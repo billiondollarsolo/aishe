@@ -1,0 +1,338 @@
+//! Configuration: TOML at `~/.config/llmsh/config.toml`, with an interactive
+//! first-run wizard when missing and graceful recovery when malformed.
+
+use std::io::Write;
+use std::path::PathBuf;
+
+use anyhow::{Context, Result};
+use serde::{Deserialize, Serialize};
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct Config {
+    #[serde(default)]
+    pub llmsh: LlmshConfig,
+    #[serde(default)]
+    pub providers: Providers,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LlmshConfig {
+    /// "suggest" | "yolo"
+    #[serde(default = "default_mode")]
+    pub mode: String,
+    /// "anthropic" | "openai"
+    #[serde(default = "default_provider")]
+    pub provider: String,
+    #[serde(default = "default_true")]
+    pub yolo_confirm_dangerous: bool,
+    #[serde(default = "default_max_iters")]
+    pub max_yolo_iterations: u32,
+    #[serde(default = "default_true")]
+    pub show_right_prompt: bool,
+    /// Reserved for v0.1: SSE streaming of answers.
+    #[serde(default)]
+    pub stream: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Providers {
+    #[serde(default = "default_anthropic")]
+    pub anthropic: ProviderConfig,
+    #[serde(default = "default_openai")]
+    pub openai: ProviderConfig,
+}
+
+impl Default for Providers {
+    fn default() -> Self {
+        Self {
+            anthropic: default_anthropic(),
+            openai: default_openai(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProviderConfig {
+    pub base_url: String,
+    pub api_key_env: String,
+    pub model: String,
+}
+
+fn default_mode() -> String {
+    "suggest".to_string()
+}
+fn default_provider() -> String {
+    "anthropic".to_string()
+}
+fn default_true() -> bool {
+    true
+}
+fn default_max_iters() -> u32 {
+    10
+}
+
+fn default_anthropic() -> ProviderConfig {
+    ProviderConfig {
+        base_url: "https://api.anthropic.com".to_string(),
+        api_key_env: "ANTHROPIC_API_KEY".to_string(),
+        model: "claude-sonnet-4-20250514".to_string(),
+    }
+}
+
+fn default_openai() -> ProviderConfig {
+    ProviderConfig {
+        base_url: "https://api.openai.com".to_string(),
+        api_key_env: "OPENAI_API_KEY".to_string(),
+        model: "gpt-4o".to_string(),
+    }
+}
+
+impl Default for LlmshConfig {
+    fn default() -> Self {
+        Self {
+            mode: default_mode(),
+            provider: default_provider(),
+            yolo_confirm_dangerous: true,
+            max_yolo_iterations: default_max_iters(),
+            show_right_prompt: true,
+            stream: false,
+        }
+    }
+}
+
+impl Default for ProviderConfig {
+    fn default() -> Self {
+        default_anthropic()
+    }
+}
+
+impl Config {
+    /// Path to the config file (`~/.config/llmsh/config.toml`).
+    pub fn path() -> PathBuf {
+        dirs::config_dir()
+            .unwrap_or_else(|| PathBuf::from("."))
+            .join("llmsh")
+            .join("config.toml")
+    }
+
+    /// Load config, running the first-run wizard if the file is missing.
+    /// On a malformed file, offers to back it up and recreate.
+    pub fn load_or_init() -> Result<Self> {
+        let path = Self::path();
+        if !path.exists() {
+            let cfg = run_wizard()?;
+            cfg.save()?;
+            println!("Saved config to {}", path.display());
+            return Ok(cfg);
+        }
+        Self::load_from(&path)
+    }
+
+    fn load_from(path: &PathBuf) -> Result<Self> {
+        let text = std::fs::read_to_string(path)
+            .with_context(|| format!("reading config at {}", path.display()))?;
+        match toml::from_str::<Config>(&text) {
+            Ok(cfg) => Ok(cfg),
+            Err(e) => {
+                eprintln!("Config at {} is malformed: {e}", path.display());
+                if prompt_yes_no("Back it up and recreate with the wizard?")? {
+                    let backup = path.with_extension("toml.bak");
+                    std::fs::rename(path, &backup)
+                        .with_context(|| format!("backing up to {}", backup.display()))?;
+                    println!("Backed up to {}", backup.display());
+                    let cfg = run_wizard()?;
+                    cfg.save()?;
+                    Ok(cfg)
+                } else {
+                    anyhow::bail!("cannot continue with malformed config");
+                }
+            }
+        }
+    }
+
+    /// Persist the config to disk, creating parent directories as needed.
+    pub fn save(&self) -> Result<()> {
+        let path = Self::path();
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)
+                .with_context(|| format!("creating config dir {}", parent.display()))?;
+        }
+        let text = toml::to_string_pretty(self).context("serializing config")?;
+        std::fs::write(&path, text)
+            .with_context(|| format!("writing config {}", path.display()))?;
+        Ok(())
+    }
+
+    /// The active provider's model name.
+    pub fn active_model(&self) -> &str {
+        match self.llmsh.provider.as_str() {
+            "openai" => &self.providers.openai.model,
+            _ => &self.providers.anthropic.model,
+        }
+    }
+
+    /// Set the active provider's model name.
+    pub fn set_active_model(&mut self, model: String) {
+        match self.llmsh.provider.as_str() {
+            "openai" => self.providers.openai.model = model,
+            _ => self.providers.anthropic.model = model,
+        }
+    }
+}
+
+fn run_wizard() -> Result<Config> {
+    println!("\n  llmsh — first-run setup\n  ───────────────────────");
+    let mut cfg = Config::default();
+
+    let provider = prompt_choice(
+        "Provider",
+        &[
+            ("anthropic", "Anthropic (Claude)"),
+            ("openai", "OpenAI-compatible (OpenAI, Ollama, …)"),
+        ],
+        "anthropic",
+    )?;
+    cfg.llmsh.provider = provider.clone();
+
+    let default_env = if provider == "openai" {
+        "OPENAI_API_KEY"
+    } else {
+        "ANTHROPIC_API_KEY"
+    };
+    let key_env = prompt_text(
+        &format!("Env var holding your API key [{default_env}]"),
+        default_env,
+    )?;
+
+    let default_model = if provider == "openai" {
+        "gpt-4o"
+    } else {
+        "claude-sonnet-4-20250514"
+    };
+    let model = prompt_text(&format!("Model [{default_model}]"), default_model)?;
+
+    let mode = prompt_choice(
+        "Default mode",
+        &[
+            ("suggest", "suggest — confirm before running"),
+            ("auto", "auto — auto-run safe commands, confirm dangerous"),
+            ("yolo", "yolo — autonomous tool loop"),
+        ],
+        "suggest",
+    )?;
+    cfg.llmsh.mode = mode;
+
+    if provider == "openai" {
+        cfg.providers.openai.api_key_env = key_env;
+        cfg.providers.openai.model = model;
+    } else {
+        cfg.providers.anthropic.api_key_env = key_env;
+        cfg.providers.anthropic.model = model;
+    }
+
+    if std::env::var(default_env)
+        .map(|v| v.trim().is_empty())
+        .unwrap_or(true)
+    {
+        let env_name = if provider == "openai" {
+            &cfg.providers.openai.api_key_env
+        } else {
+            &cfg.providers.anthropic.api_key_env
+        };
+        println!(
+            "\n  Note: ${env_name} is not set. Export it before using LLM features:\n    export {env_name}=...\n"
+        );
+    }
+
+    Ok(cfg)
+}
+
+fn prompt_text(label: &str, default: &str) -> Result<String> {
+    print!("  {label}: ");
+    std::io::stdout().flush().ok();
+    let mut line = String::new();
+    std::io::stdin().read_line(&mut line)?;
+    let line = line.trim();
+    Ok(if line.is_empty() {
+        default.to_string()
+    } else {
+        line.to_string()
+    })
+}
+
+fn prompt_choice(label: &str, options: &[(&str, &str)], default: &str) -> Result<String> {
+    println!("  {label}:");
+    for (i, (key, desc)) in options.iter().enumerate() {
+        let marker = if *key == default { "*" } else { " " };
+        println!("    {marker} {}) {desc}", i + 1);
+    }
+    print!("  choose [1-{}] (default {default}): ", options.len());
+    std::io::stdout().flush().ok();
+    let mut line = String::new();
+    std::io::stdin().read_line(&mut line)?;
+    let line = line.trim();
+    if line.is_empty() {
+        return Ok(default.to_string());
+    }
+    if let Ok(n) = line.parse::<usize>() {
+        if n >= 1 && n <= options.len() {
+            return Ok(options[n - 1].0.to_string());
+        }
+    }
+    // Allow typing the key directly.
+    for (key, _) in options {
+        if line.eq_ignore_ascii_case(key) {
+            return Ok((*key).to_string());
+        }
+    }
+    Ok(default.to_string())
+}
+
+fn prompt_yes_no(label: &str) -> Result<bool> {
+    print!("  {label} [y/N]: ");
+    std::io::stdout().flush().ok();
+    let mut line = String::new();
+    std::io::stdin().read_line(&mut line)?;
+    Ok(matches!(line.trim().to_lowercase().as_str(), "y" | "yes"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn defaults_round_trip() {
+        let cfg = Config::default();
+        let text = toml::to_string_pretty(&cfg).unwrap();
+        let parsed: Config = toml::from_str(&text).unwrap();
+        assert_eq!(parsed.llmsh.mode, "suggest");
+        assert_eq!(parsed.llmsh.provider, "anthropic");
+        assert_eq!(parsed.providers.anthropic.api_key_env, "ANTHROPIC_API_KEY");
+        assert_eq!(parsed.providers.openai.model, "gpt-4o");
+        assert!(parsed.llmsh.yolo_confirm_dangerous);
+        assert_eq!(parsed.llmsh.max_yolo_iterations, 10);
+    }
+
+    #[test]
+    fn partial_config_fills_defaults() {
+        let text = r#"
+            [llmsh]
+            mode = "yolo"
+        "#;
+        let cfg: Config = toml::from_str(text).unwrap();
+        assert_eq!(cfg.llmsh.mode, "yolo");
+        // Unspecified fields fall back to defaults.
+        assert_eq!(cfg.llmsh.provider, "anthropic");
+        assert_eq!(cfg.providers.openai.base_url, "https://api.openai.com");
+    }
+
+    #[test]
+    fn active_model_tracks_provider() {
+        let mut cfg = Config::default();
+        assert_eq!(cfg.active_model(), "claude-sonnet-4-20250514");
+        cfg.llmsh.provider = "openai".into();
+        assert_eq!(cfg.active_model(), "gpt-4o");
+        cfg.set_active_model("gpt-4o-mini".into());
+        assert_eq!(cfg.providers.openai.model, "gpt-4o-mini");
+    }
+}

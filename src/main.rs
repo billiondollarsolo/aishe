@@ -1,0 +1,344 @@
+//! llmsh — a natural-language-aware shell.
+//!
+//! Behaves like zsh for recognizable commands; anything else is treated as a
+//! natural-language request handled by an LLM (suggest or yolo mode).
+
+use std::process::ExitCode;
+use std::sync::atomic::{AtomicBool, Ordering};
+
+use anyhow::Result;
+use clap::Parser;
+use crossterm::style::Stylize;
+use reedline::{
+    default_emacs_keybindings, DefaultHinter, Emacs, FileBackedHistory, Reedline, Signal,
+};
+
+use llmsh::config::Config;
+use llmsh::dispatcher::{self, CommandCache, Dispatch};
+use llmsh::executor::Executor;
+use llmsh::highlight::CmdHighlighter;
+use llmsh::prompt::LlmshPrompt;
+use llmsh::providers::{self, Provider};
+use llmsh::{context, modes};
+
+/// Set by the SIGINT handler; checked by the yolo loop and reset around runs.
+static INTERRUPTED: AtomicBool = AtomicBool::new(false);
+
+extern "C" fn handle_sigint(_sig: libc::c_int) {
+    INTERRUPTED.store(true, Ordering::SeqCst);
+}
+
+#[derive(Parser, Debug)]
+#[command(name = "llmsh", version, about = "A natural-language-aware shell")]
+struct Args {
+    /// Override the interaction mode for this session.
+    #[arg(long, value_parser = ["suggest", "auto", "yolo"])]
+    mode: Option<String>,
+    /// Override the model for this session.
+    #[arg(long)]
+    model: Option<String>,
+    /// Override the provider for this session.
+    #[arg(long, value_parser = ["anthropic", "openai"])]
+    provider: Option<String>,
+    /// Run a single input non-interactively and exit.
+    #[arg(short = 'c')]
+    command: Option<String>,
+}
+
+fn main() -> ExitCode {
+    match run() {
+        Ok(code) => ExitCode::from(code),
+        Err(e) => {
+            eprintln!("{}", format!("llmsh: {e}").red());
+            ExitCode::from(1)
+        }
+    }
+}
+
+fn run() -> Result<u8> {
+    let args = Args::parse();
+
+    let mut config = Config::load_or_init()?;
+    if let Some(m) = &args.mode {
+        config.llmsh.mode = m.clone();
+    }
+    if let Some(p) = &args.provider {
+        config.llmsh.provider = p.clone();
+    }
+    if let Some(m) = &args.model {
+        config.set_active_model(m.clone());
+    }
+
+    let mut executor = Executor::new()?;
+    context::init(executor.shell());
+
+    let cache = CommandCache::new();
+    cache.build(executor.shell());
+
+    // Build the provider lazily-ish: report errors but keep the shell usable.
+    let mut provider: Option<Box<dyn Provider>> = match providers::make(&config) {
+        Ok(p) => Some(p),
+        Err(e) => {
+            eprintln!("{}", format!("llmsh: LLM disabled — {e}").dim());
+            None
+        }
+    };
+
+    // Install a non-fatal SIGINT handler (see INTERRUPTED docs).
+    unsafe {
+        libc::signal(
+            libc::SIGINT,
+            handle_sigint as *const () as libc::sighandler_t,
+        );
+    }
+
+    // Non-interactive single-shot mode (-c).
+    if let Some(input) = args.command {
+        return one_shot(&input, &mut executor, &mut provider, &config, &cache);
+    }
+
+    repl(&mut executor, &mut provider, &mut config, &cache)
+}
+
+/// Run one dispatch cycle non-interactively for the `-c` flag.
+fn one_shot(
+    input: &str,
+    executor: &mut Executor,
+    provider: &mut Option<Box<dyn Provider>>,
+    config: &Config,
+    cache: &CommandCache,
+) -> Result<u8> {
+    let trimmed = input.trim();
+    if trimmed.is_empty() {
+        return Ok(0);
+    }
+    match dispatcher::dispatch(trimmed, cache) {
+        Dispatch::Shell(line) => Ok(executor.run(&line) as u8),
+        Dispatch::Builtin(tokens) => {
+            if matches!(tokens[0].as_str(), "exit" | "quit") {
+                return Ok(executor.last_exit as u8);
+            }
+            if tokens[0] == "llmsh" {
+                // Meta commands are no-ops worth nothing in -c; print help-ish.
+                println!("llmsh meta commands are interactive-only");
+                return Ok(0);
+            }
+            Ok(executor.run_builtin(&tokens) as u8)
+        }
+        Dispatch::NaturalLanguage(nl) => match provider {
+            Some(p) => {
+                if config.llmsh.mode == "yolo" {
+                    modes::yolo::run(&nl, p.as_ref(), executor, config, &INTERRUPTED)?;
+                } else {
+                    // -c + NL in suggest/auto mode: print suggested command, don't run.
+                    modes::suggest::run(&nl, p.as_ref(), executor, config, true, false)?;
+                }
+                Ok(0)
+            }
+            None => {
+                eprintln!("llmsh: LLM not configured");
+                Ok(1)
+            }
+        },
+    }
+}
+
+fn repl(
+    executor: &mut Executor,
+    provider: &mut Option<Box<dyn Provider>>,
+    config: &mut Config,
+    cache: &CommandCache,
+) -> Result<u8> {
+    let history_path = data_dir().join("history");
+    if let Some(parent) = history_path.parent() {
+        std::fs::create_dir_all(parent).ok();
+    }
+    let history = Box::new(
+        FileBackedHistory::with_file(10_000, history_path)
+            .unwrap_or_else(|_| FileBackedHistory::new(10_000).expect("in-memory history")),
+    );
+
+    let keybindings = default_emacs_keybindings();
+    let edit_mode = Box::new(Emacs::new(keybindings));
+
+    let mut line_editor = Reedline::create()
+        .with_history(history)
+        .with_hinter(Box::new(DefaultHinter::default()))
+        .with_highlighter(Box::new(CmdHighlighter::new(cache.clone())))
+        .with_edit_mode(edit_mode);
+
+    loop {
+        let prompt = LlmshPrompt::new(
+            executor.cwd().clone(),
+            &config.llmsh.mode,
+            executor.last_exit,
+            config.active_model().to_string(),
+            config.llmsh.show_right_prompt,
+        );
+
+        INTERRUPTED.store(false, Ordering::SeqCst);
+        let sig = line_editor.read_line(&prompt);
+        match sig {
+            Ok(Signal::Success(buffer)) => {
+                let line = buffer.trim();
+                if line.is_empty() {
+                    continue;
+                }
+                if handle_line(line, executor, provider, config, cache)? {
+                    return Ok(executor.last_exit as u8);
+                }
+            }
+            Ok(Signal::CtrlC) => {
+                // Clear the line and re-prompt.
+                continue;
+            }
+            Ok(Signal::CtrlD) => {
+                println!("exit");
+                return Ok(executor.last_exit as u8);
+            }
+            Err(e) => {
+                eprintln!("llmsh: input error: {e}");
+                return Ok(1);
+            }
+        }
+    }
+}
+
+/// Handle one input line. Returns Ok(true) if the shell should exit.
+fn handle_line(
+    line: &str,
+    executor: &mut Executor,
+    provider: &mut Option<Box<dyn Provider>>,
+    config: &mut Config,
+    cache: &CommandCache,
+) -> Result<bool> {
+    match dispatcher::dispatch(line, cache) {
+        Dispatch::Shell(cmd) => {
+            executor.run(&cmd);
+        }
+        Dispatch::Builtin(tokens) => match tokens[0].as_str() {
+            "exit" | "quit" => return Ok(true),
+            "llmsh" => handle_meta(&tokens, config, provider, executor, cache),
+            _ => {
+                executor.run_builtin(&tokens);
+            }
+        },
+        Dispatch::NaturalLanguage(nl) => {
+            let Some(p) = provider.as_deref() else {
+                eprintln!(
+                    "{}",
+                    "llmsh: LLM not configured — set your API key env var".dim()
+                );
+                return Ok(false);
+            };
+            match config.llmsh.mode.as_str() {
+                "yolo" => modes::yolo::run(&nl, p, executor, config, &INTERRUPTED)?,
+                "auto" => modes::suggest::run(&nl, p, executor, config, false, true)?,
+                _ => modes::suggest::run(&nl, p, executor, config, false, false)?,
+            }
+        }
+    }
+    Ok(false)
+}
+
+/// Handle `llmsh ...` meta commands.
+fn handle_meta(
+    tokens: &[String],
+    config: &mut Config,
+    provider: &mut Option<Box<dyn Provider>>,
+    executor: &Executor,
+    cache: &CommandCache,
+) {
+    let sub = tokens.get(1).map(|s| s.as_str()).unwrap_or("help");
+    match sub {
+        "mode" => {
+            if let Some(m) = tokens.get(2) {
+                if matches!(m.as_str(), "suggest" | "auto" | "yolo") {
+                    config.llmsh.mode = m.clone();
+                    persist(config);
+                    println!("mode → {m}");
+                } else {
+                    eprintln!("llmsh: mode must be 'suggest', 'auto', or 'yolo'");
+                }
+            } else {
+                println!("mode: {}", config.llmsh.mode);
+            }
+        }
+        "model" => {
+            if let Some(m) = tokens.get(2) {
+                config.set_active_model(m.clone());
+                persist(config);
+                rebuild_provider(config, provider);
+                println!("model → {m}");
+            } else {
+                println!("model: {}", config.active_model());
+            }
+        }
+        "provider" => {
+            if let Some(p) = tokens.get(2) {
+                if p == "anthropic" || p == "openai" {
+                    config.llmsh.provider = p.clone();
+                    persist(config);
+                    rebuild_provider(config, provider);
+                    println!("provider → {p}");
+                } else {
+                    eprintln!("llmsh: provider must be 'anthropic' or 'openai'");
+                }
+            } else {
+                println!("provider: {}", config.llmsh.provider);
+            }
+        }
+        "config" => {
+            println!("config file: {}", Config::path().display());
+            match toml::to_string_pretty(config) {
+                Ok(t) => println!("\n{t}"),
+                Err(e) => eprintln!("llmsh: {e}"),
+            }
+        }
+        "rehash" => {
+            cache.rehash(executor.shell());
+            println!("rehashed ({} commands cached)", cache.len());
+        }
+        _ => print_meta_help(),
+    }
+}
+
+fn print_meta_help() {
+    println!(
+        "llmsh meta commands:\n\
+\x20 llmsh mode [suggest|auto|yolo]  show or set interaction mode\n\
+\x20 llmsh model [NAME]          show or set the model\n\
+\x20 llmsh provider [a|o]        show or set the provider\n\
+\x20 llmsh config                print active config\n\
+\x20 llmsh rehash                rebuild the command cache\n\
+\x20 llmsh help                  show this help\n\
+\n\
+input prefixes:\n\
+\x20 ?<text>   force natural-language\n\
+\x20 !<cmd>    force shell (safety-exempt)\n\
+\n\
+exit with `exit`, `quit`, or Ctrl-D."
+    );
+}
+
+fn rebuild_provider(config: &Config, provider: &mut Option<Box<dyn Provider>>) {
+    match providers::make(config) {
+        Ok(p) => *provider = Some(p),
+        Err(e) => {
+            eprintln!("{}", format!("llmsh: {e}").dim());
+            *provider = None;
+        }
+    }
+}
+
+fn persist(config: &Config) {
+    if let Err(e) = config.save() {
+        eprintln!("{}", format!("llmsh: could not save config: {e}").dim());
+    }
+}
+
+fn data_dir() -> std::path::PathBuf {
+    dirs::data_dir()
+        .unwrap_or_else(|| std::path::PathBuf::from("."))
+        .join("llmsh")
+}
