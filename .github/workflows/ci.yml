@@ -44,3 +44,30 @@ jobs:
 
       - name: Test
         run: cargo test --verbose
+
+  pty-smoke:
+    name: zsh-PTY smoke test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install zsh
+        run: sudo apt-get update && sudo apt-get install -y zsh
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.toml') }}
+
+      - name: Build release binary
+        run: cargo build --release
+
+      - name: Drive real zsh through the PTY front-end
+        run: python3 tests/pty_smoke.py target/release/llmsh

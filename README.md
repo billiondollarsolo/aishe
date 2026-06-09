@@ -110,6 +110,9 @@ your full `~/.zshrc` and **every plugin you already use** — `zsh-autosuggestio
 Nothing is forked or reimplemented: it's genuinely your zsh, so plugin behavior
 is identical to your normal shell. Requires `zsh` on `PATH`.
 
+The hook ergonomics below (auto-run safe via `eval`, force-NL keybinding) apply
+here too, since the PTY wrapper injects the same hook.
+
 ### 1. Standalone REPL (`llmsh`)
 
 `llmsh` runs its own line editor ([`reedline`](https://github.com/nushell/reedline),
@@ -141,6 +144,20 @@ plugin works exactly as before. When you type natural language, `llmsh` suggests
 a command and pre-fills your next prompt (`print -z`) for you to confirm or edit
 — and because it runs in your real shell, `cd`/`export` state persists normally.
 Set `LLMSH_MODE=suggest|auto|yolo` to control behavior.
+
+**auto-run safe via `eval` (zsh).** In `auto` mode the hook asks
+`llmsh --auto-line`, which classifies the suggested command with the safety gate.
+Safe commands are `eval`'d directly in your real shell — so `cd`/`export` stick
+and the command is recorded in history — while dangerous ones are pre-filled
+(`print -z`) for you to review. (bash runs `command_not_found_handle` in a
+subshell, where eval'd state wouldn't persist, so bash keeps the pre-fill path in
+auto mode.)
+
+**force-NL keybinding.** Sometimes your input *is* a valid command but you mean
+it as natural language. Press **Alt-Enter** (zsh) or **Ctrl-G** (bash) to send
+the current line to the LLM as a request and replace it with the suggestion.
+Override the zsh key with `LLMSH_NL_KEY` (a `bindkey` sequence), e.g.
+`export LLMSH_NL_KEY='^o'`.
 
 > This hook approach is intentionally chosen over wrapping zsh in a PTY: it
 > gives the same "real ZLE + native plugins" result without a second terminal
@@ -225,6 +242,10 @@ cargo build
 cargo test            # unit + integration (integration tests spawn a real shell)
 cargo clippy --all-targets -- -D warnings
 cargo fmt --check
+
+# zsh-PTY front-end smoke test (drives a real zsh through a pseudo-terminal;
+# needs `zsh` + python3, no API key). Runs in CI on every push.
+cargo build --release && python3 tests/pty_smoke.py target/release/llmsh
 ```
 
 ### Manual checklist

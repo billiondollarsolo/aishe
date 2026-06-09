@@ -19,8 +19,14 @@ use llmsh::executor::Executor;
 use llmsh::highlight::CmdHighlighter;
 use llmsh::prompt::LlmshPrompt;
 use llmsh::providers::{self, Provider};
+use llmsh::safety::{self, Risk};
 use llmsh::theme::Theme;
 use llmsh::{context, integration, modes};
+
+/// Exit code from `--auto-line` when the suggested command is dangerous: the
+/// shell hook treats any non-zero code as "pre-fill for review" instead of
+/// running. (See `integration::ZSH_HOOK`.)
+const EXIT_AUTO_DANGEROUS: u8 = 20;
 
 /// Set by the SIGINT handler; checked by the yolo loop and reset around runs.
 static INTERRUPTED: AtomicBool = AtomicBool::new(false);
@@ -55,6 +61,11 @@ struct Args {
     /// (shell hook) Run the yolo loop for a natural-language line.
     #[arg(long, hide = true)]
     yolo_line: Option<String>,
+    /// (shell hook) Auto mode: print a suggested command and exit 0 if the
+    /// safety gate deems it safe (caller runs it), or a non-zero code if
+    /// dangerous (caller pre-fills it for review).
+    #[arg(long, hide = true)]
+    auto_line: Option<String>,
     #[command(subcommand)]
     cmd: Option<Cmd>,
 }
@@ -149,6 +160,9 @@ fn run() -> Result<u8> {
     if let Some(line) = args.yolo_line {
         return yolo_line(&line, &mut executor, provider.as_deref(), &config);
     }
+    if let Some(line) = args.auto_line {
+        return auto_line(&line, &mut executor, provider.as_deref(), &config);
+    }
 
     // Non-interactive single-shot mode (-c).
     if let Some(input) = args.command {
@@ -205,6 +219,50 @@ fn yolo_line(
     };
     modes::yolo::run(line, p, executor, config, &INTERRUPTED)?;
     Ok(0)
+}
+
+/// Shell-hook helper for `auto` mode: get a suggestion, print the command to
+/// stdout, and signal safety via the exit code so the hook can decide whether to
+/// run it directly (`eval`) or pre-fill it for review.
+///
+/// - Answer (no command): nothing on stdout, exit 0.
+/// - Safe command: command on stdout, exit 0 (hook runs it).
+/// - Dangerous command: command on stdout + reason on stderr, exit
+///   `EXIT_AUTO_DANGEROUS` (hook pre-fills it instead).
+fn auto_line(
+    line: &str,
+    executor: &mut Executor,
+    provider: Option<&dyn Provider>,
+    config: &Config,
+) -> Result<u8> {
+    let Some(p) = provider else {
+        eprintln!("llmsh: LLM not configured");
+        return Ok(1);
+    };
+    match modes::suggest::request(line, p, executor, config)? {
+        modes::suggest::Suggestion::Command {
+            command,
+            explanation,
+        } => {
+            if !explanation.is_empty() {
+                eprintln!("{}", explanation.as_str().dim());
+            }
+            println!("{command}");
+            match safety::assess(&command) {
+                Risk::Safe => Ok(0),
+                Risk::Dangerous(reason) => {
+                    eprintln!("{}", format!("⚠ {reason} — pre-filled for review").yellow());
+                    Ok(EXIT_AUTO_DANGEROUS)
+                }
+            }
+        }
+        modes::suggest::Suggestion::Answer { explanation } => {
+            if !explanation.is_empty() {
+                eprintln!("{explanation}");
+            }
+            Ok(0)
+        }
+    }
 }
 
 /// Run one dispatch cycle non-interactively for the `-c` flag.

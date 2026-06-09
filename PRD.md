@@ -47,6 +47,21 @@ SDK crates.
 - Native hook (`eval "$(llmsh init zsh|bash)"`) — same `command_not_found`
   routing inside the user's own shell session.
 
+Hook ergonomics (shared by `zsh-pty` and the native zsh hook):
+- **auto-run safe via `eval`.** In `auto` mode the hook calls `llmsh --auto-line`,
+  which prints the suggested command and exits `0` if the safety gate deems it
+  safe (hook `eval`s it in the real shell; `cd`/`export` persist, recorded in
+  history) or a non-zero code if dangerous (hook pre-fills it for review). bash
+  runs `command_not_found_handle` in a subshell, so it keeps the pre-fill path.
+- **force-NL keybinding.** A ZLE widget (zsh, default Alt-Enter, `LLMSH_NL_KEY`
+  override) / `bind -x` on Ctrl-G (bash) routes the current line to the LLM as
+  natural language even when it is also a valid command.
+
+The `zsh-pty` front-end is exercised in CI by a PTY smoke test
+(`tests/pty_smoke.py`) that drives a real zsh and asserts the wrapper proxies
+native commands, installs the hook (incl. the auto path), and binds the force-NL
+widget — all without an API key.
+
 ## 3. Repository Layout
 
 ```
