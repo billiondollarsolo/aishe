@@ -7,7 +7,7 @@ use std::process::ExitCode;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use anyhow::Result;
-use clap::Parser;
+use clap::{Parser, Subcommand};
 use crossterm::style::Stylize;
 use reedline::{
     default_emacs_keybindings, DefaultHinter, Emacs, FileBackedHistory, Reedline, Signal,
@@ -19,7 +19,8 @@ use llmsh::executor::Executor;
 use llmsh::highlight::CmdHighlighter;
 use llmsh::prompt::LlmshPrompt;
 use llmsh::providers::{self, Provider};
-use llmsh::{context, modes};
+use llmsh::theme::Theme;
+use llmsh::{context, integration, modes};
 
 /// Set by the SIGINT handler; checked by the yolo loop and reset around runs.
 static INTERRUPTED: AtomicBool = AtomicBool::new(false);
@@ -43,6 +44,24 @@ struct Args {
     /// Run a single input non-interactively and exit.
     #[arg(short = 'c')]
     command: Option<String>,
+    /// (shell hook) Suggest a command for a natural-language line: prints the
+    /// command to stdout and the explanation/answer to stderr.
+    #[arg(long, hide = true)]
+    suggest_line: Option<String>,
+    /// (shell hook) Run the yolo loop for a natural-language line.
+    #[arg(long, hide = true)]
+    yolo_line: Option<String>,
+    #[command(subcommand)]
+    cmd: Option<Cmd>,
+}
+
+#[derive(Subcommand, Debug)]
+enum Cmd {
+    /// Print a shell integration snippet: `eval "$(llmsh init zsh)"`.
+    Init {
+        /// Shell to emit integration for (zsh or bash).
+        shell: String,
+    },
 }
 
 fn main() -> ExitCode {
@@ -57,6 +76,23 @@ fn main() -> ExitCode {
 
 fn run() -> Result<u8> {
     let args = Args::parse();
+
+    // `init <shell>` needs no config or provider.
+    if let Some(Cmd::Init { shell }) = &args.cmd {
+        return match integration::script(shell) {
+            Some(s) => {
+                print!("{s}");
+                Ok(0)
+            }
+            None => {
+                eprintln!(
+                    "llmsh: no integration for '{shell}' (supported: {})",
+                    integration::SUPPORTED.join(", ")
+                );
+                Ok(1)
+            }
+        };
+    }
 
     let mut config = Config::load_or_init()?;
     if let Some(m) = &args.mode {
@@ -92,12 +128,69 @@ fn run() -> Result<u8> {
         );
     }
 
+    // Shell-hook helpers (called by `llmsh init` integration).
+    if let Some(line) = args.suggest_line {
+        return suggest_line(&line, &mut executor, provider.as_deref(), &config);
+    }
+    if let Some(line) = args.yolo_line {
+        return yolo_line(&line, &mut executor, provider.as_deref(), &config);
+    }
+
     // Non-interactive single-shot mode (-c).
     if let Some(input) = args.command {
         return one_shot(&input, &mut executor, &mut provider, &config, &cache);
     }
 
     repl(&mut executor, &mut provider, &mut config, &cache)
+}
+
+/// Shell-hook helper: print a suggested command to stdout (for `print -z` /
+/// readline pre-fill) and any explanation/answer to stderr.
+fn suggest_line(
+    line: &str,
+    executor: &mut Executor,
+    provider: Option<&dyn Provider>,
+    config: &Config,
+) -> Result<u8> {
+    let Some(p) = provider else {
+        eprintln!("llmsh: LLM not configured");
+        return Ok(1);
+    };
+    match modes::suggest::request(line, p, executor, config)? {
+        modes::suggest::Suggestion::Command {
+            command,
+            explanation,
+        } => {
+            if !explanation.is_empty() {
+                eprintln!("{}", explanation.as_str().dim());
+            }
+            println!("{command}");
+            Ok(0)
+        }
+        modes::suggest::Suggestion::Answer { explanation } => {
+            // No command to run; render the answer to stderr so the shell hook's
+            // stdout capture stays empty.
+            if !explanation.is_empty() {
+                eprintln!("{explanation}");
+            }
+            Ok(0)
+        }
+    }
+}
+
+/// Shell-hook helper: run the yolo loop directly for a natural-language line.
+fn yolo_line(
+    line: &str,
+    executor: &mut Executor,
+    provider: Option<&dyn Provider>,
+    config: &Config,
+) -> Result<u8> {
+    let Some(p) = provider else {
+        eprintln!("llmsh: LLM not configured");
+        return Ok(1);
+    };
+    modes::yolo::run(line, p, executor, config, &INTERRUPTED)?;
+    Ok(0)
 }
 
 /// Run one dispatch cycle non-interactively for the `-c` flag.
@@ -160,11 +253,12 @@ fn repl(
 
     let keybindings = default_emacs_keybindings();
     let edit_mode = Box::new(Emacs::new(keybindings));
+    let theme = Theme::from_config(&config.theme);
 
     let mut line_editor = Reedline::create()
         .with_history(history)
         .with_hinter(Box::new(DefaultHinter::default()))
-        .with_highlighter(Box::new(CmdHighlighter::new(cache.clone())))
+        .with_highlighter(Box::new(CmdHighlighter::new(cache.clone(), theme)))
         .with_edit_mode(edit_mode);
 
     loop {
@@ -174,6 +268,7 @@ fn repl(
             executor.last_exit,
             config.active_model().to_string(),
             config.llmsh.show_right_prompt,
+            theme,
         );
 
         INTERRUPTED.store(false, Ordering::SeqCst);

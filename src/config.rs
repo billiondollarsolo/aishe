@@ -7,12 +7,16 @@ use std::path::PathBuf;
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
+use crate::theme::ThemeConfig;
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Config {
     #[serde(default)]
     pub llmsh: LlmshConfig,
     #[serde(default)]
     pub providers: Providers,
+    #[serde(default)]
+    pub theme: ThemeConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

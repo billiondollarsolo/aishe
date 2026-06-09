@@ -56,3 +56,23 @@ fn version_flag_works() {
         .success()
         .stdout(contains("llmsh"));
 }
+
+#[test]
+fn init_zsh_emits_integration() {
+    Command::cargo_bin("llmsh")
+        .unwrap()
+        .args(["init", "zsh"])
+        .assert()
+        .success()
+        .stdout(contains("command_not_found_handler"))
+        .stdout(contains("print -z"));
+}
+
+#[test]
+fn init_unsupported_shell_fails() {
+    Command::cargo_bin("llmsh")
+        .unwrap()
+        .args(["init", "fish"])
+        .assert()
+        .failure();
+}

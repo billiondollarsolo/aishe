@@ -91,18 +91,67 @@ yourself or to `!`-forced lines — it's a shell, not a nanny.
 
 ## zsh ergonomics
 
-`llmsh` uses [`reedline`](https://github.com/nushell/reedline) (the line editor
-behind nushell), not zsh's ZLE, so native zsh plugins cannot be loaded
-directly. Instead it provides equivalents to the most popular ones:
+There are two ways to use `llmsh`, depending on how much real-zsh fidelity you
+want:
+
+### 1. Standalone REPL (`llmsh`)
+
+`llmsh` runs its own line editor ([`reedline`](https://github.com/nushell/reedline),
+the editor behind nushell). It reimplements the most-loved zsh niceties
+natively:
 
 - **History autosuggestions** (like `zsh-autosuggestions`) — fish-style inline
   hints from your history.
-- **Command syntax highlighting** (like `zsh-syntax-highlighting`) — the command
-  head is green when it's a known command, red when unknown.
-- **oh-my-zsh aliases & functions** are picked up: at startup `llmsh` queries
-  your interactive shell (`zsh -ic 'alias +; …'`) so your aliases and functions
-  are recognized as commands and dispatch to the shell. (ZLE widgets, prompt
-  themes, and completion definitions do **not** carry over.)
+- **Syntax highlighting** (like `zsh-syntax-highlighting`) — the command head is
+  colored by whether it's a known command, with distinct colors for flags,
+  quoted strings, operators (`| && ; > <`), paths, env assignments, and the
+  `?`/`!` sigils. Fully [themeable](#theming).
+- **oh-my-zsh aliases & functions** are picked up at startup (`zsh -ic 'alias +;
+  …'`) so they're recognized as commands.
+
+### 2. Native zsh/bash hook (`eval "$(llmsh init zsh)"`)
+
+If you want your **real** zsh — with the actual `zsh-autosuggestions`,
+`zsh-syntax-highlighting`, oh-my-zsh themes, completions, and ZLE widgets — add
+this to your `~/.zshrc` (or `~/.bashrc` with `init bash`):
+
+```sh
+eval "$(llmsh init zsh)"
+```
+
+This installs a `command_not_found_handler` that routes anything that isn't a
+command to `llmsh`. Your shell's line editor is **untouched**, so every native
+plugin works exactly as before. When you type natural language, `llmsh` suggests
+a command and pre-fills your next prompt (`print -z`) for you to confirm or edit
+— and because it runs in your real shell, `cd`/`export` state persists normally.
+Set `LLMSH_MODE=suggest|auto|yolo` to control behavior.
+
+> This hook approach is intentionally chosen over wrapping zsh in a PTY: it
+> gives the same "real ZLE + native plugins" result without a second terminal
+> layer, SIGWINCH/IPC plumbing, or fighting the shell's own editor.
+
+## Theming
+
+Prompt and highlighter colors are configurable via a `[theme]` section. Pick a
+preset (`default`, `vivid`, `mono`) and/or override individual roles. Colors may
+be named (`red`, `bright-green`, `purple`), a palette index (`0`–`255`), or hex
+(`#ff8800`):
+
+```toml
+[theme]
+preset = "vivid"
+cwd = "bright-cyan"
+known_cmd = "#98c379"
+unknown_cmd = "red"
+flag = "yellow"
+string = "green"
+operator = "magenta"
+path = "blue"
+```
+
+Roles: `cwd`, `glyph_ok`, `glyph_err`, `right_prompt`, `known_cmd`,
+`unknown_cmd`, `flag`, `string`, `operator`, `path`, `assignment`, `sigil_nl`,
+`sigil_shell`.
 
 ---
 

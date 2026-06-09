@@ -91,6 +91,14 @@ impl CommandCache {
         self.inner.read().unwrap().contains(token)
     }
 
+    /// Insert a set of command names (used by tests and seeding).
+    pub fn insert_all(&self, items: &[&str]) {
+        let mut w = self.inner.write().unwrap();
+        for i in items {
+            w.insert((*i).to_string());
+        }
+    }
+
     #[allow(clippy::len_without_is_empty)]
     pub fn len(&self) -> usize {
         self.inner.read().unwrap().len()

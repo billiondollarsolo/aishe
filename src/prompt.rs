@@ -6,16 +6,26 @@ use std::path::PathBuf;
 
 use reedline::{Prompt, PromptEditMode, PromptHistorySearch, PromptHistorySearchStatus};
 
+use crate::theme::Theme;
+
 pub struct LlmshPrompt {
     cwd_display: String,
     glyph: char,
     last_exit: i32,
     right: String,
     show_right: bool,
+    theme: Theme,
 }
 
 impl LlmshPrompt {
-    pub fn new(cwd: PathBuf, mode: &str, last_exit: i32, model: String, show_right: bool) -> Self {
+    pub fn new(
+        cwd: PathBuf,
+        mode: &str,
+        last_exit: i32,
+        model: String,
+        show_right: bool,
+        theme: Theme,
+    ) -> Self {
         let glyph = match mode {
             "yolo" => '⚡',
             "auto" => '»',
@@ -29,6 +39,7 @@ impl LlmshPrompt {
             last_exit,
             right,
             show_right,
+            theme,
         }
     }
 }
@@ -82,18 +93,18 @@ impl Prompt for LlmshPrompt {
     }
 
     fn get_prompt_color(&self) -> reedline::Color {
-        reedline::Color::Cyan
+        self.theme.cwd.to_crossterm()
     }
 
     fn get_indicator_color(&self) -> reedline::Color {
         if self.last_exit == 0 {
-            reedline::Color::Green
+            self.theme.glyph_ok.to_crossterm()
         } else {
-            reedline::Color::Red
+            self.theme.glyph_err.to_crossterm()
         }
     }
 
     fn get_prompt_right_color(&self) -> reedline::Color {
-        reedline::Color::DarkGrey
+        self.theme.right_prompt.to_crossterm()
     }
 }
