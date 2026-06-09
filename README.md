@@ -119,6 +119,10 @@ here too, since the PTY wrapper injects the same hook.
 the editor behind nushell). It reimplements the most-loved zsh niceties
 natively:
 
+- **Tab completion** — press `Tab` for a completion menu (`Shift-Tab` to go
+  back). Completes command names (from the `$PATH`/builtin/alias cache) at the
+  command position, and file/directory paths (with `~/` expansion) in argument
+  position.
 - **History autosuggestions** (like `zsh-autosuggestions`) — fish-style inline
   hints from your history.
 - **Syntax highlighting** (like `zsh-syntax-highlighting`) — the command head is

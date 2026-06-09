@@ -2,6 +2,7 @@
 //! these modules; exposing them here also lets the integration tests in
 //! `tests/` exercise the internals directly.
 
+pub mod completer;
 pub mod config;
 pub mod context;
 pub mod dispatcher;

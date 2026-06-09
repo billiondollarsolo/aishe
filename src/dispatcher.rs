@@ -91,6 +91,17 @@ impl CommandCache {
         self.inner.read().unwrap().contains(token)
     }
 
+    /// Command names beginning with `prefix` (for tab completion). Unsorted.
+    pub fn matching(&self, prefix: &str) -> Vec<String> {
+        self.inner
+            .read()
+            .unwrap()
+            .iter()
+            .filter(|n| n.starts_with(prefix))
+            .cloned()
+            .collect()
+    }
+
     /// Insert a set of command names (used by tests and seeding).
     pub fn insert_all(&self, items: &[&str]) {
         let mut w = self.inner.write().unwrap();
