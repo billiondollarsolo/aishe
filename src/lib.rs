@@ -11,5 +11,6 @@ pub mod integration;
 pub mod modes;
 pub mod prompt;
 pub mod providers;
+pub mod pty;
 pub mod safety;
 pub mod theme;

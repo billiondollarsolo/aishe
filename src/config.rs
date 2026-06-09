@@ -33,6 +33,10 @@ pub struct LlmshConfig {
     pub max_yolo_iterations: u32,
     #[serde(default = "default_true")]
     pub show_right_prompt: bool,
+    /// Front-end: "reedline" (built-in editor) or "zsh-pty" (drive the user's
+    /// real interactive zsh in a PTY, so all native zsh plugins work).
+    #[serde(default = "default_front_end")]
+    pub front_end: String,
     /// Reserved for v0.1: SSE streaming of answers.
     #[serde(default)]
     pub stream: bool,
@@ -74,6 +78,9 @@ fn default_true() -> bool {
 fn default_max_iters() -> u32 {
     10
 }
+fn default_front_end() -> String {
+    "reedline".to_string()
+}
 
 fn default_anthropic() -> ProviderConfig {
     ProviderConfig {
@@ -99,6 +106,7 @@ impl Default for LlmshConfig {
             yolo_confirm_dangerous: true,
             max_yolo_iterations: default_max_iters(),
             show_right_prompt: true,
+            front_end: default_front_end(),
             stream: false,
         }
     }

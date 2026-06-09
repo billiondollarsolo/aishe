@@ -44,6 +44,10 @@ struct Args {
     /// Run a single input non-interactively and exit.
     #[arg(short = 'c')]
     command: Option<String>,
+    /// Use the zsh-PTY front-end: drive your real interactive zsh (with all
+    /// native plugins) instead of the built-in reedline editor.
+    #[arg(long)]
+    pty: bool,
     /// (shell hook) Suggest a command for a natural-language line: prints the
     /// command to stdout and the explanation/answer to stderr.
     #[arg(long, hide = true)]
@@ -62,6 +66,8 @@ enum Cmd {
         /// Shell to emit integration for (zsh or bash).
         shell: String,
     },
+    /// Launch your real interactive zsh (with all native plugins) under llmsh.
+    Zsh,
 }
 
 fn main() -> ExitCode {
@@ -103,6 +109,14 @@ fn run() -> Result<u8> {
     }
     if let Some(m) = &args.model {
         config.set_active_model(m.clone());
+    }
+
+    // zsh-PTY front-end: drive the user's real zsh. Smarts live in the injected
+    // command_not_found hook, so we don't need an in-process executor/provider.
+    let want_pty =
+        args.pty || matches!(args.cmd, Some(Cmd::Zsh)) || config.llmsh.front_end == "zsh-pty";
+    if want_pty {
+        return llmsh::pty::run_zsh(&config);
     }
 
     let mut executor = Executor::new()?;

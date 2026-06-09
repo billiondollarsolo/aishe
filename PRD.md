@@ -32,8 +32,20 @@ top) work unmodified.
 
 reedline (line editor), ureq (sync HTTP, rustls), serde/serde_json, toml,
 crossterm, termimad, clap, anyhow + thiserror, regex, dirs, libc (non-fatal
-SIGINT handler), nu-ansi-term (prompt/highlight colors). Dev: assert_cmd,
-mockito, predicates. No async runtime, no vendor SDK crates.
+SIGINT handler), nu-ansi-term (prompt/highlight colors), portable-pty (zsh-PTY
+front-end). Dev: assert_cmd, mockito, predicates. No async runtime, no vendor
+SDK crates.
+
+### Front-ends
+
+- `reedline` (default) — built-in editor with native autosuggestions, themeable
+  syntax highlighting, and a custom prompt.
+- `zsh-pty` (`llmsh zsh` / `--pty` / `front_end = "zsh-pty"`) — drives the user's
+  real interactive zsh inside a pseudo-terminal with their full config and all
+  plugins loaded; injects a `command_not_found_handler` for NL routing. No
+  plugin is forked or reimplemented.
+- Native hook (`eval "$(llmsh init zsh|bash)"`) — same `command_not_found`
+  routing inside the user's own shell session.
 
 ## 3. Repository Layout
 

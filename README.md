@@ -91,8 +91,24 @@ yourself or to `!`-forced lines — it's a shell, not a nanny.
 
 ## zsh ergonomics
 
-There are two ways to use `llmsh`, depending on how much real-zsh fidelity you
-want:
+There are three ways to use `llmsh`, in increasing order of real-zsh fidelity:
+
+### 0. zsh-PTY front-end — *all* native zsh extensions (`llmsh zsh`)
+
+```sh
+llmsh zsh          # or: llmsh --pty   (or set front_end = "zsh-pty" in config)
+```
+
+This launches your **real interactive zsh inside a pseudo-terminal**, loading
+your full `~/.zshrc` and **every plugin you already use** — `zsh-autosuggestions`,
+`zsh-syntax-highlighting`, `fast-syntax-highlighting`, `fzf-tab`,
+`powerlevel10k`, oh-my-zsh, completions — completely unmodified. llmsh injects a
+`command_not_found_handler` so natural-language input is still routed to the LLM
+(suggested commands pre-fill your next prompt via `print -z`; set `LLMSH_MODE` to
+`suggest`/`auto`/`yolo`).
+
+Nothing is forked or reimplemented: it's genuinely your zsh, so plugin behavior
+is identical to your normal shell. Requires `zsh` on `PATH`.
 
 ### 1. Standalone REPL (`llmsh`)
 
@@ -163,6 +179,7 @@ Roles: `cwd`, `glyph_ok`, `glyph_err`, `right_prompt`, `known_cmd`,
 [llmsh]
 mode = "suggest"               # suggest | auto | yolo
 provider = "anthropic"         # anthropic | openai
+front_end = "reedline"         # reedline | zsh-pty (drive real zsh + plugins)
 yolo_confirm_dangerous = true  # confirm dangerous commands even in yolo
 max_yolo_iterations = 10
 show_right_prompt = true        # show "model · mode" on the right
