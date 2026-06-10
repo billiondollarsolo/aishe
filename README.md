@@ -161,6 +161,8 @@ natively:
   `?`/`!` sigils. Fully [themeable](#theming).
 - **oh-my-zsh aliases & functions** are picked up at startup (`zsh -ic 'alias +;
   …'`) so they're recognized as commands.
+- **autocd** (like zsh's `AUTO_CD`) — type a bare directory name (e.g. `src`,
+  `..`, `~/projects`) to `cd` into it.
 - **emacs or vi keymap** — set `edit_mode = "vi"` (or `aishe editor vi`) for modal
   editing. In vi mode the prompt shows `[I]`/`[N]` for insert/normal; completion
   and `Ctrl-R` history work in both. Takes effect on the next session.

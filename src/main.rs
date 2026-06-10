@@ -572,6 +572,13 @@ fn handle_line(
     config: &mut Config,
     cache: &CommandCache,
 ) -> Result<bool> {
+    // autocd: a bare directory name (that isn't a known command) means `cd`
+    // there, like zsh's AUTO_CD.
+    if let Some(dir) = autocd_target(line, executor.cwd(), cache) {
+        executor.run_builtin(&["cd".to_string(), dir]);
+        return Ok(false);
+    }
+
     match dispatcher::dispatch(line, cache) {
         Dispatch::Shell(cmd) => {
             executor.run(&cmd);
@@ -604,6 +611,31 @@ fn handle_line(
         }
     }
     Ok(false)
+}
+
+/// zsh `AUTO_CD`: if `line` is a bare token (no whitespace/sigil) that names an
+/// existing directory and is *not* a known command, return it as a `cd` target.
+fn autocd_target(line: &str, cwd: &std::path::Path, cache: &CommandCache) -> Option<String> {
+    let t = line.trim();
+    if t.is_empty() || t.contains(char::is_whitespace) {
+        return None;
+    }
+    if t.starts_with('?') || t.starts_with('!') || t.contains('=') {
+        return None;
+    }
+    if cache.contains(t) {
+        return None; // it's a command, not a directory to enter
+    }
+    let resolved: std::path::PathBuf = if t == "~" {
+        dirs::home_dir()?
+    } else if let Some(rest) = t.strip_prefix("~/") {
+        dirs::home_dir()?.join(rest)
+    } else if t.starts_with('/') {
+        std::path::PathBuf::from(t)
+    } else {
+        cwd.join(t)
+    };
+    resolved.is_dir().then(|| t.to_string())
 }
 
 /// Extract the alias name from an `alias NAME=...` line (single definition only).
@@ -783,4 +815,41 @@ fn data_dir() -> std::path::PathBuf {
     dirs::data_dir()
         .unwrap_or_else(|| std::path::PathBuf::from("."))
         .join("aishe")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn alias_name_extracts_single_definition() {
+        assert_eq!(alias_name("alias g=git"), Some("g"));
+        assert_eq!(alias_name("alias ll='ls -la'"), Some("ll"));
+        assert_eq!(alias_name("alias"), None); // listing
+        assert_eq!(alias_name("alias g=git; rm x"), None); // operators
+        assert_eq!(alias_name("git status"), None);
+    }
+
+    #[test]
+    fn autocd_only_for_bare_existing_dirs() {
+        let base = std::env::temp_dir().join(format!("aishe-autocd-{}", std::process::id()));
+        std::fs::create_dir_all(base.join("sub")).unwrap();
+        std::fs::write(base.join("file.txt"), b"x").unwrap();
+        let cache = CommandCache::new();
+        cache.insert_all(&["ls", "sub_cmd"]);
+
+        // a bare existing directory → cd target
+        assert_eq!(autocd_target("sub", &base, &cache).as_deref(), Some("sub"));
+        // a file is not a directory
+        assert_eq!(autocd_target("file.txt", &base, &cache), None);
+        // a known command is never treated as autocd, even if a dir exists
+        std::fs::create_dir_all(base.join("ls")).unwrap();
+        assert_eq!(autocd_target("ls", &base, &cache), None);
+        // multi-token, sigils, and assignments are excluded
+        assert_eq!(autocd_target("sub other", &base, &cache), None);
+        assert_eq!(autocd_target("?sub", &base, &cache), None);
+        assert_eq!(autocd_target("FOO=sub", &base, &cache), None);
+
+        std::fs::remove_dir_all(&base).ok();
+    }
 }
