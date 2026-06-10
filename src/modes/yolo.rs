@@ -55,7 +55,7 @@ fn run_loop(
     skills: &SkillRegistry,
     history: Vec<Msg>,
 ) -> Result<Option<String>> {
-    let ctx = context::build(executor);
+    let ctx = context::build(executor, config.aishe.redact_secrets);
     // Offer the use_skill tool (and advertise the catalog) only when skills exist.
     let tools: Vec<_> = if skills.is_empty() {
         vec![run_command_tool()]
@@ -75,6 +75,7 @@ fn run_loop(
     messages.push(Msg::User(format!("{ctx}\nUser request: {input}")));
 
     interrupt.store(false, Ordering::SeqCst);
+    crate::audit::ai_request("yolo", config.active_model(), input);
 
     for iteration in 0..config.aishe.max_yolo_iterations {
         if interrupt.load(Ordering::SeqCst) {
@@ -88,6 +89,7 @@ fn run_loop(
 
         // Stream the assistant's prose live when streaming is on; otherwise wait
         // for the whole turn. `streamed` tracks whether any text was printed.
+        let before = provider.meter().snapshot();
         let mut streamed = false;
         let result = if config.aishe.stream {
             let mut out = std::io::stdout();
@@ -105,10 +107,19 @@ fn run_loop(
                 if streamed {
                     println!();
                 }
+                crate::audit::ai_error("yolo", config.active_model(), &e.to_string());
                 eprintln!("{}", format!("aishe: {e}").red());
                 return Ok(None);
             }
         };
+        let after = provider.meter().snapshot();
+        crate::audit::ai_response(
+            "yolo",
+            config.active_model(),
+            &completion_summary(&completion),
+            after.input.saturating_sub(before.input),
+            after.output.saturating_sub(before.output),
+        );
 
         // No tool calls → final answer.
         if completion.tool_calls.is_empty() {
@@ -208,6 +219,7 @@ fn run_loop(
             }
 
             let (code, output) = executor.run_captured(&command, DEFAULT_CAPTURE_TIMEOUT);
+            crate::audit::action("yolo", &command, Some(code));
             messages.push(Msg::ToolResult {
                 call_id: call.id.clone(),
                 content: format!("exit code {code}\n{output}"),
@@ -227,6 +239,35 @@ fn run_loop(
     }
 
     Ok(None)
+}
+
+/// A concise summary of one assistant turn for the audit log: the final answer
+/// text, or the list of tool calls it made.
+fn completion_summary(c: &Completion) -> String {
+    if c.tool_calls.is_empty() {
+        return c.text.clone().unwrap_or_default();
+    }
+    let calls: Vec<String> = c
+        .tool_calls
+        .iter()
+        .map(|call| {
+            if call.name == "use_skill" {
+                let name = call
+                    .arguments
+                    .get("name")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+                format!("use_skill({name})")
+            } else {
+                call.arguments
+                    .get("command")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string()
+            }
+        })
+        .collect();
+    format!("tool_calls: {}", calls.join(" | "))
 }
 
 const YOLO_SYSTEM: &str = super::YOLO_SYSTEM_PROMPT;

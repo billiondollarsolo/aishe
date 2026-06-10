@@ -17,10 +17,38 @@ pub struct Config {
     pub providers: Providers,
     #[serde(default)]
     pub theme: ThemeConfig,
+    #[serde(default)]
+    pub logging: LoggingConfig,
     /// Per-model price overrides (USD per 1M tokens) for cost estimates, keyed by
     /// model name or substring. Falls back to a built-in table; see `usage.rs`.
     #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     pub pricing: std::collections::BTreeMap<String, crate::usage::Price>,
+}
+
+/// Audit logging of AI calls, responses, and AI-initiated actions.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LoggingConfig {
+    /// Write a JSONL audit log. Off by default (it records prompts/outputs to
+    /// disk). Also enableable with `AISHE_LOG=1`.
+    #[serde(default)]
+    pub enabled: bool,
+    /// Log file path. Defaults to `$XDG_DATA_HOME/aishe/audit.jsonl`. Override
+    /// with `AISHE_LOG_FILE`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub file: Option<String>,
+    /// Redact likely secrets from logged text. On by default.
+    #[serde(default = "default_true")]
+    pub redact: bool,
+}
+
+impl Default for LoggingConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            file: None,
+            redact: true,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -71,6 +99,10 @@ pub struct AisheConfig {
     /// with `aishe reset`.
     #[serde(default = "default_true")]
     pub memory: bool,
+    /// Redact likely secrets (tokens, passwords, URL credentials) from the
+    /// environment context block sent to the model. On by default.
+    #[serde(default = "default_true")]
+    pub redact_secrets: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -152,6 +184,7 @@ impl Default for AisheConfig {
             show_usage: true,
             budget_usd: 0.0,
             memory: true,
+            redact_secrets: true,
         }
     }
 }

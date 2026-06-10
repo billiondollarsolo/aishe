@@ -60,6 +60,21 @@ budget_usd = 0.0
 # ("now do the same for the other file") have context. Clear with `aishe reset`.
 memory = true
 
+# Scrub likely secrets (tokens, passwords, URL credentials) from the environment
+# context block sent to the model. Recommended on.
+redact_secrets = true
+
+# ---------------------------------------------------------------------------
+# Optional: audit logging of AI calls, responses, and AI-initiated actions.
+# Off by default (it writes prompts/outputs to disk). Also enableable with
+# AISHE_LOG=1, and the path with AISHE_LOG_FILE.
+# ---------------------------------------------------------------------------
+
+# [logging]
+# enabled = true
+# file = "/custom/path/audit.jsonl"   # default: $XDG_DATA_HOME/aishe/audit.jsonl
+# redact = true                       # scrub secrets from logged text
+
 # ---------------------------------------------------------------------------
 # Providers. Only the one named by `provider` above is used, but you can keep
 # both configured and switch with `aishe provider ...`.

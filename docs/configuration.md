@@ -34,6 +34,19 @@ which persist your choice back to the file.
 | `show_usage` | bool | `true` | Print a per-session token and cost line after each interaction. |
 | `budget_usd` | float | `0.0` | Stop calling the model past this session cost. `0` = unlimited. |
 | `memory` | bool | `true` | Remember recent natural-language turns in the REPL so follow-ups have context. Clear with `aishe reset`. |
+| `redact_secrets` | bool | `true` | Scrub likely secrets from the context block sent to the model. See [Logging and privacy](logging.md). |
+
+## `[logging]` section (optional)
+
+Audit logging of AI calls, responses, and AI-initiated actions. Off by default.
+
+| Field | Type | Default | Meaning |
+|-------|------|---------|---------|
+| `enabled` | bool | `false` | Write a JSONL audit log. Also enableable with `AISHE_LOG=1`. |
+| `file` | string | unset | Log path. Default `$XDG_DATA_HOME/aishe/audit.jsonl`. Override with `AISHE_LOG_FILE`. |
+| `redact` | bool | `true` | Scrub secrets from logged text. |
+
+See [Logging and privacy](logging.md) for the event shapes and examples.
 
 ## `[providers.anthropic]` and `[providers.openai]`
 

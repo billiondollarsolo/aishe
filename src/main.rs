@@ -140,6 +140,9 @@ fn run() -> Result<u8> {
         config.set_active_model(m.clone());
     }
 
+    // Initialize the audit log (off unless enabled in config or via $AISHE_LOG).
+    init_audit(&config);
+
     // Non-interactive invocations (`-c` and the shell-hook helpers) never use
     // the PTY front-end — they need the in-process executor/provider, not a
     // wrapped interactive zsh.
@@ -303,6 +306,34 @@ fn doctor() -> u8 {
         println!("{ok} API key: ${key_env} is set");
     } else {
         println!("{warn} API key: ${key_env} not set — LLM features disabled (export it)");
+    }
+
+    // Privacy: secret redaction and audit logging.
+    println!(
+        "{ok} secret redaction: {}",
+        if cfg.aishe.redact_secrets {
+            "on"
+        } else {
+            "off"
+        }
+    );
+    let env_log = matches!(
+        std::env::var("AISHE_LOG").ok().as_deref(),
+        Some("1") | Some("true") | Some("yes")
+    );
+    if cfg.logging.enabled || env_log {
+        let path = std::env::var("AISHE_LOG_FILE").ok().unwrap_or_else(|| {
+            cfg.logging
+                .file
+                .clone()
+                .unwrap_or_else(|| aishe::audit::default_path().display().to_string())
+        });
+        println!(
+            "{ok} audit log: on ({path}; redact {})",
+            if cfg.logging.redact { "on" } else { "off" }
+        );
+    } else {
+        println!("{warn} audit log: off (enable with [logging] enabled=true or AISHE_LOG=1)");
     }
 
     println!();
@@ -1108,6 +1139,21 @@ fn data_dir() -> std::path::PathBuf {
     dirs::data_dir()
         .unwrap_or_else(|| std::path::PathBuf::from("."))
         .join("aishe")
+}
+
+/// Initialize the audit logger from config, with environment overrides:
+/// `AISHE_LOG=1` forces it on, `AISHE_LOG_FILE` overrides the path.
+fn init_audit(config: &Config) {
+    let env_on = matches!(
+        std::env::var("AISHE_LOG").ok().as_deref(),
+        Some("1") | Some("true") | Some("yes")
+    );
+    let enabled = config.logging.enabled || env_on;
+    let path = std::env::var("AISHE_LOG_FILE")
+        .ok()
+        .map(std::path::PathBuf::from)
+        .or_else(|| config.logging.file.clone().map(std::path::PathBuf::from));
+    aishe::audit::init(enabled, path, config.logging.redact);
 }
 
 #[cfg(test)]

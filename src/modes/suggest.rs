@@ -138,7 +138,7 @@ fn run_stream(
     session: &mut Session,
 ) -> Result<()> {
     let _ = config; // streaming needs no further per-request tuning yet
-    let ctx = context::build(executor);
+    let ctx = context::build(executor, config.aishe.redact_secrets);
     let shell = executor
         .shell()
         .file_name()
@@ -148,6 +148,10 @@ fn run_stream(
     let mut messages = session.history();
     messages.push(Msg::User(format!("{ctx}\nUser request: {input}")));
 
+    let model = config.active_model();
+    let mode = config.aishe.mode.as_str();
+    crate::audit::ai_request(mode, model, input);
+    let before = provider.meter().snapshot();
     let mut streamer = AnswerStreamer::new();
     let mut out = std::io::stdout();
     // Streaming uses the CMD:/WHY: sentinel protocol, not JSON — unconstrained.
@@ -158,10 +162,19 @@ fn run_stream(
     let full = match result {
         Ok(f) => f,
         Err(e) => {
+            crate::audit::ai_error(mode, model, &e.to_string());
             eprintln!("{}", format!("aishe: {e}").red());
             return Ok(());
         }
     };
+    let after = provider.meter().snapshot();
+    crate::audit::ai_response(
+        mode,
+        model,
+        &full,
+        after.input.saturating_sub(before.input),
+        after.output.saturating_sub(before.output),
+    );
 
     if streamer.finish(&mut out) {
         // The model committed to a command; nothing was streamed to the screen.
@@ -319,7 +332,7 @@ pub fn request(
     config: &Config,
     history: Vec<Msg>,
 ) -> Result<Suggestion> {
-    let ctx = context::build(executor);
+    let ctx = context::build(executor, config.aishe.redact_secrets);
     let shell = executor
         .shell()
         .file_name()
@@ -330,15 +343,39 @@ pub fn request(
     let mut messages = history;
     messages.push(Msg::User(format!("{ctx}\nUser request: {input}")));
 
+    let model = config.active_model();
+    let mode = config.aishe.mode.as_str();
+    crate::audit::ai_request(mode, model, input);
+    let before = provider.meter().snapshot();
     match provider.complete(&system, &messages, &suggestion_format(config)) {
-        Ok(text) => Ok(parse_suggestion(&text)),
+        Ok(text) => {
+            let after = provider.meter().snapshot();
+            let s = parse_suggestion(&text);
+            crate::audit::ai_response(
+                mode,
+                model,
+                &suggestion_summary(&s),
+                after.input.saturating_sub(before.input),
+                after.output.saturating_sub(before.output),
+            );
+            Ok(s)
+        }
         Err(e) => {
+            crate::audit::ai_error(mode, model, &e.to_string());
             eprintln!("{}", format!("aishe: {e}").red());
             // Surface the failure as an empty answer so the REPL keeps going.
             Ok(Suggestion::Answer {
                 explanation: String::new(),
             })
         }
+    }
+}
+
+/// One-line summary of a suggestion for the audit log.
+fn suggestion_summary(s: &Suggestion) -> String {
+    match s {
+        Suggestion::Command { command, .. } => format!("command: {command}"),
+        Suggestion::Answer { explanation } => format!("answer: {explanation}"),
     }
 }
 
@@ -380,7 +417,7 @@ fn auto_run(command: &str, explanation: &str, executor: &mut Executor) -> Result
     if !explanation.is_empty() {
         println!("  {}", explanation.dim());
     }
-    run_with_gate(command, executor)
+    run_with_gate(command, executor, "auto")
 }
 
 fn present_command(command: &str, explanation: &str, executor: &mut Executor) -> Result<()> {
@@ -402,12 +439,12 @@ fn present_command(command: &str, explanation: &str, executor: &mut Executor) ->
     println!();
 
     match choice {
-        Choice::Run => run_with_gate(command, executor),
+        Choice::Run => run_with_gate(command, executor, "suggest"),
         Choice::Edit => {
             if let Some(edited) = edit_line(command)? {
                 let edited = edited.trim();
                 if !edited.is_empty() {
-                    run_with_gate(edited, executor)?;
+                    run_with_gate(edited, executor, "suggest")?;
                 }
             }
             Ok(())
@@ -419,11 +456,15 @@ fn present_command(command: &str, explanation: &str, executor: &mut Executor) ->
     }
 }
 
-fn run_with_gate(command: &str, executor: &mut Executor) -> Result<()> {
+fn run_with_gate(command: &str, executor: &mut Executor, source: &str) -> Result<()> {
     match safety_gate(command) {
-        GateOutcome::Declined => Ok(()),
+        GateOutcome::Declined => {
+            crate::audit::action(source, command, None);
+            Ok(())
+        }
         GateOutcome::Proceed => {
             let code = executor.run(command);
+            crate::audit::action(source, command, Some(code));
             if code != 0 {
                 println!("  {}", "(type ? to ask about the error)".dim());
             }

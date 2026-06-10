@@ -46,10 +46,13 @@ is tagged `(reedline)` so we can re-scope quickly.
 
 ## 2. Trust and safety, quick wins first
 
-- [ ] **Secret redaction in model context.** `context.rs` ships the last 10
-  commands verbatim to the provider; a prior `export TOKEN=...`, `mysql -p...`, or
-  a URL with credentials leaks. Redact `KEY=value`, `-p<secret>`,
-  `Authorization:`, and high-entropy tokens before sending. Now.
+- [x] **Secret redaction in model context.** Recent commands are scrubbed of
+  secret-named assignments, credential flags, URL credentials, `Authorization:`
+  headers, known key shapes, and high-entropy tokens before being sent. On by
+  default. See `src/redact.rs` and docs/logging.md. Done.
+- [x] **Audit logging.** Optional JSONL log of AI requests, responses (with token
+  usage), errors, and AI-initiated commands (with exit codes). Off by default;
+  logged text is redacted. See `src/audit.rs`. Done.
 - [ ] **Adversarial safety corpus.** `safety.rs` has the rules but only a couple
   of inline tests. Build a large dangerous-vs-benign-lookalike battery:
   `rm -rf "$EMPTY"/`, obfuscated `dd`, `sudo` wrappers, base64 and `eval`

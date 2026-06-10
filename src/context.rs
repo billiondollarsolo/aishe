@@ -21,8 +21,11 @@ pub fn init(shell: &std::path::Path) {
     SHELL_INFO.get_or_init(|| detect_shell_version(shell));
 }
 
-/// Build the context block string for the current executor state.
-pub fn build(executor: &Executor) -> String {
+/// Build the context block string for the current executor state. When
+/// `redact_secrets` is set, recent commands are scrubbed of likely credentials
+/// before being included (they can contain `export TOKEN=...`, `mysql -p...`, or
+/// URLs with passwords).
+pub fn build(executor: &Executor, redact_secrets: bool) -> String {
     let os = OS_INFO.get().cloned().unwrap_or_else(detect_os);
     let shell = SHELL_INFO
         .get()
@@ -47,6 +50,11 @@ pub fn build(executor: &Executor) -> String {
         "Recent commands (last {MAX_HISTORY}, [exit_code] cmd):\n"
     ));
     for (cmd, code) in executor.history.iter().take(MAX_HISTORY) {
+        let cmd = if redact_secrets {
+            crate::redact::redact(cmd)
+        } else {
+            cmd.clone()
+        };
         out.push_str(&format!("  [{code}] {cmd}\n"));
     }
 
@@ -124,12 +132,25 @@ mod tests {
     #[test]
     fn build_contains_required_fields() {
         let exec = Executor::new().unwrap();
-        let block = build(&exec);
+        let block = build(&exec, true);
         assert!(block.contains("OS: "));
         assert!(block.contains("Shell backend: "));
         assert!(block.contains("CWD: "));
         assert!(block.contains("Directory listing"));
         assert!(block.contains("Recent commands"));
+    }
+
+    #[test]
+    fn build_redacts_secrets_in_history_when_enabled() {
+        let mut exec = Executor::new().unwrap();
+        exec.history
+            .push_front(("export API_TOKEN=supersecretvalue123".to_string(), 0));
+        let redacted = build(&exec, true);
+        assert!(redacted.contains("API_TOKEN=<redacted>"), "{redacted}");
+        assert!(!redacted.contains("supersecretvalue123"));
+        // With redaction off, the raw command is included verbatim.
+        let raw = build(&exec, false);
+        assert!(raw.contains("supersecretvalue123"));
     }
 
     #[test]

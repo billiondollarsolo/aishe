@@ -60,3 +60,10 @@ If you are certain, prefix the line with `!` to run it as shell and skip the gat
 
 Use this deliberately. The gate exists to catch mistakes, especially commands a
 model proposed.
+
+## Secrets in the model context
+
+aishe sends an environment context block (including your recent commands) with
+each request. To avoid leaking credentials that appear in those commands, it
+redacts likely secrets before sending. This is on by default. See
+[Logging and privacy](logging.md).

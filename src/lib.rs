@@ -2,6 +2,7 @@
 //! these modules; exposing them here also lets the integration tests in
 //! `tests/` exercise the internals directly.
 
+pub mod audit;
 pub mod commands;
 pub mod completer;
 pub mod config;
@@ -16,6 +17,7 @@ pub mod modes;
 pub mod prompt;
 pub mod providers;
 pub mod pty;
+pub mod redact;
 pub mod safety;
 pub mod session;
 pub mod skills;

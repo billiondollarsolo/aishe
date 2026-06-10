@@ -19,6 +19,7 @@ If you are new, start with [Installation](installation.md) and then
 - [Custom commands and skills](custom-commands-and-skills.md) - your own /commands and model skills
 - [Token usage and cost](usage-and-cost.md) - metering, the price table, and budgets
 - [Safety gate](safety.md) - how dangerous commands are screened
+- [Logging and privacy](logging.md) - secret redaction and the audit log
 - [Prompt and theming](prompt-and-theming.md) - prompts, the git segment, colors
 - [Shell integration and .aishrc](shell-integration.md) - the native hook and startup file
 - [Troubleshooting](troubleshooting.md) - common issues and `aishe doctor`

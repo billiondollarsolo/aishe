@@ -228,6 +228,18 @@ The gate is path-aware for `rm -rf`: an in-tree relative path like
 escaping targets are flagged. The gate does not apply to commands you type
 yourself or to `!`-forced lines. Details in [docs/safety.md](docs/safety.md).
 
+## Logging and privacy
+
+aishe sends an environment context block (including your recent commands) with
+each request. To avoid leaking credentials, it **redacts likely secrets**
+(tokens, passwords, URL credentials) from that block before sending. This is on
+by default (`redact_secrets`).
+
+An optional **audit log** records every AI call, response (with token usage), and
+AI-initiated command (with exit code) as JSONL. It is off by default; enable it
+with `[logging] enabled = true` or `AISHE_LOG=1`. Logged text is redacted too.
+See [docs/logging.md](docs/logging.md).
+
 ## Prompt and theming
 
 The reedline front-end supports a custom left prompt (`prompt_format` with
@@ -301,6 +313,7 @@ The [docs/](docs/) directory has the full user guide:
 - [Custom commands and skills](docs/custom-commands-and-skills.md)
 - [Token usage and cost](docs/usage-and-cost.md)
 - [Safety gate](docs/safety.md)
+- [Logging and privacy](docs/logging.md)
 - [Prompt and theming](docs/prompt-and-theming.md)
 - [Shell integration and .aishrc](docs/shell-integration.md)
 - [Troubleshooting](docs/troubleshooting.md)

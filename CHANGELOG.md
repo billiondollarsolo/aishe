@@ -29,6 +29,16 @@ breaking changes can land in any release.
   the provider).
 
 ### Added
+- **Secret redaction in the model context.** Recent commands sent to the model
+  are scrubbed of likely credentials (secret-named assignments, `--password`/
+  `--token` flags, URL credentials, `Authorization:` headers, known key shapes
+  like `sk-`/`ghp_`/`gsk_`/`AKIA`, and long high-entropy tokens). On by default
+  (`redact_secrets`). Heuristic, not a guarantee.
+- **Audit logging.** Optional JSONL log of every AI call (`ai_request`), response
+  with token usage (`ai_response`), error (`ai_error`), and AI-initiated command
+  with exit code (`action`). Off by default; enable with `[logging] enabled` or
+  `AISHE_LOG=1`, path via `AISHE_LOG_FILE`. Logged text is redacted unless
+  disabled. `aishe doctor` shows redaction and logging status.
 - **Conversation memory.** The interactive REPL now remembers recent
   natural-language turns (across suggest, auto, and yolo) so follow-ups like "now
   do the same for the other file" have context. It stores requests and replies
