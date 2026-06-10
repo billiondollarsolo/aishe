@@ -2,7 +2,7 @@
 //! first-run wizard when missing and graceful recovery when malformed.
 
 use std::io::Write;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
@@ -135,17 +135,63 @@ impl Config {
             .join("config.toml")
     }
 
+    /// Legacy config path from before the rename (`~/.config/llmsh/config.toml`).
+    fn legacy_path() -> PathBuf {
+        dirs::config_dir()
+            .unwrap_or_else(|| PathBuf::from("."))
+            .join("llmsh")
+            .join("config.toml")
+    }
+
     /// Load config, running the first-run wizard if the file is missing.
     /// On a malformed file, offers to back it up and recreate.
     pub fn load_or_init() -> Result<Self> {
         let path = Self::path();
         if !path.exists() {
+            // One-time migration: adopt a pre-rename ~/.config/llmsh config.
+            if let Some(cfg) = Self::migrate_legacy(&path)? {
+                return Ok(cfg);
+            }
             let cfg = run_wizard()?;
             cfg.save()?;
             println!("Saved config to {}", path.display());
             return Ok(cfg);
         }
         Self::load_from(&path)
+    }
+
+    /// If a legacy `~/.config/llmsh/config.toml` exists (and no aishe config
+    /// does yet), port it to the new location, rewriting the `[llmsh]` section
+    /// header to `[aishe]`. Returns the loaded config on success.
+    fn migrate_legacy(new_path: &Path) -> Result<Option<Self>> {
+        let legacy = Self::legacy_path();
+        if !legacy.exists() {
+            return Ok(None);
+        }
+        let text = match std::fs::read_to_string(&legacy) {
+            Ok(t) => t,
+            Err(_) => return Ok(None),
+        };
+        let cfg = match Self::parse_legacy_text(&text) {
+            Ok(c) => c,
+            // Leave a malformed legacy file alone; fall through to the wizard.
+            Err(_) => return Ok(None),
+        };
+        cfg.save()?;
+        eprintln!(
+            "aishe: migrated config from {} to {}",
+            legacy.display(),
+            new_path.display()
+        );
+        Ok(Some(cfg))
+    }
+
+    /// Parse a pre-rename config file's text. The only structural difference is
+    /// the top-level section name (`[llmsh]` → `[aishe]`); all field names are
+    /// shared, so a textual rewrite is sufficient.
+    fn parse_legacy_text(text: &str) -> Result<Self> {
+        let ported = text.replace("[llmsh]", "[aishe]");
+        Ok(toml::from_str::<Config>(&ported)?)
     }
 
     fn load_from(path: &PathBuf) -> Result<Self> {
@@ -344,6 +390,29 @@ mod tests {
         // Unspecified fields fall back to defaults.
         assert_eq!(cfg.aishe.provider, "anthropic");
         assert_eq!(cfg.providers.openai.base_url, "https://api.openai.com");
+    }
+
+    #[test]
+    fn legacy_config_is_ported() {
+        // A pre-rename config (with the [llmsh] section) migrates to the aishe
+        // schema, preserving user settings and filling defaults.
+        let legacy = r#"
+            [llmsh]
+            mode = "yolo"
+            provider = "openai"
+
+            [providers.openai]
+            base_url = "http://localhost:11434"
+            api_key_env = "OPENAI_API_KEY"
+            model = "llama3"
+        "#;
+        let cfg = Config::parse_legacy_text(legacy).unwrap();
+        assert_eq!(cfg.aishe.mode, "yolo");
+        assert_eq!(cfg.aishe.provider, "openai");
+        assert_eq!(cfg.providers.openai.model, "llama3");
+        // Unspecified fields still fall back to defaults.
+        assert_eq!(cfg.aishe.front_end, "auto");
+        assert_eq!(cfg.providers.anthropic.api_key_env, "ANTHROPIC_API_KEY");
     }
 
     #[test]
