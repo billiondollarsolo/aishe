@@ -145,7 +145,30 @@ description: How to cut a Rust release (when to bump, tag, publish)
 In **yolo** mode, aishe tells the model each skill's `name: description`; when
 your request matches, the model calls a `use_skill` tool to pull that skill's
 full instructions into context, then proceeds. Only the descriptions are always
-in context — bodies are loaded on demand. See [`examples/skills/`](examples/skills/).
+in context — bodies are loaded on demand. `/skills` lists what's loaded. See
+[`examples/skills/`](examples/skills/).
+
+### Claude Code compatibility
+
+The formats are intentionally the same as Claude Code's, so artifacts from the
+ecosystem drop in unchanged (aishe just ignores keys it doesn't use, e.g.
+`allowed-tools`, `model`, `license`):
+
+- **Agent Skills** from [`anthropics/skills`](https://github.com/anthropics/skills) —
+  copy a skill folder (its `SKILL.md` has `name` + `description` frontmatter) into
+  `~/.config/aishe/skills/`.
+- **Slash commands** from collections like
+  [`wshobson/commands`](https://github.com/wshobson/commands) or
+  [`awesome-claude-code`](https://github.com/hesreallyhim/awesome-claude-code) —
+  copy a `.md` (with `$ARGUMENTS`/`$1`) into `~/.config/aishe/commands/`.
+
+```sh
+# e.g. install a real Anthropic skill and a community command
+git clone https://github.com/anthropics/skills /tmp/skills
+cp -r /tmp/skills/skills/internal-comms ~/.config/aishe/skills/
+curl -fsSL https://raw.githubusercontent.com/wshobson/commands/main/tools/code-explain.md \
+  -o ~/.config/aishe/commands/code-explain.md
+```
 
 Exit with `exit`, `quit`, or `Ctrl-D`.
 

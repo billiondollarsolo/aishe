@@ -404,6 +404,7 @@ pub fn is_meta_subcommand(w: &str) -> bool {
             | "config"
             | "rehash"
             | "commands"
+            | "skills"
             | "help"
     )
 }

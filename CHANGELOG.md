@@ -61,7 +61,15 @@ breaking changes can land in any release.
 - **Skills (model-invoked)** — Markdown skill files in `~/.config/aishe/skills/`
   / `<project>/.aishe/skills/` are advertised to the model in yolo mode; it pulls
   a skill's full instructions into context on demand via a `use_skill` tool
-  (Claude-Code-style progressive disclosure).
+  (Claude-Code-style progressive disclosure). `aishe skills` (`/skills`) lists
+  what's loaded; both `/skills` and `/commands` also work non-interactively
+  (`aishe -c`).
+- **Claude Code compatibility** — real Agent Skills from `anthropics/skills`
+  (e.g. `internal-comms`, `brand-guidelines`) and slash commands from community
+  collections (e.g. `wshobson/commands`) drop into `~/.config/aishe/skills/` and
+  `~/.config/aishe/commands/` unchanged; aishe reads the `name`/`description`
+  frontmatter and ignores keys it doesn't use (`allowed-tools`, `model`,
+  `license`, …). Verified end-to-end against a live model.
 - **CI** — cross-platform tests plus PTY smoke tests for both front-ends.
 
 ### Changed

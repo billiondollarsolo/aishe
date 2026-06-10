@@ -440,8 +440,42 @@ fn one_shot(
                 return Ok(executor.last_exit as u8);
             }
             if tokens[0] == "aishe" {
-                // Meta commands are no-ops worth nothing in -c; print help-ish.
-                println!("aishe meta commands are interactive-only");
+                // Read-only listings are useful in -c; state-changing meta
+                // commands need the interactive session (persistence/restart).
+                match tokens.get(1).map(|s| s.as_str()) {
+                    Some("commands") => {
+                        if commands.is_empty() {
+                            println!(
+                                "no custom commands (add *.md files to ~/.config/aishe/commands/)"
+                            );
+                        } else {
+                            println!("custom slash-commands:");
+                            for (name, desc) in commands.list() {
+                                println!("\x20 /{name}  —  {desc}");
+                            }
+                        }
+                    }
+                    Some("skills") => {
+                        if skills.is_empty() {
+                            println!(
+                                "no skills (add <name>/SKILL.md files to ~/.config/aishe/skills/)"
+                            );
+                        } else {
+                            println!("model-invoked skills (yolo mode):");
+                            for (name, desc) in skills.list() {
+                                println!("\x20 {name}  —  {desc}");
+                            }
+                        }
+                    }
+                    Some("config") => {
+                        println!("config file: {}", Config::path().display());
+                        match toml::to_string_pretty(config) {
+                            Ok(t) => println!("\n{t}"),
+                            Err(e) => eprintln!("aishe: {e}"),
+                        }
+                    }
+                    _ => println!("aishe meta commands are interactive-only"),
+                }
                 return Ok(0);
             }
             Ok(executor.run_builtin(&tokens) as u8)
@@ -661,7 +695,7 @@ fn handle_line(
         }
         Dispatch::Builtin(tokens) => match tokens[0].as_str() {
             "exit" | "quit" => return Ok(true),
-            "aishe" => handle_meta(&tokens, config, provider, executor, cache, commands),
+            "aishe" => handle_meta(&tokens, config, provider, executor, cache, commands, skills),
             _ => {
                 executor.run_builtin(&tokens);
             }
@@ -790,6 +824,7 @@ fn handle_meta(
     executor: &Executor,
     cache: &CommandCache,
     commands: &CommandRegistry,
+    skills: &SkillRegistry,
 ) {
     let sub = tokens.get(1).map(|s| s.as_str()).unwrap_or("help");
     match sub {
@@ -800,6 +835,16 @@ fn handle_meta(
                 println!("custom slash-commands:");
                 for (name, desc) in commands.list() {
                     println!("\x20 /{name}  —  {desc}");
+                }
+            }
+        }
+        "skills" => {
+            if skills.is_empty() {
+                println!("no skills (add <name>/SKILL.md files to ~/.config/aishe/skills/)");
+            } else {
+                println!("model-invoked skills (yolo mode):");
+                for (name, desc) in skills.list() {
+                    println!("\x20 {name}  —  {desc}");
                 }
             }
         }
@@ -935,6 +980,8 @@ fn print_meta_help() {
 \x20 aishe stream [on|off]       show or toggle token streaming\n\
 \x20 aishe structured [schema|json|prompt]  output-format strategy\n\
 \x20 aishe theme [PRESET]        show or set the color preset\n\
+\x20 aishe commands              list custom /slash-commands\n\
+\x20 aishe skills                list model-invoked skills (yolo)\n\
 \x20 aishe config                print active config\n\
 \x20 aishe rehash                rebuild the command cache\n\
 \x20 aishe help                  show this help\n\
