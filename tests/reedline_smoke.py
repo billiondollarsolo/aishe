@@ -128,6 +128,7 @@ def make_env():
             'mode = "suggest"\n'
             'front_end = "reedline"\n'
             "show_right_prompt = false\n"
+            'prompt_format = "[{mode}] {cwd}"\n'
         )
     # An .aishrc whose alias should be sourced into delegated commands. The body
     # uses arithmetic so the result (AISHRC_42) appears only in command output,
@@ -165,6 +166,10 @@ def main():
     home, env = make_env()
     sh = Pty([os.path.abspath(BINARY), "--no-pty"], env)
     try:
+        # 0) the custom prompt_format ("[{mode}] {cwd}") is rendered.
+        if not sh.expect("[suggest]"):
+            fail("custom prompt_format was not rendered", sh)
+
         # 1) a shell command runs through the reedline editor.
         sh.send("echo REEDLINE_OK_$((6 * 7))")
         if not sh.expect("REEDLINE_OK_42"):
@@ -200,6 +205,11 @@ def main():
         sh.send("foo")
         if not sh.expect("REPLAY_42"):
             fail("interactively-defined alias did not persist across commands", sh)
+
+        # 4b) the theme meta command accepts a known preset.
+        sh.send("aishe theme nord")
+        if not sh.expect("theme → nord"):
+            fail("aishe theme command did not set the preset", sh)
 
         # 5) clean exit.
         sh.send("exit")

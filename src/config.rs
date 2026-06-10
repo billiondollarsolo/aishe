@@ -41,6 +41,10 @@ pub struct AisheConfig {
     /// reedline line-editor keymap: "emacs" (default) or "vi".
     #[serde(default = "default_edit_mode")]
     pub edit_mode: String,
+    /// Optional custom left-prompt format for the reedline front-end. Supports
+    /// `{cwd}`, `{mode}`, `{model}`, `{exit}`. `None` = just the cwd.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompt_format: Option<String>,
     /// Stream answers token-by-token in the interactive REPL (suggest/auto).
     #[serde(default)]
     pub stream: bool,
@@ -115,6 +119,7 @@ impl Default for AisheConfig {
             show_right_prompt: true,
             front_end: default_front_end(),
             edit_mode: default_edit_mode(),
+            prompt_format: None,
             stream: false,
         }
     }

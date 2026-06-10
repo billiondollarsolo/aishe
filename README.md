@@ -76,6 +76,7 @@ aishe model [NAME]               show or set the model
 aishe provider [anthropic|openai] show or set the provider
 aishe editor [emacs|vi]          show or set the line-editor keymap
 aishe stream [on|off]            show or toggle token streaming
+aishe theme [PRESET]             show or set the color preset
 aishe config                     print the active config
 aishe rehash                     rebuild the command cache
 aishe help                       show help
@@ -157,6 +158,10 @@ natively:
 - **emacs or vi keymap** — set `edit_mode = "vi"` (or `aishe editor vi`) for modal
   editing. In vi mode the prompt shows `[I]`/`[N]` for insert/normal; completion
   and `Ctrl-R` history work in both. Takes effect on the next session.
+- **Custom prompt** — set `prompt_format` (e.g. `"[{mode}] {cwd}"`) to customize
+  the left prompt with `{cwd}`/`{mode}`/`{model}`/`{exit}` placeholders. (For a
+  full powerlevel10k/oh-my-zsh prompt, use the zsh-PTY front-end — it renders
+  your real zsh prompt.)
 
 ### 2. Native zsh/bash hook (`eval "$(aishe init zsh)"`)
 
@@ -196,7 +201,9 @@ Override the zsh key with `AISHE_NL_KEY` (a `bindkey` sequence), e.g.
 ## Theming
 
 Prompt and highlighter colors are configurable via a `[theme]` section. Pick a
-preset (`default`, `vivid`, `mono`) and/or override individual roles. Colors may
+preset (`default`, `vivid`, `mono`, `nord`, `gruvbox`) — switch live-ish with
+`aishe theme nord` (applies on restart) — and/or override individual roles.
+Colors may
 be named (`red`, `bright-green`, `purple`), a palette index (`0`–`255`), or hex
 (`#ff8800`):
 
@@ -255,6 +262,7 @@ edit_mode = "emacs"            # emacs | vi (reedline line-editor keymap)
 yolo_confirm_dangerous = true  # confirm dangerous commands even in yolo
 max_yolo_iterations = 10
 show_right_prompt = true        # show "model · mode" on the right
+# prompt_format = "[{mode}] {cwd}"  # custom reedline left prompt: {cwd} {mode} {model} {exit}
 stream = false                  # stream answers token-by-token (suggest/auto)
 
 [providers.anthropic]

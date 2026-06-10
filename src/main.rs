@@ -423,6 +423,7 @@ fn repl(
             config.active_model().to_string(),
             config.aishe.show_right_prompt,
             theme,
+            config.aishe.prompt_format.as_deref(),
         );
 
         INTERRUPTED.store(false, Ordering::SeqCst);
@@ -602,6 +603,26 @@ fn handle_meta(
                 println!("front-end: {}", config.aishe.front_end);
             }
         }
+        "theme" => {
+            if let Some(t) = tokens.get(2) {
+                if aishe::theme::PRESETS.contains(&t.as_str()) {
+                    config.theme.preset = Some(t.clone());
+                    persist(config);
+                    println!("theme → {t} (restart aishe to apply)");
+                } else {
+                    eprintln!(
+                        "aishe: unknown theme '{t}' (presets: {})",
+                        aishe::theme::PRESETS.join(", ")
+                    );
+                }
+            } else {
+                let cur = config.theme.preset.as_deref().unwrap_or("default");
+                println!(
+                    "theme: {cur}  (presets: {})",
+                    aishe::theme::PRESETS.join(", ")
+                );
+            }
+        }
         "rehash" => {
             cache.rehash(executor.shell());
             println!("rehashed ({} commands cached)", cache.len());
@@ -619,6 +640,7 @@ fn print_meta_help() {
 \x20 aishe editor [emacs|vi]     show or set the line-editor keymap\n\
 \x20 aishe frontend [auto|reedline|zsh-pty]  show or set the front-end\n\
 \x20 aishe stream [on|off]       show or toggle token streaming\n\
+\x20 aishe theme [PRESET]        show or set the color preset\n\
 \x20 aishe config                print active config\n\
 \x20 aishe rehash                rebuild the command cache\n\
 \x20 aishe help                  show this help\n\

@@ -11,12 +11,13 @@ use reedline::{
 use crate::theme::Theme;
 
 pub struct AishePrompt {
-    cwd_display: String,
     glyph: char,
     last_exit: i32,
     right: String,
     show_right: bool,
     theme: Theme,
+    /// Rendered left prompt: either the cwd or a custom format applied.
+    left: String,
 }
 
 impl AishePrompt {
@@ -27,6 +28,7 @@ impl AishePrompt {
         model: String,
         show_right: bool,
         theme: Theme,
+        prompt_format: Option<&str>,
     ) -> Self {
         let glyph = match mode {
             "yolo" => '⚡',
@@ -35,15 +37,28 @@ impl AishePrompt {
         };
         let cwd_display = abbreviate_home(&cwd);
         let right = format!("{model} · {mode}");
+        let left = match prompt_format {
+            Some(fmt) => apply_format(fmt, &cwd_display, mode, &model, last_exit),
+            None => cwd_display,
+        };
         Self {
-            cwd_display,
             glyph,
             last_exit,
             right,
             show_right,
             theme,
+            left,
         }
     }
+}
+
+/// Substitute `{cwd}` / `{mode}` / `{model}` / `{exit}` placeholders in a custom
+/// prompt format string.
+fn apply_format(fmt: &str, cwd: &str, mode: &str, model: &str, last_exit: i32) -> String {
+    fmt.replace("{cwd}", cwd)
+        .replace("{mode}", mode)
+        .replace("{model}", model)
+        .replace("{exit}", &last_exit.to_string())
 }
 
 /// Replace a leading $HOME with `~`.
@@ -61,7 +76,7 @@ fn abbreviate_home(cwd: &std::path::Path) -> String {
 
 impl Prompt for AishePrompt {
     fn render_prompt_left(&self) -> Cow<'_, str> {
-        Cow::Owned(self.cwd_display.clone())
+        Cow::Borrowed(&self.left)
     }
 
     fn render_prompt_right(&self) -> Cow<'_, str> {

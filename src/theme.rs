@@ -8,6 +8,9 @@
 use nu_ansi_term::{Color as NuColor, Style as NuStyle};
 use serde::{Deserialize, Serialize};
 
+/// Built-in theme preset names (for `aishe theme` and validation).
+pub const PRESETS: &[&str] = &["default", "vivid", "mono", "nord", "gruvbox"];
+
 /// A library-neutral color.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Col {
@@ -219,10 +222,50 @@ impl Theme {
         }
     }
 
+    /// Nord palette (arctic, bluish).
+    pub fn preset_nord() -> Theme {
+        Theme {
+            cwd: Col::Rgb(0x88, 0xc0, 0xd0),
+            glyph_ok: Col::Rgb(0xa3, 0xbe, 0x8c),
+            glyph_err: Col::Rgb(0xbf, 0x61, 0x6a),
+            right_prompt: Col::Rgb(0x4c, 0x56, 0x6a),
+            known_cmd: Col::Rgb(0xa3, 0xbe, 0x8c),
+            unknown_cmd: Col::Rgb(0xbf, 0x61, 0x6a),
+            flag: Col::Rgb(0xeb, 0xcb, 0x8b),
+            string: Col::Rgb(0xa3, 0xbe, 0x8c),
+            operator: Col::Rgb(0xb4, 0x8e, 0xad),
+            path: Col::Rgb(0x81, 0xa1, 0xc1),
+            assignment: Col::Rgb(0x88, 0xc0, 0xd0),
+            sigil_nl: Col::Rgb(0xb4, 0x8e, 0xad),
+            sigil_shell: Col::Rgb(0xeb, 0xcb, 0x8b),
+        }
+    }
+
+    /// Gruvbox (dark) palette (warm, retro).
+    pub fn preset_gruvbox() -> Theme {
+        Theme {
+            cwd: Col::Rgb(0x8e, 0xc0, 0x7c),
+            glyph_ok: Col::Rgb(0xb8, 0xbb, 0x26),
+            glyph_err: Col::Rgb(0xfb, 0x49, 0x34),
+            right_prompt: Col::Rgb(0x92, 0x83, 0x74),
+            known_cmd: Col::Rgb(0xb8, 0xbb, 0x26),
+            unknown_cmd: Col::Rgb(0xfb, 0x49, 0x34),
+            flag: Col::Rgb(0xfa, 0xbd, 0x2f),
+            string: Col::Rgb(0xb8, 0xbb, 0x26),
+            operator: Col::Rgb(0xd3, 0x86, 0x9b),
+            path: Col::Rgb(0x83, 0xa5, 0x98),
+            assignment: Col::Rgb(0x8e, 0xc0, 0x7c),
+            sigil_nl: Col::Rgb(0xd3, 0x86, 0x9b),
+            sigil_shell: Col::Rgb(0xfa, 0xbd, 0x2f),
+        }
+    }
+
     fn preset_by_name(name: &str) -> Theme {
         match name {
             "vivid" => Theme::preset_vivid(),
             "mono" => Theme::preset_mono(),
+            "nord" => Theme::preset_nord(),
+            "gruvbox" => Theme::preset_gruvbox(),
             _ => Theme::preset_default(),
         }
     }
@@ -297,6 +340,26 @@ mod tests {
         assert_eq!(t.cwd, Col::Rgb(0x10, 0x20, 0x30));
         // unspecified roles come from the mono preset
         assert_eq!(t.unknown_cmd, Col::Ansi(9));
+    }
+
+    #[test]
+    fn named_presets_resolve() {
+        // Every advertised preset name resolves to a distinct, parseable theme.
+        for name in PRESETS {
+            let cfg = ThemeConfig {
+                preset: Some((*name).to_string()),
+                ..Default::default()
+            };
+            let _ = Theme::from_config(&cfg);
+        }
+        assert_eq!(
+            Theme::from_config(&ThemeConfig {
+                preset: Some("nord".into()),
+                ..Default::default()
+            })
+            .cwd,
+            Col::Rgb(0x88, 0xc0, 0xd0)
+        );
     }
 
     #[test]
