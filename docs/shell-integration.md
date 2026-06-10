@@ -92,6 +92,11 @@ In the reedline front-end:
 
 - History is stored at `~/.local/share/aishe/history` and persists across
   restarts.
+- **Filtering** (zsh-style): consecutive duplicate commands are not saved
+  (`hist_ignore_dups`, default on); commands starting with a space are not saved
+  when `hist_ignore_space` is on; and `hist_ignore` is a list of glob patterns
+  (`*`/`?`) for commands to keep out of history, for example
+  `hist_ignore = ["ls", "cd *", "* --help"]`.
 - `Ctrl-R` opens a browsable, filterable history menu.
 - History expansion supports `!!`, `!$`, `!^`, `!*`, `!-N`, `!!:N` word
   selection, and `^old^new` quick substitution. Note that `!cmd` stays aishe's

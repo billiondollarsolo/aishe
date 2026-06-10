@@ -92,6 +92,21 @@ pub struct AisheConfig {
     /// (navigate with `cd -N` / `cd +N`, list with `dirs -v`).
     #[serde(default)]
     pub auto_pushd: bool,
+    /// Don't save a command to history when it equals the previous one
+    /// (`HIST_IGNORE_DUPS`).
+    #[serde(default = "default_true")]
+    pub hist_ignore_dups: bool,
+    /// Don't save commands to history when it starts with a space
+    /// (`HIST_IGNORE_SPACE`).
+    #[serde(default)]
+    pub hist_ignore_space: bool,
+    /// Glob patterns (`*`/`?`) of commands to keep out of history (`HISTIGNORE`),
+    /// e.g. `["ls", "cd *", "* --help"]`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub hist_ignore: Vec<String>,
+    /// Extra base directories searched by `cd <name>` (`CDPATH`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub cdpath: Vec<String>,
     /// Structured-output strategy for suggest mode: "schema" (strict JSON schema,
     /// default), "json" (any JSON object), or "prompt" (unconstrained).
     #[serde(default = "default_structured")]
@@ -201,6 +216,10 @@ impl Default for AisheConfig {
             git_status: true,
             report_time: default_report_time(),
             auto_pushd: false,
+            hist_ignore_dups: true,
+            hist_ignore_space: false,
+            hist_ignore: Vec::new(),
+            cdpath: Vec::new(),
             structured: default_structured(),
             stream: false,
             show_usage: true,

@@ -69,19 +69,25 @@ impl AishePrompt {
 /// Git status flags for the prompt segment.
 #[derive(Debug, Default, PartialEq, Eq)]
 struct GitStatus {
+    staged: bool,
     dirty: bool,
     ahead: u32,
     behind: u32,
 }
 
 /// The full git prompt segment: branch (from `.git/HEAD`, cheap) plus, when
-/// `show_status` is set, a `*` for a dirty tree and `⇡N`/`⇣N` ahead/behind the
-/// upstream (one short, time-limited `git status` call). `None` outside a repo.
+/// `show_status` is set, `+` (staged), `*` (unstaged changes), `⇡N`/`⇣N`
+/// ahead/behind the upstream (one short, time-limited `git status` call), and
+/// `⚑N` for stashes. `None` outside a repo.
 pub fn git_segment_full(cwd: &Path, show_status: bool) -> Option<String> {
-    let branch = git_segment(cwd)?;
+    let git_dir = find_git_dir(cwd)?;
+    let branch = branch_from_head(&git_dir)?;
     let mut out = format!("⎇ {branch}");
     if show_status {
         if let Some(st) = git_status(cwd) {
+            if st.staged {
+                out.push('+');
+            }
             if st.dirty {
                 out.push('*');
             }
@@ -92,8 +98,20 @@ pub fn git_segment_full(cwd: &Path, show_status: bool) -> Option<String> {
                 out.push_str(&format!("⇣{}", st.behind));
             }
         }
+        let stashes = stash_count(&git_dir);
+        if stashes > 0 {
+            out.push_str(&format!("⚑{stashes}"));
+        }
     }
     Some(out)
+}
+
+/// Count stash entries by counting lines in `<git_dir>/logs/refs/stash` (cheap,
+/// no `git` process). `0` when there are none.
+fn stash_count(git_dir: &Path) -> usize {
+    std::fs::read_to_string(git_dir.join("logs/refs/stash"))
+        .map(|s| s.lines().filter(|l| !l.trim().is_empty()).count())
+        .unwrap_or(0)
 }
 
 /// Run `git status --porcelain=v2 --branch` with a short timeout and parse the
@@ -124,7 +142,9 @@ fn git_status(cwd: &Path) -> Option<GitStatus> {
     Some(parse_git_status(&text))
 }
 
-/// Parse `git status --porcelain=v2 --branch` output.
+/// Parse `git status --porcelain=v2 --branch` output. Changed/renamed entries
+/// carry a two-char `XY` field: `X` is the staged status, `Y` the worktree one
+/// (`.` means unchanged).
 fn parse_git_status(text: &str) -> GitStatus {
     let mut st = GitStatus::default();
     for line in text.lines() {
@@ -136,7 +156,16 @@ fn parse_git_status(text: &str) -> GitStatus {
                     st.behind = n.parse().unwrap_or(0);
                 }
             }
-        } else if line.starts_with("1 ") || line.starts_with("2 ") || line.starts_with("u ") {
+        } else if line.starts_with("1 ") || line.starts_with("2 ") {
+            let xy: Vec<char> = line.chars().skip(2).take(2).collect();
+            if matches!(xy.first(), Some(c) if *c != '.') {
+                st.staged = true;
+            }
+            if matches!(xy.get(1), Some(c) if *c != '.') {
+                st.dirty = true;
+            }
+        } else if line.starts_with("u ") {
+            // Unmerged paths count as a dirty tree.
             st.dirty = true;
         }
     }
@@ -173,24 +202,32 @@ fn apply_format(fmt: &str, cwd: &str, mode: &str, model: &str, last_exit: i32) -
 /// `.git/HEAD` — no `git` process, so it's cheap enough to compute per prompt.
 /// Returns `None` when not inside a work tree.
 pub fn git_segment(cwd: &Path) -> Option<String> {
-    // Walk up to find a `.git` directory or file.
+    branch_from_head(&find_git_dir(cwd)?)
+}
+
+/// Walk up from `cwd` to the repository's git directory (handling a `.git` file
+/// for worktrees/submodules). `None` when not inside a work tree.
+fn find_git_dir(cwd: &Path) -> Option<PathBuf> {
     let mut dir = Some(cwd);
-    let git_dir = loop {
+    loop {
         let d = dir?;
         let candidate = d.join(".git");
         if candidate.is_dir() {
-            break candidate;
+            return Some(candidate);
         }
         if candidate.is_file() {
             // Worktree/submodule: `.git` is `gitdir: <path>`.
             let text = std::fs::read_to_string(&candidate).ok()?;
             let p = text.strip_prefix("gitdir:")?.trim();
             let pb = PathBuf::from(p);
-            break if pb.is_absolute() { pb } else { d.join(pb) };
+            return Some(if pb.is_absolute() { pb } else { d.join(pb) });
         }
         dir = d.parent();
-    };
+    }
+}
 
+/// The branch name (or short detached SHA) from `<git_dir>/HEAD`.
+fn branch_from_head(git_dir: &Path) -> Option<String> {
     let head = std::fs::read_to_string(git_dir.join("HEAD")).ok()?;
     let head = head.trim();
     if let Some(rf) = head.strip_prefix("ref: refs/heads/") {
@@ -306,18 +343,41 @@ mod tests {
     }
 
     #[test]
-    fn parse_git_status_reads_dirty_and_ab() {
+    fn parse_git_status_reads_dirty_staged_and_ab() {
+        // unstaged change (Y=M) → dirty, not staged.
         let out = "# branch.oid abc\n# branch.head main\n# branch.ab +2 -1\n1 .M N... file\n";
         let st = parse_git_status(out);
         assert!(st.dirty);
+        assert!(!st.staged);
         assert_eq!(st.ahead, 2);
         assert_eq!(st.behind, 1);
+
+        // staged change (X=M) → staged, not dirty.
+        let staged = "# branch.head main\n1 M. N... file\n";
+        let st = parse_git_status(staged);
+        assert!(st.staged);
+        assert!(!st.dirty);
 
         let clean = "# branch.head main\n# branch.ab +0 -0\n";
         let st = parse_git_status(clean);
         assert!(!st.dirty);
+        assert!(!st.staged);
         assert_eq!(st.ahead, 0);
         assert_eq!(st.behind, 0);
+    }
+
+    #[test]
+    fn stash_count_counts_reflog_lines() {
+        let git_dir = std::env::temp_dir().join(format!("aishe-stash-{}", std::process::id()));
+        std::fs::create_dir_all(git_dir.join("logs/refs")).unwrap();
+        assert_eq!(stash_count(&git_dir), 0); // no stash file yet
+        std::fs::write(
+            git_dir.join("logs/refs/stash"),
+            "0000 1111 t <t> 0 +0 WIP one\n0000 2222 t <t> 0 +0 WIP two\n",
+        )
+        .unwrap();
+        assert_eq!(stash_count(&git_dir), 2);
+        std::fs::remove_dir_all(&git_dir).ok();
     }
 
     #[test]

@@ -70,6 +70,11 @@ Features:
   `auto_pushd = true` (zsh `AUTO_PUSHD`), every `cd` pushes the previous directory
   onto the stack; navigate it with `cd -N` / `cd +N` and list it with `dirs -v`
   (numbered).
+- **cdpath**: `cd <name>` also searches the `cdpath` base directories (or
+  `$CDPATH`) when the name is not under the current directory.
+- **History filtering**: consecutive-duplicate removal, ignore-space, and
+  `HISTIGNORE` glob patterns (see
+  [Shell integration and .aishrc](shell-integration.md)).
 - **Command duration and git status in the prompt** (see
   [Prompt and theming](prompt-and-theming.md)).
 - **emacs or vi keymap** via `edit_mode` (or `aishe editor vi`). In vi mode the

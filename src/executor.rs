@@ -29,6 +29,8 @@ pub struct Executor {
     last_duration: Option<Duration>,
     /// zsh `AUTO_PUSHD`: push the previous dir onto the stack on every `cd`.
     auto_pushd: bool,
+    /// Extra base directories searched by `cd <name>` (zsh `cdpath`).
+    cdpath: Vec<PathBuf>,
     /// Last 10 (command, exit_code) pairs, for LLM context.
     pub history: VecDeque<(String, i32)>,
     /// Temp rc file sourced into every delegated command: the user's `.aishrc`
@@ -57,6 +59,7 @@ impl Executor {
             last_exit: 0,
             last_duration: None,
             auto_pushd: false,
+            cdpath: Vec::new(),
             history: VecDeque::with_capacity(10),
             session_rc: init_session_rc().ok(),
             dir_stack: Vec::new(),
@@ -78,6 +81,11 @@ impl Executor {
     /// onto the directory stack.
     pub fn set_auto_pushd(&mut self, on: bool) {
         self.auto_pushd = on;
+    }
+
+    /// Set the `cdpath`: extra base directories searched by `cd <name>`.
+    pub fn set_cdpath(&mut self, dirs: Vec<PathBuf>) {
+        self.cdpath = dirs;
     }
 
     /// Configure a `zsh -c`/`bash -c` invocation to source the session rc (user
@@ -254,23 +262,47 @@ impl Executor {
         code
     }
 
-    /// Resolve a `cd`/`pushd` argument to a canonical existing directory.
+    /// Resolve a `cd`/`pushd` argument to a canonical existing directory. A bare
+    /// name (no `/`, `~`, or `.` prefix) that isn't found under the cwd is also
+    /// searched for under each `cdpath` base directory.
     fn resolve_dir(&self, arg: &str) -> Result<PathBuf, String> {
         let target = if arg.is_empty() || arg == "~" {
             self.home()
         } else {
             self.expand_tilde(arg)
         };
-        let target = if target.is_absolute() {
-            target
+        let local = if target.is_absolute() {
+            target.clone()
         } else {
-            self.cwd.join(target)
+            self.cwd.join(&target)
         };
-        match target.canonicalize() {
-            Ok(c) if c.is_dir() => Ok(c),
-            Ok(_) => Err(format!("not a directory: {}", target.display())),
-            Err(e) => Err(format!("{}: {e}", target.display())),
+        // Prefer a directory under the cwd (or an absolute path).
+        if let Ok(c) = local.canonicalize() {
+            if c.is_dir() {
+                return Ok(c);
+            }
         }
+        // Then try the cdpath for a bare name.
+        if is_bare_name(arg) {
+            for base in &self.cdpath {
+                if let Ok(c) = base.join(&target).canonicalize() {
+                    if c.is_dir() {
+                        return Ok(c);
+                    }
+                }
+            }
+        }
+        match local.canonicalize() {
+            Ok(c) if c.is_dir() => Ok(c),
+            Ok(_) => Err(format!("not a directory: {}", local.display())),
+            Err(e) => Err(format!("{}: {e}", local.display())),
+        }
+    }
+
+    /// Whether a `cd` argument resolved via the `cdpath` rather than the cwd (so
+    /// `cd` should print the destination, as zsh does).
+    fn resolved_via_cdpath(&self, arg: &str) -> bool {
+        is_bare_name(arg) && !self.cwd.join(arg).is_dir()
     }
 
     /// Move to `new`, recording the previous dir and updating `$PWD`.
@@ -299,10 +331,15 @@ impl Executor {
         if let Some(n) = arg.and_then(stack_index) {
             return self.cd_stack_index(n);
         }
-        match self.resolve_dir(arg.unwrap_or("")) {
+        let a = arg.unwrap_or("");
+        match self.resolve_dir(a) {
             Ok(dir) => {
                 if dir != self.cwd {
                     self.maybe_pushd();
+                }
+                // zsh prints the destination when `cd` resolved via the cdpath.
+                if !self.cdpath.is_empty() && self.resolved_via_cdpath(a) {
+                    println!("{}", dir.display());
                 }
                 self.set_cwd(dir);
                 0
@@ -587,6 +624,12 @@ fn abbreviate_home(path: &Path, home: &Path) -> String {
     }
 }
 
+/// A `cd` argument that is a plain name (no `/`, `~`, or `.` prefix), and so is
+/// eligible for `cdpath` lookup.
+fn is_bare_name(arg: &str) -> bool {
+    !arg.is_empty() && !arg.starts_with('/') && !arg.starts_with('~') && !arg.starts_with('.')
+}
+
 /// Parse a `cd -N` / `cd +N` argument into a directory-stack index. Returns
 /// `None` for a bare `-`/`+` or a non-numeric argument.
 fn stack_index(arg: &str) -> Option<usize> {
@@ -743,6 +786,38 @@ mod tests {
 
         // out-of-range index is an error.
         assert_eq!(ex.run_builtin(&["cd".into(), "-9".into()]), 1);
+    }
+
+    #[test]
+    fn is_bare_name_works() {
+        assert!(is_bare_name("projects"));
+        assert!(!is_bare_name("/abs"));
+        assert!(!is_bare_name("~/x"));
+        assert!(!is_bare_name("./rel"));
+        assert!(!is_bare_name("../up"));
+        assert!(!is_bare_name(""));
+    }
+
+    #[test]
+    fn cdpath_resolves_bare_name() {
+        let base = std::env::temp_dir().join(format!("aishe-cdp-{}", std::process::id()));
+        // A name unlikely to exist under the test's cwd, so cdpath is consulted.
+        let name = "cdp_target_xyz";
+        let target = base.join(name);
+        std::fs::create_dir_all(&target).unwrap();
+
+        let mut ex = Executor::new().unwrap();
+        ex.set_cdpath(vec![base.clone()]);
+        // `cd <name>` is not under the cwd, so it resolves via the cdpath.
+        assert_eq!(ex.run_builtin(&["cd".into(), name.into()]), 0);
+        assert_eq!(
+            ex.cwd().canonicalize().unwrap(),
+            target.canonicalize().unwrap()
+        );
+        // a name that exists in neither cwd nor cdpath still errors.
+        assert_eq!(ex.run_builtin(&["cd".into(), "no_such_dir_xyz".into()]), 1);
+
+        std::fs::remove_dir_all(&base).ok();
     }
 
     #[test]

@@ -48,6 +48,14 @@ report_time = 3
 # Navigate with `cd -N` / `cd +N`, list with `dirs -v`.
 auto_pushd = false
 
+# History filtering (zsh-style):
+hist_ignore_dups = true     # don't save a command equal to the previous one
+hist_ignore_space = false   # don't save commands that start with a space
+# hist_ignore = ["ls", "cd *", "* --help"]   # glob patterns to keep out of history
+
+# Extra base directories searched by `cd <name>` (like zsh cdpath / $CDPATH).
+# cdpath = ["/home/me/projects", "/srv"]
+
 # Custom reedline left prompt. Placeholders: {cwd} {mode} {model} {exit}.
 # Leave commented out for the default (just the cwd).
 # prompt_format = "[{mode}] {cwd}"

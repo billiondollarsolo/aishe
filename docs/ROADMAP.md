@@ -68,14 +68,15 @@ is tagged `(reedline)` so we can re-scope quickly.
 - [ ] **Job control**: `cmd &`, `jobs`, `fg`, `bg`, `Ctrl-Z`/`SIGTSTP`,
   `disown`, `wait`. (reedline) The single biggest parity gap. Later (re-scope
   first).
-- [ ] **Richer history**: dedup (`HIST_IGNORE_DUPS`), timestamps, cross-session
-  sharing, `HISTIGNORE`. (reedline)
-- [~] **Prompt depth**: command duration (`report_time`) and git dirty +
-  ahead/behind (`git_status`) shipped; an exit-status glyph already colors the
-  prompt. Staged/stash indicators and async vcs_info still open. (reedline)
-- [~] **Spelling correction** (`CORRECT`), named dirs (`~proj`), `cdpath`,
-  global and suffix aliases still open. `AUTO_PUSHD` shipped (`auto_pushd`,
-  `cd -N`/`cd +N`, `dirs -v`). (reedline)
+- [~] **Richer history**: dedup (`HIST_IGNORE_DUPS`), ignore-space, and
+  `HISTIGNORE` glob patterns shipped (`hist_ignore_dups`/`hist_ignore_space`/
+  `hist_ignore`). Timestamps and cross-session sharing still open. (reedline)
+- [~] **Prompt depth**: command duration (`report_time`) and git
+  staged/unstaged/ahead-behind/stash (`git_status`) shipped; an exit-status glyph
+  already colors the prompt. Async vcs_info still open. (reedline)
+- [~] **Spelling correction** (`CORRECT`), named dirs (`~proj`), global and
+  suffix aliases still open. `AUTO_PUSHD` and `cdpath` shipped (`auto_pushd`,
+  `cd -N`/`cd +N`, `dirs -v`, `cdpath`). (reedline)
 - [ ] **Completion depth**: closer to zsh compsys, with descriptions for
   arbitrary commands, file completion with glob qualifiers, and completion from
   man pages or `--help`. (reedline)

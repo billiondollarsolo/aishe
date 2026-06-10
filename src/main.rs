@@ -630,10 +630,17 @@ fn repl(
     if let Some(parent) = history_path.parent() {
         std::fs::create_dir_all(parent).ok();
     }
-    let history = Box::new(
+    let file_history: Box<dyn reedline::History> = Box::new(
         FileBackedHistory::with_file(10_000, history_path)
             .unwrap_or_else(|_| FileBackedHistory::new(10_000).expect("in-memory history")),
     );
+    // Wrap with zsh-style filtering: drop consecutive duplicates and HISTIGNORE
+    // matches before they are persisted.
+    let history = Box::new(aishe::histfilter::FilteredHistory::new(
+        file_history,
+        config.aishe.hist_ignore_dups,
+        &config.aishe.hist_ignore,
+    ));
 
     // Tab → completion menu (command names / file paths), Shift-Tab → previous,
     // Ctrl-R → browsable history menu. Applied to whichever keymap is active.
@@ -659,12 +666,18 @@ fn repl(
         .with_hinter(ghost.hinter(aishe::ghost::default_style()))
         .with_highlighter(Box::new(CmdHighlighter::new(cache.clone(), theme)))
         .with_edit_mode(edit_mode);
+    // HIST_IGNORE_SPACE: lines starting with a space aren't saved to history.
+    if config.aishe.hist_ignore_space {
+        line_editor = line_editor.with_history_exclusion_prefix(Some(" ".to_string()));
+    }
 
     // Conversation memory for natural-language turns this session.
     let mut session = Session::new(config.aishe.memory);
 
     // zsh AUTO_PUSHD for the directory stack.
     executor.set_auto_pushd(config.aishe.auto_pushd);
+    // cdpath: config entries, falling back to $CDPATH when none are configured.
+    executor.set_cdpath(resolve_cdpath(config));
 
     loop {
         // Computed once per prompt (not per keystroke). The branch comes from
@@ -1188,6 +1201,23 @@ fn data_dir() -> std::path::PathBuf {
     dirs::data_dir()
         .unwrap_or_else(|| std::path::PathBuf::from("."))
         .join("aishe")
+}
+
+/// The `cdpath` base directories: the configured `cdpath`, or `$CDPATH` (colon-
+/// separated) when none are configured.
+fn resolve_cdpath(config: &Config) -> Vec<std::path::PathBuf> {
+    if !config.aishe.cdpath.is_empty() {
+        return config
+            .aishe
+            .cdpath
+            .iter()
+            .map(std::path::PathBuf::from)
+            .collect();
+    }
+    std::env::var("CDPATH")
+        .ok()
+        .map(|v| std::env::split_paths(&v).collect())
+        .unwrap_or_default()
 }
 
 /// Initialize the audit logger from config, with environment overrides:

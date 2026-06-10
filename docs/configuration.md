@@ -31,6 +31,10 @@ which persist your choice back to the file.
 | `git_status` | bool | `true` | Add dirty (`*`) and ahead/behind (`⇡`/`⇣`) markers to the git segment (one `git status` per prompt). |
 | `report_time` | integer | `3` | Show the last command's duration when it ran at least this many seconds. `0` disables. |
 | `auto_pushd` | bool | `false` | zsh `AUTO_PUSHD`: every `cd` pushes the previous dir (`cd -N`/`cd +N`, `dirs -v`). |
+| `hist_ignore_dups` | bool | `true` | Don't save a command equal to the previous one (`HIST_IGNORE_DUPS`). |
+| `hist_ignore_space` | bool | `false` | Don't save commands that start with a space (`HIST_IGNORE_SPACE`). |
+| `hist_ignore` | array | `[]` | Glob patterns of commands to keep out of history (`HISTIGNORE`), e.g. `["ls", "cd *"]`. |
+| `cdpath` | array | `[]` | Extra base dirs searched by `cd <name>` (`CDPATH`); falls back to `$CDPATH`. |
 | `prompt_format` | string | unset | Custom left prompt. Placeholders: `{cwd}`, `{mode}`, `{model}`, `{exit}`. |
 | `structured` | string | `schema` | Suggest output format: `schema`, `json`, or `prompt`. |
 | `stream` | bool | `false` | Stream answers token-by-token in the REPL (suggest and auto). |
