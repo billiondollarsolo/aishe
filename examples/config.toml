@@ -1,0 +1,104 @@
+# Example aishe configuration.
+#
+# Copy this to ~/.config/aishe/config.toml (or $XDG_CONFIG_HOME/aishe/config.toml)
+# and edit to taste. Every field has a sensible default, so you can delete any
+# line you do not care about. API keys are NEVER stored here; they are read from
+# the environment variable named by `api_key_env`.
+
+[aishe]
+# Interaction mode for natural-language input.
+#   suggest = propose a command, you confirm  (default)
+#   auto    = run safe commands immediately, confirm dangerous ones
+#   yolo    = agentic loop that runs commands and iterates until done
+mode = "suggest"
+
+# Which provider block below to use: "anthropic" or "openai".
+provider = "anthropic"
+
+# Front-end (input loop).
+#   auto     = zsh-PTY when zsh is on $PATH, else the reedline editor  (default)
+#   reedline = the built-in line editor
+#   zsh-pty  = always drive your real interactive zsh in a pseudo-terminal
+front_end = "auto"
+
+# reedline line-editor keymap: "emacs" or "vi".
+edit_mode = "emacs"
+
+# In yolo mode, confirm commands the safety gate flags as dangerous.
+yolo_confirm_dangerous = true
+
+# Maximum tool-use iterations for a single yolo request.
+max_yolo_iterations = 10
+
+# Show "model and mode" on the right of the reedline prompt.
+show_right_prompt = true
+
+# Show a git branch segment in the right prompt (reedline front-end).
+git_prompt = true
+
+# Custom reedline left prompt. Placeholders: {cwd} {mode} {model} {exit}.
+# Leave commented out for the default (just the cwd).
+# prompt_format = "[{mode}] {cwd}"
+
+# Output-format strategy for suggest mode.
+#   schema = strict JSON schema where supported, with automatic step-down (default)
+#   json   = ask for any JSON object
+#   prompt = unconstrained text, parsed defensively
+structured = "schema"
+
+# Stream answers token-by-token in the interactive REPL (suggest and auto).
+stream = false
+
+# Print a dim per-session token and cost line after each model interaction.
+show_usage = true
+
+# Stop calling the model once the estimated session cost reaches this many USD.
+# 0 = unlimited. Only enforced when the model's price is known.
+budget_usd = 0.0
+
+# ---------------------------------------------------------------------------
+# Providers. Only the one named by `provider` above is used, but you can keep
+# both configured and switch with `aishe provider ...`.
+# ---------------------------------------------------------------------------
+
+[providers.anthropic]
+base_url = "https://api.anthropic.com"
+api_key_env = "ANTHROPIC_API_KEY"
+model = "claude-sonnet-4-20250514"
+
+[providers.openai]
+# Point base_url at any OpenAI-compatible endpoint:
+#   OpenAI:     https://api.openai.com
+#   Groq:       https://api.groq.com/openai
+#   Ollama:     http://localhost:11434
+#   OpenRouter: https://openrouter.ai/api
+base_url = "https://api.openai.com"
+api_key_env = "OPENAI_API_KEY"
+model = "gpt-4o"
+
+# ---------------------------------------------------------------------------
+# Optional: per-model price overrides for cost estimates (USD per 1M tokens).
+# Keys are matched by exact model name first, then by substring. Falls back to a
+# built-in table. Only needed if a model is missing from the table or priced
+# differently for you.
+# ---------------------------------------------------------------------------
+
+# [pricing."openai/gpt-oss-120b"]
+# input = 0.15
+# output = 0.60
+
+# ---------------------------------------------------------------------------
+# Optional: theming for the reedline prompt and syntax highlighter.
+# Pick a preset (default, vivid, mono, nord, gruvbox) and override any role.
+# Colors may be names (red, bright-green), a palette index (0-255), or hex.
+# ---------------------------------------------------------------------------
+
+[theme]
+preset = "default"
+# cwd = "bright-cyan"
+# known_cmd = "#98c379"
+# unknown_cmd = "red"
+# flag = "yellow"
+# string = "green"
+# operator = "magenta"
+# path = "blue"

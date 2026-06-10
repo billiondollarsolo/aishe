@@ -5,8 +5,8 @@ Copy a skill into `~/.config/aishe/skills/` (user) or `<project>/.aishe/skills/`
 
 Unlike `/commands` (which you invoke), **skills are invoked by the model**: in
 yolo mode aishe lists each skill's `name: description`, and the model calls the
-`use_skill` tool to load a skill's full instructions when your request matches —
-Claude-Code-style progressive disclosure.
+`use_skill` tool to load a skill's full instructions when your request matches.
+This is Claude Code style progressive disclosure.
 
 ```md
 ---

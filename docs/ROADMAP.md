@@ -1,88 +1,94 @@
 # aishe roadmap
 
 A living backlog of where aishe is headed. Grounded in a code audit (June 2026).
-Ordered by theme, not strictly by priority; the **Now / Next / Later** tags at the
+Ordered by theme, not strictly by priority. The Now / Next / Later tags at the
 end of each item are the current intent.
 
 ## The architectural fork (read this first)
 
-The **reedline front-end runs each input line as a fresh `zsh -c "…"`**
-(`executor.rs`). Shell state is *simulated* by intercepting `cd`/`export`/aliases/
-functions and replaying them from a generated rc file. That model **cannot do real
-job control** — `cmd &`, `jobs`, `fg`, `bg`, `Ctrl-Z` need a persistent shell that
-owns the job table. The **zsh-PTY front-end** (`pty.rs`, the `auto` default when zsh
-is present) *is* a real zsh and gets all of this for free.
+The reedline front-end runs each input line as a fresh `zsh -c "..."`
+(`executor.rs`). Shell state is simulated by intercepting `cd`, `export`,
+aliases, and functions and replaying them from a generated rc file. That model
+cannot do real job control, because `cmd &`, `jobs`, `fg`, `bg`, and `Ctrl-Z`
+need a persistent shell that owns the job table. The zsh-PTY front-end
+(`pty.rs`, the `auto` default when zsh is present) is a real zsh and gets all of
+this for free.
 
-So most zsh-parity work below only matters **if reedline stays a flagship**. The
-alternative is to make zsh-pty the flagship "real shell" and position reedline as
-the lightweight AI command runner. **Decision: deferred** — but every reedline-only
-item is tagged `(reedline)` so we can re-scope quickly.
+So most zsh-parity work below only matters if reedline stays a flagship. The
+alternative is to make zsh-pty the flagship real shell and position reedline as
+the lightweight AI command runner. Decision: deferred. Every reedline-only item
+is tagged `(reedline)` so we can re-scope quickly.
 
----
+## 1. AI-shell features (the differentiators), building now
 
-## 1. AI-shell features (the differentiators) — **building now**
-
-- [ ] **Token & cost accounting + budget cap.** Surface `usage` from every
-  provider call, accumulate per session, show `tokens in/out · ~$cost`, add a
-  `budget_usd` guard that stops before overspending, and an `aishe usage`
-  command. *Foundational — everything below benefits.* **Now**
+- [x] **Token and cost accounting plus budget cap.** Surface usage from every
+  provider call, accumulate per session, show `tokens · cost`, add a `budget_usd`
+  guard, and an `aishe usage` command. Foundational; everything below benefits.
+  Done.
 - [ ] **Yolo streaming.** The agentic loop uses non-streaming
-  `complete_with_tools`, so long runs look frozen. Stream assistant text +
-  tool-call deltas (Anthropic `message_delta`, OpenAI tool-call streaming). **Next**
-- [ ] **Session memory.** NL/yolo invocations start cold each time. Keep a rolling
-  conversation transcript in the interactive REPL so follow-ups work ("now do the
-  same for the other file"); cap/summarize to control cost. **Next**
-- [ ] **Inline ghost-text AI autosuggestion.** Warp/Copilot-style: as you type,
-  asynchronously propose a completion of the current command, accept with `→`.
-  Needs debounce + cancellation + cost guard. **Later (biggest)**
-- [ ] **Richer yolo toolset / MCP.** Beyond `run_command`: `read_file`,
-  `apply_patch`, web fetch; optional MCP client so external tool servers plug in. **Later**
-- [ ] **Dry-run / plan preview for yolo.** Show the planned step(s) and let the
-  user approve the batch before execution. **Later**
+  `complete_with_tools`, so long runs look frozen. Stream assistant text and
+  tool-call deltas (Anthropic `message_delta`, OpenAI tool-call streaming). Next.
+- [ ] **Session memory.** NL and yolo invocations start cold each time. Keep a
+  rolling conversation transcript in the interactive REPL so follow-ups work
+  ("now do the same for the other file"); cap or summarize to control cost. Next.
+- [ ] **Inline ghost-text AI autosuggestion.** Warp or Copilot style: as you
+  type, asynchronously propose a completion of the current command, accept with
+  the right arrow. Needs debounce, cancellation, and a cost guard. Later (biggest).
+- [ ] **Richer yolo toolset and MCP.** Beyond `run_command`: `read_file`,
+  `apply_patch`, web fetch; an optional MCP client so external tool servers plug
+  in. Later.
+- [ ] **Dry-run or plan preview for yolo.** Show the planned steps and let the
+  user approve the batch before execution. Later.
 - [ ] **Response caching.** Cache identical (prompt, context) suggestions briefly
-  to cut latency/cost on repeats. **Later**
+  to cut latency and cost on repeats. Later.
 - [ ] **Per-project context.** Optional `.aishe/context.md` fed to the model for
-  repo-specific conventions. **Later**
+  repo-specific conventions. Later.
 
-## 2. Trust & safety — **quick wins first**
+## 2. Trust and safety, quick wins first
 
 - [ ] **Secret redaction in model context.** `context.rs` ships the last 10
-  commands verbatim to the provider; a prior `export TOKEN=…`, `mysql -p…`, or a
-  URL with credentials leaks. Redact `KEY=value`, `-p<secret>`, `Authorization:`,
-  and high-entropy tokens before sending. **Now**
-- [ ] **Adversarial safety corpus.** `safety.rs` has the rules but only ~2 inline
-  tests. Build a large dangerous-vs-benign-lookalike battery: `rm -rf "$EMPTY"/`,
-  obfuscated `dd`, `sudo` wrappers, base64/`eval` payloads, `find … -delete`,
-  `git clean -xfd`, `> /dev/sda`, chained/quoted variants. **Now**
-- [ ] **Sandbox / confirm tiers.** Optional restricted exec for yolo (no network,
-  scratch dir), graduated confirmation. **Later**
+  commands verbatim to the provider; a prior `export TOKEN=...`, `mysql -p...`, or
+  a URL with credentials leaks. Redact `KEY=value`, `-p<secret>`,
+  `Authorization:`, and high-entropy tokens before sending. Now.
+- [ ] **Adversarial safety corpus.** `safety.rs` has the rules but only a couple
+  of inline tests. Build a large dangerous-vs-benign-lookalike battery:
+  `rm -rf "$EMPTY"/`, obfuscated `dd`, `sudo` wrappers, base64 and `eval`
+  payloads, `find ... -delete`, `git clean -xfd`, `> /dev/sda`, chained and
+  quoted variants. Now.
+- [ ] **Sandbox or confirm tiers.** Optional restricted exec for yolo (no
+  network, scratch dir) with graduated confirmation. Later.
 
-## 3. zsh parity (mostly `reedline`)
+## 3. zsh parity (mostly reedline)
 
-- [ ] **Job control** — `cmd &`, `jobs`, `fg`, `bg`, `Ctrl-Z`/`SIGTSTP`,
-  `disown`, `wait`. *(reedline)* The single biggest parity gap. **Later (re-scope first)**
-- [ ] **Richer history** — dedup (`HIST_IGNORE_DUPS`), timestamps, cross-session
-  sharing, `HISTIGNORE`. *(reedline)*
-- [ ] **Prompt depth** — git **dirty/staged/ahead-behind/stash**, **exit-status**
-  glyph, **command duration** (`REPORTTIME`), async vcs_info. *(reedline)*
-- [ ] **Spelling correction** (`CORRECT`), **named dirs** (`~proj`), **`cdpath`**,
-  **`AUTO_PUSHD`**, **global/suffix aliases**. *(reedline)*
-- [ ] **Completion depth** — closer to zsh compsys: descriptions for arbitrary
-  commands, file completion with glob qualifiers, completion from man/`--help`. *(reedline)*
+- [ ] **Job control**: `cmd &`, `jobs`, `fg`, `bg`, `Ctrl-Z`/`SIGTSTP`,
+  `disown`, `wait`. (reedline) The single biggest parity gap. Later (re-scope
+  first).
+- [ ] **Richer history**: dedup (`HIST_IGNORE_DUPS`), timestamps, cross-session
+  sharing, `HISTIGNORE`. (reedline)
+- [ ] **Prompt depth**: git dirty, staged, ahead-behind, and stash indicators, an
+  exit-status glyph, command duration (`REPORTTIME`), async vcs_info. (reedline)
+- [ ] **Spelling correction** (`CORRECT`), named dirs (`~proj`), `cdpath`,
+  `AUTO_PUSHD`, global and suffix aliases. (reedline)
+- [ ] **Completion depth**: closer to zsh compsys, with descriptions for
+  arbitrary commands, file completion with glob qualifiers, and completion from
+  man pages or `--help`. (reedline)
 
 ## 4. Test surface not yet exercised
 
-- [ ] **Adversarial safety corpus** (see §2).
-- [ ] **Provider failure modes** — 429 rate-limit, timeouts, truncated/malformed
-  SSE, non-JSON bodies, the schema→json→prompt step-down path, usage parsing.
-- [ ] **Interactive PTY behaviors** — `Ctrl-C` mid-command, `Ctrl-Z`, window
-  resize, completion-menu navigation, multi-line editing (only smoke-tested today).
-- [ ] **I/O edges** — stdin piping / non-tty (`echo "prompt" | aishe`), large &
-  binary captured output limits, Unicode/emoji/wide-char line editing.
-- [ ] **Exit-code propagation** — `aishe -c 'false'` → 1, pipelines, `$?` chains.
-- [ ] **Config precedence** — env vs flags vs file, legacy migration.
+- [ ] Adversarial safety corpus (see section 2).
+- [ ] Provider failure modes: 429 rate-limit, timeouts, truncated or malformed
+  SSE, non-JSON bodies, the schema to json to prompt step-down path, usage
+  parsing.
+- [ ] Interactive PTY behaviors: `Ctrl-C` mid-command, `Ctrl-Z`, window resize,
+  completion-menu navigation, multi-line editing (only smoke-tested today).
+- [ ] I/O edges: stdin piping and non-tty (`echo "prompt" | aishe`), large and
+  binary captured output limits, Unicode and emoji line editing.
+- [ ] Exit-code propagation: `aishe -c 'false'` returns 1, pipelines, `$?`
+  chains.
+- [ ] Config precedence: env vs flags vs file, legacy migration.
 
-## 5. Distribution & polish
+## 5. Distribution and polish
 
-- [ ] Packaging (Homebrew/AUR/cargo-binstall), shell-completion for `aishe`
-  itself, man page, `aishe --version` build metadata, richer `aishe doctor`.
+- [ ] Prebuilt packages (Homebrew, a Linux package or tarball, cargo-binstall),
+  shell completion for `aishe` itself, a man page, build metadata in
+  `aishe --version`, and a richer `aishe doctor`.
