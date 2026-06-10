@@ -34,6 +34,18 @@ aishe --version
 aishe doctor
 ```
 
+## Build options
+
+Syntax highlighting for code blocks in model answers is on by default (it bundles
+a set of syntaxes and themes, which adds a few MB to the binary). For a smaller
+binary without it, build with default features off:
+
+```sh
+cargo build --release --no-default-features
+```
+
+Code blocks then render as plain styled blocks instead of being color-tokenized.
+
 ## Build without installing
 
 If you would rather not install into `~/.cargo/bin`, just build the release

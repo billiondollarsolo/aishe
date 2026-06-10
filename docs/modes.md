@@ -68,7 +68,8 @@ aishe stream on        # or stream = true in config
 
 In suggest and auto mode, an answer streams to the screen as it is generated.
 Once the model commits to a command instead of prose, aishe falls back to the
-normal confirm or run flow, so a command is never half-printed.
+normal confirm or run flow, so a command is never half-printed. When a prose
+answer finishes streaming, aishe re-renders it as markdown in place.
 
 In yolo mode, the agentic loop streams the model's text live too, so long runs no
 longer look frozen: you see the reasoning and the final answer as they arrive,
@@ -82,9 +83,16 @@ Streaming works with both providers over SSE, including streamed tool calls.
 Endpoints without SSE simply deliver the whole answer at once (aishe falls back
 automatically). Streaming is not used for the scriptable suggest `-c` path.
 
-Note on syntax highlighting: code blocks are rendered as styled blocks, but
-per-language syntax highlighting inside a code block is not done yet (it is on the
-roadmap and would apply to both streaming and non-streaming output).
+## Rendering and syntax highlighting
+
+Model answers are rendered as markdown: headers, lists, emphasis, tables, inline
+code, and fenced code blocks. Fenced code blocks are syntax-highlighted by
+language (for example ```python or ```rust), using a bundled set of syntaxes and
+a dark theme. This applies to both streamed and non-streamed answers.
+
+Highlighting is built in by default. To build a smaller binary without the
+bundled syntaxes, compile with `--no-default-features`; code blocks then render as
+plain styled blocks. See [Installation](installation.md).
 
 ## Structured output
 

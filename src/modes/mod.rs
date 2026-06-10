@@ -136,10 +136,121 @@ pub fn run_command_tool() -> ToolDef {
     }
 }
 
-/// Render markdown text to the terminal via termimad.
+/// Render markdown text to the terminal. Prose is rendered with termimad; fenced
+/// code blocks are syntax-highlighted (when the `highlight` feature is on).
 pub fn render_markdown(text: &str) {
+    #[cfg(not(feature = "highlight"))]
+    {
+        termimad::MadSkin::default().print_text(text);
+    }
+    #[cfg(feature = "highlight")]
+    {
+        render_markdown_highlighted(text);
+    }
+}
+
+/// Split `text` into prose segments (rendered by termimad) and fenced code
+/// blocks (syntax-highlighted), preserving order. A trailing unterminated fence
+/// is still rendered as code.
+#[cfg(feature = "highlight")]
+fn render_markdown_highlighted(text: &str) {
     let skin = termimad::MadSkin::default();
-    skin.print_text(text);
+    let mut prose = String::new();
+    let mut code = String::new();
+    let mut lang = String::new();
+    let mut in_code = false;
+
+    for line in text.split('\n') {
+        let head = line.trim_start();
+        if in_code {
+            if head.starts_with("```") {
+                highlight::print_code_block(&code, &lang);
+                code.clear();
+                lang.clear();
+                in_code = false;
+            } else {
+                code.push_str(line);
+                code.push('\n');
+            }
+        } else if head.starts_with("```") {
+            if !prose.trim().is_empty() {
+                skin.print_text(&prose);
+            }
+            prose.clear();
+            lang = head.trim_start_matches('`').trim().to_string();
+            in_code = true;
+        } else {
+            prose.push_str(line);
+            prose.push('\n');
+        }
+    }
+    if in_code && !code.is_empty() {
+        highlight::print_code_block(&code, &lang);
+    }
+    if !prose.trim().is_empty() {
+        skin.print_text(&prose);
+    }
+}
+
+/// Syntax highlighting for fenced code blocks via syntect.
+#[cfg(feature = "highlight")]
+mod highlight {
+    use std::io::Write;
+    use std::sync::OnceLock;
+
+    use syntect::easy::HighlightLines;
+    use syntect::highlighting::{Theme, ThemeSet};
+    use syntect::parsing::SyntaxSet;
+    use syntect::util::{as_24_bit_terminal_escaped, LinesWithEndings};
+
+    static SYNTAXES: OnceLock<SyntaxSet> = OnceLock::new();
+    static THEME: OnceLock<Theme> = OnceLock::new();
+
+    fn syntaxes() -> &'static SyntaxSet {
+        SYNTAXES.get_or_init(SyntaxSet::load_defaults_newlines)
+    }
+
+    fn theme() -> &'static Theme {
+        THEME.get_or_init(|| {
+            let mut ts = ThemeSet::load_defaults();
+            ts.themes
+                .remove("base16-ocean.dark")
+                .unwrap_or_else(|| ThemeSet::load_defaults().themes["InspiredGitHub"].clone())
+        })
+    }
+
+    /// Print one fenced code block, syntax-highlighted by `lang` (falling back to
+    /// plain text for unknown or empty languages). Foreground colors only (no
+    /// background fill), with a reset at the end so styling does not leak.
+    pub fn print_code_block(code: &str, lang: &str) {
+        let ss = syntaxes();
+        let syntax = (!lang.is_empty())
+            .then(|| {
+                ss.find_syntax_by_token(lang)
+                    .or_else(|| ss.find_syntax_by_extension(lang))
+            })
+            .flatten()
+            .unwrap_or_else(|| ss.find_syntax_plain_text());
+
+        let mut h = HighlightLines::new(syntax, theme());
+        let mut out = std::io::stdout();
+        for line in LinesWithEndings::from(code) {
+            match h.highlight_line(line, ss) {
+                Ok(ranges) => {
+                    let _ = write!(out, "{}", as_24_bit_terminal_escaped(&ranges[..], false));
+                }
+                Err(_) => {
+                    let _ = write!(out, "{line}");
+                }
+            }
+        }
+        // Reset attributes; ensure the block ends on its own line.
+        let _ = write!(out, "\x1b[0m");
+        if !code.ends_with('\n') {
+            let _ = writeln!(out);
+        }
+        let _ = out.flush();
+    }
 }
 
 /// After a final answer has been streamed to the screen as raw text, re-render it

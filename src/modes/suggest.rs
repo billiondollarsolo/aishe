@@ -149,8 +149,9 @@ fn run_stream(
             present_command(&command, &explanation, executor)
         }
     } else {
-        // A prose answer was streamed live; just terminate the line.
-        println!();
+        // A prose answer was streamed live as raw text; re-render it as markdown
+        // in place (code blocks, lists, emphasis) now that it is complete.
+        super::rerender_streamed_markdown(&full);
         Ok(())
     }
 }

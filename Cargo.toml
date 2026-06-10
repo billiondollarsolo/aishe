@@ -14,6 +14,13 @@ categories = ["command-line-utilities"]
 name = "aishe"
 path = "src/main.rs"
 
+[features]
+default = ["highlight"]
+# Syntax-highlight fenced code blocks in rendered model output (adds the syntect
+# dependency and the bundled syntaxes/themes). Disable for a smaller binary:
+#   cargo build --release --no-default-features
+highlight = ["dep:syntect"]
+
 [dependencies]
 reedline = "0.38"
 ureq = { version = "2", features = ["json", "tls", "native-certs"] }
@@ -30,6 +37,10 @@ dirs = "5"
 libc = "0.2"
 nu-ansi-term = "0.50"
 portable-pty = "0.8"
+# Pure-Rust regex engine (fancy-regex) so no C oniguruma dependency is needed.
+syntect = { version = "5", default-features = false, features = [
+    "default-fancy",
+], optional = true }
 
 [dev-dependencies]
 assert_cmd = "2"

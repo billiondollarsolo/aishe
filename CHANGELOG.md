@@ -29,6 +29,12 @@ breaking changes can land in any release.
   the provider).
 
 ### Added
+- **Syntax-highlighted code blocks.** Rendered model answers now highlight fenced
+  code blocks by language (via syntect, pure-Rust fancy-regex), for both streamed
+  and non-streamed output. On by default; build `--no-default-features` for a
+  smaller binary that renders code blocks plain.
+- **Markdown re-render for streamed suggest/auto answers.** A streamed prose
+  answer is re-rendered as markdown in place when it finishes, matching yolo.
 - **Yolo streaming.** The agentic loop now streams the model's text live (over
   Anthropic and OpenAI-compatible SSE, including streamed tool calls), so long
   runs no longer look frozen. A streamed final answer is re-rendered as markdown
