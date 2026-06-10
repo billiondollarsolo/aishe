@@ -30,7 +30,7 @@ const FALLBACK_BUILTINS: &[&str] = &[
     "getopts", "hash", "jobs", "kill", "let", "local", "print", "printf", "pushd", "popd", "read",
     "readonly", "set", "setopt", "shift", "test", "trap", "type", "typeset", "ulimit", "umask",
     "wait", "which", "zmodload", "cd", "export", "unset", "source", "true", "false", "bg", "fg",
-    "disown", "enable", "disable", "where", "whence",
+    "disown", "enable", "disable", "where", "whence", ":", "repeat", "noglob",
 ];
 
 /// Shared command cache, swappable from a background thread.
@@ -56,12 +56,17 @@ impl CommandCache {
     /// builtins/aliases/functions on a background thread so the first prompt
     /// is not blocked.
     pub fn build(&self, shell: &Path) {
-        // Synchronous PATH scan.
+        // Synchronous PATH scan + a fallback builtin set, so pure shell builtins
+        // (`print`, `let`, `typeset`, `jobs`, `:`, …) are recognized immediately
+        // — before the background fetch lands. This matters for `-c`/one-shot and
+        // the very first interactive prompt, which otherwise race the thread and
+        // misroute builtins to the LLM.
         let path_cmds = scan_path();
         {
             let mut w = self.inner.write().unwrap();
             w.extend(path_cmds);
             w.extend(INTERCEPTED.iter().map(|s| s.to_string()));
+            w.extend(FALLBACK_BUILTINS.iter().map(|s| s.to_string()));
         }
 
         // Background fetch of shell builtins + user aliases/functions.
@@ -180,6 +185,12 @@ pub fn dispatch(line: &str, cache: &CommandCache) -> Dispatch {
         return Dispatch::Shell(trimmed.to_string());
     }
 
+    // Array assignment at the head of the line (`arr=(a b c)`, `path+=(/x)`),
+    // possibly followed by `; cmd …` — route the whole line to shell.
+    if is_array_assignment(trimmed) {
+        return Dispatch::Shell(trimmed.to_string());
+    }
+
     // 5. Pipelines / compound lines, split quote-aware on `|`/`;`/`&&`/`||`. It's
     //    shell if every segment's head is a known command or a shell reserved
     //    word (so `grep -E 'a|b'` stays one segment, and `x=1; while …; done`
@@ -187,6 +198,9 @@ pub fn dispatch(line: &str, cache: &CommandCache) -> Dispatch {
     let segments = split_top_level(trimmed);
     if segments.len() > 1 {
         let all_shell = segments.iter().all(|seg| {
+            if is_array_assignment(seg) {
+                return true; // `arr=(a b c)` segment is shell
+            }
             match effective_command_token(&tokenize(seg)) {
                 EffectiveHead::Token(t) => cache.contains(&t) || is_reserved_word(&t),
                 _ => true, // assignment-only or empty segment is fine
@@ -297,8 +311,29 @@ pub fn is_shell_construct_head(line: &str) -> bool {
     let first = t.split(|c: char| c.is_whitespace()).next().unwrap_or("");
     matches!(
         first,
-        "if" | "for" | "while" | "until" | "case" | "select" | "function" | "time"
+        "if" | "for" | "while" | "until" | "case" | "select" | "function" | "time" | "repeat"
     )
+}
+
+/// A zsh array assignment at the start of `seg`, e.g. `arr=(a b c)` or
+/// `path+=(/x)`. The whitespace tokenizer splits the parenthesized values, so
+/// without this the head resolves to a value word and the line misroutes to the
+/// LLM. Recognized as shell.
+fn is_array_assignment(seg: &str) -> bool {
+    let s = seg.trim_start();
+    let eq = match s.find('=') {
+        Some(i) => i,
+        None => return false,
+    };
+    let name = s[..eq].strip_suffix('+').unwrap_or(&s[..eq]);
+    !name.is_empty()
+        && name
+            .chars()
+            .next()
+            .map(|c| c.is_ascii_alphabetic() || c == '_')
+            .unwrap_or(false)
+        && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+        && s[eq + 1..].trim_start().starts_with('(')
 }
 
 fn starts_with_shell_syntax(line: &str) -> bool {
@@ -435,6 +470,7 @@ fn is_reserved_word(w: &str) -> bool {
             | "[["
             | "(("
             | "["
+            | "repeat"
     )
 }
 
@@ -594,6 +630,29 @@ mod tests {
         assert!(matches!(dispatch("FOO=1 env", &c), Dispatch::Shell(_)));
         // pure assignment.
         assert!(matches!(dispatch("FOO=bar", &c), Dispatch::Shell(_)));
+    }
+
+    #[test]
+    fn array_assignment_is_shell() {
+        let c = cache_with(&["echo"]);
+        // `arr=(a b c)` has spaces inside the parens — must not misroute.
+        assert!(matches!(dispatch("arr=(a b c)", &c), Dispatch::Shell(_)));
+        assert!(matches!(
+            dispatch("arr=(a b c); echo ${#arr}", &c),
+            Dispatch::Shell(_)
+        ));
+        assert!(matches!(dispatch("path+=(/x /y)", &c), Dispatch::Shell(_)));
+        // not an array assignment: `echo a=(b)` is a command, routes via head.
+        assert!(matches!(dispatch("echo a=(b)", &c), Dispatch::Shell(_)));
+    }
+
+    #[test]
+    fn repeat_keyword_is_shell() {
+        let c = cache_with(&["echo"]);
+        assert!(matches!(
+            dispatch("repeat 3 echo hi", &c),
+            Dispatch::Shell(_)
+        ));
     }
 
     #[test]

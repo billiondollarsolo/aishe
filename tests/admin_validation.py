@@ -1,16 +1,19 @@
 #!/usr/bin/env python3
 """Repeatable admin / validation harness for aishe.
 
-Four suites:
-  1. Shell pass-through — run ~100 common Linux commands & shell constructs
-     through `aishe -c` and compare to the raw shell (proves "Linux still works
-     like Linux": aishe delegates faithfully). Run with NO api key, so anything
-     misrouted to the LLM shows up as a mismatch.
-  2. Admin file ops — create/edit/move/permission/delete files via aishe and
-     verify the resulting on-disk state.
+Five suites:
+  1. Shell pass-through — run ~190 common + edge-case Linux commands & shell
+     constructs through `aishe -c` and compare to the raw shell (proves "Linux
+     still works like Linux": aishe delegates faithfully). Run with NO api key,
+     so anything misrouted to the LLM shows up as a mismatch.
+  2. Admin file ops — create/edit/move/permission/archive/delete files via aishe
+     and verify the resulting on-disk state.
   4. Plugins, slash-commands & skills (deterministic) — meta slash-commands
-     (`/commands`, `/skills`, `/config`, `/help`), custom command discovery and
-     `shell:`/`$ARGUMENTS` templating execution. No model needed.
+     (`/commands`, `/skills`, `/config`, `/help`), custom command discovery,
+     `shell:`/`$ARGUMENTS`/`$1`/`$2` templating, no-frontmatter discovery, and
+     project→user override precedence. No model needed.
+  5. Dispatch classification — assert each input routes to shell vs natural
+     language (independent of output determinism). No model needed.
   3. Natural language (optional; needs an API key) — suggest / yolo / mode
      switching, custom NL commands, and model-invoked skills (progressive
      disclosure) against the real model.
@@ -149,6 +152,111 @@ SHELL_CASES = [
     "id -u",
     "uname -s",
     "test $((2**10)) -eq 1024 && echo pow",
+    # --- edge cases: quoting & escaping ---
+    "echo $'a\\nb'",
+    "echo $'tab\\tend'",
+    'echo "a\\"b"',
+    "echo 'can'\\''t'",
+    "echo \"nested 'single'\"",
+    "echo 'literal $HOME stays'",
+    "printf '%b\\n' 'x\\ty'",
+    "echo a\\ b",
+    "echo \"has | pipe\"",
+    "echo \"has ; semi\"",
+    "echo 'has && amp'",
+    "echo \"$(echo inner) outer\"",
+    "v=x; echo \"${v:+yes}\"",
+    "echo one'two'three",
+    'echo a"b"c',
+    # --- edge cases: arithmetic ---
+    "echo $((2 ** 8))",
+    "echo $((17 % 5))",
+    "echo $((-3 + 10))",
+    "echo $((10 / 3))",
+    "echo $((1 << 4))",
+    "echo $((0xff))",
+    "echo $((2#1010))",
+    "echo $(( (1+2) * 3 ))",
+    "echo $((5 > 3))",
+    "echo $((5 == 5))",
+    "n=5; echo $((n*n))",
+    "echo $((8#17))",
+    # --- edge cases: parameter expansion (zsh) ---
+    "v=hello; echo ${v//l/L}",
+    "v=hello; echo ${v/l/L}",
+    "v=HELLO; echo ${(L)v}",
+    "v=hello; echo ${(U)v}",
+    "v=hello; echo ${v:0:2}",
+    "v=hello; echo ${v: -2}",
+    "v=a,b,c; echo ${v//,/ }",
+    "v=foobar; echo ${v#foo}",
+    "v=foobar; echo ${v%bar}",
+    "v=path/to/file.txt; echo ${v:t}",
+    "v=path/to/file.txt; echo ${v:h}",
+    "v=path/to/file.txt; echo ${v:e}",
+    "v=path/to/file.txt; echo ${v:r}",
+    "echo ${UNSETZZZ:-fallback}",
+    "echo ${UNSETZZZ:=assigned}",
+    "v=; echo ${v:-empty}",
+    "echo ${(C)v::=hello world}",
+    # --- edge cases: arrays (zsh) ---
+    "arr=(a b c); echo ${#arr}",
+    "arr=(a b c); echo $arr[2]",
+    "arr=(a b c); echo ${arr[-1]}",
+    "arr=(a b c); echo ${arr[@]}",
+    "arr=(1 2 3 4); echo ${arr[2,3]}",
+    "arr=(c a b); echo ${(o)arr}",
+    "arr=(b a b a); echo ${(u)arr}",
+    # --- edge cases: globbing & brace expansion ---
+    "echo *.txt",
+    "echo [ab].txt",
+    "echo ?.txt",
+    "echo **/*.txt",
+    "echo {1..3}",
+    "echo {a,b}{1,2}",
+    "echo file{01..03}.log",
+    "echo {1..10..2}",
+    "echo {Z..X}",
+    "echo nomatch-*(N)",
+    # --- edge cases: redirection & here-docs/strings ---
+    "cat <<< herestring",
+    "echo $(wc -w <<< 'one two three')",
+    "{ echo out; echo err >&2; } 2>/dev/null",
+    "printf '%s\\n' a b c | tac",
+    "echo $(seq 3 | wc -l)",
+    "cat <<EOF | wc -l\na\nb\nc\nEOF",
+    "echo hi | cat -",
+    "echo discard >/dev/null; echo $?",
+    # --- edge cases: compound / control structures ---
+    "for i in {1..3}; do echo i=$i; done",
+    "i=5; until (( i >= 8 )); do echo $i; i=$((i+1)); done",
+    "if [[ -f a.txt ]]; then echo has; fi",
+    "case abc in a*) echo A;; esac",
+    "n=0; for f in *.txt; do n=$((n+1)); done; echo $n",
+    "{ echo a; echo b; } | wc -l",
+    "(cd subdir && pwd) | xargs basename",
+    "true && echo yes || echo no",
+    "false && echo yes || echo no",
+    "false || echo recovered",
+    "echo hi | while read l; do echo got-$l; done",
+    "for ((i=0;i<3;i++)); do echo c$i; done",
+    "repeat 3 echo hi",
+    "x=1; [[ $x == 1 ]] && echo one",
+    # --- edge cases: builtins & misc commands ---
+    "print -l a b c",
+    "print -r -- 'raw\\nstring'",
+    "printf '%03d\\n' 7",
+    "printf '%-5s|\\n' hi",
+    "printf '%+d\\n' 5",
+    "printf '%x\\n' 255",
+    "printf '%o\\n' 8",
+    "type echo",
+    "echo a b c | tr ' ' '\\n' | wc -l",
+    "echo a; echo b; echo c",
+    "echo a # trailing comment",
+    ": ignored; echo aftercolon",
+    "let n=6+1; echo $n",
+    "typeset -i k=9; echo $k",
 ]
 
 # Non-deterministic: just require exit 0 (output not compared).
@@ -160,6 +268,60 @@ SMOKE_CASES = [
     "env | wc -l",
     "ls -l /usr/bin | head -3",
     "free -m 2>/dev/null | head -1 || echo nofree",
+    "sleep 0",
+    "jobs",
+    "echo $RANDOM >/dev/null",
+    "type -a echo >/dev/null",
+    "ls -d */ 2>/dev/null | head -1 || echo none",
+    "hash -r",
+    "ulimit -n >/dev/null",
+    "umask",
+]
+
+# ----- dispatch classification (no key): assert routing, not output ------------
+# A line that must run as SHELL must NOT hit the model (no "LLM not configured").
+# A line that must be NATURAL LANGUAGE must hit the model (with no key, that
+# surfaces as the "LLM not configured" notice). This catches mis-routing
+# independent of whether the command's output is deterministic.
+DISPATCH_SHELL = [
+    "ls -la",
+    "git status",
+    "for i in 1 2; do echo $i; done",
+    "x=1; echo $x",
+    "echo a | grep a",
+    "{ echo x; }",
+    "( echo y )",
+    "if true; then echo z; fi",
+    "while false; do echo never; done",
+    "until true; do echo never; done",
+    "case x in x) echo m;; esac",
+    "time echo hi",
+    "cd /tmp && pwd",
+    "FOO=bar env >/dev/null",
+    "echo 'list all the files please'",       # quoted NL → still echo (shell)
+    "find . -name '*.txt'",
+    "/bin/echo hi",
+    "$(echo echo) hi",
+    "grep -E 'foo|bar' a.txt",
+    "f() { echo hi; }; f",
+    "[[ -d subdir ]] && echo yes",
+    "(( 1 + 1 ))",
+    "!echo forced-shell",                     # ! sigil = forced shell
+    "tar --version",
+    "awk 'BEGIN{print 1}'",
+    "sed -n '1p' a.txt",
+]
+DISPATCH_NL = [
+    "what is the capital of france",
+    "how do I list files by size",
+    "please summarize this directory",
+    "explain the difference between tcp and udp",
+    "tell me a joke about computers",
+    "show me the largest files here",
+    "?force this to be natural language",      # ? sigil = forced NL
+    "turn this csv into json data",
+    "why is my disk full",
+    "give me a one-liner to backup my home dir",
 ]
 
 # ----- admin file-editing scenario (run via aishe; verified on disk) ----------
@@ -177,6 +339,22 @@ def file_ops_script(d):
          lambda: open(f"{d}/proj/sorted.txt").read() == "c\nb\na\n"),
         (f"rm -f {d}/proj/src/h.txt", lambda: not os.path.exists(f"{d}/proj/src/h.txt")),
         (f"find {d}/proj -type f | wc -l", lambda: True),  # informational
+        # --- edge cases ---
+        (f"mkdir -p {d}/a/b/c/deep", lambda: os.path.isdir(f"{d}/a/b/c/deep")),
+        (f"touch {d}/t.txt", lambda: os.path.exists(f"{d}/t.txt")),
+        (f"echo data > {d}/tr.txt && : > {d}/tr.txt", lambda: open(f"{d}/tr.txt").read() == ""),
+        (f"cat >> {d}/h.txt <<EOF\nx\ny\nEOF", lambda: open(f"{d}/h.txt").read() == "x\ny\n"),
+        (f"touch {d}/e.sh && chmod u+x {d}/e.sh", lambda: (os.stat(f"{d}/e.sh").st_mode & 0o100) != 0),
+        (f'touch "{d}/a b.txt"', lambda: os.path.exists(f"{d}/a b.txt")),
+        (f"echo h > {d}/.hidden", lambda: os.path.exists(f"{d}/.hidden")),
+        (f"cp -r {d}/proj {d}/proj_copy", lambda: os.path.isfile(f"{d}/proj_copy/f.txt")),
+        (f"printf '%s\\n' x y z | xargs -n1 echo > {d}/xa.txt", lambda: open(f"{d}/xa.txt").read() == "x\ny\nz\n"),
+        (f"sed -e 's/x/X/' -e 's/y/Y/' {d}/h.txt > {d}/sed2.txt", lambda: open(f"{d}/sed2.txt").read() == "X\nY\n"),
+        (f"grep -rl x {d}/proj_copy >/dev/null; echo rc=$?", lambda: True),  # informational
+        (f"tar -C {d} -czf {d}/proj.tgz proj", lambda: os.path.exists(f"{d}/proj.tgz")),
+        (f"mkdir -p {d}/ex && tar -C {d}/ex -xzf {d}/proj.tgz", lambda: os.path.isfile(f"{d}/ex/proj/f.txt")),
+        (f"find {d}/proj -name '*.txt' -exec wc -l {{}} + >/dev/null", lambda: True),  # informational
+        (f"rm -rf {d}/proj_copy", lambda: not os.path.exists(f"{d}/proj_copy")),
     ]
 
 # ----- NL prompts (need API key) ----------------------------------------------
@@ -224,6 +402,18 @@ def install_plugins(cfgroot):
             "echo args=$ARGUMENTS first=$1\n"
         )
 
+    # 1b. Positional templating: $1/$2 in a shell command.
+    with open(os.path.join(cdir, "echo2.md"), "w") as f:
+        f.write("---\ndescription: positional args\nshell: true\n---\necho p1=$1 p2=$2\n")
+
+    # 1c. No frontmatter at all — must still be discovered (default description).
+    with open(os.path.join(cdir, "plain.md"), "w") as f:
+        f.write("Just a body, no frontmatter, referencing $ARGUMENTS.\n")
+
+    # 1d. A user command that a project command will override (precedence test).
+    with open(os.path.join(cdir, "dup.md"), "w") as f:
+        f.write("---\ndescription: USER-DUP\nshell: true\n---\necho USER-DUP\n")
+
     # 2. An *NL* custom command (prompt template) — used in the key-gated suite.
     with open(os.path.join(cdir, "bigfiles.md"), "w") as f:
         f.write(
@@ -260,6 +450,24 @@ def key():
         return open("/tmp/aishe-secrets.env").read().split("=", 1)[1].strip()
     except Exception:
         return None
+
+
+def install_project_plugins(projroot):
+    """Drop project-scoped (`<cwd>/.aishe/`) command & skill files to exercise
+    project discovery and user→project override precedence."""
+    cdir = os.path.join(projroot, ".aishe", "commands")
+    sdir = os.path.join(projroot, ".aishe", "skills", "proj-skill")
+    os.makedirs(cdir, exist_ok=True)
+    os.makedirs(sdir, exist_ok=True)
+    # Same name as a user command → project must win.
+    with open(os.path.join(cdir, "dup.md"), "w") as f:
+        f.write("---\ndescription: PROJECT-DUP\nshell: true\n---\necho PROJECT-DUP\n")
+    # A project-only command.
+    with open(os.path.join(cdir, "projcmd.md"), "w") as f:
+        f.write("---\ndescription: project only\nshell: true\n---\necho PROJ-ONLY\n")
+    # A project-only skill.
+    with open(os.path.join(sdir, "SKILL.md"), "w") as f:
+        f.write("---\nname: proj-skill\ndescription: a project-scoped skill\n---\nProject skill body.\n")
 
 
 def make_config():
@@ -306,6 +514,7 @@ def main():
     open(f"{fixture}/nums.txt", "w").write("3\n1\n2\n1\n")
     os.makedirs(f"{fixture}/subdir", exist_ok=True)
     open(f"{fixture}/subdir/c.txt", "w").write("inner\n")
+    install_project_plugins(fixture)  # project-scoped .aishe/ under the cwd
 
     env_local = base_env(cfgroot, with_key=False)
     report = []
@@ -378,9 +587,39 @@ def main():
     # No-arg invocation should still run (empty expansion).
     rc, out, err = run([BIN, "-c", "/echo-args"], env_local, cwd=fixture)
     add("plugin: /echo-args (no args)", rc == 0 and "args=" in out, f"→ `{out.strip()}`")
+    # Positional $1/$2 templating.
+    rc, out, err = run([BIN, "-c", "/echo2 x y z"], env_local, cwd=fixture)
+    add("plugin: /echo2 positional $1/$2", "p1=x p2=y" in out, f"→ `{out.strip()}`")
     # Unknown slash command should not crash (falls through gracefully).
     rc, out, err = run([BIN, "-c", "/nonexistent-cmd-xyz"], env_local, cwd=fixture)
     add("plugin: unknown /command handled", rc is not None)
+
+    report.append("\n**Discovery & project-override precedence:**\n")
+    # No-frontmatter command is discovered.
+    rc, out, err = run([BIN, "-c", "/commands"], env_local, cwd=fixture)
+    add("plugin: no-frontmatter command discovered", "plain" in out)
+    # Project-only command + project skill are discovered (cwd = project root).
+    add("plugin: project-only command discovered", "projcmd" in out)
+    rc, sout, _ = run([BIN, "-c", "/skills"], env_local, cwd=fixture)
+    add("plugin: project-only skill discovered", "proj-skill" in sout)
+    # Project command overrides a same-named user command.
+    rc, out, err = run([BIN, "-c", "/dup"], env_local, cwd=fixture)
+    add("plugin: project overrides user (/dup)", "PROJECT-DUP" in out and "USER-DUP" not in out,
+        f"→ `{out.strip()}`")
+
+    # ---- Suite 5: dispatch classification (no key; routing only) ----
+    section("Suite 5 — Dispatch classification (shell vs natural language)")
+    NL_NOTE = "LLM not configured"
+    report.append("\n**Must route to SHELL (must NOT call the model):**\n")
+    for cmd in DISPATCH_SHELL:
+        _, out, err = run([BIN, "-c", cmd], env_local, cwd=fixture)
+        ok = NL_NOTE not in err
+        add(f"route-shell: {cmd}", ok, "" if ok else "(misrouted to NL)")
+    report.append("\n**Must route to NATURAL LANGUAGE (must reach the model path):**\n")
+    for cmd in DISPATCH_NL:
+        _, out, err = run([BIN, "-c", cmd], env_local, cwd=fixture)
+        ok = NL_NOTE in err
+        add(f"route-nl: {cmd}", ok, "" if ok else f"(not routed to NL; err={err.strip()[:80]!r})")
 
     # ---- Suite 3: natural language (needs key) ----
     section("Suite 3 — Natural language (real model)")
@@ -490,7 +729,10 @@ def main():
         c = counts.get(name, [0, 0])
         return c[1] > 0 and c[0] == c[1]
 
-    critical = full("shell") and full("fileop") and full("slash") and full("plugin")
+    # route-nl is informational (depends on no oddly-named command shadowing an
+    # NL word on the host); a real command misrouted to NL (route-shell) is a bug.
+    critical = (full("shell") and full("fileop") and full("slash")
+                and full("plugin") and full("route-shell"))
     sys.exit(0 if critical else 1)
 
 

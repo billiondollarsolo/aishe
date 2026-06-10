@@ -7,6 +7,15 @@ breaking changes can land in any release.
 ## [Unreleased]
 
 ### Fixed
+- **Builtins no longer misroute to the LLM in one-shot/`-c` (and the first
+  interactive prompt).** The shell-builtin list was fetched on a background
+  thread, so `aishe -c 'print …'` / `let` / `typeset` / `jobs` / `:` could race
+  the thread and be sent to the model. The fallback builtin set is now seeded
+  **synchronously** at startup. (Caught by the expanded validation harness.)
+- **zsh array assignments route to shell.** `arr=(a b c)` (spaces inside the
+  parens) and `path+=(/x)` were tokenized into a bare value head and misrouted
+  to the LLM; they're now recognized as shell. Added `repeat`/`:`/`noglob` to
+  the builtin/keyword sets too.
 - **Shell hook suggest-mode now actually prefills.** zsh/bash run the
   `command_not_found` handler in a *subshell*, so the old `print -z`/`READLINE_LINE`
   (and auto-mode `eval`) silently did nothing. The handler now hands off via a
