@@ -1,7 +1,7 @@
 //! Yolo mode: an agentic loop where the model drives `run_command` until it has
 //! accomplished the task, then summarizes.
 
-use std::io::Write;
+use std::io::{IsTerminal, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use anyhow::Result;
@@ -12,7 +12,7 @@ use crate::config::Config;
 use crate::context;
 use crate::executor::{Executor, DEFAULT_CAPTURE_TIMEOUT};
 use crate::mcp::McpRegistry;
-use crate::providers::{AssistantMsg, Completion, Msg, Provider};
+use crate::providers::{AssistantMsg, Completion, Msg, Provider, ResponseFormat};
 use crate::safety::{self, Risk};
 use crate::session::Session;
 use crate::skills::SkillRegistry;
@@ -96,7 +96,26 @@ fn run_loop(
         ));
     }
     let mut messages: Vec<Msg> = history;
-    messages.push(Msg::User(format!("{ctx}\nUser request: {input}")));
+    let mut user_msg = format!("{ctx}\nUser request: {input}");
+
+    // Plan-first (dry run): show the intended steps and require approval before
+    // the loop touches anything. Interactive only — there is no one to approve a
+    // piped/`-c` run, so it proceeds as normal there.
+    if config.aishe.yolo_plan && std::io::stdin().is_terminal() {
+        match plan_first(input, &ctx, provider, config) {
+            PlanOutcome::Declined => {
+                println!("  {}", "aborted".dim());
+                return Ok(None);
+            }
+            PlanOutcome::Approved(plan) => {
+                user_msg.push_str(&format!("\n\nApproved plan to follow:\n{plan}"));
+            }
+            // No plan produced (empty or error): proceed without one.
+            PlanOutcome::Skip => {}
+        }
+    }
+
+    messages.push(Msg::User(user_msg));
 
     interrupt.store(false, Ordering::SeqCst);
     crate::audit::ai_request("yolo", config.active_model(), input);
@@ -292,6 +311,69 @@ fn run_loop(
     }
 
     Ok(None)
+}
+
+/// Result of the plan-first pre-pass.
+enum PlanOutcome {
+    /// The user approved the printed plan; thread it into the loop.
+    Approved(String),
+    /// The user declined; abort the run.
+    Declined,
+    /// No usable plan (empty or the planning call failed); run without one.
+    Skip,
+}
+
+const PLAN_SYSTEM: &str = "You are about to run an agentic shell task. First, \
+    WITHOUT executing anything, lay out the concrete steps you intend to take as \
+    a short numbered list (commands or file edits at a high level). Be specific \
+    but concise; do not actually run or simulate anything, just describe the plan.";
+
+/// Ask the model for its intended steps, print them, and get the user's approval
+/// before the agentic loop runs. The planning call is a plain (no-tool)
+/// completion; its tokens are metered and the turn is audit-logged.
+fn plan_first(input: &str, ctx: &str, provider: &dyn Provider, config: &Config) -> PlanOutcome {
+    println!("  {}", "planning…".dim());
+    let messages = vec![Msg::User(format!("{ctx}\nUser request: {input}"))];
+    crate::audit::ai_request("yolo-plan", config.active_model(), input);
+    let before = provider.meter().snapshot();
+    let plan = match provider.complete(PLAN_SYSTEM, &messages, &ResponseFormat::Text) {
+        Ok(p) => p,
+        Err(e) => {
+            crate::audit::ai_error("yolo-plan", config.active_model(), &e.to_string());
+            eprintln!("{}", format!("aishe: planning failed: {e}").red());
+            return PlanOutcome::Skip;
+        }
+    };
+    let after = provider.meter().snapshot();
+    crate::audit::ai_response(
+        "yolo-plan",
+        config.active_model(),
+        &plan,
+        after.input.saturating_sub(before.input),
+        after.output.saturating_sub(before.output),
+    );
+    if plan.trim().is_empty() {
+        return PlanOutcome::Skip;
+    }
+    println!("\n  {}", "Plan".bold());
+    render_markdown(&plan);
+    if confirm_plan() {
+        PlanOutcome::Approved(plan)
+    } else {
+        PlanOutcome::Declined
+    }
+}
+
+/// Prompt `Proceed with this plan? [Y/n]`. Defaults to yes on Enter.
+fn confirm_plan() -> bool {
+    print!("  {} ", "Proceed with this plan? [Y/n]".yellow().bold());
+    let _ = std::io::stdout().flush();
+    let mut line = String::new();
+    if std::io::stdin().read_line(&mut line).is_err() {
+        return false;
+    }
+    let a = line.trim();
+    a.is_empty() || a.eq_ignore_ascii_case("y") || a.eq_ignore_ascii_case("yes")
 }
 
 /// A concise summary of one assistant turn for the audit log: the final answer

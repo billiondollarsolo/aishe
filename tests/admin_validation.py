@@ -645,6 +645,7 @@ cdpath = ["/tmp", "/srv"]
 correct = true
 file_tools = false
 web_tool = false
+yolo_plan = true
 max_yolo_iterations = 5
 yolo_confirm_dangerous = false
 
@@ -902,6 +903,7 @@ def main():
         "correct = true",
         "file_tools = false",
         "web_tool = false",
+        "yolo_plan = true",
         "budget_usd = 1.5",
         "hist_ignore_space = true",
         "ghost_text = true",
@@ -933,7 +935,7 @@ def main():
 
     # 6d. New read-only / toggle meta commands behave in `-c` (no crash, not NL).
     report.append("\n**New meta commands (`-c`):**\n")
-    for meta in ["/usage", "/reset", "/ghost", "/help"]:
+    for meta in ["/usage", "/reset", "/ghost", "/plan", "/help"]:
         rc, out, err = run([BIN, "-c", meta], env_local, cwd=fixture)
         ok = rc == 0 and "LLM not configured" not in err
         add(f"meta: {meta}", ok, "" if ok else f"(rc={rc} err={err.strip()[:60]!r})")

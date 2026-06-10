@@ -1094,6 +1094,23 @@ fn handle_meta(
                 if ghost.is_enabled() { "on" } else { "off" }
             ),
         },
+        "plan" => match tokens.get(2).map(|s| s.as_str()) {
+            Some("on") | Some("true") => {
+                config.aishe.yolo_plan = true;
+                persist(config);
+                println!("yolo plan-first → on");
+            }
+            Some("off") | Some("false") => {
+                config.aishe.yolo_plan = false;
+                persist(config);
+                println!("yolo plan-first → off");
+            }
+            Some(_) => eprintln!("aishe: plan must be 'on' or 'off'"),
+            None => println!(
+                "yolo plan-first: {}",
+                if config.aishe.yolo_plan { "on" } else { "off" }
+            ),
+        },
         "reset" => {
             let n = session.turns();
             session.clear();
@@ -1296,9 +1313,11 @@ fn print_meta_help() {
 \x20 aishe theme [PRESET]        show or set the color preset\n\
 \x20 aishe commands              list custom /slash-commands\n\
 \x20 aishe skills                list model-invoked skills (yolo)\n\
+\x20 aishe mcp                   list MCP tools (yolo)\n\
 \x20 aishe usage                 session token & cost usage\n\
 \x20 aishe reset                 clear conversation memory\n\
 \x20 aishe ghost [on|off]        inline AI ghost-text autosuggestion\n\
+\x20 aishe plan [on|off]         yolo plan-first dry run\n\
 \x20 aishe config                print active config\n\
 \x20 aishe rehash                rebuild the command cache\n\
 \x20 aishe help                  show this help\n\

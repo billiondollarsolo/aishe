@@ -17,6 +17,7 @@ aishe theme [PRESET]              show or set the color preset
 aishe usage                       session token and cost usage
 aishe reset                       clear conversation memory
 aishe ghost [on|off]              inline AI ghost-text autosuggestion
+aishe plan [on|off]               yolo plan-first dry run
 aishe commands                    list custom slash-commands
 aishe skills                      list model-invoked skills
 aishe mcp                         list MCP tools (yolo)

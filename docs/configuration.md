@@ -26,6 +26,7 @@ which persist your choice back to the file.
 | `edit_mode` | string | `emacs` | reedline keymap: `emacs` or `vi`. |
 | `yolo_confirm_dangerous` | bool | `true` | In yolo, confirm commands the safety gate flags. |
 | `max_yolo_iterations` | integer | `10` | Maximum tool-use steps for one yolo request. |
+| `yolo_plan` | bool | `false` | Plan-first dry run: the model shows its intended steps and you approve before the loop runs (interactive only). Toggle with `aishe plan`. |
 | `file_tools` | bool | `true` | Offer the built-in `read_file`/`write_file`/`edit_file`/`list_dir` tools to yolo. |
 | `web_tool` | bool | `true` | Offer the built-in `fetch_url` tool to yolo (read web pages/docs; HTML stripped to text, size-capped). |
 | `show_right_prompt` | bool | `true` | Show "model and mode" on the right (reedline). |

@@ -40,6 +40,7 @@ const META_SUBCOMMANDS: &[(&str, &str)] = &[
     ("usage", "session token & cost usage"),
     ("reset", "clear conversation memory"),
     ("ghost", "inline AI ghost text: on|off"),
+    ("plan", "yolo plan-first dry run: on|off"),
     ("help", "show help"),
 ];
 

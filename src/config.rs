@@ -88,6 +88,11 @@ pub struct AisheConfig {
     pub yolo_confirm_dangerous: bool,
     #[serde(default = "default_max_iters")]
     pub max_yolo_iterations: u32,
+    /// Plan-first (dry run): before the yolo loop runs anything, ask the model
+    /// for its intended steps, show them, and require approval. Interactive only.
+    /// Off by default.
+    #[serde(default)]
+    pub yolo_plan: bool,
     /// Offer the built-in file tools (`read_file`/`write_file`/`edit_file`/
     /// `list_dir`) to yolo, so it can work with files directly instead of via the
     /// shell. On by default.
@@ -247,6 +252,7 @@ impl Default for AisheConfig {
             provider: default_provider(),
             yolo_confirm_dangerous: true,
             max_yolo_iterations: default_max_iters(),
+            yolo_plan: false,
             file_tools: true,
             web_tool: true,
             show_right_prompt: true,

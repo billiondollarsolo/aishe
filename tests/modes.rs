@@ -186,6 +186,48 @@ fn yolo_web_tool_dispatch() {
 }
 
 #[test]
+fn yolo_plan_skipped_without_tty() {
+    // With yolo_plan on but no terminal on stdin (as under `cargo test`/`-c`), the
+    // plan-first pre-pass is bypassed and the loop runs normally. Guards against
+    // plan-first breaking non-interactive runs.
+    let provider = MockProvider::with_completions(
+        vec![
+            Completion {
+                text: None,
+                tool_calls: vec![tool_call("echo planned")],
+            },
+            Completion {
+                text: Some("done".into()),
+                tool_calls: vec![],
+            },
+        ],
+        false,
+    );
+    let mut exec = Executor::new().unwrap();
+    let mut config = Config::default();
+    config.aishe.yolo_plan = true;
+    let flag = AtomicBool::new(false);
+
+    yolo::run(
+        "do a thing",
+        &provider,
+        &mut exec,
+        &config,
+        &flag,
+        &SkillRegistry::default(),
+        &McpRegistry::default(),
+        &mut Session::new(false),
+    )
+    .unwrap();
+
+    assert!(
+        exec.history.iter().any(|(c, _)| c == "echo planned"),
+        "plan-first must not block a non-tty run: {:?}",
+        exec.history
+    );
+}
+
+#[test]
 fn yolo_runs_tool_then_finishes() {
     let provider = MockProvider::with_completions(
         vec![

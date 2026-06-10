@@ -30,6 +30,12 @@ yolo_confirm_dangerous = true
 # Maximum tool-use iterations for a single yolo request.
 max_yolo_iterations = 10
 
+# Plan-first (dry run) for yolo: before running anything, the model lays out its
+# intended steps and you approve them ("Proceed with this plan? [Y/n]"). Adds one
+# planning call per request. Interactive only; off by default. Toggle live with
+# `aishe plan on`.
+yolo_plan = false
+
 # Offer the built-in file tools (read_file / write_file / edit_file / list_dir)
 # to yolo, so it edits files precisely instead of via cat/sed/heredocs.
 file_tools = true

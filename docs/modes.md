@@ -63,6 +63,11 @@ and decides what to do next, repeating until the task is done or it hits
   goes to the model). Use this instead of `curl`/`wget` for reading the web.
 - **MCP tools**: if you configure [MCP servers](mcp.md), their tools are offered
   too, namespaced `mcp__<server>__<tool>`, and proxied to the server when called.
+- **Plan-first (dry run)** (`yolo_plan = true`, off by default): before the loop
+  runs anything, the model lays out its intended steps and you approve them
+  (`Proceed with this plan? [Y/n]`). Costs one extra planning call and applies
+  only interactively (a piped/`-c` run has no one to approve, so it proceeds).
+  Toggle live with `aishe plan on`.
 - With `yolo_confirm_dangerous = true`, the safety gate still pauses for
   dangerous commands.
 - If skills are present, the model can pull a skill's instructions into context

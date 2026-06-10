@@ -36,6 +36,12 @@ breaking changes can land in any release.
   the provider).
 
 ### Added
+- **Plan-first (dry run) for yolo.** With `yolo_plan = true` (or `aishe plan on`),
+  before the agentic loop runs anything the model lays out its intended steps and
+  you approve them (`Proceed with this plan? [Y/n]`). It costs one extra planning
+  call, threads the approved plan into the run, and applies only interactively (a
+  piped/`-c` run has no one to approve, so it proceeds as before). Off by default;
+  the planning call is metered and audit-logged as `mode: yolo-plan`.
 - **MCP (Model Context Protocol) client.** Configure stdio MCP servers under
   `[mcp_servers]` and their tools are offered to the yolo loop, namespaced
   `mcp__<server>__<tool>` and proxied to the server when the model calls them.

@@ -44,8 +44,9 @@ is tagged `(reedline)` so we can re-scope quickly.
   `mcp__<server>__<tool>` so the MCP ecosystem plugs into the yolo loop. Done.
   (Streamable-HTTP transport and consuming MCP prompts/resources are possible
   follow-ups.)
-- [ ] **Dry-run or plan preview for yolo.** Show the planned steps and let the
-  user approve the batch before execution. Later.
+- [x] **Dry-run or plan preview for yolo.** With `yolo_plan` (`aishe plan on`),
+  the model lays out its intended steps and the user approves before the loop
+  runs; the approved plan is threaded into the run. Interactive only. Done.
 - [ ] **Response caching.** Cache identical (prompt, context) suggestions briefly
   to cut latency and cost on repeats. Later.
 - [ ] **Per-project context.** Optional `.aishe/context.md` fed to the model for
