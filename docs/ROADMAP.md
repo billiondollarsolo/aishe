@@ -25,12 +25,12 @@ is tagged `(reedline)` so we can re-scope quickly.
   provider call, accumulate per session, show `tokens · cost`, add a `budget_usd`
   guard, and an `aishe usage` command. Foundational; everything below benefits.
   Done.
-- [ ] **Yolo streaming.** The agentic loop uses non-streaming
-  `complete_with_tools`, so long runs look frozen. Stream assistant text and
-  tool-call deltas (Anthropic `message_delta`, OpenAI tool-call streaming). Next.
-- [ ] **Session memory.** NL and yolo invocations start cold each time. Keep a
-  rolling conversation transcript in the interactive REPL so follow-ups work
-  ("now do the same for the other file"); cap or summarize to control cost. Next.
+- [x] **Yolo streaming.** The agentic loop streams assistant text live (and
+  tool-call deltas) over both providers, re-rendering the final answer as
+  markdown with syntax-highlighted code blocks. Done.
+- [x] **Session memory.** The interactive REPL keeps a rolling, size-capped
+  transcript so follow-ups ("now do the same for the other file") work; clear
+  with `aishe reset`, toggle with `memory`. Done.
 - [x] **Inline ghost-text AI autosuggestion.** Warp/Copilot style: a background
   worker (debounced, cached, budget-aware, shared provider) predicts the rest of
   the command; reedline shows it as dim ghost text, accept with the Right arrow.
