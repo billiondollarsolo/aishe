@@ -26,11 +26,62 @@ const INTERCEPTED: &[&str] = &[
 
 /// Hardcoded fallback list of zsh builtins, used if querying zsh fails.
 const FALLBACK_BUILTINS: &[&str] = &[
-    "alias", "autoload", "bindkey", "command", "compgen", "declare", "echo", "eval", "exec", "fc",
-    "getopts", "hash", "jobs", "kill", "let", "local", "print", "printf", "pushd", "popd", "read",
-    "readonly", "set", "setopt", "shift", "test", "trap", "type", "typeset", "ulimit", "umask",
-    "wait", "which", "zmodload", "cd", "export", "unset", "source", "true", "false", "bg", "fg",
-    "disown", "enable", "disable", "where", "whence", ":", "repeat", "noglob",
+    "alias",
+    "autoload",
+    "bindkey",
+    "command",
+    "compgen",
+    "declare",
+    "echo",
+    "eval",
+    "exec",
+    "fc",
+    "getopts",
+    "hash",
+    "jobs",
+    "kill",
+    "let",
+    "local",
+    "print",
+    "printf",
+    "pushd",
+    "popd",
+    "read",
+    "readonly",
+    "set",
+    "setopt",
+    "shift",
+    "test",
+    "trap",
+    "type",
+    "typeset",
+    "ulimit",
+    "umask",
+    "wait",
+    "which",
+    "zmodload",
+    "cd",
+    "export",
+    "unset",
+    "source",
+    "true",
+    "false",
+    "bg",
+    "fg",
+    "disown",
+    "enable",
+    "disable",
+    "where",
+    "whence",
+    ":",
+    "repeat",
+    "noglob",
+    "unsetopt",
+    "integer",
+    "float",
+    "unhash",
+    "unfunction",
+    "zcompile",
 ];
 
 /// Shared command cache, swappable from a background thread.
@@ -193,9 +244,9 @@ pub fn dispatch(line: &str, cache: &CommandCache) -> Dispatch {
         return Dispatch::Shell(trimmed.to_string());
     }
 
-    // Array assignment at the head of the line (`arr=(a b c)`, `path+=(/x)`),
-    // possibly followed by `; cmd …` — route the whole line to shell.
-    if is_array_assignment(trimmed) {
+    // Assignment at the head of the line (`v='a b'`, `x=$(cmd)`, `arr=(a b c)`,
+    // `m[k]=v`), possibly followed by `; cmd …` — route the whole line to shell.
+    if is_assignment_head(trimmed) {
         return Dispatch::Shell(trimmed.to_string());
     }
 
@@ -206,8 +257,8 @@ pub fn dispatch(line: &str, cache: &CommandCache) -> Dispatch {
     let segments = split_top_level(trimmed);
     if segments.len() > 1 {
         let all_shell = segments.iter().all(|seg| {
-            if is_array_assignment(seg) {
-                return true; // `arr=(a b c)` segment is shell
+            if is_assignment_head(seg) {
+                return true; // `v='a b'` / `arr=(…)` / `m[k]=v` segment is shell
             }
             match effective_command_token(&tokenize(seg)) {
                 EffectiveHead::Token(t) => cache.contains(&t) || is_reserved_word(&t),
@@ -323,25 +374,32 @@ pub fn is_shell_construct_head(line: &str) -> bool {
     )
 }
 
-/// A zsh array assignment at the start of `seg`, e.g. `arr=(a b c)` or
-/// `path+=(/x)`. The whitespace tokenizer splits the parenthesized values, so
+/// True if `seg` starts with a shell variable assignment, e.g. `v=1`,
+/// `v='a b'`, `x=$(cmd args)`, `arr=(a b c)`, `path+=(/x)`, or `m[k]=v`. The
+/// whitespace-naive tokenizer splits a quoted/substituted/parenthesized value, so
 /// without this the head resolves to a value word and the line misroutes to the
-/// LLM. Recognized as shell.
-fn is_array_assignment(seg: &str) -> bool {
+/// LLM. The value (after `=`) may be anything; only the name is validated.
+fn is_assignment_head(seg: &str) -> bool {
     let s = seg.trim_start();
     let eq = match s.find('=') {
         Some(i) => i,
         None => return false,
     };
-    let name = s[..eq].strip_suffix('+').unwrap_or(&s[..eq]);
-    !name.is_empty()
-        && name
+    let name = &s[..eq];
+    // No whitespace before `=` (otherwise it's `cmd arg=...`, not an assignment).
+    if name.is_empty() || name.contains(char::is_whitespace) {
+        return false;
+    }
+    // Allow `name[key]` (array element) and `name+` (append); validate the base.
+    let base = name.split('[').next().unwrap_or(name);
+    let base = base.strip_suffix('+').unwrap_or(base);
+    !base.is_empty()
+        && base
             .chars()
             .next()
             .map(|c| c.is_ascii_alphabetic() || c == '_')
             .unwrap_or(false)
-        && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
-        && s[eq + 1..].trim_start().starts_with('(')
+        && base.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
 }
 
 fn starts_with_shell_syntax(line: &str) -> bool {
@@ -352,14 +410,17 @@ fn starts_with_shell_syntax(line: &str) -> bool {
         || line.starts_with('(')
 }
 
-/// Split a line into top-level segments on **unquoted** `|`, `||`, `&&`, `;`.
-/// Quote/escape-aware, so operators inside `'…'`/`"…"` (e.g. `grep -E 'a|b'`)
-/// don't split. Empty segments are dropped.
+/// Split a line into top-level segments on **unquoted, unparenthesized** `|`,
+/// `||`, `&&`, `;`. Quote/escape-aware (operators inside `'…'`/`"…"` like
+/// `grep -E 'a|b'` don't split), paren-depth-aware (so `|` inside `$((7 | 8))`,
+/// `$(a; b)`, or `( a | b )` doesn't split), and aware of the `>|` clobber
+/// redirect. Empty segments are dropped.
 fn split_top_level(line: &str) -> Vec<String> {
     let chars: Vec<char> = line.chars().collect();
     let mut segs = Vec::new();
     let mut cur = String::new();
     let (mut in_s, mut in_d, mut esc) = (false, false, false);
+    let mut depth: i32 = 0; // unquoted parenthesis nesting
     let mut i = 0;
     while i < chars.len() {
         let c = chars[i];
@@ -390,10 +451,34 @@ fn split_top_level(line: &str) -> Vec<String> {
             i += 1;
             continue;
         }
+        // Inside parentheses (command/arith/process substitution), operators are
+        // part of the sub-expression: track depth and don't split.
+        if c == '(' {
+            depth += 1;
+            cur.push(c);
+            i += 1;
+            continue;
+        }
+        if c == ')' {
+            depth -= 1;
+            cur.push(c);
+            i += 1;
+            continue;
+        }
+        if depth > 0 {
+            cur.push(c);
+            i += 1;
+            continue;
+        }
         match c {
             '\\' => {
                 cur.push(c);
                 esc = true;
+                i += 1;
+            }
+            // `>|` (clobber redirect): the `|` is part of the redirect, not a pipe.
+            '|' if cur.trim_end().ends_with('>') => {
+                cur.push(c);
                 i += 1;
             }
             '\'' => {
@@ -655,6 +740,65 @@ mod tests {
         assert!(matches!(dispatch("path+=(/x /y)", &c), Dispatch::Shell(_)));
         // not an array assignment: `echo a=(b)` is a command, routes via head.
         assert!(matches!(dispatch("echo a=(b)", &c), Dispatch::Shell(_)));
+    }
+
+    #[test]
+    fn assignment_head_with_quoted_or_subst_value_is_shell() {
+        let c = cache_with(&["echo", "typeset"]);
+        // Quoted/substituted values contain spaces the tokenizer would split.
+        assert!(matches!(
+            dispatch("v='a b'; echo \"[$v]\"", &c),
+            Dispatch::Shell(_)
+        ));
+        assert!(matches!(
+            dispatch("x=$(echo dyn); echo $x", &c),
+            Dispatch::Shell(_)
+        ));
+        // Array-element assignment.
+        assert!(matches!(
+            dispatch("typeset -A m; m[k]=v; echo $m[k]", &c),
+            Dispatch::Shell(_)
+        ));
+        // A bare assignment line on its own.
+        assert!(matches!(dispatch("v='a b'", &c), Dispatch::Shell(_)));
+        // Still NL when the head is an unknown word, not an assignment.
+        assert!(matches!(
+            dispatch("please do a thing", &c),
+            Dispatch::NaturalLanguage(_)
+        ));
+    }
+
+    #[test]
+    fn operators_inside_parens_do_not_split() {
+        let c = cache_with(&["echo"]);
+        // `|` inside `$(( … ))` is arithmetic OR, not a pipe.
+        assert!(matches!(
+            dispatch("echo $((7 | 8))", &c),
+            Dispatch::Shell(_)
+        ));
+        assert!(matches!(
+            dispatch("echo $(printf a; printf b)", &c),
+            Dispatch::Shell(_)
+        ));
+        // `>|` clobber redirect: the `|` is part of the redirect.
+        assert!(matches!(
+            dispatch("echo hi >| /dev/null; echo $?", &c),
+            Dispatch::Shell(_)
+        ));
+    }
+
+    #[test]
+    fn split_top_level_respects_parens_and_clobber() {
+        assert_eq!(split_top_level("echo $((7 | 8))"), vec!["echo $((7 | 8))"]);
+        assert_eq!(
+            split_top_level("a >| b; c"),
+            vec!["a >| b".to_string(), "c".to_string()]
+        );
+        // a real pipe still splits.
+        assert_eq!(
+            split_top_level("ls | grep x"),
+            vec!["ls".to_string(), "grep x".to_string()]
+        );
     }
 
     #[test]

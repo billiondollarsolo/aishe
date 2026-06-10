@@ -1,8 +1,12 @@
 #!/usr/bin/env python3
 """Repeatable admin / validation harness for aishe.
 
-Five suites:
-  1. Shell pass-through — run ~190 common + edge-case Linux commands & shell
+The report it writes is verbose: every check shows its actual output (or the
+aishe-vs-raw-shell diff on a mismatch), with a per-suite timing table and an
+environment header.
+
+Six suites:
+  1. Shell pass-through: run ~300 common + edge-case Linux commands & shell
      constructs through `aishe -c` and compare to the raw shell (proves "Linux
      still works like Linux": aishe delegates faithfully). Run with NO api key,
      so anything misrouted to the LLM shows up as a mismatch.
@@ -34,10 +38,18 @@ The API key (for suite 3) is read from $GROQ_API_KEY or /tmp/aishe-secrets.env.
 import datetime
 import json
 import os
+import platform
 import shutil
 import subprocess
 import sys
 import tempfile
+import time
+
+
+def trunc(s, n=240):
+    """Truncate a value's text for the report, noting how much was dropped."""
+    s = str(s)
+    return s if len(s) <= n else s[:n] + f"…(+{len(s) - n} chars)"
 
 BIN = os.path.abspath(sys.argv[1] if len(sys.argv) > 1 else "target/release/aishe")
 RAW_SHELL = shutil.which("zsh") or shutil.which("bash")
@@ -263,6 +275,115 @@ SHELL_CASES = [
     ": ignored; echo aftercolon",
     "let n=6+1; echo $n",
     "typeset -i k=9; echo $k",
+    # --- edge cases: more quoting / escaping / special chars ---
+    "echo \"a\\\\b\"",
+    "echo 'a\\b'",
+    "echo \"price: \\$5\"",
+    "echo 'literal `backtick`'",
+    "echo \"$(printf '%s' nested)\"",
+    "echo \"${HOME:+has-home}\"",
+    "v='a b'; echo \"[$v]\"",
+    "v='a b'; echo [$v]",
+    "echo a''b",
+    "echo a\"\"b",
+    "echo \"tab\\tin-double\"",
+    "echo $'\\x41\\x42'",
+    "echo $'\\u00e9'",
+    "echo $'col1\\tcol2'",
+    "printf '%q\\n' 'a b'",
+    "echo \\$notvar",
+    "echo '#notcomment'",
+    "echo end #comment",
+    # --- edge cases: parameter expansion (more zsh) ---
+    "v=Hello; echo ${v:0:1}${v: -1}",
+    "v=aXbXc; echo ${v//X/-}",
+    "v=foobarbar; echo ${v%%bar*}",
+    "v=foobarbar; echo ${v##*bar}",
+    "v=a.b.c.d; echo ${v//./ }",
+    "echo ${UNSET-fallback}",
+    "v=x; echo ${v:+set}${UNSET:+set}",
+    "v=hello; echo ${(C)v}",
+    "v='one two three'; echo ${#${(z)v}}",
+    "arr=(1 2 3); echo ${(j:+:)arr}",
+    "arr=(c b a); echo \"${(@s.,.)${(j:,:)arr}}\"",
+    "v=hello; echo ${v[2,4]}",
+    "v=hello; echo ${v[-1]}",
+    "echo ${(l:5::0:)1}",
+    "echo ${(r:5:)foo}",
+    # --- edge cases: arithmetic (more) ---
+    "echo $((3 ** 0))",
+    "echo $((7 & 3))",
+    "echo $((7 | 8))",
+    "echo $((6 ^ 3))",
+    "echo $((~0 & 255))",
+    "echo $((100 % 7))",
+    "echo $((-7 / 2))",
+    "echo $((1e0 < 2))",
+    "echo $((16#ff))",
+    "echo $(( 2 > 1 ? 10 : 20 ))",
+    "i=5; echo $((i++)) $i",
+    "i=5; echo $((++i)) $i",
+    "echo $(( [##16] 255 ))",
+    # --- edge cases: globbing / brace (more) ---
+    "echo {a,b,c}.txt",
+    "echo pre{1,2}post",
+    "echo {1..3}{a,b}",
+    "echo [[:digit:]]*",
+    "echo *.{txt,csv}",
+    "echo a.t?t",
+    "echo subdir/*.txt",
+    "echo no_such_glob_*(N)",
+    "setopt nullglob; echo nomatch_*; unsetopt nullglob",
+    "echo {3..1}",
+    "echo {a..c}{1..2}",
+    # --- edge cases: redirection / fds / heredoc ---
+    "echo to-err >&2 2>/dev/null; echo done",
+    "exec 3>&1; echo via-fd >&3; exec 3>&-",
+    "{ echo o; echo e >&2; } 2>&1 | sort",
+    "cat <<'EOF'\n$nosubst\nEOF",
+    "cat <<EOF\n$((1+1))\nEOF",
+    "read x <<< 'word'; echo $x",
+    "read -r a b <<< 'x y z'; echo \"$a|$b\"",
+    "echo abc | tee /dev/null | cat",
+    "printf 'a\\nb\\n' | head -1",
+    "printf 'a\\nb\\nc\\n' | sed -n '$p'",
+    "echo hi >| /dev/null; echo $?",
+    "echo x | wc -c",
+    # --- edge cases: control flow / functions (more) ---
+    "for ((i=1;i<=3;i++)) do echo r$i; done",
+    "i=0; while (( i < 2 )); do echo w$i; (( i++ )); done",
+    "case abc in (a*) echo A;; (*) echo other;; esac",
+    "if (( 1 )); then echo t; fi",
+    "f() { return 3; }; f; echo $?",
+    "f() { echo \"$# args: $*\"; }; f a b c",
+    "f() { local x=inner; echo $x; }; x=outer; f; echo $x",
+    "() { echo anon $1; } hello",
+    "true && { echo a; echo b; }",
+    "{ echo one; echo two; } | wc -l",
+    "n=0; repeat 4 (( n++ )); echo $n",
+    # --- edge cases: text processing (more) ---
+    "echo 'a1b2c3' | tr -d '0-9'",
+    "echo 'a,b,c' | cut -d, -f2",
+    "printf '3\\n1\\n2\\n' | sort -n | tr '\\n' ' '",
+    "printf 'x\\nx\\ny\\n' | uniq -c | tr -s ' '",
+    "echo 'Hello World' | tr '[:upper:]' '[:lower:]'",
+    "echo 'one two three' | awk '{print NF}'",
+    "echo 'a:b:c' | awk -F: '{print $2}'",
+    "printf '1 2\\n3 4\\n' | awk '{s+=$1} END{print s}'",
+    "echo abcabc | sed 's/a/X/2'",
+    "echo 'foo123bar' | grep -oE '[0-9]+'",
+    "echo -e 'a\\nb\\nc' | grep -c ''",
+    "printf '%s\\n' a b c | nl | tr -s ' '",
+    "echo 'hello' | rev",
+    "echo 'a b c' | xargs -n1 | wc -l",
+    # --- edge cases: assignments / env ---
+    "a=1 b=2 c=3; echo $a$b$c",
+    "x=$(echo dyn); echo $x",
+    "x=${#HOME}; [ $x -gt 0 ] && echo haslen",
+    "arr=(a b c); arr+=(d); echo ${#arr}",
+    "typeset -A m; m[k]=v; echo $m[k]",
+    "integer n=40+2; echo $n",
+    "x=5; (( x += 3 )); echo $x",
 ]
 
 # Non-deterministic: just require exit 0 (output not compared).
@@ -571,6 +692,7 @@ def main():
         sys.exit(f"binary not found: {BIN}")
     if not RAW_SHELL:
         sys.exit("no zsh/bash on PATH")
+    run_t0 = time.monotonic()
 
     cfgroot = make_config()
     install_plugins(cfgroot)
@@ -587,9 +709,25 @@ def main():
     env_local = base_env(cfgroot, with_key=False)
     report = []
     counts = {}
+    timings = []  # (suite-title, seconds, n-checks)
+    _suite = {"title": None, "t0": None, "n0": 0}
 
     def section(title):
+        # Close out the previous suite's timing before starting a new one.
+        if _suite["title"] is not None:
+            n = sum(v[1] for v in counts.values()) - _suite["n0"]
+            timings.append((_suite["title"], time.monotonic() - _suite["t0"], n))
+            report.append(f"\n_{n} checks in {time.monotonic() - _suite['t0']:.1f}s_")
+        _suite["title"] = title
+        _suite["t0"] = time.monotonic()
+        _suite["n0"] = sum(v[1] for v in counts.values())
         report.append(f"\n## {title}\n")
+
+    def close_last_suite():
+        if _suite["title"] is not None:
+            n = sum(v[1] for v in counts.values()) - _suite["n0"]
+            timings.append((_suite["title"], time.monotonic() - _suite["t0"], n))
+            report.append(f"\n_{n} checks in {time.monotonic() - _suite['t0']:.1f}s_")
 
     def add(name, ok, detail=""):
         counts[name.split(":")[0]] = counts.get(name.split(":")[0], [0, 0])
@@ -607,15 +745,27 @@ def main():
         rc_a, out_a, err_a = run([BIN, "-c", cmd], env_local, cwd=fixture)
         rc_r, out_r, _ = run([RAW_SHELL, "-c", cmd], env_local, cwd=fixture)
         match = (out_a.rstrip("\n") == out_r.rstrip("\n")) and (rc_a == rc_r)
-        if not match:
-            s1_fail += 1
-            detail = f"\n    aishe(rc={rc_a}): {out_a!r}\n    raw(rc={rc_r}): {out_r!r}\n    stderr: {err_a.strip()!r}"
+        if match:
+            # Verbose: show the (matching) exit code and output for every case.
+            detail = f"→ rc={rc_a} out={trunc(repr(out_a.rstrip(chr(10))))}"
         else:
-            detail = ""
+            s1_fail += 1
+            detail = (
+                f"**MISMATCH**\n"
+                f"    aishe(rc={rc_a}): {trunc(repr(out_a))}\n"
+                f"    raw  (rc={rc_r}): {trunc(repr(out_r))}\n"
+                f"    stderr: {trunc(repr(err_a.strip()))}"
+            )
         add(f"shell: {cmd}", match, detail)
     for cmd in SMOKE_CASES:
         rc_a, out_a, err_a = run([BIN, "-c", cmd], env_local, cwd=fixture)
-        add(f"smoke: {cmd}", rc_a == 0, "" if rc_a == 0 else f"(rc={rc_a} err={err_a.strip()!r})")
+        ok = rc_a == 0
+        detail = (
+            f"→ rc={rc_a} out={trunc(repr(out_a.strip()), 120)}"
+            if ok
+            else f"(rc={rc_a} err={trunc(repr(err_a.strip()))})"
+        )
+        add(f"smoke: {cmd}", ok, detail)
 
     # ---- Suite 2: admin file ops ----
     section("Suite 2 — Admin file-editing operations (verified on disk)")
@@ -627,7 +777,14 @@ def main():
         except Exception as e:
             ok = False
             err = f"{err} check-exc: {e}"
-        add(f"fileop: {cmd}", ok, "" if ok else f"(rc={rc} err={err.strip()!r})")
+        # Show the command with the temp dir collapsed to <d> for readability.
+        shown = cmd.replace(opdir, "<d>")
+        detail = (
+            f"→ rc={rc} on-disk state verified"
+            if ok
+            else f"(rc={rc} err={trunc(repr(err.strip()))})"
+        )
+        add(f"fileop: {shown}", ok, detail)
     shutil.rmtree(opdir, ignore_errors=True)
 
     # ---- Suite 4: plugins / slash-commands / skills (deterministic) ----
@@ -682,12 +839,16 @@ def main():
     for cmd in DISPATCH_SHELL:
         _, out, err = run([BIN, "-c", cmd], env_local, cwd=fixture)
         ok = NL_NOTE not in err
-        add(f"route-shell: {cmd}", ok, "" if ok else "(misrouted to NL)")
+        add(f"route-shell: {cmd}", ok, "→ ran as shell" if ok else "**misrouted to NL**")
     report.append("\n**Must route to NATURAL LANGUAGE (must reach the model path):**\n")
     for cmd in DISPATCH_NL:
         _, out, err = run([BIN, "-c", cmd], env_local, cwd=fixture)
         ok = NL_NOTE in err
-        add(f"route-nl: {cmd}", ok, "" if ok else f"(not routed to NL; err={err.strip()[:80]!r})")
+        add(
+            f"route-nl: {cmd}",
+            ok,
+            "→ reached the model path" if ok else f"**not routed to NL** ({trunc(repr(err.strip()), 80)})",
+        )
 
     # ---- Suite 6: config & meta-command robustness (deterministic) ----
     section("Suite 6 — Config & meta-command robustness (no model needed)")
@@ -864,24 +1025,55 @@ def main():
         shutil.rmtree(log_root, ignore_errors=True)
 
     # ---- write report ----
+    close_last_suite()
     ts = datetime.datetime.utcnow().strftime("%Y%m%dT%H%M%SZ")
     total_ok = sum(v[0] for v in counts.values())
     total = sum(v[1] for v in counts.values())
+    elapsed = time.monotonic() - run_t0
+    failures = [
+        line for line in report if line.startswith("- ❌")
+    ]
+    raw_ver = (
+        subprocess.run([RAW_SHELL, "--version"], capture_output=True, text=True)
+        .stdout.strip()
+        .splitlines()[0]
+        if RAW_SHELL
+        else "?"
+    )
     header = [
         f"# aishe validation report — {ts}",
         "",
         f"- Binary: `{BIN}`",
-        f"- Raw shell: `{RAW_SHELL}`  ({subprocess.run([RAW_SHELL,'--version'],capture_output=True,text=True).stdout.strip().splitlines()[0] if RAW_SHELL else '?'})",
         f"- aishe: `{subprocess.run([BIN,'--version'],capture_output=True,text=True).stdout.strip()}`",
-        f"- Date (UTC): {datetime.datetime.utcnow().isoformat()}Z",
+        f"- Raw shell: `{RAW_SHELL}`  ({raw_ver})",
+        f"- Host: {platform.platform()}  ·  python {platform.python_version()}",
+        f"- Model suite: {'enabled (Groq gpt-oss-120b)' if key() else 'skipped (no API key)'}",
+        f"- Date (UTC): {datetime.datetime.utcnow().isoformat()}Z  ·  wall time {elapsed:.1f}s",
         "",
         "## Summary",
         "",
-        f"**{total_ok}/{total} checks passed**",
+        f"**{total_ok}/{total} checks passed**  ({len(failures)} failed)",
         "",
+        "| Category | Pass / Total |",
+        "|----------|:-----------:|",
     ]
     for name, (ok, n) in sorted(counts.items()):
-        header.append(f"- {name}: {ok}/{n}")
+        flag = "" if ok == n else "  ⚠️"
+        header.append(f"| `{name}` | {ok}/{n}{flag} |")
+    header.append("")
+    header.append("### Per-suite timing")
+    header.append("")
+    header.append("| Suite | Checks | Seconds |")
+    header.append("|-------|:------:|:-------:|")
+    for title, secs, n in timings:
+        short = title.split(" — ")[0]
+        header.append(f"| {short} | {n} | {secs:.1f} |")
+    header.append("")
+    if failures:
+        header.append("### Failures")
+        header.append("")
+        header.extend(failures)
+        header.append("")
     out_dir = os.path.join(REPO, "test-results")
     os.makedirs(out_dir, exist_ok=True)
     path = os.path.join(out_dir, f"validation-{ts}.md")

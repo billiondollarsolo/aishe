@@ -7,6 +7,13 @@ breaking changes can land in any release.
 ## [Unreleased]
 
 ### Fixed
+- **More dispatcher edge cases no longer misroute to the LLM** (found by the
+  expanded validation harness): scalar assignments with quoted or
+  command-substituted values that contain spaces (`v='a b'`, `x=$(cmd args)`),
+  array-element assignments (`m[k]=v`), `|` inside arithmetic/command
+  substitution (`echo $((7 | 8))`), the `>|` clobber redirect, and the
+  `unsetopt`/`integer`/`float` builtins. `split_top_level` is now paren-depth
+  aware, and assignment-head detection handles any value.
 - **Builtins no longer misroute to the LLM in one-shot/`-c` (and the first
   interactive prompt).** The shell-builtin list was fetched on a background
   thread, so `aishe -c 'print …'` / `let` / `typeset` / `jobs` / `:` could race
