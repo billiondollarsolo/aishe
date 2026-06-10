@@ -22,10 +22,71 @@ use crate::dispatcher::CommandCache;
 /// Upper bound on suggestions returned for a single Tab.
 const MAX_SUGGESTIONS: usize = 500;
 
-/// `aishe` meta subcommands (for `aishe <Tab>`).
-const META_SUBCOMMANDS: &[&str] = &[
-    "mode", "model", "provider", "editor", "frontend", "stream", "theme", "config", "rehash",
-    "help",
+/// `aishe` meta subcommands, with a short description shown in the menu.
+const META_SUBCOMMANDS: &[(&str, &str)] = &[
+    ("mode", "interaction mode: suggest|auto|yolo"),
+    ("model", "show or set the model"),
+    ("provider", "anthropic|openai"),
+    ("editor", "line-editor keymap: emacs|vi"),
+    ("frontend", "auto|reedline|zsh-pty"),
+    ("stream", "toggle token streaming"),
+    ("theme", "color preset"),
+    ("config", "print active config"),
+    ("rehash", "rebuild the command cache"),
+    ("help", "show help"),
+];
+
+/// First-argument subcommands for a few common tools.
+const GIT_SUBCOMMANDS: &[&str] = &[
+    "add",
+    "branch",
+    "checkout",
+    "cherry-pick",
+    "clean",
+    "clone",
+    "commit",
+    "config",
+    "diff",
+    "fetch",
+    "init",
+    "log",
+    "merge",
+    "mv",
+    "pull",
+    "push",
+    "rebase",
+    "remote",
+    "reset",
+    "restore",
+    "revert",
+    "rm",
+    "show",
+    "stash",
+    "status",
+    "switch",
+    "tag",
+];
+const CARGO_SUBCOMMANDS: &[&str] = &[
+    "add", "bench", "build", "check", "clean", "clippy", "doc", "fmt", "init", "install", "new",
+    "publish", "remove", "run", "test", "update",
+];
+const DOCKER_SUBCOMMANDS: &[&str] = &[
+    "build", "compose", "exec", "images", "inspect", "kill", "logs", "ps", "pull", "push", "rm",
+    "rmi", "run", "start", "stop", "tag",
+];
+const NPM_SUBCOMMANDS: &[&str] = &[
+    "install",
+    "ci",
+    "run",
+    "start",
+    "test",
+    "build",
+    "init",
+    "publish",
+    "update",
+    "uninstall",
+    "exec",
+    "ls",
 ];
 
 pub struct AisheCompleter {
@@ -65,9 +126,65 @@ impl Completer for AisheCompleter {
         match seg_tokens[0] {
             "aishe" => complete_aishe_meta(&seg_tokens, word, span),
             "cd" | "pushd" | "rmdir" => complete_paths(word, span, true),
-            _ => complete_paths(word, span, false),
+            _ => command_arg_suggestions(&seg_tokens, word, span)
+                .unwrap_or_else(|| complete_paths(word, span, false)),
         }
     }
+}
+
+/// Per-command argument completion for a few common tools. Returns `None` to
+/// fall back to path completion (e.g. `git checkout <file>`).
+fn command_arg_suggestions(seg: &[&str], word: &str, span: Span) -> Option<Vec<Suggestion>> {
+    let arg_index = seg.len(); // the current word is argument #arg_index (1 = first)
+    if arg_index == 1 {
+        let subs: &[&str] = match seg[0] {
+            "git" => GIT_SUBCOMMANDS,
+            "cargo" => CARGO_SUBCOMMANDS,
+            "docker" => DOCKER_SUBCOMMANDS,
+            "npm" | "pnpm" | "yarn" => NPM_SUBCOMMANDS,
+            _ => return None,
+        };
+        return Some(str_suggestions(subs, word, span));
+    }
+    // Dynamic git branch completion for branch-oriented subcommands.
+    if seg[0] == "git"
+        && matches!(
+            seg.get(1),
+            Some(&("checkout" | "switch" | "merge" | "rebase"))
+        )
+    {
+        let matches: Vec<Suggestion> = git_branches()
+            .into_iter()
+            .filter(|b| b.starts_with(word))
+            .map(|b| Suggestion {
+                value: b,
+                span,
+                append_whitespace: true,
+                ..Default::default()
+            })
+            .collect();
+        if !matches.is_empty() {
+            return Some(matches);
+        }
+    }
+    None
+}
+
+/// Local git branch names (best-effort; empty if not a repo or git is missing).
+fn git_branches() -> Vec<String> {
+    std::process::Command::new("git")
+        .args(["for-each-ref", "--format=%(refname:short)", "refs/heads"])
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| {
+            String::from_utf8_lossy(&o.stdout)
+                .lines()
+                .map(|l| l.trim().to_string())
+                .filter(|l| !l.is_empty())
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 /// Byte index where the word under the cursor begins (after the last
@@ -132,20 +249,20 @@ fn complete_env(word: &str, span: Span) -> Vec<Suggestion> {
     {
         return Vec::new();
     }
-    let mut names: Vec<String> = std::env::vars()
-        .map(|(k, _)| k)
-        .filter(|k| k.starts_with(prefix))
+    let mut vars: Vec<(String, String)> = std::env::vars()
+        .filter(|(k, _)| k.starts_with(prefix))
         .collect();
-    names.sort();
-    names.truncate(MAX_SUGGESTIONS);
-    names
-        .into_iter()
-        .map(|k| Suggestion {
+    vars.sort_by(|a, b| a.0.cmp(&b.0));
+    vars.truncate(MAX_SUGGESTIONS);
+    vars.into_iter()
+        .map(|(k, v)| Suggestion {
             value: if brace {
                 format!("${{{k}}}")
             } else {
                 format!("${k}")
             },
+            // Show the (truncated) current value in the menu.
+            description: Some(truncate(&v, 40)),
             span,
             append_whitespace: !brace,
             ..Default::default()
@@ -156,8 +273,18 @@ fn complete_env(word: &str, span: Span) -> Vec<Suggestion> {
 /// Complete `aishe` meta subcommands and their fixed-value arguments.
 fn complete_aishe_meta(seg_tokens: &[&str], word: &str, span: Span) -> Vec<Suggestion> {
     match seg_tokens.len() {
-        // `aishe <word>` — the subcommand.
-        1 => str_suggestions(META_SUBCOMMANDS, word, span),
+        // `aishe <word>` — the subcommand (with a description in the menu).
+        1 => META_SUBCOMMANDS
+            .iter()
+            .filter(|(name, _)| name.starts_with(word))
+            .map(|(name, desc)| Suggestion {
+                value: (*name).to_string(),
+                description: Some((*desc).to_string()),
+                span,
+                append_whitespace: true,
+                ..Default::default()
+            })
+            .collect(),
         // `aishe <sub> <word>` — fixed values for subcommands that have them.
         2 => {
             let values: &[&str] = match seg_tokens[1] {
@@ -254,6 +381,15 @@ fn home() -> PathBuf {
     dirs::home_dir().unwrap_or_else(|| PathBuf::from("."))
 }
 
+/// Truncate a string to `max` chars, appending `…` if it was cut.
+fn truncate(s: &str, max: usize) -> String {
+    if s.chars().count() <= max {
+        s.to_string()
+    } else {
+        format!("{}…", s.chars().take(max).collect::<String>())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -326,6 +462,17 @@ mod tests {
         // theme presets come from the theme module
         let line = "aishe theme ";
         assert!(values(&c.complete(line, line.len())).contains(&"nord".to_string()));
+    }
+
+    #[test]
+    fn per_command_subcommands() {
+        let mut c = AisheCompleter::new(CommandCache::new());
+        let v = values(&c.complete("git c", 5));
+        assert!(v.contains(&"commit".to_string()) && v.contains(&"checkout".to_string()));
+        assert_eq!(values(&c.complete("cargo b", 7)), vec!["bench", "build"]);
+        // unknown tool falls back to path completion (no subcommand list)
+        let v = values(&c.complete("frobnicate sub", 14));
+        assert!(!v.iter().any(|x| x == "status"));
     }
 
     #[test]

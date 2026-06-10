@@ -142,8 +142,10 @@ natively:
 
 - **Tab completion** — press `Tab` for a completion menu (`Shift-Tab` to go
   back). Context-aware: command names at the command position (incl. after a
-  pipe); environment variables for `$VAR`/`${VAR`; directories-only for
-  `cd`/`pushd`/`rmdir`; `aishe` meta subcommands and their values; and
+  pipe); environment variables for `$VAR`/`${VAR` (with values shown);
+  directories-only for `cd`/`pushd`/`rmdir`; subcommands for `git`/`cargo`/
+  `docker`/`npm` (plus live branch names for `git checkout`/`switch`/`merge`/
+  `rebase`); `aishe` meta subcommands (with descriptions) and their values; and
   file/directory paths (with `~/` expansion) elsewhere.
 - **History autosuggestions** (like `zsh-autosuggestions`) — fish-style inline
   hints from your history.
