@@ -4,8 +4,12 @@
 //! We deliberately own this layer (no vendor SDK crates) to keep the binary
 //! small and the request/response shapes fully under our control.
 
-use crate::config::Config;
+use std::time::Duration;
+
 use anyhow::Result;
+use serde_json::Value;
+
+use crate::config::Config;
 
 pub mod anthropic;
 pub mod openai_compat;
@@ -74,6 +78,22 @@ pub trait Provider {
         json_mode: bool,
     ) -> Result<String, ProviderError>;
 
+    /// Streaming completion: invokes `sink` with text deltas as they arrive and
+    /// returns the full concatenated text. The default implementation falls back
+    /// to a single non-streaming call, so callers work even against a provider or
+    /// endpoint without SSE support (the whole answer simply arrives at once).
+    fn complete_stream(
+        &self,
+        system: &str,
+        messages: &[Msg],
+        json_mode: bool,
+        sink: &mut dyn FnMut(&str),
+    ) -> Result<String, ProviderError> {
+        let full = self.complete(system, messages, json_mode)?;
+        sink(&full);
+        Ok(full)
+    }
+
     /// Tool-use completion for the agentic (yolo) loop.
     fn complete_with_tools(
         &self,
@@ -81,6 +101,87 @@ pub trait Provider {
         messages: &[Msg],
         tools: &[ToolDef],
     ) -> Result<Completion, ProviderError>;
+}
+
+/// POST a request for a Server-Sent Events stream, retrying once on 429/5xx or a
+/// connection error. Returns the streaming response for [`read_sse`] to consume.
+pub(crate) fn stream_post(
+    url: &str,
+    headers: &[(&str, &str)],
+    body: &Value,
+) -> Result<ureq::Response, ProviderError> {
+    let mut attempt = 0;
+    loop {
+        // Per-read timeout (not a whole-call deadline) so long streams aren't cut.
+        let agent = ureq::AgentBuilder::new()
+            .timeout_connect(Duration::from_secs(10))
+            .timeout_read(Duration::from_secs(HTTP_TIMEOUT_SECS))
+            .build();
+        let mut req = agent.post(url);
+        for (k, v) in headers {
+            req = req.set(k, v);
+        }
+        match req.send_json(body.clone()) {
+            Ok(resp) => return Ok(resp),
+            Err(ureq::Error::Status(status, resp)) => {
+                let message = error_message(resp);
+                if status == 401 {
+                    return Err(ProviderError::Api {
+                        status,
+                        message: format!("API key invalid ({message})"),
+                    });
+                }
+                if (status == 429 || status >= 500) && attempt == 0 {
+                    attempt += 1;
+                    std::thread::sleep(Duration::from_secs(2));
+                    continue;
+                }
+                return Err(ProviderError::Api { status, message });
+            }
+            Err(e) => {
+                if attempt == 0 {
+                    attempt += 1;
+                    std::thread::sleep(Duration::from_secs(2));
+                    continue;
+                }
+                return Err(ProviderError::Http(e.to_string()));
+            }
+        }
+    }
+}
+
+/// Read an SSE stream line by line, invoking `on_data` with the payload of each
+/// `data:` line (skipping blanks and the `[DONE]` sentinel).
+pub(crate) fn read_sse(
+    resp: ureq::Response,
+    mut on_data: impl FnMut(&str),
+) -> Result<(), ProviderError> {
+    use std::io::BufRead;
+    let reader = std::io::BufReader::new(resp.into_reader());
+    for line in reader.lines() {
+        let line = line.map_err(|e| ProviderError::Http(e.to_string()))?;
+        if let Some(data) = line.strip_prefix("data:") {
+            let data = data.trim();
+            if data.is_empty() || data == "[DONE]" {
+                continue;
+            }
+            on_data(data);
+        }
+    }
+    Ok(())
+}
+
+/// Pull a human-readable message out of an error response body.
+pub(crate) fn error_message(resp: ureq::Response) -> String {
+    match resp.into_json::<Value>() {
+        Ok(v) => v
+            .get("error")
+            .and_then(|e| e.get("message"))
+            .and_then(|m| m.as_str())
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| v.to_string()),
+        Err(_) => "unknown error".to_string(),
+    }
 }
 
 /// Build the configured provider, reading the API key from the configured env var.

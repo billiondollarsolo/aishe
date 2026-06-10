@@ -21,13 +21,8 @@ static PATTERNS: LazyLock<Vec<(Regex, &'static str)>> = LazyLock::new(|| {
     // `echo 'rm -rf ...'` — is not flagged. `CMD` is replaced with that anchor.
     const CMD: &str = r"^(sudo\s+)?";
     let raw: &[(String, &str)] = &[
-        // rm with recursive+force in any flag combination.
-        (
-            format!(
-                r"{CMD}rm\b.*(-[a-z]*r[a-z]*f|-[a-z]*f[a-z]*r|--recursive\s+--force|--no-preserve-root)"
-            ),
-            "recursive force delete",
-        ),
+        // Recursive-force `rm` is handled separately by `rm_recursive_force_risk`,
+        // which is path-aware (a relative target inside the tree is allowed).
         // rm/mv targeting bare /, ~, or $HOME.
         (
             format!(r"{CMD}(rm|mv)\b[^|]*\s(/|~|\$home)(\s|$)"),
@@ -99,6 +94,11 @@ pub fn assess(command: &str) -> Risk {
         if seg.is_empty() {
             continue;
         }
+        // Path-aware recursive-`rm` check first (it may *clear* an otherwise
+        // scary-looking `rm -rf` when every target is a relative in-tree path).
+        if let Some(reason) = rm_recursive_force_risk(seg) {
+            return Risk::Dangerous(reason);
+        }
         for (re, reason) in PATTERNS.iter() {
             if re.is_match(seg) {
                 return Risk::Dangerous(reason);
@@ -106,6 +106,74 @@ pub fn assess(command: &str) -> Risk {
         }
     }
     Risk::Safe
+}
+
+/// Path-aware risk for a recursive, forced `rm` (`rm -rf`, `rm -fr`,
+/// `rm --recursive --force`, …). Returns `Some(reason)` when the deletion could
+/// be catastrophic — a system/absolute path, the home dir, a variable, a bare
+/// glob, or a target that escapes the current tree (`..`) — and `None` when
+/// every target is an ordinary relative path inside the working tree (e.g.
+/// `node_modules`, `build dist`, `./target`), which is treated as the user's own
+/// project files and left to run.
+///
+/// Operates on the normalized (lowercased, space-collapsed) segment; the danger
+/// signals (`/`, `~`, `$`, `..`, `*`) are case-insensitive, so lowercasing the
+/// path is harmless here.
+fn rm_recursive_force_risk(seg: &str) -> Option<&'static str> {
+    let mut tokens = seg.split_whitespace();
+    let mut head = tokens.next()?;
+    if head == "sudo" {
+        head = tokens.next()?;
+    }
+    if head != "rm" {
+        return None;
+    }
+
+    let mut recursive = false;
+    let mut force = false;
+    let mut targets: Vec<&str> = Vec::new();
+    for tok in tokens {
+        match tok {
+            "--recursive" => recursive = true,
+            "--force" => force = true,
+            "--no-preserve-root" => return Some("recursive delete of root"),
+            _ if tok.starts_with("--") => {} // other long options: ignore
+            _ if tok.starts_with('-') => {
+                let flags = &tok[1..];
+                if flags.contains('r') || flags.contains('R') {
+                    recursive = true;
+                }
+                if flags.contains('f') {
+                    force = true;
+                }
+            }
+            _ => targets.push(tok),
+        }
+    }
+
+    if !(recursive && force) {
+        return None;
+    }
+    if targets.is_empty() {
+        return Some("recursive force delete with no target");
+    }
+    if targets.iter().any(|t| is_dangerous_path(t)) {
+        return Some("recursive force delete of a system or out-of-tree path");
+    }
+    None
+}
+
+/// Lexical test for a deletion target that is *not* a safe relative in-tree
+/// path: absolute (`/…`), home (`~…`), a variable (`$…`), a bare `/`/`~`/`*`/
+/// `.`/`..`, or anything containing a `..` segment that could escape the tree.
+fn is_dangerous_path(p: &str) -> bool {
+    matches!(p, "/" | "~" | "." | ".." | "*")
+        || p.starts_with('/')
+        || p.starts_with('~')
+        || p.starts_with('$')
+        || p.starts_with("../")
+        || p.contains("/../")
+        || p.ends_with("/..")
 }
 
 /// Lowercase and collapse runs of whitespace into single spaces.
@@ -177,10 +245,15 @@ mod tests {
     #[test]
     fn dangerous_cases() {
         dangerous("rm -rf /");
-        dangerous("rm -rf node_modules");
         dangerous("rm -fr ~/projects");
         dangerous("rm -rf --no-preserve-root /");
         dangerous("sudo rm -rf /var");
+        // Path-aware recursive rm: catastrophic / out-of-tree targets.
+        dangerous("rm -rf /tmp/cache");
+        dangerous("rm -rf ../sibling");
+        dangerous("rm -rf $HOME");
+        dangerous("rm -rf *");
+        dangerous("rm -rf foo/../../etc");
         dangerous("dd if=/dev/zero of=/dev/sda");
         dangerous("mkfs.ext4 /dev/sdb1");
         dangerous("fdisk /dev/sda");
@@ -203,7 +276,6 @@ mod tests {
         dangerous("reboot");
         dangerous("find / -name '*.log' -delete");
         dangerous("find ~ -type f -exec rm {} +");
-        dangerous("ls && rm -rf build");
     }
 
     #[test]
@@ -211,6 +283,12 @@ mod tests {
         safe("rm file.txt");
         safe("rm -i file.txt");
         safe("rm *.tmp");
+        // Path-aware recursive rm: relative, in-tree targets are the user's own
+        // project files — not flagged (the whole point of path-awareness).
+        safe("rm -rf node_modules");
+        safe("rm -rf build dist");
+        safe("rm -rf ./target");
+        safe("ls && rm -rf build");
         safe("ls -la");
         safe("git status");
         safe("git push origin feature-branch");

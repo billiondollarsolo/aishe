@@ -5,7 +5,8 @@
 use serde_json::{json, Value};
 
 use super::{
-    Completion, Msg, Provider, ProviderError, ToolCall, ToolDef, HTTP_TIMEOUT_SECS, MAX_TOKENS,
+    read_sse, stream_post, Completion, Msg, Provider, ProviderError, ToolCall, ToolDef,
+    HTTP_TIMEOUT_SECS, MAX_TOKENS,
 };
 
 pub struct OpenAiProvider {
@@ -190,6 +191,60 @@ impl Provider for OpenAiProvider {
         let body = self.build_body(system, messages, tools, false);
         let resp = self.post(&body)?;
         Self::parse_completion(&resp)
+    }
+
+    fn complete_stream(
+        &self,
+        system: &str,
+        messages: &[Msg],
+        json_mode: bool,
+        sink: &mut dyn FnMut(&str),
+    ) -> Result<String, ProviderError> {
+        let auth = format!("Bearer {}", self.api_key);
+        let headers = [
+            ("Authorization", auth.as_str()),
+            ("content-type", "application/json"),
+        ];
+        let mut body = self.build_body(system, messages, &[], json_mode);
+        body["stream"] = json!(true);
+
+        let resp = match stream_post(&self.endpoint(), &headers, &body) {
+            Ok(r) => r,
+            // Some compat servers (Ollama, …) reject response_format; retry plain.
+            Err(ProviderError::Api {
+                status: 400,
+                message,
+            }) if json_mode && message.contains("response_format") => {
+                let mut body = self.build_body(system, messages, &[], false);
+                body["stream"] = json!(true);
+                stream_post(&self.endpoint(), &headers, &body)?
+            }
+            Err(e) => return Err(e),
+        };
+
+        let mut full = String::new();
+        read_sse(resp, |data| {
+            if let Some(t) = Self::content_delta(data) {
+                full.push_str(&t);
+                sink(&t);
+            }
+        })?;
+        Ok(full)
+    }
+}
+
+impl OpenAiProvider {
+    /// Extract `choices[0].delta.content` from a streaming chunk, if present.
+    fn content_delta(data: &str) -> Option<String> {
+        let v: Value = serde_json::from_str(data).ok()?;
+        v.get("choices")
+            .and_then(|c| c.as_array())
+            .and_then(|a| a.first())
+            .and_then(|c| c.get("delta"))
+            .and_then(|d| d.get("content"))
+            .and_then(|t| t.as_str())
+            .filter(|s| !s.is_empty())
+            .map(|s| s.to_string())
     }
 }
 

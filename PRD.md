@@ -104,5 +104,9 @@ See the inline module documentation for the authoritative behavior. Highlights:
 ## 5. Non-Goals (v0.1)
 
 Full in-editor shell scripting, job control for delegated processes, Windows,
-plugins/completions for arbitrary CLIs, PTY-based yolo capture, SSE streaming
-(config flag reserved), path-aware `rm -rf` risk analysis.
+plugins/completions for arbitrary CLIs, PTY-based yolo capture.
+
+Delivered since the original v0.1 spec: SSE streaming of suggest/auto answers
+(`stream` config flag + `aishe stream` command), and path-aware `rm -rf` risk
+analysis (relative in-tree targets allowed; absolute/home/variable/glob/escaping
+targets flagged).

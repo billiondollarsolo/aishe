@@ -6,8 +6,9 @@ use aishe::safety::{assess, Risk};
 fn dangerous_table() {
     let cases = [
         "rm -rf /",
-        "rm -rf node_modules",
+        "rm -rf /usr/local",
         "rm -fr ~/Documents",
+        "rm -rf ../../etc",
         "sudo rm -rf /etc",
         "rm -rf --no-preserve-root /",
         "dd if=/dev/zero of=/dev/sda bs=1M",
@@ -45,6 +46,8 @@ fn safe_table() {
         "rm file.txt",
         "rm -i temp.log",
         "rm *.bak",
+        "rm -rf node_modules",
+        "rm -rf target build",
         "ls -la",
         "git status",
         "git push origin feature",

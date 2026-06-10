@@ -41,7 +41,7 @@ pub struct AisheConfig {
     /// reedline line-editor keymap: "emacs" (default) or "vi".
     #[serde(default = "default_edit_mode")]
     pub edit_mode: String,
-    /// Reserved for v0.1: SSE streaming of answers.
+    /// Stream answers token-by-token in the interactive REPL (suggest/auto).
     #[serde(default)]
     pub stream: bool,
 }

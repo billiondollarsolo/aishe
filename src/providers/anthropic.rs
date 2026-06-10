@@ -3,7 +3,8 @@
 use serde_json::{json, Value};
 
 use super::{
-    Completion, Msg, Provider, ProviderError, ToolCall, ToolDef, HTTP_TIMEOUT_SECS, MAX_TOKENS,
+    read_sse, stream_post, Completion, Msg, Provider, ProviderError, ToolCall, ToolDef,
+    HTTP_TIMEOUT_SECS, MAX_TOKENS,
 };
 
 const ANTHROPIC_VERSION: &str = "2023-06-01";
@@ -161,6 +162,48 @@ impl Provider for AnthropicProvider {
         let body = self.build_body(system, messages, tools);
         let resp = self.post(&body)?;
         Self::parse_completion(&resp)
+    }
+
+    fn complete_stream(
+        &self,
+        system: &str,
+        messages: &[Msg],
+        _json_mode: bool,
+        sink: &mut dyn FnMut(&str),
+    ) -> Result<String, ProviderError> {
+        let mut body = self.build_body(system, messages, &[]);
+        body["stream"] = json!(true);
+        let resp = stream_post(
+            &self.endpoint(),
+            &[
+                ("x-api-key", &self.api_key),
+                ("anthropic-version", ANTHROPIC_VERSION),
+                ("content-type", "application/json"),
+            ],
+            &body,
+        )?;
+        let mut full = String::new();
+        read_sse(resp, |data| {
+            if let Some(t) = Self::text_delta(data) {
+                full.push_str(&t);
+                sink(&t);
+            }
+        })?;
+        Ok(full)
+    }
+}
+
+impl AnthropicProvider {
+    /// Extract the text of a `content_block_delta` SSE event, if present.
+    fn text_delta(data: &str) -> Option<String> {
+        let v: Value = serde_json::from_str(data).ok()?;
+        if v.get("type").and_then(|t| t.as_str()) != Some("content_block_delta") {
+            return None;
+        }
+        v.get("delta")
+            .and_then(|d| d.get("text"))
+            .and_then(|t| t.as_str())
+            .map(|s| s.to_string())
     }
 }
 

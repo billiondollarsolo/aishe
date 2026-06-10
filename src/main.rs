@@ -557,6 +557,20 @@ fn handle_meta(
                 println!("editor: {}", config.aishe.edit_mode);
             }
         }
+        "stream" => match tokens.get(2).map(|s| s.as_str()) {
+            Some("on") | Some("true") => {
+                config.aishe.stream = true;
+                persist(config);
+                println!("stream → on");
+            }
+            Some("off") | Some("false") => {
+                config.aishe.stream = false;
+                persist(config);
+                println!("stream → off");
+            }
+            Some(_) => eprintln!("aishe: stream must be 'on' or 'off'"),
+            None => println!("stream: {}", if config.aishe.stream { "on" } else { "off" }),
+        },
         "frontend" => {
             if let Some(f) = tokens.get(2) {
                 if matches!(f.as_str(), "auto" | "reedline" | "zsh-pty") {
@@ -586,6 +600,7 @@ fn print_meta_help() {
 \x20 aishe provider [a|o]        show or set the provider\n\
 \x20 aishe editor [emacs|vi]     show or set the line-editor keymap\n\
 \x20 aishe frontend [auto|reedline|zsh-pty]  show or set the front-end\n\
+\x20 aishe stream [on|off]       show or toggle token streaming\n\
 \x20 aishe config                print active config\n\
 \x20 aishe rehash                rebuild the command cache\n\
 \x20 aishe help                  show this help\n\

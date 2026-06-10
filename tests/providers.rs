@@ -118,6 +118,66 @@ fn anthropic_retries_on_429() {
 }
 
 #[test]
+fn anthropic_streams_text_deltas() {
+    let mut server = mockito::Server::new();
+    // A minimal Anthropic SSE stream: two text deltas across content blocks.
+    let sse = concat!(
+        "event: content_block_delta\n",
+        "data: {\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\"Hello\"}}\n\n",
+        "event: content_block_delta\n",
+        "data: {\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\" world\"}}\n\n",
+        "event: message_stop\n",
+        "data: {\"type\":\"message_stop\"}\n\n",
+    );
+    let m = server
+        .mock("POST", "/v1/messages")
+        .match_body(Matcher::PartialJson(json!({ "stream": true })))
+        .with_status(200)
+        .with_header("content-type", "text/event-stream")
+        .with_body(sse)
+        .create();
+
+    let p = AnthropicProvider::new(server.url(), "k".into(), "m".into());
+    let mut chunks: Vec<String> = Vec::new();
+    let full = p
+        .complete_stream("SYS", &[Msg::User("hi".into())], false, &mut |d| {
+            chunks.push(d.to_string())
+        })
+        .unwrap();
+    assert_eq!(full, "Hello world");
+    assert_eq!(chunks, vec!["Hello", " world"]);
+    m.assert();
+}
+
+#[test]
+fn openai_streams_content_deltas() {
+    let mut server = mockito::Server::new();
+    let sse = concat!(
+        "data: {\"choices\":[{\"delta\":{\"content\":\"Hel\"}}]}\n\n",
+        "data: {\"choices\":[{\"delta\":{\"content\":\"lo\"}}]}\n\n",
+        "data: [DONE]\n\n",
+    );
+    let m = server
+        .mock("POST", "/v1/chat/completions")
+        .match_body(Matcher::PartialJson(json!({ "stream": true })))
+        .with_status(200)
+        .with_header("content-type", "text/event-stream")
+        .with_body(sse)
+        .create();
+
+    let p = OpenAiProvider::new(server.url(), "tok".into(), "gpt-x".into());
+    let mut got = String::new();
+    let full = p
+        .complete_stream("SYS", &[Msg::User("hi".into())], false, &mut |d| {
+            got.push_str(d)
+        })
+        .unwrap();
+    assert_eq!(full, "Hello");
+    assert_eq!(got, "Hello");
+    m.assert();
+}
+
+#[test]
 fn openai_system_first_and_json_mode() {
     let mut server = mockito::Server::new();
     let m = server

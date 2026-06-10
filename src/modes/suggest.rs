@@ -81,8 +81,150 @@ pub fn run(
     scriptable: bool,
     auto: bool,
 ) -> Result<()> {
+    // Interactive streaming: render answers token-by-token. Not used for the
+    // scriptable (`-c`) path, whose stdout is consumed by the shell hook.
+    if config.aishe.stream && !scriptable {
+        return run_stream(input, provider, executor, config, auto);
+    }
     let suggestion = request(input, provider, executor, config)?;
     handle_suggestion(suggestion, executor, scriptable, auto)
+}
+
+/// Streaming variant of [`run`]: uses the sentinel-protocol system prompt and
+/// streams a prose answer to the terminal as it arrives, or — once the model
+/// commits to a `CMD:` line — falls back to the normal confirm/auto flow.
+fn run_stream(
+    input: &str,
+    provider: &dyn Provider,
+    executor: &mut Executor,
+    config: &Config,
+    auto: bool,
+) -> Result<()> {
+    let _ = config; // streaming needs no further per-request tuning yet
+    let ctx = context::build(executor);
+    let shell = executor
+        .shell()
+        .file_name()
+        .map(|s| s.to_string_lossy().to_string())
+        .unwrap_or_else(|| "sh".to_string());
+    let system = super::suggest_stream_system_prompt(&shell, std::env::consts::OS);
+    let user = format!("{ctx}\nUser request: {input}");
+
+    let mut streamer = AnswerStreamer::new();
+    let mut out = std::io::stdout();
+    let result = provider.complete_stream(&system, &[Msg::User(user)], false, &mut |delta| {
+        streamer.push(delta, &mut out);
+    });
+    let full = match result {
+        Ok(f) => f,
+        Err(e) => {
+            eprintln!("{}", format!("aishe: {e}").red());
+            return Ok(());
+        }
+    };
+
+    if streamer.finish(&mut out) {
+        // The model committed to a command; nothing was streamed to the screen.
+        let (command, explanation) = parse_cmd_protocol(&full);
+        if command.is_empty() {
+            return Ok(());
+        }
+        if auto {
+            auto_run(&command, &explanation, executor)
+        } else {
+            present_command(&command, &explanation, executor)
+        }
+    } else {
+        // A prose answer was streamed live; just terminate the line.
+        println!();
+        Ok(())
+    }
+}
+
+/// Routes a streamed response to either a live prose answer or a buffered
+/// command. While undecided it withholds output until it can tell whether the
+/// text begins with the `CMD:` sentinel, so a command is never half-printed.
+struct AnswerStreamer {
+    /// `None` until decided; `Some(true)` = command, `Some(false)` = prose.
+    is_command: Option<bool>,
+    /// Output withheld while undecided.
+    pending: String,
+    /// The full response, accumulated regardless of decision.
+    full: String,
+}
+
+impl AnswerStreamer {
+    fn new() -> Self {
+        Self {
+            is_command: None,
+            pending: String::new(),
+            full: String::new(),
+        }
+    }
+
+    fn push<W: std::io::Write>(&mut self, delta: &str, out: &mut W) {
+        self.full.push_str(delta);
+        match self.is_command {
+            Some(true) => {} // command: swallow output
+            Some(false) => {
+                let _ = write!(out, "{delta}");
+                let _ = out.flush();
+            }
+            None => {
+                self.pending.push_str(delta);
+                let trimmed = self.pending.trim_start();
+                if trimmed.is_empty() {
+                    return;
+                }
+                if trimmed.starts_with("CMD:") {
+                    self.is_command = Some(true);
+                    self.pending.clear();
+                } else if "CMD:".starts_with(trimmed) {
+                    // Still possibly the start of "CMD:" — keep buffering.
+                } else {
+                    self.is_command = Some(false);
+                    let _ = write!(out, "{}", self.pending);
+                    let _ = out.flush();
+                    self.pending.clear();
+                }
+            }
+        }
+    }
+
+    /// Finalize and report whether the response was a command. Flushes any
+    /// withheld prose for very short responses that never tripped a decision.
+    fn finish<W: std::io::Write>(&mut self, out: &mut W) -> bool {
+        match self.is_command {
+            Some(decided) => decided,
+            None => {
+                let is_cmd = self.full.trim_start().starts_with("CMD:");
+                if !is_cmd && !self.pending.is_empty() {
+                    let _ = write!(out, "{}", self.pending);
+                    let _ = out.flush();
+                }
+                is_cmd
+            }
+        }
+    }
+}
+
+/// Parse the `CMD:`/`WHY:` sentinel protocol into (command, explanation).
+fn parse_cmd_protocol(text: &str) -> (String, String) {
+    let mut command = String::new();
+    let mut explanation = String::new();
+    for line in text.lines() {
+        let l = line.trim();
+        if let Some(rest) = l.strip_prefix("CMD:") {
+            if command.is_empty() {
+                command = rest.trim().to_string();
+            }
+        } else if let Some(rest) = l.strip_prefix("WHY:") {
+            if explanation.is_empty() {
+                explanation = rest.trim().to_string();
+            }
+        }
+    }
+    (command, explanation)
 }
 
 /// Ask the provider for a suggestion given the user's input + context.
@@ -307,5 +449,60 @@ mod tests {
     fn parse_command_without_command_field_is_answer() {
         let raw = r#"{"type":"command","command":null,"explanation":"cannot do that"}"#;
         assert!(matches!(parse_suggestion(raw), Suggestion::Answer { .. }));
+    }
+
+    /// Drive a streamer with a sequence of deltas; return (is_command, printed).
+    fn drive(deltas: &[&str]) -> (bool, String) {
+        let mut s = AnswerStreamer::new();
+        let mut out: Vec<u8> = Vec::new();
+        for d in deltas {
+            s.push(d, &mut out);
+        }
+        let is_cmd = s.finish(&mut out);
+        (is_cmd, String::from_utf8(out).unwrap())
+    }
+
+    #[test]
+    fn streams_prose_live_and_withholds_nothing() {
+        let (is_cmd, printed) = drive(&["The ", "answer ", "is 42."]);
+        assert!(!is_cmd);
+        assert_eq!(printed, "The answer is 42.");
+    }
+
+    #[test]
+    fn command_is_never_printed() {
+        // Even when the sentinel is split across deltas, no command text leaks.
+        let (is_cmd, printed) = drive(&["CM", "D: rm -rf build\nWHY: clean"]);
+        assert!(is_cmd);
+        assert_eq!(printed, "");
+    }
+
+    #[test]
+    fn leading_whitespace_before_sentinel_still_detected() {
+        let (is_cmd, printed) = drive(&["\n  CMD: ls -la"]);
+        assert!(is_cmd);
+        assert_eq!(printed, "");
+    }
+
+    #[test]
+    fn short_prose_flushed_on_finish() {
+        // "Hi" never disambiguates from "CMD:" by prefix, so it's held until end.
+        let (is_cmd, printed) = drive(&["Hi"]);
+        assert!(!is_cmd);
+        assert_eq!(printed, "Hi");
+    }
+
+    #[test]
+    fn parses_cmd_and_why_protocol() {
+        let (cmd, why) = parse_cmd_protocol("CMD: du -sh *\nWHY: show sizes");
+        assert_eq!(cmd, "du -sh *");
+        assert_eq!(why, "show sizes");
+    }
+
+    #[test]
+    fn parses_cmd_without_why() {
+        let (cmd, why) = parse_cmd_protocol("CMD: pwd");
+        assert_eq!(cmd, "pwd");
+        assert_eq!(why, "");
     }
 }

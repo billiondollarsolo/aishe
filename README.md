@@ -50,6 +50,14 @@ aishe
 
 Switch at any time: `aishe mode auto`, or start with `aishe --mode yolo`.
 
+### Streaming
+
+Enable token streaming with `aishe stream on` (or `stream = true` in config). In
+`suggest`/`auto` mode, prose answers then render live as they arrive; once the
+model commits to a command instead, aishe falls back to the usual confirm/run
+flow (a command is never half-printed). Works with both providers (Anthropic and
+OpenAI-compatible SSE); endpoints without SSE simply deliver the answer at once.
+
 ### Input prefixes
 
 - `?<text>` — force natural-language (e.g. `?how do I find large files`)
@@ -67,6 +75,7 @@ aishe mode [suggest|auto|yolo]   show or set the interaction mode
 aishe model [NAME]               show or set the model
 aishe provider [anthropic|openai] show or set the provider
 aishe editor [emacs|vi]          show or set the line-editor keymap
+aishe stream [on|off]            show or toggle token streaming
 aishe config                     print the active config
 aishe rehash                     rebuild the command cache
 aishe help                       show help
@@ -84,8 +93,12 @@ operations — `rm -rf`, `dd of=/dev/…`, `mkfs`, fork bombs, `curl … | sh`,
 `git push --force` to main, `shutdown`/`reboot`, and more. Dangerous commands
 print a red panel and require you to type the full word `yes`.
 
-The gate is intentionally conservative: in v0.1 `rm -rf` is **always** flagged,
-even `rm -rf node_modules`. The gate does **not** apply to commands you type
+**Path-aware `rm -rf`.** Recursive-force deletes are judged by their targets
+(lexically, no filesystem access): a relative, in-tree path like `rm -rf
+node_modules`, `rm -rf build dist`, or `rm -rf ./target` is treated as your own
+project files and runs without fuss, while anything catastrophic or out-of-tree
+is flagged — absolute (`/var`), home (`~`, `$HOME`), a variable, a bare glob
+(`*`), or an escaping `..` path. The gate does **not** apply to commands you type
 yourself or to `!`-forced lines — it's a shell, not a nanny.
 
 ---
@@ -218,7 +231,7 @@ edit_mode = "emacs"            # emacs | vi (reedline line-editor keymap)
 yolo_confirm_dangerous = true  # confirm dangerous commands even in yolo
 max_yolo_iterations = 10
 show_right_prompt = true        # show "model · mode" on the right
-stream = false                  # reserved (SSE streaming, deferred)
+stream = false                  # stream answers token-by-token (suggest/auto)
 
 [providers.anthropic]
 base_url = "https://api.anthropic.com"

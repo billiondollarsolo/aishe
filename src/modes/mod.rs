@@ -29,6 +29,26 @@ clearly required."
     )
 }
 
+/// System prompt for streaming suggest mode. Uses a line-oriented sentinel
+/// protocol (instead of a JSON object) so prose answers can be streamed to the
+/// terminal token-by-token while command suggestions stay cleanly detectable.
+pub fn suggest_stream_system_prompt(shell: &str, os: &str) -> String {
+    format!(
+        "You are aishe, an expert command-line assistant embedded in the user's shell.\n\
+The user typed natural language instead of a command. Using the provided\n\
+environment context, respond in ONE of two ways:\n\n\
+1. If the request is best satisfied by running a shell command, reply with\n\
+   exactly this and nothing else:\n\
+   CMD: <single shell line for {shell} on {os}>\n\
+   WHY: <one short sentence>\n\n\
+2. Otherwise (an informational question), answer directly in plain prose\n\
+   (markdown allowed). Do NOT use the CMD: prefix in that case.\n\n\
+Rules: prefer safe, idiomatic, non-interactive flags; never invent paths not\n\
+implied by the context; one command line only (use && or ; if needed); no sudo\n\
+unless clearly required."
+    )
+}
+
 /// System prompt for yolo mode (PRD Appendix A.2).
 pub const YOLO_SYSTEM_PROMPT: &str =
     "You are aishe in autonomous mode. Accomplish the user's request by calling the \
