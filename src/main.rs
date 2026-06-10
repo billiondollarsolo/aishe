@@ -464,6 +464,11 @@ fn handle_line(
     match dispatcher::dispatch(line, cache) {
         Dispatch::Shell(cmd) => {
             executor.run(&cmd);
+            // A newly-defined alias must be recognized as a command on later
+            // lines (the executor persists the alias itself via the session rc).
+            if let Some(name) = alias_name(&cmd) {
+                cache.insert_all(&[name]);
+            }
         }
         Dispatch::Builtin(tokens) => match tokens[0].as_str() {
             "exit" | "quit" => return Ok(true),
@@ -488,6 +493,19 @@ fn handle_line(
         }
     }
     Ok(false)
+}
+
+/// Extract the alias name from an `alias NAME=...` line (single definition only).
+fn alias_name(cmd: &str) -> Option<&str> {
+    let t = cmd.trim();
+    if t.contains(';') || t.contains('|') || t.contains('&') {
+        return None;
+    }
+    let rest = t.strip_prefix("alias ")?.trim_start();
+    let (name, _) = rest.split_once('=')?;
+    let name = name.trim();
+    (!name.is_empty() && !name.starts_with('-') && !name.contains(char::is_whitespace))
+        .then_some(name)
 }
 
 /// Handle `aishe ...` meta commands.

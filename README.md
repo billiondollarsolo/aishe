@@ -218,6 +218,30 @@ Roles: `cwd`, `glyph_ok`, `glyph_err`, `right_prompt`, `known_cmd`,
 
 ---
 
+## Startup file (`.aishrc`)
+
+aishe sources `~/.aishrc` and `~/.config/aishe/aishrc` (in that order) into
+**every** delegated command, so aliases, functions, and exports you define there
+are available to all commands and recognized at the prompt:
+
+```sh
+# ~/.aishrc
+alias gs='git status'
+alias ll='ls -lah'
+export EDITOR=nvim
+gco() { git checkout "$@"; }   # functions work here too
+```
+
+This is shell-agnostic setup that applies in both front-ends (the zsh-PTY
+front-end of course also runs your real `~/.zshrc`).
+
+Aliases and shell options (`setopt`/`unsetopt`) you define **interactively** also
+persist to later commands in the reedline front-end — aishe replays them via the
+same mechanism. (Functions defined interactively still don't persist across
+lines; put them in `.aishrc`, or use the zsh-PTY front-end.)
+
+---
+
 ## Configuration reference
 
 `~/.config/aishe/config.toml`:
@@ -251,9 +275,12 @@ API keys are read **only** from the named environment variables.
 ## Limitations (v0.1)
 
 - **Persistent state caveats.** `cd`, `export`, `unset`, and `source` are
-  intercepted so state persists across delegated commands. But aliases and
-  functions defined by a `source`d file (or your `.zshrc`) do **not** persist
-  into later commands, since each line runs in a fresh `zsh -c`.
+  intercepted so state persists across delegated commands; aliases/functions/
+  exports in `~/.aishrc` and interactively-defined aliases/`setopt` persist too
+  (see [Startup file](#startup-file-aishrc)). But **functions** defined
+  interactively (or by a `source`d file) do **not** persist into later commands,
+  since each line runs in a fresh `zsh -c`. Use `.aishrc` or the zsh-PTY
+  front-end for those.
 - **No job control.** `Ctrl-Z` / `bg` / `fg` for delegated processes are not
   supported. `Ctrl-C` reaches the foreground child; `aishe` itself survives.
 - **yolo runs with stdin closed.** Autonomous commands are non-interactive

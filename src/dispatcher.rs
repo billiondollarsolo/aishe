@@ -292,8 +292,13 @@ fn fetch_builtins(shell: &Path) -> HashSet<String> {
 
 /// Query user aliases and function names via an interactive shell, with a 2s
 /// timeout (`.zshrc` may be slow). On timeout, returns empty with a warning.
+/// Also sources the user's `.aishrc` files so aliases/functions defined there
+/// are recognized as commands (the executor sources the same files at run time).
 fn fetch_aliases_and_functions(shell: &Path) -> HashSet<String> {
-    let script = "alias +; print -l ${(k)functions}";
+    let script = "[ -f \"$HOME/.aishrc\" ] && source \"$HOME/.aishrc\" 2>/dev/null; \
+         [ -f \"${XDG_CONFIG_HOME:-$HOME/.config}/aishe/aishrc\" ] && \
+         source \"${XDG_CONFIG_HOME:-$HOME/.config}/aishe/aishrc\" 2>/dev/null; \
+         alias +; print -l ${(k)functions}";
     match run_with_timeout(shell, &["-ic", script], Duration::from_secs(2)) {
         Some(out) => out
             .lines()

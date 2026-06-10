@@ -27,6 +27,10 @@ pub struct Executor {
     pub last_exit: i32,
     /// Last 10 (command, exit_code) pairs, for LLM context.
     pub history: VecDeque<(String, i32)>,
+    /// Temp rc file sourced into every delegated command: the user's `.aishrc`
+    /// files plus interactively-defined aliases/options replayed for persistence.
+    /// `None` if it couldn't be created (commands then run without it).
+    session_rc: Option<PathBuf>,
 }
 
 impl Executor {
@@ -45,6 +49,7 @@ impl Executor {
             prev_cwd: None,
             last_exit: 0,
             history: VecDeque::with_capacity(10),
+            session_rc: init_session_rc().ok(),
         })
     }
 
@@ -53,6 +58,41 @@ impl Executor {
     }
     pub fn cwd(&self) -> &PathBuf {
         &self.cwd
+    }
+
+    /// Configure a `zsh -c`/`bash -c` invocation to source the session rc (user
+    /// `.aishrc` + replayed definitions) before running `line`.
+    ///
+    /// The command is passed via `$AISHE_CMD` and run through `eval` *after* the
+    /// rc is sourced. This matters because aliases are resolved at parse time:
+    /// `source rc; greet` would parse `greet` before the alias exists, whereas
+    /// `eval "$AISHE_CMD"` re-parses at runtime once the alias is defined.
+    fn apply_rc(&self, cmd: &mut Command, line: &str) {
+        cmd.arg("-c");
+        match &self.session_rc {
+            Some(rc) => {
+                cmd.arg(format!(
+                    "source {} 2>/dev/null; eval \"$AISHE_CMD\"",
+                    single_quote(rc)
+                ));
+                cmd.env("AISHE_CMD", line);
+            }
+            None => {
+                cmd.arg(line);
+            }
+        }
+    }
+
+    /// Append an interactively-typed alias/option definition to the session rc
+    /// so it persists into later commands (the reedline front-end runs each line
+    /// in a fresh shell, so state would otherwise be lost).
+    fn persist_definition(&mut self, line: &str) {
+        let (Some(rc), Some(def)) = (&self.session_rc, persistable_definition(line)) else {
+            return;
+        };
+        if let Ok(mut f) = std::fs::OpenOptions::new().append(true).open(rc) {
+            let _ = writeln!(f, "{def}");
+        }
     }
 
     fn record(&mut self, line: &str, code: i32) {
@@ -66,15 +106,14 @@ impl Executor {
     /// Delegate a shell line to the backing shell with inherited stdio, so
     /// interactive children (vim, ssh, top) and pipes/globs/redirs all work.
     pub fn run(&mut self, line: &str) -> i32 {
-        let status = Command::new(&self.shell)
-            .arg("-c")
-            .arg(line)
-            .envs(&self.env)
+        let mut cmd = Command::new(&self.shell);
+        self.apply_rc(&mut cmd, line);
+        cmd.envs(&self.env)
             .current_dir(&self.cwd)
             .stdin(Stdio::inherit())
             .stdout(Stdio::inherit())
-            .stderr(Stdio::inherit())
-            .status();
+            .stderr(Stdio::inherit());
+        let status = cmd.status();
 
         let code = match status {
             Ok(s) => exit_code(&s),
@@ -83,6 +122,9 @@ impl Executor {
                 127
             }
         };
+        if code == 0 {
+            self.persist_definition(line);
+        }
         self.record(line, code);
         code
     }
@@ -90,9 +132,9 @@ impl Executor {
     /// Run a command capturing merged stdout+stderr (tee'd to the terminal),
     /// with a timeout and stdin closed. Returns (exit_code, truncated_output).
     pub fn run_captured(&mut self, line: &str, timeout: Duration) -> (i32, String) {
-        let child = Command::new(&self.shell)
-            .arg("-c")
-            .arg(line)
+        let mut cmd = Command::new(&self.shell);
+        self.apply_rc(&mut cmd, line);
+        let child = cmd
             .envs(&self.env)
             .current_dir(&self.cwd)
             .stdin(Stdio::null())
@@ -361,6 +403,63 @@ fn strip_quotes(v: &str) -> String {
     }
 }
 
+/// Create the per-session rc file that every delegated command sources. It
+/// begins by loading the user's `~/.aishrc` and `~/.config/aishe/aishrc` (if
+/// present); interactively-defined aliases/options are appended later.
+fn init_session_rc() -> std::io::Result<PathBuf> {
+    let path = std::env::temp_dir().join(format!("aishe-session-{}.zsh", std::process::id()));
+    // Ensure aliases expand in the non-interactive `-c` shell (bash needs the
+    // shopt; zsh has it on by default). Each line is harmless in the other shell.
+    let mut content = String::from(
+        "# aishe session rc (generated)\n\
+         shopt -s expand_aliases 2>/dev/null\n\
+         setopt aliases 2>/dev/null\n",
+    );
+    if let Some(home) = dirs::home_dir() {
+        let p = single_quote(&home.join(".aishrc"));
+        content.push_str(&format!("[ -f {p} ] && source {p}\n"));
+    }
+    if let Some(cfg) = dirs::config_dir() {
+        let p = single_quote(&cfg.join("aishe").join("aishrc"));
+        content.push_str(&format!("[ -f {p} ] && source {p}\n"));
+    }
+    std::fs::write(&path, content)?;
+    Ok(path)
+}
+
+/// Single-quote a path for safe interpolation into a shell command.
+fn single_quote(path: &std::path::Path) -> String {
+    format!("'{}'", path.display().to_string().replace('\'', r"'\''"))
+}
+
+/// If `line` is *solely* an alias/option definition, return the text to replay
+/// in later commands; otherwise `None`. Lines with shell operators (`;`, `|`,
+/// `&`, newlines) are rejected so we never replay a whole pipeline.
+fn persistable_definition(line: &str) -> Option<String> {
+    let t = line.trim();
+    if t.contains(';') || t.contains('|') || t.contains('&') || t.contains('\n') {
+        return None;
+    }
+    let (cmd, rest) = match t.split_once(char::is_whitespace) {
+        Some((c, r)) => (c, r.trim()),
+        None => (t, ""),
+    };
+    match cmd {
+        // `alias x=y` defines; bare `alias` just lists — don't replay the latter.
+        "alias" if rest.contains('=') => Some(t.to_string()),
+        "unalias" | "setopt" | "unsetopt" if !rest.is_empty() => Some(t.to_string()),
+        _ => None,
+    }
+}
+
+impl Drop for Executor {
+    fn drop(&mut self) {
+        if let Some(rc) = &self.session_rc {
+            let _ = std::fs::remove_file(rc);
+        }
+    }
+}
+
 /// Find an executable on `$PATH`.
 pub fn which(name: &str) -> Option<PathBuf> {
     let path = std::env::var_os("PATH")?;
@@ -397,5 +496,37 @@ mod tests {
         assert_eq!(strip_quotes("\"hello\""), "hello");
         assert_eq!(strip_quotes("'hi'"), "hi");
         assert_eq!(strip_quotes("plain"), "plain");
+    }
+
+    #[test]
+    fn persistable_definitions_detected() {
+        assert_eq!(
+            persistable_definition("alias g=git"),
+            Some("alias g=git".to_string())
+        );
+        assert_eq!(
+            persistable_definition("  setopt extended_glob "),
+            Some("setopt extended_glob".to_string())
+        );
+        assert_eq!(
+            persistable_definition("unalias g"),
+            Some("unalias g".to_string())
+        );
+    }
+
+    #[test]
+    fn non_definitions_not_persisted() {
+        // bare listing forms, non-definitions, and anything with operators.
+        assert_eq!(persistable_definition("alias"), None);
+        assert_eq!(persistable_definition("setopt"), None);
+        assert_eq!(persistable_definition("ls -la"), None);
+        assert_eq!(persistable_definition("alias g=git; rm -rf build"), None);
+        assert_eq!(persistable_definition("alias g=git && echo hi"), None);
+    }
+
+    #[test]
+    fn single_quote_escapes() {
+        assert_eq!(single_quote(std::path::Path::new("/tmp/x")), "'/tmp/x'");
+        assert_eq!(single_quote(std::path::Path::new("/a'b")), r"'/a'\''b'");
     }
 }

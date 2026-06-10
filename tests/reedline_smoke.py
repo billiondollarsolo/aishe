@@ -82,6 +82,15 @@ class Pty:
     def send(self, line):
         os.write(self.master, (line + "\r").encode("utf-8"))
 
+    def settle(self, seconds=2.0):
+        """Drain output for a fixed window so a running command finishes and the
+        editor is idle at the prompt before the next (dependent) command — a
+        human waits for the prompt; type-ahead during a running child can be
+        consumed by that child rather than the editor."""
+        deadline = time.monotonic() + seconds
+        while time.monotonic() < deadline:
+            self._drain(time.monotonic() + 0.2)
+
     def wait_exit(self, timeout=10):
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
@@ -120,6 +129,11 @@ def make_env():
             'front_end = "reedline"\n'
             "show_right_prompt = false\n"
         )
+    # An .aishrc whose alias should be sourced into delegated commands. The body
+    # uses arithmetic so the result (AISHRC_42) appears only in command output,
+    # never in the (un-evaluated) alias definition text.
+    with open(os.path.join(cfgdir, "aishrc"), "w") as f:
+        f.write("alias greet='echo AISHRC_$((6 * 7))'\n")
     env = dict(os.environ)
     env.update(
         {
@@ -165,7 +179,29 @@ def main():
         if not sh.expect("AAA BBB"):
             fail("continued line did not submit/run once complete", sh)
 
-        # 3) clean exit.
+        # 3) .aishrc is sourced into delegated commands. A synchronous `rehash`
+        #    first guarantees the alias is in the command cache (so `greet` is
+        #    recognized as a command rather than routed to the LLM).
+        sh.send("aishe rehash")
+        if not sh.expect("rehashed"):
+            fail("aishe rehash did not run", sh)
+        sh.send("greet")
+        if not sh.expect("AISHRC_42"):
+            fail(".aishrc alias was not sourced into delegated commands", sh)
+
+        # 4) an interactively-defined alias persists to the next command. The
+        #    arithmetic result (REPLAY_42) appears only when `foo` actually runs
+        #    the alias — not in the echoed definition text. A settle command in
+        #    between ensures the alias command has finished and the editor is back
+        #    at the prompt before `foo` is sent (otherwise type-ahead can be
+        #    consumed by the still-running child shell).
+        sh.send("alias foo='echo REPLAY_$((6 * 7))'")
+        sh.settle(2.0)  # let the alias command finish; editor idle at the prompt
+        sh.send("foo")
+        if not sh.expect("REPLAY_42"):
+            fail("interactively-defined alias did not persist across commands", sh)
+
+        # 5) clean exit.
         sh.send("exit")
         code = sh.wait_exit(timeout=10)
         if code is None:
