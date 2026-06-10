@@ -199,6 +199,17 @@ impl Config {
         Ok(toml::from_str::<Config>(&ported)?)
     }
 
+    /// Load the config only if present and well-formed; `Ok(None)` if the file
+    /// doesn't exist. Never runs the wizard. Used by `aishe doctor`.
+    pub fn load_quiet() -> Result<Option<Self>> {
+        let path = Self::path();
+        if !path.exists() {
+            return Ok(None);
+        }
+        let text = std::fs::read_to_string(&path)?;
+        Ok(Some(toml::from_str::<Config>(&text)?))
+    }
+
     fn load_from(path: &PathBuf) -> Result<Self> {
         let text = std::fs::read_to_string(path)
             .with_context(|| format!("reading config at {}", path.display()))?;

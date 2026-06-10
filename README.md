@@ -38,6 +38,9 @@ export ANTHROPIC_API_KEY=sk-ant-...      # or OPENAI_API_KEY=...
 aishe
 ```
 
+Not sure your setup is right? Run `aishe doctor` for a quick check of your shell,
+config, resolved front-end, provider, and API key.
+
 ---
 
 ## Modes

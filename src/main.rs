@@ -87,6 +87,8 @@ enum Cmd {
     },
     /// Launch your real interactive zsh (with all native plugins) under aishe.
     Zsh,
+    /// Check your environment: shell, config, front-end, provider, API key.
+    Doctor,
 }
 
 fn main() -> ExitCode {
@@ -101,6 +103,11 @@ fn main() -> ExitCode {
 
 fn run() -> Result<u8> {
     let args = Args::parse();
+
+    // `doctor` inspects the environment without loading/initializing config.
+    if matches!(args.cmd, Some(Cmd::Doctor)) {
+        return Ok(doctor());
+    }
 
     // `init <shell>` needs no config or provider.
     if let Some(Cmd::Init { shell }) = &args.cmd {
@@ -199,6 +206,95 @@ fn run() -> Result<u8> {
     }
 
     repl(&mut executor, &mut provider, &mut config, &cache)
+}
+
+/// Environment check (`aishe doctor`): report shell, config, front-end,
+/// provider, and API-key status. Returns 1 if a *critical* check fails (no
+/// backing shell, or a malformed config); a missing API key is a warning only.
+fn doctor() -> u8 {
+    let ok = "✓".green();
+    let bad = "✗".red();
+    let warn = "!".yellow();
+    let mut critical_ok = true;
+
+    println!("{}", "aishe doctor".bold());
+    println!("────────────");
+
+    // Backing shell.
+    let zsh = aishe::executor::which("zsh");
+    let bash = aishe::executor::which("bash");
+    match (&zsh, &bash) {
+        (Some(z), _) => println!("{ok} backing shell: zsh ({})", z.display()),
+        (None, Some(b)) => println!("{ok} backing shell: bash ({}) — zsh not found", b.display()),
+        (None, None) => {
+            println!("{bad} backing shell: none found (install zsh or bash)");
+            critical_ok = false;
+        }
+    }
+
+    // Config.
+    let cfg = match Config::load_quiet() {
+        Ok(Some(c)) => {
+            println!("{ok} config: {}", Config::path().display());
+            c
+        }
+        Ok(None) => {
+            println!("{warn} config: not created yet (run `aishe` once to set up)");
+            Config::default()
+        }
+        Err(e) => {
+            println!(
+                "{bad} config: malformed at {} ({e})",
+                Config::path().display()
+            );
+            critical_ok = false;
+            Config::default()
+        }
+    };
+
+    // Front-end resolution.
+    let resolved = match cfg.aishe.front_end.as_str() {
+        "zsh-pty" => "zsh-pty",
+        "reedline" => "reedline",
+        _ if zsh.is_some() => "zsh-pty (auto)",
+        _ => "reedline (auto — zsh not found)",
+    };
+    println!(
+        "{ok} front-end: {resolved}  [config: {}]",
+        cfg.aishe.front_end
+    );
+
+    // Provider, model, and API key.
+    let (provider, model, key_env) = match cfg.aishe.provider.as_str() {
+        "openai" => (
+            "openai",
+            &cfg.providers.openai.model,
+            &cfg.providers.openai.api_key_env,
+        ),
+        _ => (
+            "anthropic",
+            &cfg.providers.anthropic.model,
+            &cfg.providers.anthropic.api_key_env,
+        ),
+    };
+    println!("{ok} provider: {provider} · model {model}");
+    let key_set = std::env::var(key_env)
+        .map(|v| !v.trim().is_empty())
+        .unwrap_or(false);
+    if key_set {
+        println!("{ok} API key: ${key_env} is set");
+    } else {
+        println!("{warn} API key: ${key_env} not set — LLM features disabled (export it)");
+    }
+
+    println!();
+    if critical_ok {
+        println!("{}", "all critical checks passed".green());
+        0
+    } else {
+        println!("{}", "some checks failed".red());
+        1
+    }
 }
 
 /// Shell-hook helper: print a suggested command to stdout (for `print -z` /

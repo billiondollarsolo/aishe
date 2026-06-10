@@ -69,6 +69,23 @@ fn init_zsh_emits_integration() {
 }
 
 #[test]
+fn doctor_reports_environment() {
+    let home = temp_config_home();
+    Command::cargo_bin("aishe")
+        .unwrap()
+        .env("XDG_CONFIG_HOME", &home)
+        .env("XDG_DATA_HOME", home.join("data"))
+        .env("ANTHROPIC_API_KEY", "sk-test")
+        .arg("doctor")
+        .assert()
+        .success()
+        .stdout(contains("backing shell"))
+        .stdout(contains("front-end"))
+        .stdout(contains("provider: anthropic"))
+        .stdout(contains("$ANTHROPIC_API_KEY is set"));
+}
+
+#[test]
 fn init_unsupported_shell_fails() {
     Command::cargo_bin("aishe")
         .unwrap()
