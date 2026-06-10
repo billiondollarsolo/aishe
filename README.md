@@ -66,6 +66,7 @@ error.
 llmsh mode [suggest|auto|yolo]   show or set the interaction mode
 llmsh model [NAME]               show or set the model
 llmsh provider [anthropic|openai] show or set the provider
+llmsh editor [emacs|vi]          show or set the line-editor keymap
 llmsh config                     print the active config
 llmsh rehash                     rebuild the command cache
 llmsh help                       show help
@@ -137,6 +138,9 @@ natively:
   `?`/`!` sigils. Fully [themeable](#theming).
 - **oh-my-zsh aliases & functions** are picked up at startup (`zsh -ic 'alias +;
   …'`) so they're recognized as commands.
+- **emacs or vi keymap** — set `edit_mode = "vi"` (or `llmsh editor vi`) for modal
+  editing. In vi mode the prompt shows `[I]`/`[N]` for insert/normal; completion
+  and `Ctrl-R` history work in both. Takes effect on the next session.
 
 ### 2. Native zsh/bash hook (`eval "$(llmsh init zsh)"`)
 
@@ -207,6 +211,7 @@ Roles: `cwd`, `glyph_ok`, `glyph_err`, `right_prompt`, `known_cmd`,
 mode = "suggest"               # suggest | auto | yolo
 provider = "anthropic"         # anthropic | openai
 front_end = "reedline"         # reedline | zsh-pty (drive real zsh + plugins)
+edit_mode = "emacs"            # emacs | vi (reedline line-editor keymap)
 yolo_confirm_dangerous = true  # confirm dangerous commands even in yolo
 max_yolo_iterations = 10
 show_right_prompt = true        # show "model · mode" on the right

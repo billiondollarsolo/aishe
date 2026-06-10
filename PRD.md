@@ -40,8 +40,8 @@ SDK crates.
 
 - `reedline` (default) — built-in editor with native autosuggestions, tab
   completion (command names + file paths), `Ctrl-R` history-search menu,
-  multi-line continuation for unterminated shell lines, themeable syntax
-  highlighting, and a custom prompt.
+  multi-line continuation for unterminated shell lines, an emacs or vi keymap
+  (`edit_mode`), themeable syntax highlighting, and a custom prompt.
 - `zsh-pty` (`llmsh zsh` / `--pty` / `front_end = "zsh-pty"`) — drives the user's
   real interactive zsh inside a pseudo-terminal with their full config and all
   plugins loaded; injects a `command_not_found_handler` for NL routing. No

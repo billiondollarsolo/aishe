@@ -10,8 +10,9 @@ use anyhow::Result;
 use clap::{Parser, Subcommand};
 use crossterm::style::Stylize;
 use reedline::{
-    default_emacs_keybindings, ColumnarMenu, DefaultHinter, Emacs, FileBackedHistory, KeyCode,
-    KeyModifiers, ListMenu, MenuBuilder, Reedline, ReedlineEvent, ReedlineMenu, Signal,
+    default_emacs_keybindings, default_vi_insert_keybindings, default_vi_normal_keybindings,
+    ColumnarMenu, DefaultHinter, EditMode, Emacs, FileBackedHistory, KeyCode, KeyModifiers,
+    Keybindings, ListMenu, MenuBuilder, Reedline, ReedlineEvent, ReedlineMenu, Signal, Vi,
 };
 
 use llmsh::completer::LlmshCompleter;
@@ -311,6 +312,51 @@ fn one_shot(
     }
 }
 
+/// Add llmsh's menu keybindings — Tab/Shift-Tab completion menu and Ctrl-R
+/// history menu — to a keymap. Shared by the emacs and vi keymaps.
+fn add_llmsh_bindings(kb: &mut Keybindings) {
+    kb.add_binding(
+        KeyModifiers::NONE,
+        KeyCode::Tab,
+        ReedlineEvent::UntilFound(vec![
+            ReedlineEvent::Menu("completion_menu".to_string()),
+            ReedlineEvent::MenuNext,
+        ]),
+    );
+    kb.add_binding(
+        KeyModifiers::SHIFT,
+        KeyCode::BackTab,
+        ReedlineEvent::MenuPrevious,
+    );
+    // Ctrl-R → browsable, filterable history menu (upgrade over the default
+    // single-line incremental search): type to filter, arrows to pick.
+    kb.add_binding(
+        KeyModifiers::CONTROL,
+        KeyCode::Char('r'),
+        ReedlineEvent::UntilFound(vec![
+            ReedlineEvent::Menu("history_menu".to_string()),
+            ReedlineEvent::MenuNext,
+        ]),
+    );
+}
+
+/// Build the reedline edit mode for the configured keymap. "vi" gives modal
+/// editing (Esc for normal mode); anything else is emacs. llmsh's menu bindings
+/// are added to both vi sub-keymaps so completion/history work in either mode.
+fn build_edit_mode(edit_mode: &str) -> Box<dyn EditMode> {
+    if edit_mode == "vi" {
+        let mut insert = default_vi_insert_keybindings();
+        let mut normal = default_vi_normal_keybindings();
+        add_llmsh_bindings(&mut insert);
+        add_llmsh_bindings(&mut normal);
+        Box::new(Vi::new(insert, normal))
+    } else {
+        let mut kb = default_emacs_keybindings();
+        add_llmsh_bindings(&mut kb);
+        Box::new(Emacs::new(kb))
+    }
+}
+
 fn repl(
     executor: &mut Executor,
     provider: &mut Option<Box<dyn Provider>>,
@@ -326,32 +372,9 @@ fn repl(
             .unwrap_or_else(|_| FileBackedHistory::new(10_000).expect("in-memory history")),
     );
 
-    // Tab → completion menu (command names / file paths), Shift-Tab → previous.
-    let mut keybindings = default_emacs_keybindings();
-    keybindings.add_binding(
-        KeyModifiers::NONE,
-        KeyCode::Tab,
-        ReedlineEvent::UntilFound(vec![
-            ReedlineEvent::Menu("completion_menu".to_string()),
-            ReedlineEvent::MenuNext,
-        ]),
-    );
-    keybindings.add_binding(
-        KeyModifiers::SHIFT,
-        KeyCode::BackTab,
-        ReedlineEvent::MenuPrevious,
-    );
-    // Ctrl-R → browsable, filterable history menu (upgrade over the default
-    // single-line incremental search): type to filter, arrows to pick.
-    keybindings.add_binding(
-        KeyModifiers::CONTROL,
-        KeyCode::Char('r'),
-        ReedlineEvent::UntilFound(vec![
-            ReedlineEvent::Menu("history_menu".to_string()),
-            ReedlineEvent::MenuNext,
-        ]),
-    );
-    let edit_mode = Box::new(Emacs::new(keybindings));
+    // Tab → completion menu (command names / file paths), Shift-Tab → previous,
+    // Ctrl-R → browsable history menu. Applied to whichever keymap is active.
+    let edit_mode = build_edit_mode(&config.llmsh.edit_mode);
     let theme = Theme::from_config(&config.theme);
 
     let completion_menu = Box::new(ColumnarMenu::default().with_name("completion_menu"));
@@ -496,6 +519,19 @@ fn handle_meta(
                 Err(e) => eprintln!("llmsh: {e}"),
             }
         }
+        "editor" => {
+            if let Some(m) = tokens.get(2) {
+                if matches!(m.as_str(), "emacs" | "vi") {
+                    config.llmsh.edit_mode = m.clone();
+                    persist(config);
+                    println!("editor → {m} (restart llmsh to apply)");
+                } else {
+                    eprintln!("llmsh: editor must be 'emacs' or 'vi'");
+                }
+            } else {
+                println!("editor: {}", config.llmsh.edit_mode);
+            }
+        }
         "rehash" => {
             cache.rehash(executor.shell());
             println!("rehashed ({} commands cached)", cache.len());
@@ -510,6 +546,7 @@ fn print_meta_help() {
 \x20 llmsh mode [suggest|auto|yolo]  show or set interaction mode\n\
 \x20 llmsh model [NAME]          show or set the model\n\
 \x20 llmsh provider [a|o]        show or set the provider\n\
+\x20 llmsh editor [emacs|vi]     show or set the line-editor keymap\n\
 \x20 llmsh config                print active config\n\
 \x20 llmsh rehash                rebuild the command cache\n\
 \x20 llmsh help                  show this help\n\

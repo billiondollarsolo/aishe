@@ -37,6 +37,9 @@ pub struct LlmshConfig {
     /// real interactive zsh in a PTY, so all native zsh plugins work).
     #[serde(default = "default_front_end")]
     pub front_end: String,
+    /// reedline line-editor keymap: "emacs" (default) or "vi".
+    #[serde(default = "default_edit_mode")]
+    pub edit_mode: String,
     /// Reserved for v0.1: SSE streaming of answers.
     #[serde(default)]
     pub stream: bool,
@@ -81,6 +84,9 @@ fn default_max_iters() -> u32 {
 fn default_front_end() -> String {
     "reedline".to_string()
 }
+fn default_edit_mode() -> String {
+    "emacs".to_string()
+}
 
 fn default_anthropic() -> ProviderConfig {
     ProviderConfig {
@@ -107,6 +113,7 @@ impl Default for LlmshConfig {
             max_yolo_iterations: default_max_iters(),
             show_right_prompt: true,
             front_end: default_front_end(),
+            edit_mode: default_edit_mode(),
             stream: false,
         }
     }

@@ -4,7 +4,9 @@
 use std::borrow::Cow;
 use std::path::PathBuf;
 
-use reedline::{Prompt, PromptEditMode, PromptHistorySearch, PromptHistorySearchStatus};
+use reedline::{
+    Prompt, PromptEditMode, PromptHistorySearch, PromptHistorySearchStatus, PromptViMode,
+};
 
 use crate::theme::Theme;
 
@@ -70,8 +72,13 @@ impl Prompt for LlmshPrompt {
         }
     }
 
-    fn render_prompt_indicator(&self, _edit_mode: PromptEditMode) -> Cow<'_, str> {
-        Cow::Owned(format!(" {} ", self.glyph))
+    fn render_prompt_indicator(&self, edit_mode: PromptEditMode) -> Cow<'_, str> {
+        // In vi mode, tag the indicator so the active sub-mode is visible.
+        match edit_mode {
+            PromptEditMode::Vi(PromptViMode::Normal) => Cow::Owned(format!(" [N]{} ", self.glyph)),
+            PromptEditMode::Vi(PromptViMode::Insert) => Cow::Owned(format!(" [I]{} ", self.glyph)),
+            _ => Cow::Owned(format!(" {} ", self.glyph)),
+        }
     }
 
     fn render_prompt_multiline_indicator(&self) -> Cow<'_, str> {
