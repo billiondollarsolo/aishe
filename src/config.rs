@@ -33,7 +33,8 @@ pub struct LlmshConfig {
     pub max_yolo_iterations: u32,
     #[serde(default = "default_true")]
     pub show_right_prompt: bool,
-    /// Front-end: "reedline" (built-in editor) or "zsh-pty" (drive the user's
+    /// Front-end: "auto" (default — zsh-pty when zsh is on $PATH, else
+    /// reedline), "reedline" (built-in editor), or "zsh-pty" (drive the user's
     /// real interactive zsh in a PTY, so all native zsh plugins work).
     #[serde(default = "default_front_end")]
     pub front_end: String,
@@ -82,7 +83,7 @@ fn default_max_iters() -> u32 {
     10
 }
 fn default_front_end() -> String {
-    "reedline".to_string()
+    "auto".to_string()
 }
 fn default_edit_mode() -> String {
     "emacs".to_string()

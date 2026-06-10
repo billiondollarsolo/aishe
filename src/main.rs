@@ -58,6 +58,10 @@ struct Args {
     /// native plugins) instead of the built-in reedline editor.
     #[arg(long)]
     pty: bool,
+    /// Force the built-in reedline editor for this session, overriding the
+    /// "auto" front-end (which otherwise prefers zsh-pty when zsh is present).
+    #[arg(long = "no-pty")]
+    no_pty: bool,
     /// (shell hook) Suggest a command for a natural-language line: prints the
     /// command to stdout and the explanation/answer to stderr.
     #[arg(long, hide = true)]
@@ -126,10 +130,31 @@ fn run() -> Result<u8> {
         config.set_active_model(m.clone());
     }
 
+    // Non-interactive invocations (`-c` and the shell-hook helpers) never use
+    // the PTY front-end — they need the in-process executor/provider, not a
+    // wrapped interactive zsh.
+    let non_interactive = args.command.is_some()
+        || args.suggest_line.is_some()
+        || args.yolo_line.is_some()
+        || args.auto_line.is_some();
+
     // zsh-PTY front-end: drive the user's real zsh. Smarts live in the injected
     // command_not_found hook, so we don't need an in-process executor/provider.
-    let want_pty =
-        args.pty || matches!(args.cmd, Some(Cmd::Zsh)) || config.llmsh.front_end == "zsh-pty";
+    // Resolution: an explicit `--pty`/`zsh`/`zsh-pty` wins; `--no-pty`/`reedline`
+    // forces the built-in editor; the default "auto" picks zsh-pty whenever zsh
+    // is on $PATH and falls back to reedline otherwise.
+    let want_pty = !non_interactive
+        && if args.pty || matches!(args.cmd, Some(Cmd::Zsh)) {
+            true
+        } else if args.no_pty {
+            false
+        } else {
+            match config.llmsh.front_end.as_str() {
+                "zsh-pty" => true,
+                "reedline" => false,
+                _ => llmsh::executor::which("zsh").is_some(),
+            }
+        };
     if want_pty {
         return llmsh::pty::run_zsh(&config);
     }
@@ -532,6 +557,19 @@ fn handle_meta(
                 println!("editor: {}", config.llmsh.edit_mode);
             }
         }
+        "frontend" => {
+            if let Some(f) = tokens.get(2) {
+                if matches!(f.as_str(), "auto" | "reedline" | "zsh-pty") {
+                    config.llmsh.front_end = f.clone();
+                    persist(config);
+                    println!("front-end → {f} (restart llmsh to apply)");
+                } else {
+                    eprintln!("llmsh: front-end must be 'auto', 'reedline', or 'zsh-pty'");
+                }
+            } else {
+                println!("front-end: {}", config.llmsh.front_end);
+            }
+        }
         "rehash" => {
             cache.rehash(executor.shell());
             println!("rehashed ({} commands cached)", cache.len());
@@ -547,6 +585,7 @@ fn print_meta_help() {
 \x20 llmsh model [NAME]          show or set the model\n\
 \x20 llmsh provider [a|o]        show or set the provider\n\
 \x20 llmsh editor [emacs|vi]     show or set the line-editor keymap\n\
+\x20 llmsh frontend [auto|reedline|zsh-pty]  show or set the front-end\n\
 \x20 llmsh config                print active config\n\
 \x20 llmsh rehash                rebuild the command cache\n\
 \x20 llmsh help                  show this help\n\

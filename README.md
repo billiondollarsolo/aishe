@@ -94,22 +94,25 @@ yourself or to `!`-forced lines — it's a shell, not a nanny.
 
 There are three ways to use `llmsh`, in increasing order of real-zsh fidelity:
 
-### 0. zsh-PTY front-end — *all* native zsh extensions (`llmsh zsh`)
+### 0. zsh-PTY front-end — *all* native zsh extensions (default when zsh is present)
 
 ```sh
-llmsh zsh          # or: llmsh --pty   (or set front_end = "zsh-pty" in config)
+llmsh              # "auto" front-end: uses zsh-PTY when zsh is on $PATH
+llmsh zsh          # or force it: llmsh --pty   (or set front_end = "zsh-pty")
+llmsh --no-pty     # force the built-in reedline editor instead
 ```
 
-This launches your **real interactive zsh inside a pseudo-terminal**, loading
-your full `~/.zshrc` and **every plugin you already use** — `zsh-autosuggestions`,
-`zsh-syntax-highlighting`, `fast-syntax-highlighting`, `fzf-tab`,
-`powerlevel10k`, oh-my-zsh, completions — completely unmodified. llmsh injects a
-`command_not_found_handler` so natural-language input is still routed to the LLM
-(suggested commands pre-fill your next prompt via `print -z`; set `LLMSH_MODE` to
-`suggest`/`auto`/`yolo`).
+The default `front_end = "auto"` launches your **real interactive zsh inside a
+pseudo-terminal** whenever `zsh` is on `$PATH` (falling back to the built-in
+reedline editor otherwise). It loads your full `~/.zshrc` and **every plugin you
+already use** — `zsh-autosuggestions`, `zsh-syntax-highlighting`,
+`fast-syntax-highlighting`, `fzf-tab`, `powerlevel10k`, oh-my-zsh, completions —
+completely unmodified. llmsh injects a `command_not_found_handler` so
+natural-language input is still routed to the LLM (suggested commands pre-fill
+your next prompt via `print -z`; set `LLMSH_MODE` to `suggest`/`auto`/`yolo`).
 
 Nothing is forked or reimplemented: it's genuinely your zsh, so plugin behavior
-is identical to your normal shell. Requires `zsh` on `PATH`.
+is identical to your normal shell.
 
 The hook ergonomics below (auto-run safe via `eval`, force-NL keybinding) apply
 here too, since the PTY wrapper injects the same hook.
@@ -210,7 +213,7 @@ Roles: `cwd`, `glyph_ok`, `glyph_err`, `right_prompt`, `known_cmd`,
 [llmsh]
 mode = "suggest"               # suggest | auto | yolo
 provider = "anthropic"         # anthropic | openai
-front_end = "reedline"         # reedline | zsh-pty (drive real zsh + plugins)
+front_end = "auto"             # auto (zsh-pty if zsh present, else reedline) | reedline | zsh-pty
 edit_mode = "emacs"            # emacs | vi (reedline line-editor keymap)
 yolo_confirm_dangerous = true  # confirm dangerous commands even in yolo
 max_yolo_iterations = 10
