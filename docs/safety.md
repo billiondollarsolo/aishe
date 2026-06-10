@@ -20,17 +20,23 @@ It is a shell, not a nanny: if you type a destructive command directly, it runs.
 The gate screens for irreversible or high-impact operations, including:
 
 - recursive force deletes (`rm -rf`) of risky targets (see below),
-- raw device writes (`dd of=/dev/...`, `> /dev/sd...`),
-- filesystem creation (`mkfs`),
+- raw device writes and disk tools (`dd of=/dev/...`, `> /dev/sd...`, `mkfs`,
+  `fdisk`, `parted`, `wipefs`, `shred /dev/...`, `diskutil erase`),
+- recursive permission or ownership changes on root (`chmod -R ... /`),
 - fork bombs,
 - piping a download straight into a shell (`curl ... | sh`, `wget ... | bash`),
-- force pushes to main or master (`git push --force`),
-- system power changes (`shutdown`, `reboot`),
-- mass truncation with globs,
+- git history or working-tree loss (`git push --force` to main/master,
+  `git reset --hard`, `git clean -f`),
+- system power changes (`shutdown`, `reboot`, `halt`, `kill -9 1`),
+- mass delete (`find / ... -delete`) and mass truncation with globs,
 - and more.
 
-`sudo` prefixes are recognized so wrapping a dangerous command in `sudo` does not
-slip past the gate.
+The gate is robust against common ways of hiding a dangerous command. It strips
+leading wrappers and environment assignments before judging the real command, so
+`sudo -i rm -rf /`, `FOO=bar rm -rf /`, `env rm -rf /`, `time rm -rf /`,
+`nice rm -rf /`, and `timeout 5 rm -rf /` are all caught. It also unquotes `rm`
+targets, so `rm -rf "$HOME"` and `rm -rf '/'` do not slip through. A large
+adversarial test corpus (`tests/safety_corpus.rs`) guards these.
 
 ## Path-aware rm -rf
 

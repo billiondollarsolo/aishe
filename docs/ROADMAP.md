@@ -53,11 +53,11 @@ is tagged `(reedline)` so we can re-scope quickly.
 - [x] **Audit logging.** Optional JSONL log of AI requests, responses (with token
   usage), errors, and AI-initiated commands (with exit codes). Off by default;
   logged text is redacted. See `src/audit.rs`. Done.
-- [ ] **Adversarial safety corpus.** `safety.rs` has the rules but only a couple
-  of inline tests. Build a large dangerous-vs-benign-lookalike battery:
-  `rm -rf "$EMPTY"/`, obfuscated `dd`, `sudo` wrappers, base64 and `eval`
-  payloads, `find ... -delete`, `git clean -xfd`, `> /dev/sda`, chained and
-  quoted variants. Now.
+- [x] **Adversarial safety corpus.** `tests/safety_corpus.rs` has ~90 dangerous
+  (including wrapper, quote, env-prefix, and chained bypass attempts) and ~60
+  benign look-alikes. The gate was hardened to strip leading
+  wrappers/assignments and unquote `rm` targets, plus new `wipefs`/`shred`/
+  `git clean -f` rules. Done.
 - [ ] **Sandbox or confirm tiers.** Optional restricted exec for yolo (no
   network, scratch dir) with graduated confirmation. Later.
 

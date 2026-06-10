@@ -29,6 +29,13 @@ breaking changes can land in any release.
   the provider).
 
 ### Added
+- **Hardened the safety gate against bypasses, with an adversarial corpus.** The
+  gate now strips leading wrappers and env assignments before judging a command
+  (`sudo -i rm -rf /`, `FOO=bar rm -rf /`, `env`/`time`/`nohup`/`nice`/`timeout`
+  prefixes) and unquotes `rm` targets (`rm -rf "$HOME"`, `rm -rf '/'`), closing
+  real under-flagging holes. Added `wipefs`, `shred /dev/...`, `git clean -f`,
+  more device names, and cwd-wiping `rm -rf ./`/`./*`. New `tests/safety_corpus.rs`
+  with ~90 dangerous (including bypass attempts) and ~60 benign look-alikes.
 - **Secret redaction in the model context.** Recent commands sent to the model
   are scrubbed of likely credentials (secret-named assignments, `--password`/
   `--token` flags, URL credentials, `Authorization:` headers, known key shapes

@@ -1,6 +1,13 @@
 //! Destructive-command gate. Conservative by design: we flag commands that can
-//! cause irreversible loss. v0.1 has no path-awareness, so `rm -rf` is always
-//! Dangerous (see PRD §4.7).
+//! cause irreversible loss, while staying path-aware for `rm -rf` (a relative
+//! in-tree target is the user's own files and is allowed).
+//!
+//! Each command line is normalized (lowercased, whitespace-collapsed), split on
+//! shell operators, and each segment has its leading prefixes stripped (env
+//! assignments and privilege/wrapper words like `sudo`, `doas`, `env`, `time`,
+//! `nohup`, `nice`, `timeout`) so wrappers cannot smuggle a dangerous command
+//! past the anchored patterns. `rm` targets are unquoted before the path check so
+//! `rm -rf "$HOME"` and `rm -rf '/'` are still caught.
 
 use std::sync::LazyLock;
 
@@ -35,6 +42,8 @@ static PATTERNS: LazyLock<Vec<(Regex, &'static str)>> = LazyLock::new(|| {
         (format!(r"{CMD}fdisk\b"), "disk partitioning"),
         (format!(r"{CMD}parted\b"), "disk partitioning"),
         (format!(r"{CMD}diskutil\s+erase"), "disk formatting"),
+        (format!(r"{CMD}wipefs\b"), "wipes filesystem signatures"),
+        (format!(r"{CMD}shred\b.*\s/dev/"), "shred a device"),
         // recursive perms/ownership on root.
         (
             format!(r"{CMD}chmod\b.*-r.*\s/(\s|$)"),
@@ -49,7 +58,7 @@ static PATTERNS: LazyLock<Vec<(Regex, &'static str)>> = LazyLock::new(|| {
         (r":\(\)\{:\|:&\};:".to_string(), "fork bomb"),
         // redirect to a block device.
         (
-            r">\s*/dev/(sd|nvme|hd|disk)".to_string(),
+            r">\s*/dev/(sd|nvme|hd|disk|vd|xvd|mmcblk|loop)".to_string(),
             "device overwrite",
         ),
         // piping a remote script straight into a shell.
@@ -69,6 +78,10 @@ static PATTERNS: LazyLock<Vec<(Regex, &'static str)>> = LazyLock::new(|| {
         (
             format!(r"{CMD}git\s+reset\s+--hard\b"),
             "discards local changes",
+        ),
+        (
+            format!(r"{CMD}git\s+clean\b[^|]*\s-\S*f"),
+            "deletes untracked files",
         ),
         // taking the system down.
         (format!(r"{CMD}kill\s+-9\s+1(\s|$)"), "killing init (pid 1)"),
@@ -90,7 +103,11 @@ static PATTERNS: LazyLock<Vec<(Regex, &'static str)>> = LazyLock::new(|| {
 pub fn assess(command: &str) -> Risk {
     let normalized = normalize(command);
     for segment in split_segments(&normalized) {
-        let seg = segment.trim();
+        // Drop leading env assignments and privilege/wrapper prefixes so a
+        // wrapped command (`sudo -i rm -rf /`, `FOO=bar rm -rf /`, `env rm …`,
+        // `time rm …`) is judged on its real head.
+        let stripped = strip_prefixes(segment.trim());
+        let seg = stripped.trim();
         if seg.is_empty() {
             continue;
         }
@@ -106,6 +123,82 @@ pub fn assess(command: &str) -> Risk {
         }
     }
     Risk::Safe
+}
+
+/// Strip leading environment assignments and privilege/wrapper words from a
+/// segment, returning the remainder (the real command and its arguments). This
+/// prevents wrappers from hiding a dangerous command from the anchored patterns.
+fn strip_prefixes(seg: &str) -> String {
+    let toks: Vec<&str> = seg.split_whitespace().collect();
+    let mut i = 0;
+    while i < toks.len() {
+        let t = toks[i];
+        if is_leading_assignment(t) {
+            i += 1;
+            continue;
+        }
+        match t {
+            "sudo" | "doas" => {
+                i += 1;
+                i = skip_opts(
+                    &toks,
+                    i,
+                    &["-u", "-g", "--user", "--group", "-p", "--prompt"],
+                );
+            }
+            // env: following `K=V` are handled by the assignment branch above.
+            "env" => {
+                i += 1;
+                i = skip_opts(&toks, i, &[]);
+            }
+            "time" | "nohup" | "command" | "builtin" | "exec" | "setsid" => {
+                i += 1;
+            }
+            "nice" | "ionice" => {
+                i += 1;
+                i = skip_opts(&toks, i, &["-n", "-c", "-p", "--adjustment"]);
+            }
+            "timeout" => {
+                i += 1;
+                i = skip_opts(&toks, i, &["-s", "--signal", "-k", "--kill-after"]);
+                // Consume the DURATION argument.
+                if i < toks.len() && !toks[i].starts_with('-') {
+                    i += 1;
+                }
+            }
+            _ => break,
+        }
+    }
+    toks[i..].join(" ")
+}
+
+/// Skip a run of leading `-flag` tokens starting at `i`; when a flag is in
+/// `with_arg`, also consume the following non-flag argument. Returns the new
+/// index.
+fn skip_opts(toks: &[&str], mut i: usize, with_arg: &[&str]) -> usize {
+    while i < toks.len() && toks[i].starts_with('-') {
+        let opt = toks[i];
+        i += 1;
+        if with_arg.contains(&opt) && i < toks.len() && !toks[i].starts_with('-') {
+            i += 1;
+        }
+    }
+    i
+}
+
+/// A leading `NAME=VALUE` environment assignment (valid shell identifier name).
+fn is_leading_assignment(tok: &str) -> bool {
+    match tok.find('=') {
+        Some(eq) if eq > 0 => {
+            let name = &tok[..eq];
+            name.bytes()
+                .next()
+                .map(|b| b == b'_' || b.is_ascii_alphabetic())
+                .unwrap_or(false)
+                && name.bytes().all(|b| b == b'_' || b.is_ascii_alphanumeric())
+        }
+        _ => false,
+    }
 }
 
 /// Path-aware risk for a recursive, forced `rm` (`rm -rf`, `rm -fr`,
@@ -154,21 +247,33 @@ fn rm_recursive_force_risk(seg: &str) -> Option<&'static str> {
     if !(recursive && force) {
         return None;
     }
-    if targets.is_empty() {
+    // Strip quotes so `rm -rf "$HOME"`, `'/'`, `"/etc"` are still seen as their
+    // dangerous targets.
+    let cleaned: Vec<String> = targets.iter().map(|t| unquote(t)).collect();
+    if cleaned.iter().all(|t| t.is_empty()) {
         return Some("recursive force delete with no target");
     }
-    if targets.iter().any(|t| is_dangerous_path(t)) {
+    if cleaned.iter().any(|t| is_dangerous_path(t)) {
         return Some("recursive force delete of a system or out-of-tree path");
     }
     None
 }
 
+/// Remove all quote characters from a token (so partial quoting like
+/// `"$HOME"/.config` is also neutralized for the path check).
+fn unquote(t: &str) -> String {
+    t.replace(['"', '\''], "")
+}
+
 /// Lexical test for a deletion target that is *not* a safe relative in-tree
-/// path: absolute (`/…`), home (`~…`), a variable (`$…`), a bare `/`/`~`/`*`/
-/// `.`/`..`, or anything containing a `..` segment that could escape the tree.
+/// path: absolute (`/…`), home (`~…`), a variable (`$…`), a bare or cwd-wiping
+/// target (`/`/`~`/`.`/`./`/`..`/`*`/`./*`), or anything containing a `..`
+/// segment that could escape the tree.
 fn is_dangerous_path(p: &str) -> bool {
-    matches!(p, "/" | "~" | "." | ".." | "*")
-        || p.starts_with('/')
+    matches!(
+        p,
+        "/" | "~" | "." | "./" | ".." | "../" | "*" | "./*" | "/*" | "~/*"
+    ) || p.starts_with('/')
         || p.starts_with('~')
         || p.starts_with('$')
         || p.starts_with("../")
