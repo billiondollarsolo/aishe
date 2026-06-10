@@ -193,20 +193,22 @@ this to your `~/.zshrc` (or `~/.bashrc` with `init bash`):
 eval "$(aishe init zsh)"
 ```
 
-This installs a `command_not_found_handler` that routes anything that isn't a
-command to `aishe`. Your shell's line editor is **untouched**, so every native
-plugin works exactly as before. When you type natural language, `aishe` suggests
-a command and pre-fills your next prompt (`print -z`) for you to confirm or edit
-— and because it runs in your real shell, `cd`/`export` state persists normally.
-Set `AISHE_MODE=suggest|auto|yolo` to control behavior.
+This installs a `command_not_found_handler` (zsh) / `command_not_found_handle`
+(bash) that routes anything that isn't a command to `aishe`. Your shell's line
+editor is **untouched**, so every native plugin works exactly as before. Set
+`AISHE_MODE=suggest|auto|yolo` to control behavior.
 
-**auto-run safe via `eval` (zsh).** In `auto` mode the hook asks
-`aishe --auto-line`, which classifies the suggested command with the safety gate.
-Safe commands are `eval`'d directly in your real shell — so `cd`/`export` stick
-and the command is recorded in history — while dangerous ones are pre-filled
-(`print -z`) for you to review. (bash runs `command_not_found_handle` in a
-subshell, where eval'd state wouldn't persist, so bash keeps the pre-fill path in
-auto mode.)
+> **How it works:** shells run the not-found handler in a *subshell*, so it can't
+> touch the line editor or shell state directly. aishe writes the suggested
+> action to a temp file and a `precmd` (zsh) / `PROMPT_COMMAND` (bash) hook acts
+> on it in the **main** shell — which is what makes prefill and state-changes work.
+
+- **suggest**: zsh pre-fills your next prompt (`print -z`) to confirm/edit; bash
+  prints the suggestion (recall it with `Ctrl-X Ctrl-R`).
+- **auto**: a command the safety gate deems **safe** is run in your real shell —
+  so `cd`/`export` persist and it's recorded in history — while a **dangerous**
+  one is offered for review instead.
+- **yolo**: the agentic loop runs directly.
 
 **force-NL keybinding.** Sometimes your input *is* a valid command but you mean
 it as natural language. Press **Alt-Enter** (zsh) or **Ctrl-G** (bash) to send

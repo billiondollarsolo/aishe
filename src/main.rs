@@ -172,14 +172,10 @@ fn run() -> Result<u8> {
     let cache = CommandCache::new();
     cache.build(executor.shell());
 
-    // Build the provider lazily-ish: report errors but keep the shell usable.
-    let mut provider: Option<Box<dyn Provider>> = match providers::make(&config) {
-        Ok(p) => Some(p),
-        Err(e) => {
-            eprintln!("{}", format!("aishe: LLM disabled — {e}").dim());
-            None
-        }
-    };
+    // Build the provider, but keep the shell fully usable without it. We do NOT
+    // warn here: local commands shouldn't print LLM noise, and the NL paths
+    // (REPL, -c, hooks) each report a missing provider at the point of use.
+    let mut provider: Option<Box<dyn Provider>> = providers::make(&config).ok();
 
     // Install a non-fatal SIGINT handler (see INTERRUPTED docs).
     unsafe {
@@ -484,6 +480,18 @@ fn repl(
     config: &mut Config,
     cache: &CommandCache,
 ) -> Result<u8> {
+    // One-time hint in the interactive shell if LLM features are unavailable.
+    if provider.is_none() {
+        let key_env = match config.aishe.provider.as_str() {
+            "openai" => &config.providers.openai.api_key_env,
+            _ => &config.providers.anthropic.api_key_env,
+        };
+        eprintln!(
+            "{}",
+            format!("aishe: LLM features disabled — set ${key_env} to enable").dim()
+        );
+    }
+
     let history_path = data_dir().join("history");
     if let Some(parent) = history_path.parent() {
         std::fs::create_dir_all(parent).ok();

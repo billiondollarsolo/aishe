@@ -6,6 +6,19 @@ breaking changes can land in any release.
 
 ## [Unreleased]
 
+### Fixed
+- **Shell hook suggest-mode now actually prefills.** zsh/bash run the
+  `command_not_found` handler in a *subshell*, so the old `print -z`/`READLINE_LINE`
+  (and auto-mode `eval`) silently did nothing. The handler now hands off via a
+  temp file to a `precmd` (zsh) / `PROMPT_COMMAND` (bash) hook that runs in the
+  main shell — so suggestions prefill and safe auto commands run with `cd`/`export`
+  persisting. (Found via live testing against a real model.)
+- **Honor the system trust store** (`ureq` `native-certs`), so aishe works behind
+  corporate / TLS-inspecting proxies whose CA isn't in the bundled root set.
+- **No more spurious `LLM disabled` warning** on startup for purely-local use; the
+  notice is shown once in the interactive REPL (or at the point an NL request needs
+  the provider).
+
 ### Added
 - **zsh-PTY front-end** — drive your real interactive zsh inside a pseudo-terminal
   with every native plugin (zsh-autosuggestions, zsh-syntax-highlighting, fzf-tab,

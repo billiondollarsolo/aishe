@@ -7,21 +7,24 @@
 //! real — while still routing anything that isn't a command to the LLM.
 //!
 //! The user adds `eval "$(aishe init zsh)"` to their `~/.zshrc`. When they type
-//! something that isn't a command, the hook asks `aishe --suggest-line` for a
-//! command and pushes it onto the editing buffer (`print -z`) for confirm/edit;
-//! in `auto` mode it runs safe commands directly via `eval` (zsh only — see
-//! below); in `yolo` mode it runs the agentic loop directly.
+//! something that isn't a command, the hook asks `aishe` for a command.
 //!
-//! Two ergonomic extras (zsh):
-//! - **auto-run safe via `eval`.** In `auto` mode the hook calls
-//!   `aishe --auto-line`, which prints the command and exits `0` if the safety
-//!   gate deems it safe (the hook `eval`s it in your real shell, so `cd`/`export`
-//!   persist) or exits non-zero if dangerous (the hook pre-fills it for review).
-//!   bash runs `command_not_found_handle` in a *subshell*, so eval'd state would
-//!   not persist there — bash keeps the pre-fill path in auto mode.
+//! **Subshell handoff (important).** zsh (like bash) runs
+//! `command_not_found_handler` in a *subshell* (`$ZSH_SUBSHELL > 0`), so it
+//! cannot touch the line editor (`print -z`) or shell state (`cd`/`export`)
+//! directly — those changes are discarded. Instead the handler writes the
+//! intended action + command to a per-shell temp file (`$AISHE_PENDING_FILE`,
+//! which survives the subshell), and a `precmd` hook — running in the *main*
+//! shell before the next prompt — acts on it:
+//! - **suggest**: `print -z` the command onto the editing buffer (confirm/edit).
+//! - **auto**: `eval` a safe command in the main shell (so `cd`/`export` persist
+//!   and it's recorded in history), or `print -z` a dangerous one for review.
+//! - **yolo**: the handler runs `aishe --yolo-line` inline (its side effects and
+//!   tty output survive the subshell; it manages its own commands).
+//!
 //! - **force-NL keybinding.** A ZLE widget (default Alt-Enter, override with
-//!   `AISHE_NL_KEY`) sends the current line to the LLM as natural language even
-//!   when it is also a valid command. bash binds the same to `Ctrl-G`.
+//!   `AISHE_NL_KEY`) runs in a real widget (so `BUFFER` works) and replaces the
+//!   line with an LLM suggestion. bash binds the same to `Ctrl-G`.
 
 use std::borrow::Cow;
 
@@ -41,7 +44,12 @@ pub const SUPPORTED: &[&str] = &["zsh", "bash"];
 /// and the PTY wrapper's generated `.zshrc`. This is the single source of truth
 /// for zsh behavior so the standalone `init` snippet and the PTY front-end never
 /// drift apart.
-pub const ZSH_HOOK: &str = r#"command_not_found_handler() {
+pub const ZSH_HOOK: &str = r#": ${AISHE_PENDING_FILE:=${TMPDIR:-/tmp}/aishe-pending-$$}
+
+# Runs in a SUBSHELL (zsh forks for command-not-found), so it cannot use
+# `print -z`/`cd`/`export` directly — it writes the action+command to a temp
+# file that survives the subshell; aishe_precmd (main shell) acts on it.
+command_not_found_handler() {
   local line="${(j: :)@}"
   case "${AISHE_MODE:-suggest}" in
     yolo)
@@ -49,17 +57,15 @@ pub const ZSH_HOOK: &str = r#"command_not_found_handler() {
       return 0
       ;;
     auto)
-      # Ask aishe for a command. Exit 0 => safe: run it directly in this shell
-      # (cd/export persist). Non-zero => dangerous: pre-fill for review instead.
       local cmd rc
       cmd="$(command aishe --auto-line "$line" 2> /dev/tty)"
       rc=$?
       if [[ -n "$cmd" ]]; then
+        # exit 0 => safe (run it); non-zero => dangerous (pre-fill for review)
         if (( rc == 0 )); then
-          print -s -- "$cmd"
-          eval "$cmd"
+          printf 'run\n%s\n' "$cmd" > "$AISHE_PENDING_FILE"
         else
-          print -z -- "$cmd"
+          printf 'fill\n%s\n' "$cmd" > "$AISHE_PENDING_FILE"
         fi
       fi
       return 0
@@ -67,11 +73,23 @@ pub const ZSH_HOOK: &str = r#"command_not_found_handler() {
     *)
       local cmd
       cmd="$(command aishe --suggest-line "$line" 2> /dev/tty)"
-      if [[ -n "$cmd" ]]; then
-        print -z -- "$cmd"
-      fi
+      [[ -n "$cmd" ]] && printf 'fill\n%s\n' "$cmd" > "$AISHE_PENDING_FILE"
       return 0
       ;;
+  esac
+}
+
+# Runs in the MAIN shell before each prompt: act on a pending command.
+aishe_precmd() {
+  [[ -f "$AISHE_PENDING_FILE" ]] || return
+  local action cmd
+  action="$(head -n 1 "$AISHE_PENDING_FILE")"
+  cmd="$(tail -n +2 "$AISHE_PENDING_FILE")"
+  command rm -f "$AISHE_PENDING_FILE"
+  [[ -z "$cmd" ]] && return
+  case "$action" in
+    run)  print -s -- "$cmd"; eval "$cmd" ;;  # main shell: cd/export persist
+    *)    print -z -- "$cmd" ;;               # pre-fill for confirm/edit
   esac
 }
 
@@ -89,6 +107,8 @@ aishe-nl-widget() {
   fi
 }
 if [[ -o interactive ]]; then
+  autoload -Uz add-zsh-hook
+  add-zsh-hook precmd aishe_precmd
   zle -N aishe-nl-widget
   bindkey "${AISHE_NL_KEY:-^[^M}" aishe-nl-widget
 fi
@@ -128,9 +148,11 @@ export ZDOTDIR="${{AISHE_REAL_ZDOTDIR}}"
 }
 
 const BASH_SCRIPT: &str = r#"# aishe bash integration — add to ~/.bashrc:  eval "$(aishe init bash)"
-# Routes unknown input to aishe. Bash has no `print -z`, so the suggested
-# command is placed in the readline buffer via the PROMPT hook.
-# Set AISHE_MODE=suggest|auto|yolo to control behavior (default: suggest).
+# Routes unknown input to aishe. Set AISHE_MODE=suggest|auto|yolo (default
+# suggest). bash runs command_not_found_handle in a SUBSHELL, so it can't touch
+# shell state directly — it writes a temp file that a PROMPT_COMMAND hook acts
+# on in the main shell.
+: ${AISHE_PENDING_FILE:=${TMPDIR:-/tmp}/aishe-pending-$$}
 command_not_found_handle() {
   local line="$*"
   case "${AISHE_MODE:-suggest}" in
@@ -138,23 +160,47 @@ command_not_found_handle() {
       command aishe --yolo-line "$line" < /dev/tty > /dev/tty 2>&1
       return 0
       ;;
+    auto)
+      local cmd rc
+      cmd="$(command aishe --auto-line "$line" 2> /dev/tty)"
+      rc=$?
+      if [ -n "$cmd" ]; then
+        if [ "$rc" -eq 0 ]; then printf 'run\n%s\n' "$cmd" > "$AISHE_PENDING_FILE"
+        else printf 'fill\n%s\n' "$cmd" > "$AISHE_PENDING_FILE"; fi
+      fi
+      return 0
+      ;;
     *)
-      # suggest and auto both pre-fill here. bash runs command_not_found_handle
-      # in a subshell, so eval'd state (cd/export) would not persist — pre-fill
-      # is the honest path. Use Ctrl-X Ctrl-R to recall the suggestion.
       local cmd
       cmd="$(command aishe --suggest-line "$line" 2> /dev/tty)"
-      if [ -n "$cmd" ]; then
-        # Pre-fill the next prompt with the suggested command.
-        READLINE_LINE="$cmd"
-        READLINE_POINT=${#cmd}
-        export AISHE_PENDING="$cmd"
-        bind '"\C-x\C-r": "\C-a\C-k$AISHE_PENDING"' 2>/dev/null
-      fi
+      [ -n "$cmd" ] && printf 'fill\n%s\n' "$cmd" > "$AISHE_PENDING_FILE"
       return 0
       ;;
   esac
 }
+
+# Main-shell hook: run a safe auto command (state persists), or offer a
+# suggestion. (readline can't be reliably pre-filled from PROMPT_COMMAND, so a
+# suggestion is printed and stashed; recall it with Ctrl-X Ctrl-R.)
+__aishe_prompt() {
+  [ -f "$AISHE_PENDING_FILE" ] || return
+  local action cmd
+  action="$(head -n 1 "$AISHE_PENDING_FILE")"
+  cmd="$(tail -n +2 "$AISHE_PENDING_FILE")"
+  command rm -f "$AISHE_PENDING_FILE"
+  [ -z "$cmd" ] && return
+  if [ "$action" = run ]; then
+    history -s "$cmd"; eval "$cmd"
+  else
+    printf 'aishe suggests: %s  (Ctrl-X Ctrl-R to recall)\n' "$cmd"
+    export AISHE_PENDING="$cmd"
+    bind '"\C-x\C-r": "\C-a\C-k$AISHE_PENDING"' 2>/dev/null
+  fi
+}
+case ":${PROMPT_COMMAND}:" in
+  *__aishe_prompt*) ;;
+  *) PROMPT_COMMAND="__aishe_prompt${PROMPT_COMMAND:+;$PROMPT_COMMAND}" ;;
+esac
 
 # Force-NL: Ctrl-G turns the current line into an aishe suggestion even if it is
 # a valid command. `bind -x` runs in the current shell, so READLINE_LINE sticks.
@@ -195,6 +241,16 @@ mod tests {
     }
 
     #[test]
+    fn zsh_script_uses_precmd_handoff() {
+        // The handler runs in a subshell, so it must hand off via a temp file to
+        // a precmd hook (which runs in the main shell where print -z/eval work).
+        let s = script("zsh").unwrap();
+        assert!(s.contains("AISHE_PENDING_FILE"));
+        assert!(s.contains("aishe_precmd"));
+        assert!(s.contains("add-zsh-hook precmd aishe_precmd"));
+    }
+
+    #[test]
     fn zsh_script_has_force_nl_widget() {
         let s = script("zsh").unwrap();
         assert!(s.contains("aishe-nl-widget"));
@@ -211,6 +267,10 @@ mod tests {
         assert!(s.contains("--suggest-line"));
         assert!(s.contains("__aishe_nl"));
         assert!(s.contains("bind -x"));
+        // subshell handoff: handler writes a file, PROMPT_COMMAND acts on it.
+        assert!(s.contains("AISHE_PENDING_FILE"));
+        assert!(s.contains("__aishe_prompt"));
+        assert!(s.contains("PROMPT_COMMAND"));
     }
 
     #[test]
