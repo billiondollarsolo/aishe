@@ -128,6 +128,8 @@ def make_env():
             'mode = "suggest"\n'
             'front_end = "reedline"\n'
             "show_right_prompt = false\n"
+            "correct = true\n"  # exercise zsh CORRECT (REPL-only, no key needed)
+            "auto_pushd = true\n"
             'prompt_format = "[{mode}] {cwd}"\n'
         )
     # An .aishrc whose alias should be sourced into delegated commands. The body
@@ -236,6 +238,25 @@ def main():
         sh.send("done")
         if not sh.expect("LOOP_3"):
             fail("multi-line control structure did not run", sh)
+
+        # 4f) zsh AUTO_PUSHD: cd pushes the previous dir; `dirs -v` numbers it.
+        sh.send("cd /tmp")
+        sh.settle(1.0)
+        sh.send("dirs -v")
+        if not sh.expect("1\t"):
+            fail("auto_pushd / dirs -v did not show a numbered stack", sh)
+
+        # 4g) spelling correction (CORRECT): a mistyped command word is offered as
+        #     a correction; accepting it runs the corrected command. "ehco" is a
+        #     transposition of "echo"; CORRECT_42 only appears once echo runs.
+        sh.send("ehco CORRECT_$((6 * 7))")
+        # The prompt text is colorized, so match the plain `'ehco'` and `[Y/n]`
+        # markers rather than the whole sentence.
+        if not sh.expect("'ehco'") or not sh.expect("[Y/n]"):
+            fail("spelling correction was not offered for a mistyped command", sh)
+        sh.send("y")  # accept the correction
+        if not sh.expect("CORRECT_42"):
+            fail("accepting the correction did not run the corrected command", sh)
 
         # 5) clean exit.
         sh.send("exit")

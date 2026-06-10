@@ -34,9 +34,18 @@ suites:
    command discovery, `shell` and `$ARGUMENTS` templating, no-frontmatter
    discovery, and project over user override precedence.
 4. Dispatch classification: asserts each input routes to shell or natural language
-   independent of output.
-5. Natural language (needs an API key): suggest, yolo, mode switching, custom NL
-   commands, and model-invoked skills.
+   independent of output (including the `/usage`, `/reset`, `/ghost` meta slashes).
+5. Config and meta robustness: a config exercising every newer field round-trips
+   through `/config`, `aishe doctor` passes, the repo example config parses, and
+   the new meta commands behave. No model needed.
+6. Natural language (needs an API key): suggest, yolo, mode switching, custom NL
+   commands, model-invoked skills, the token-usage line, the budget cap, and
+   audit logging.
+
+The two PTY smoke tests are part of the suite too: `tests/reedline_smoke.py`
+exercises interactive, REPL-only features without a key (editing, multi-line
+continuation, aliases/functions, history expansion, `AUTO_PUSHD`/`dirs -v`, and
+spelling correction), and `tests/pty_smoke.py` drives the zsh-PTY front-end.
 
 Run it:
 

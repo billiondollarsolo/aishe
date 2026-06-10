@@ -112,8 +112,13 @@ Details in [docs/front-ends.md](docs/front-ends.md).
 2. **Built-in reedline editor.** A self-contained line editor with
    context-aware tab completion, history autosuggestions, `Ctrl-R` history
    search, history expansion, multi-line continuation, syntax highlighting,
-   autocd, a directory stack, emacs or vi keymaps, and optional
-   [inline AI ghost text](docs/ghost-text.md) (`aishe ghost on`).
+   emacs or vi keymaps, and optional
+   [inline AI ghost text](docs/ghost-text.md) (`aishe ghost on`). It also brings
+   a lot of zsh ergonomics: a rich prompt (command duration and git
+   staged/dirty/ahead-behind/stash markers), navigation (autocd, directory stack,
+   `AUTO_PUSHD`, `cdpath`, named dirs `~proj`), history filtering
+   (`HIST_IGNORE_DUPS`, `HISTIGNORE`), and spelling correction (`CORRECT`). See
+   [docs/front-ends.md](docs/front-ends.md).
 
 3. **Native zsh/bash hook.** Add `eval "$(aishe init zsh)"` to your `~/.zshrc`
    (or `~/.bashrc` with `init bash`) to keep your own shell and editor while
@@ -286,9 +291,16 @@ provider = "anthropic"         # anthropic | openai
 front_end = "auto"             # auto | reedline | zsh-pty
 edit_mode = "emacs"            # emacs | vi
 structured = "schema"          # schema | json | prompt
-stream = false
-show_usage = true
+stream = false                 # stream answers token-by-token
+show_usage = true              # print token/cost after each model call
 budget_usd = 0.0               # 0 = unlimited
+memory = true                  # remember recent turns (aishe reset to clear)
+ghost_text = false             # inline AI ghost text (aishe ghost on)
+redact_secrets = true          # scrub secrets from the model context
+report_time = 3                # show command duration over N seconds
+auto_pushd = false             # zsh AUTO_PUSHD
+correct = false                # zsh CORRECT (fix mistyped commands)
+# many more fields: see examples/config.toml and docs/configuration.md
 
 [providers.anthropic]
 base_url = "https://api.anthropic.com"

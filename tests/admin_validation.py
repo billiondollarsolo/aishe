@@ -14,9 +14,14 @@ Five suites:
      project→user override precedence. No model needed.
   5. Dispatch classification — assert each input routes to shell vs natural
      language (independent of output determinism). No model needed.
+  6. Config & meta robustness — a config exercising every newer field round-trips
+     through `/config`, `aishe doctor` passes, the repo example config parses, and
+     the new meta commands (`/usage`, `/reset`, `/ghost`, `/help`) behave. No
+     model needed.
   3. Natural language (optional; needs an API key) — suggest / yolo / mode
-     switching, custom NL commands, and model-invoked skills (progressive
-     disclosure) against the real model.
+     switching, custom NL commands, model-invoked skills (progressive
+     disclosure), token-usage display, the budget cap, and audit logging against
+     the real model.
 
 Writes a timestamped Markdown report to test-results/ and prints a summary.
 Designed to be extended: add rows to SHELL_CASES / FILE_OPS / NL_SUGGEST, or
@@ -27,6 +32,7 @@ The API key (for suite 3) is read from $GROQ_API_KEY or /tmp/aishe-secrets.env.
 """
 
 import datetime
+import json
 import os
 import shutil
 import subprocess
@@ -307,6 +313,11 @@ DISPATCH_SHELL = [
     "[[ -d subdir ]] && echo yes",
     "(( 1 + 1 ))",
     "!echo forced-shell",                     # ! sigil = forced shell
+    "/usage",                                 # meta slash-commands route to builtin
+    "/reset",
+    "/ghost",
+    "/skills",
+    "/help",
     "tar --version",
     "awk 'BEGIN{print 1}'",
     "sed -n '1p' a.txt",
@@ -361,7 +372,9 @@ def file_ops_script(d):
 NL_SUGGEST = [
     "list files in long format including hidden",
     "show disk usage of the current directory sorted largest first",
-    "find all rust files modified in the last day",
+    # `?` forces NL: the request starts with the real command `find`, which would
+    # otherwise route to the shell (the documented command-vs-NL ambiguity).
+    "?find all rust files modified in the last day",
     "count the number of lines in all text files here",
     "show the running processes for the current user",
     "create a gzip archive of the src directory",
@@ -482,6 +495,61 @@ def make_config():
             'model = "openai/gpt-oss-120b"\n'
         )
     return cfgroot
+
+
+# A config exercising every newer field, with distinctive values so we can
+# confirm each one round-trips through `/config`.
+FULL_CONFIG = """\
+[aishe]
+mode = "auto"
+provider = "openai"
+front_end = "reedline"
+edit_mode = "vi"
+structured = "json"
+stream = true
+show_usage = false
+budget_usd = 1.5
+memory = false
+ghost_text = true
+redact_secrets = false
+report_time = 7
+git_status = false
+git_prompt = false
+show_right_prompt = false
+auto_pushd = true
+hist_ignore_dups = false
+hist_ignore_space = true
+hist_ignore = ["ls", "cd *"]
+cdpath = ["/tmp", "/srv"]
+correct = true
+max_yolo_iterations = 5
+yolo_confirm_dangerous = false
+
+[providers.openai]
+base_url = "https://api.groq.com/openai"
+api_key_env = "GROQ_API_KEY"
+model = "openai/gpt-oss-120b"
+
+[logging]
+enabled = false
+redact = true
+
+[pricing."openai/gpt-oss-120b"]
+input = 0.15
+output = 0.6
+
+[named_dirs]
+proj = "/home/me/projects"
+"""
+
+
+def write_config(text):
+    """Create a temp config root containing `text` as config.toml."""
+    root = tempfile.mkdtemp(prefix="aishe-cfg-")
+    os.makedirs(os.path.join(root, "aishe"))
+    with open(os.path.join(root, "aishe", "config.toml"), "w") as f:
+        f.write(text)
+    return root
 
 
 def base_env(cfgroot, with_key=False):
@@ -621,6 +689,60 @@ def main():
         ok = NL_NOTE in err
         add(f"route-nl: {cmd}", ok, "" if ok else f"(not routed to NL; err={err.strip()[:80]!r})")
 
+    # ---- Suite 6: config & meta-command robustness (deterministic) ----
+    section("Suite 6 — Config & meta-command robustness (no model needed)")
+
+    # 6a. A config exercising every newer field round-trips through `/config`.
+    full_root = write_config(FULL_CONFIG)
+    full_env = base_env(full_root, with_key=False)
+    rc, out, err = run([BIN, "-c", "/config"], full_env)
+    report.append("\n**Full config round-trips (`/config`):**\n")
+    expected = [
+        'mode = "auto"',
+        "report_time = 7",
+        "auto_pushd = true",
+        "correct = true",
+        "budget_usd = 1.5",
+        "hist_ignore_space = true",
+        "ghost_text = true",
+        "redact_secrets = false",
+        "[logging]",
+        "[pricing.",
+        "[named_dirs]",
+        'proj = "/home/me/projects"',
+    ]
+    for token in expected:
+        add(f"config: {token}", token in out, "" if token in out else f"(missing from /config)")
+    add("config: parses (rc 0)", rc == 0)
+
+    # 6b. `aishe doctor` reports the privacy/logging status and passes.
+    rc, out, err = run([BIN, "doctor"], full_env)
+    add("config: doctor passes", rc == 0, f"(rc={rc})")
+    add("config: doctor shows redaction line", "secret redaction" in out)
+    add("config: doctor shows audit-log line", "audit log" in out)
+
+    # 6c. The repo's annotated example config parses cleanly.
+    report.append("\n**Repo example config parses:**\n")
+    example = os.path.join(REPO, "examples", "config.toml")
+    if os.path.exists(example):
+        ex_root = write_config(open(example).read())
+        rc, out, err = run([BIN, "-c", "/config"], base_env(ex_root, with_key=False))
+        add("config: examples/config.toml parses", rc == 0 and "[aishe]" in out,
+            "" if "[aishe]" in out else f"(err={err.strip()[:80]!r})")
+        shutil.rmtree(ex_root, ignore_errors=True)
+
+    # 6d. New read-only / toggle meta commands behave in `-c` (no crash, not NL).
+    report.append("\n**New meta commands (`-c`):**\n")
+    for meta in ["/usage", "/reset", "/ghost", "/help"]:
+        rc, out, err = run([BIN, "-c", meta], env_local, cwd=fixture)
+        ok = rc == 0 and "LLM not configured" not in err
+        add(f"meta: {meta}", ok, "" if ok else f"(rc={rc} err={err.strip()[:60]!r})")
+    # `/usage` with no calls reports an empty session rather than erroring.
+    rc, out, err = run([BIN, "-c", "/usage"], env_local, cwd=fixture)
+    add("meta: /usage reports empty session", "no model calls" in out.lower() or "usage" in out.lower())
+
+    shutil.rmtree(full_root, ignore_errors=True)
+
     # ---- Suite 3: natural language (needs key) ----
     section("Suite 3 — Natural language (real model)")
     k = key()
@@ -692,6 +814,55 @@ def main():
             "" if stamped else f"(exists={os.path.exists(target)})")
         shutil.rmtree(skill_dir, ignore_errors=True)
 
+        # Token/cost accounting: the per-session usage line prints after a call.
+        report.append("\n**Token usage line (after a suggest call):**\n")
+        rc, out, err = run([BIN, "-c", "list files by size"], env_llm, cwd=fixture, timeout=60)
+        usage_ok = ("in ·" in err or " in " in err) and (
+            "$" in err or "cost n/a" in err or "req" in err
+        )
+        add("usage: per-call usage line shown", usage_ok,
+            "" if usage_ok else f"(stderr={err.strip()[-120:]!r})")
+
+        # Budget cap: a tiny budget stops a yolo run before it finishes.
+        report.append("\n**Budget cap stops a yolo run:**\n")
+        budget_root = write_config(
+            '[aishe]\nmode = "yolo"\nprovider = "openai"\nfront_end = "reedline"\n'
+            "budget_usd = 0.00001\n\n[providers.openai]\n"
+            'base_url = "https://api.groq.com/openai"\napi_key_env = "GROQ_API_KEY"\n'
+            'model = "openai/gpt-oss-120b"\n'
+        )
+        bdir = tempfile.mkdtemp(prefix="aishe-budget-")
+        rc, out, err = run(
+            [BIN, "--mode", "yolo", "-c",
+             f"create three files {bdir}/a {bdir}/b {bdir}/c then list them"],
+            base_env(budget_root, with_key=True), cwd=fixture, timeout=90)
+        add("budget: yolo stops at budget", "budget reached" in (out + err).lower(),
+            "" if "budget reached" in (out + err).lower() else f"(tail={(out+err).strip()[-120:]!r})")
+        shutil.rmtree(budget_root, ignore_errors=True)
+        shutil.rmtree(bdir, ignore_errors=True)
+
+        # Audit logging: an NL call is recorded as ai_request + ai_response.
+        report.append("\n**Audit log records AI calls:**\n")
+        log_root = write_config(
+            '[aishe]\nmode = "suggest"\nprovider = "openai"\nfront_end = "reedline"\n'
+            "\n[providers.openai]\n"
+            'base_url = "https://api.groq.com/openai"\napi_key_env = "GROQ_API_KEY"\n'
+            'model = "openai/gpt-oss-120b"\n\n[logging]\nenabled = true\n'
+        )
+        log_env = base_env(log_root, with_key=True)
+        run([BIN, "-c", "show the current date"], log_env, cwd=fixture, timeout=60)
+        log_path = os.path.join(log_env["XDG_DATA_HOME"], "aishe", "audit.jsonl")
+        kinds = set()
+        if os.path.exists(log_path):
+            for line in open(log_path):
+                try:
+                    kinds.add(json.loads(line).get("kind"))
+                except Exception:
+                    pass
+        add("audit: ai_request logged", "ai_request" in kinds)
+        add("audit: ai_response logged", "ai_response" in kinds)
+        shutil.rmtree(log_root, ignore_errors=True)
+
     # ---- write report ----
     ts = datetime.datetime.utcnow().strftime("%Y%m%dT%H%M%SZ")
     total_ok = sum(v[0] for v in counts.values())
@@ -732,7 +903,8 @@ def main():
     # route-nl is informational (depends on no oddly-named command shadowing an
     # NL word on the host); a real command misrouted to NL (route-shell) is a bug.
     critical = (full("shell") and full("fileop") and full("slash")
-                and full("plugin") and full("route-shell"))
+                and full("plugin") and full("route-shell")
+                and full("config") and full("meta"))
     sys.exit(0 if critical else 1)
 
 
