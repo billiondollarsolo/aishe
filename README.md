@@ -146,7 +146,9 @@ natively:
   directories-only for `cd`/`pushd`/`rmdir`; subcommands for `git`/`cargo`/
   `docker`/`npm` (plus live branch names for `git checkout`/`switch`/`merge`/
   `rebase`); `aishe` meta subcommands (with descriptions) and their values; and
-  file/directory paths (with `~/` expansion) elsewhere.
+  file/directory paths (with `~/` expansion) elsewhere. Matching is
+  case-insensitive and falls back to fuzzy subsequence (`gco`→`git-checkout`,
+  `dwn`→`Downloads/`) when there's no prefix match.
 - **History autosuggestions** (like `zsh-autosuggestions`) — fish-style inline
   hints from your history.
 - **History search** — `Ctrl-R` opens a browsable, filterable menu of past
@@ -177,6 +179,9 @@ natively:
   the left prompt with `{cwd}`/`{mode}`/`{model}`/`{exit}` placeholders. (For a
   full powerlevel10k/oh-my-zsh prompt, use the zsh-PTY front-end — it renders
   your real zsh prompt.)
+- **Git prompt segment** — the right prompt shows the current branch (`⎇ main`),
+  read straight from `.git/HEAD` (no `git` process). Disable with
+  `git_prompt = false`.
 
 ### 2. Native zsh/bash hook (`eval "$(aishe init zsh)"`)
 
@@ -277,6 +282,7 @@ edit_mode = "emacs"            # emacs | vi (reedline line-editor keymap)
 yolo_confirm_dangerous = true  # confirm dangerous commands even in yolo
 max_yolo_iterations = 10
 show_right_prompt = true        # show "model · mode" on the right
+git_prompt = true               # show "⎇ branch" in the right prompt (reedline)
 # prompt_format = "[{mode}] {cwd}"  # custom reedline left prompt: {cwd} {mode} {model} {exit}
 stream = false                  # stream answers token-by-token (suggest/auto)
 

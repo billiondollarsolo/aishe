@@ -91,15 +91,24 @@ impl CommandCache {
         self.inner.read().unwrap().contains(token)
     }
 
-    /// Command names beginning with `prefix` (for tab completion). Unsorted.
+    /// Command names beginning with `prefix`, case-insensitively (for tab
+    /// completion). Unsorted.
     pub fn matching(&self, prefix: &str) -> Vec<String> {
+        let lp = prefix.to_lowercase();
         self.inner
             .read()
             .unwrap()
             .iter()
-            .filter(|n| n.starts_with(prefix))
+            .filter(|n| n.to_lowercase().starts_with(&lp))
             .cloned()
             .collect()
+    }
+
+    /// Command names fuzzily matching `query` (subsequence), ranked best-first.
+    /// Used as a fallback when there are no prefix matches.
+    pub fn fuzzy(&self, query: &str) -> Vec<String> {
+        let all: Vec<String> = self.inner.read().unwrap().iter().cloned().collect();
+        crate::fuzzy::rank(all, query)
     }
 
     /// Insert a set of command names (used by tests and seeding).

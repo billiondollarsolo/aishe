@@ -221,9 +221,14 @@ fn looks_like_path(word: &str) -> bool {
 }
 
 fn complete_commands(cache: &CommandCache, word: &str, span: Span) -> Vec<Suggestion> {
+    // Case-insensitive prefix first; fall back to fuzzy subsequence (e.g. `gco`).
     let mut names = cache.matching(word);
-    names.sort();
-    names.dedup();
+    if names.is_empty() && !word.is_empty() {
+        names = cache.fuzzy(word); // already ranked best-first
+    } else {
+        names.sort();
+        names.dedup();
+    }
     names.truncate(MAX_SUGGESTIONS);
     names
         .into_iter()
@@ -249,8 +254,9 @@ fn complete_env(word: &str, span: Span) -> Vec<Suggestion> {
     {
         return Vec::new();
     }
+    let lp = prefix.to_lowercase();
     let mut vars: Vec<(String, String)> = std::env::vars()
-        .filter(|(k, _)| k.starts_with(prefix))
+        .filter(|(k, _)| k.to_lowercase().starts_with(&lp))
         .collect();
     vars.sort_by(|a, b| a.0.cmp(&b.0));
     vars.truncate(MAX_SUGGESTIONS);
@@ -276,7 +282,7 @@ fn complete_aishe_meta(seg_tokens: &[&str], word: &str, span: Span) -> Vec<Sugge
         // `aishe <word>` — the subcommand (with a description in the menu).
         1 => META_SUBCOMMANDS
             .iter()
-            .filter(|(name, _)| name.starts_with(word))
+            .filter(|(name, _)| name.to_lowercase().starts_with(&word.to_lowercase()))
             .map(|(name, desc)| Suggestion {
                 value: (*name).to_string(),
                 description: Some((*desc).to_string()),
@@ -302,11 +308,13 @@ fn complete_aishe_meta(seg_tokens: &[&str], word: &str, span: Span) -> Vec<Sugge
     }
 }
 
-/// Build suggestions from a fixed option list, filtered by `word` prefix.
+/// Build suggestions from a fixed option list, filtered by `word` prefix
+/// (case-insensitive).
 fn str_suggestions(options: &[&str], word: &str, span: Span) -> Vec<Suggestion> {
+    let lw = word.to_lowercase();
     options
         .iter()
-        .filter(|o| o.starts_with(word))
+        .filter(|o| o.to_lowercase().starts_with(&lw))
         .map(|o| Suggestion {
             value: (*o).to_string(),
             span,
@@ -340,15 +348,12 @@ fn complete_paths(word: &str, span: Span, dirs_only: bool) -> Vec<Suggestion> {
     };
 
     let include_hidden = file_prefix.starts_with('.');
-    let mut out: Vec<Suggestion> = Vec::new();
+    let mut all: Vec<(String, bool)> = Vec::new();
     for entry in entries.flatten() {
         let name = match entry.file_name().into_string() {
             Ok(n) => n,
             Err(_) => continue,
         };
-        if !name.starts_with(file_prefix) {
-            continue;
-        }
         if name.starts_with('.') && !include_hidden {
             continue;
         }
@@ -356,25 +361,46 @@ fn complete_paths(word: &str, span: Span, dirs_only: bool) -> Vec<Suggestion> {
         if dirs_only && !is_dir {
             continue;
         }
-        let value = if is_dir {
-            format!("{dir_part}{name}/")
-        } else {
-            format!("{dir_part}{name}")
-        };
-        out.push(Suggestion {
-            value,
+        all.push((name, is_dir));
+    }
+
+    // Case-insensitive prefix first; fall back to fuzzy subsequence.
+    let lp = file_prefix.to_lowercase();
+    let mut chosen: Vec<(String, bool)> = all
+        .iter()
+        .filter(|(n, _)| n.to_lowercase().starts_with(&lp))
+        .cloned()
+        .collect();
+    if chosen.is_empty() && !file_prefix.is_empty() {
+        let names = crate::fuzzy::rank(all.iter().map(|(n, _)| n.clone()).collect(), file_prefix);
+        chosen = names
+            .into_iter()
+            .filter_map(|n| {
+                all.iter()
+                    .find(|(en, _)| *en == n)
+                    .map(|(en, d)| (en.clone(), *d))
+            })
+            .collect();
+    } else {
+        chosen.sort_by(|a, b| a.0.cmp(&b.0));
+    }
+    chosen.truncate(MAX_SUGGESTIONS);
+
+    chosen
+        .into_iter()
+        .map(|(name, is_dir)| Suggestion {
+            value: if is_dir {
+                format!("{dir_part}{name}/")
+            } else {
+                format!("{dir_part}{name}")
+            },
             span,
             // Don't append a space after a directory, so the user can keep
             // descending; do after a file.
             append_whitespace: !is_dir,
             ..Default::default()
-        });
-        if out.len() >= MAX_SUGGESTIONS {
-            break;
-        }
-    }
-    out.sort_by(|a, b| a.value.cmp(&b.value));
-    out
+        })
+        .collect()
 }
 
 fn home() -> PathBuf {
@@ -462,6 +488,17 @@ mod tests {
         // theme presets come from the theme module
         let line = "aishe theme ";
         assert!(values(&c.complete(line, line.len())).contains(&"nord".to_string()));
+    }
+
+    #[test]
+    fn fuzzy_fallback_when_no_prefix_match() {
+        let cache = CommandCache::new();
+        cache.insert_all(&["git-checkout", "grep", "ls"]);
+        let mut c = AisheCompleter::new(cache);
+        // no command starts with "gco", so fuzzy finds git-checkout
+        assert!(values(&c.complete("gco", 3)).contains(&"git-checkout".to_string()));
+        // case-insensitive prefix
+        assert!(values(&c.complete("GRE", 3)).contains(&"grep".to_string()));
     }
 
     #[test]

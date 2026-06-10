@@ -7,6 +7,7 @@ pub mod config;
 pub mod context;
 pub mod dispatcher;
 pub mod executor;
+pub mod fuzzy;
 pub mod highlight;
 pub mod history_expand;
 pub mod integration;

@@ -512,6 +512,12 @@ fn repl(
         .with_edit_mode(edit_mode);
 
     loop {
+        // Computed once per prompt (not per keystroke), reading .git/HEAD.
+        let git = if config.aishe.git_prompt {
+            aishe::prompt::git_segment(executor.cwd())
+        } else {
+            None
+        };
         let prompt = AishePrompt::new(
             executor.cwd().clone(),
             &config.aishe.mode,
@@ -520,6 +526,7 @@ fn repl(
             config.aishe.show_right_prompt,
             theme,
             config.aishe.prompt_format.as_deref(),
+            git,
         );
 
         INTERRUPTED.store(false, Ordering::SeqCst);

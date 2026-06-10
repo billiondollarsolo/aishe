@@ -28,8 +28,11 @@ breaking changes can land in any release.
 - **`.aishrc` startup file** sourced into every command, plus persistence of
   interactively-defined aliases, shell options, and **functions** (multi-line
   `name() { … }`) across the reedline front-end.
-- **Custom prompt** (`prompt_format`) and **theme presets** (`default`, `vivid`,
-  `mono`, `nord`, `gruvbox`) with an `aishe theme` command.
+- **Custom prompt** (`prompt_format`), a **git branch segment** in the right
+  prompt (`git_prompt`, read from `.git/HEAD`), and **theme presets** (`default`,
+  `vivid`, `mono`, `nord`, `gruvbox`) with an `aishe theme` command.
+- **Fuzzy completion** — case-insensitive matching with a subsequence fallback
+  (`gco`→`git-checkout`).
 - **`aishe doctor`** — environment check for shell, config, front-end, provider,
   and API key.
 - **CI** — cross-platform tests plus PTY smoke tests for both front-ends.

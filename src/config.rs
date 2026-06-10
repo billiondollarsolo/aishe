@@ -45,6 +45,9 @@ pub struct AisheConfig {
     /// `{cwd}`, `{mode}`, `{model}`, `{exit}`. `None` = just the cwd.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub prompt_format: Option<String>,
+    /// Show a git branch segment in the right prompt (reedline front-end).
+    #[serde(default = "default_true")]
+    pub git_prompt: bool,
     /// Stream answers token-by-token in the interactive REPL (suggest/auto).
     #[serde(default)]
     pub stream: bool,
@@ -120,6 +123,7 @@ impl Default for AisheConfig {
             front_end: default_front_end(),
             edit_mode: default_edit_mode(),
             prompt_format: None,
+            git_prompt: true,
             stream: false,
         }
     }

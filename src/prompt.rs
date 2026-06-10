@@ -2,7 +2,7 @@
 //! optional right prompt of `model · mode`.
 
 use std::borrow::Cow;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use reedline::{
     Prompt, PromptEditMode, PromptHistorySearch, PromptHistorySearchStatus, PromptViMode,
@@ -21,6 +21,8 @@ pub struct AishePrompt {
 }
 
 impl AishePrompt {
+    // A prompt legitimately has many independent display inputs.
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         cwd: PathBuf,
         mode: &str,
@@ -29,6 +31,7 @@ impl AishePrompt {
         show_right: bool,
         theme: Theme,
         prompt_format: Option<&str>,
+        git: Option<String>,
     ) -> Self {
         let glyph = match mode {
             "yolo" => '⚡',
@@ -36,7 +39,10 @@ impl AishePrompt {
             _ => '❯',
         };
         let cwd_display = abbreviate_home(&cwd);
-        let right = format!("{model} · {mode}");
+        let right = match git {
+            Some(branch) => format!("⎇ {branch}  {model} · {mode}"),
+            None => format!("{model} · {mode}"),
+        };
         let left = match prompt_format {
             Some(fmt) => apply_format(fmt, &cwd_display, mode, &model, last_exit),
             None => cwd_display,
@@ -59,6 +65,40 @@ fn apply_format(fmt: &str, cwd: &str, mode: &str, model: &str, last_exit: i32) -
         .replace("{mode}", mode)
         .replace("{model}", model)
         .replace("{exit}", &last_exit.to_string())
+}
+
+/// The current git branch (or short detached SHA) for `cwd`, read directly from
+/// `.git/HEAD` — no `git` process, so it's cheap enough to compute per prompt.
+/// Returns `None` when not inside a work tree.
+pub fn git_segment(cwd: &Path) -> Option<String> {
+    // Walk up to find a `.git` directory or file.
+    let mut dir = Some(cwd);
+    let git_dir = loop {
+        let d = dir?;
+        let candidate = d.join(".git");
+        if candidate.is_dir() {
+            break candidate;
+        }
+        if candidate.is_file() {
+            // Worktree/submodule: `.git` is `gitdir: <path>`.
+            let text = std::fs::read_to_string(&candidate).ok()?;
+            let p = text.strip_prefix("gitdir:")?.trim();
+            let pb = PathBuf::from(p);
+            break if pb.is_absolute() { pb } else { d.join(pb) };
+        }
+        dir = d.parent();
+    };
+
+    let head = std::fs::read_to_string(git_dir.join("HEAD")).ok()?;
+    let head = head.trim();
+    if let Some(rf) = head.strip_prefix("ref: refs/heads/") {
+        Some(rf.to_string())
+    } else if head.len() >= 7 {
+        // Detached HEAD: show a short SHA.
+        Some(head[..7].to_string())
+    } else {
+        None
+    }
 }
 
 /// Replace a leading $HOME with `~`.
@@ -128,5 +168,38 @@ impl Prompt for AishePrompt {
 
     fn get_prompt_right_color(&self) -> reedline::Color {
         self.theme.right_prompt.to_crossterm()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn git_segment_reads_branch_from_head() {
+        let dir = std::env::temp_dir().join(format!("aishe-git-{}", std::process::id()));
+        let gitdir = dir.join(".git");
+        std::fs::create_dir_all(&gitdir).unwrap();
+        std::fs::write(gitdir.join("HEAD"), "ref: refs/heads/feature/x\n").unwrap();
+        assert_eq!(git_segment(&dir).as_deref(), Some("feature/x"));
+
+        // detached HEAD → short sha
+        std::fs::write(gitdir.join("HEAD"), "0123456789abcdef\n").unwrap();
+        assert_eq!(git_segment(&dir).as_deref(), Some("0123456"));
+
+        // a subdirectory still finds the repo by walking up
+        let sub = dir.join("a/b");
+        std::fs::create_dir_all(&sub).unwrap();
+        assert_eq!(git_segment(&sub).as_deref(), Some("0123456"));
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn git_segment_none_outside_repo() {
+        let dir = std::env::temp_dir().join(format!("aishe-nogit-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        assert_eq!(git_segment(&dir), None);
+        std::fs::remove_dir_all(&dir).ok();
     }
 }
