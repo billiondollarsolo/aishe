@@ -582,10 +582,13 @@ fn handle_line(
     match dispatcher::dispatch(line, cache) {
         Dispatch::Shell(cmd) => {
             executor.run(&cmd);
-            // A newly-defined alias must be recognized as a command on later
-            // lines (the executor persists the alias itself via the session rc).
+            // A newly-defined alias/function must be recognized as a command on
+            // later lines (the executor persists the definition via the rc).
             if let Some(name) = alias_name(&cmd) {
                 cache.insert_all(&[name]);
+            }
+            if let Some(name) = dispatcher::function_def_name(&cmd) {
+                cache.insert_all(&[&name]);
             }
         }
         Dispatch::Builtin(tokens) => match tokens[0].as_str() {

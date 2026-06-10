@@ -219,6 +219,16 @@ def main():
         if not sh.expect("got NUMBER_42"):
             fail("history expansion (!$) did not work", sh)
 
+        # 4d) a multi-line function definition persists and is callable. The
+        #     body's arithmetic result (FUNC_42) only appears when greet2 runs.
+        sh.send("greet2() {")
+        sh.send("echo FUNC_$((6 * 7))")
+        sh.send("}")
+        sh.settle(2.0)
+        sh.send("greet2")
+        if not sh.expect("FUNC_42"):
+            fail("interactively-defined function did not persist/run", sh)
+
         # 5) clean exit.
         sh.send("exit")
         code = sh.wait_exit(timeout=10)

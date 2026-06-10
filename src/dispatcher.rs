@@ -142,6 +142,12 @@ pub fn dispatch(line: &str, cache: &CommandCache) -> Dispatch {
         return Dispatch::Shell(trimmed.to_string());
     }
 
+    // 4b. Function definitions (`name() { … }`, `function name { … }`) — route
+    //     to shell before the operator/cache checks (the body may contain `;`).
+    if function_def_name(trimmed).is_some() {
+        return Dispatch::Shell(trimmed.to_string());
+    }
+
     // Env assignments: `FOO=bar cmd`. A pure assignment line is shell.
     let effective_first = effective_command_token(&tokens);
     if let EffectiveHead::Assignment = effective_first {
@@ -208,6 +214,42 @@ fn is_assignment(tok: &str) -> bool {
     } else {
         false
     }
+}
+
+/// If `line` begins a shell function definition (`name() …`, `name () …`, or
+/// `function name …`), return the function's name. Used to route definitions to
+/// the shell, balance their braces in the validator, and persist them.
+pub fn function_def_name(line: &str) -> Option<String> {
+    let t = line.trim();
+    // `function name [()] [{ … }]`
+    if let Some(rest) = t.strip_prefix("function ") {
+        let name = rest
+            .trim_start()
+            .split(|c: char| c.is_whitespace() || c == '(' || c == '{')
+            .next()
+            .unwrap_or("");
+        return is_valid_func_name(name).then(|| name.to_string());
+    }
+    // `name() …` / `name () …`  (the `()` is required to disambiguate)
+    if let Some(paren) = t.find('(') {
+        let name = t[..paren].trim();
+        if t[paren + 1..].trim_start().starts_with(')') && is_valid_func_name(name) {
+            return Some(name.to_string());
+        }
+    }
+    None
+}
+
+/// A POSIX-ish function name: starts with a letter/underscore, then word chars
+/// or `-`.
+fn is_valid_func_name(s: &str) -> bool {
+    let mut chars = s.chars();
+    match chars.next() {
+        Some(c) if c.is_ascii_alphabetic() || c == '_' => {}
+        _ => return false,
+    }
+    s.chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
 }
 
 fn starts_with_shell_syntax(line: &str) -> bool {
@@ -429,6 +471,38 @@ mod tests {
             dispatch("find big files | wat", &c),
             Dispatch::NaturalLanguage(_)
         ));
+    }
+
+    #[test]
+    fn function_definitions_detected() {
+        assert_eq!(
+            function_def_name("greet() { echo hi; }").as_deref(),
+            Some("greet")
+        );
+        assert_eq!(function_def_name("greet () {").as_deref(), Some("greet"));
+        assert_eq!(
+            function_def_name("function greet {").as_deref(),
+            Some("greet")
+        );
+        assert_eq!(
+            function_def_name("function greet() {").as_deref(),
+            Some("greet")
+        );
+        // not function definitions
+        assert_eq!(function_def_name("echo (hi)"), None);
+        assert_eq!(function_def_name("a=$(date)"), None);
+        assert_eq!(function_def_name("git status"), None);
+    }
+
+    #[test]
+    fn function_def_routes_to_shell() {
+        let c = cache_with(&[]);
+        assert!(matches!(
+            dispatch("greet() { echo hi; }", &c),
+            Dispatch::Shell(_)
+        ));
+        assert!(matches!(dispatch("greet() {", &c), Dispatch::Shell(_)));
+        assert!(matches!(dispatch("function g {", &c), Dispatch::Shell(_)));
     }
 
     #[test]

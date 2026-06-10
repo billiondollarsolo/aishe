@@ -22,7 +22,8 @@ breaking changes can land in any release.
 - **Token streaming** of suggest/auto answers (`stream` / `aishe stream`) over
   Anthropic and OpenAI-compatible SSE.
 - **`.aishrc` startup file** sourced into every command, plus persistence of
-  interactively-defined aliases and shell options across the reedline front-end.
+  interactively-defined aliases, shell options, and **functions** (multi-line
+  `name() { … }`) across the reedline front-end.
 - **Custom prompt** (`prompt_format`) and **theme presets** (`default`, `vivid`,
   `mono`, `nord`, `gruvbox`) with an `aishe theme` command.
 - **`aishe doctor`** — environment check for shell, config, front-end, provider,

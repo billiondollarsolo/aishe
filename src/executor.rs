@@ -99,6 +99,18 @@ impl Executor {
         }
     }
 
+    /// Append a whole function definition to the session rc so it persists into
+    /// later commands (re-defining a function on each `source` is cheap and has
+    /// no side effects — the body only runs when the function is called).
+    fn persist_function(&mut self, line: &str) {
+        let Some(rc) = &self.session_rc else { return };
+        if crate::dispatcher::function_def_name(line).is_some() {
+            if let Ok(mut f) = std::fs::OpenOptions::new().append(true).open(rc) {
+                let _ = writeln!(f, "{line}");
+            }
+        }
+    }
+
     fn record(&mut self, line: &str, code: i32) {
         self.last_exit = code;
         if self.history.len() == 10 {
@@ -128,6 +140,7 @@ impl Executor {
         };
         if code == 0 {
             self.persist_definition(line);
+            self.persist_function(line);
         }
         self.record(line, code);
         code

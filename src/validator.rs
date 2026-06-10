@@ -29,23 +29,36 @@ impl Validator for AisheValidator {
         match dispatcher::dispatch(line, &self.cache) {
             // NL (and empty input) always submits — don't trap apostrophes.
             Dispatch::NaturalLanguage(_) => ValidationResult::Complete,
-            _ if shell_incomplete(line) => ValidationResult::Incomplete,
-            _ => ValidationResult::Complete,
+            _ => {
+                // For a function definition, also require a complete `{ … }`
+                // body so multi-line definitions keep going until closed.
+                let is_func = dispatcher::function_def_name(line).is_some();
+                if shell_incomplete(line, is_func) {
+                    ValidationResult::Incomplete
+                } else {
+                    ValidationResult::Complete
+                }
+            }
         }
     }
 }
 
 /// True if a shell line is unterminated: an open single/double quote, a trailing
-/// unescaped backslash (line continuation), or unbalanced parentheses.
+/// unescaped backslash (line continuation), or unbalanced parentheses. When
+/// `func` is set (a function definition), also require a `{ … }` body that has
+/// been opened and closed.
 ///
 /// Shell-aware enough for interactive editing: single quotes are literal (no
 /// escapes inside them), backslash escapes the next char outside single quotes,
-/// and parens inside quotes are ignored.
-fn shell_incomplete(line: &str) -> bool {
+/// and brackets inside quotes are ignored. Brace balancing is applied *only* to
+/// function definitions, so ordinary `${VAR}` / `{a,b}` lines aren't affected.
+fn shell_incomplete(line: &str, func: bool) -> bool {
     let mut in_single = false;
     let mut in_double = false;
     let mut escaped = false;
     let mut paren: i32 = 0;
+    let mut brace: i32 = 0;
+    let mut saw_brace = false;
 
     for c in line.chars() {
         if escaped {
@@ -65,11 +78,18 @@ fn shell_incomplete(line: &str) -> bool {
             '"' => in_double = !in_double,
             '(' if !in_double => paren += 1,
             ')' if !in_double => paren = (paren - 1).max(0),
+            '{' if !in_double => {
+                brace += 1;
+                saw_brace = true;
+            }
+            '}' if !in_double => brace = (brace - 1).max(0),
             _ => {}
         }
     }
 
-    in_single || in_double || escaped || paren > 0
+    let base = in_single || in_double || escaped || paren > 0;
+    // A function definition isn't done until its body has opened and closed.
+    base || (func && (brace > 0 || !saw_brace))
 }
 
 #[cfg(test)]
@@ -91,20 +111,38 @@ mod tests {
 
     #[test]
     fn complete_shell_lines() {
-        assert!(!shell_incomplete("echo hello"));
-        assert!(!shell_incomplete("echo 'hello world'"));
-        assert!(!shell_incomplete(r#"echo "a \" b""#));
-        assert!(!shell_incomplete("echo $(date)"));
-        assert!(!shell_incomplete(r"echo a\\")); // escaped backslash, not a continuation
-        assert!(!shell_incomplete("echo \"line1\nline2\"")); // newline inside quotes, balanced
+        assert!(!shell_incomplete("echo hello", false));
+        assert!(!shell_incomplete("echo 'hello world'", false));
+        assert!(!shell_incomplete(r#"echo "a \" b""#, false));
+        assert!(!shell_incomplete("echo $(date)", false));
+        assert!(!shell_incomplete(r"echo a\\", false)); // escaped backslash
+        assert!(!shell_incomplete("echo \"line1\nline2\"", false)); // newline in quotes
+                                                                    // Braces only matter for function defs — ordinary brace use is complete.
+        assert!(!shell_incomplete("echo ${VAR} {a,b}", false));
     }
 
     #[test]
     fn incomplete_shell_lines() {
-        assert!(shell_incomplete("echo 'hello"));
-        assert!(shell_incomplete("echo \"hello"));
-        assert!(shell_incomplete(r"echo hello \")); // trailing continuation
-        assert!(shell_incomplete("echo $(date"));
+        assert!(shell_incomplete("echo 'hello", false));
+        assert!(shell_incomplete("echo \"hello", false));
+        assert!(shell_incomplete(r"echo hello \", false)); // trailing continuation
+        assert!(shell_incomplete("echo $(date", false));
+    }
+
+    #[test]
+    fn function_definitions_need_a_closed_body() {
+        // `func` flag: needs an opened+closed brace block.
+        assert!(shell_incomplete("greet() {", true)); // open brace
+        assert!(shell_incomplete("greet()", true)); // no body yet
+        assert!(shell_incomplete("greet() {\n  echo hi", true)); // still open
+        assert!(!shell_incomplete("greet() { echo hi; }", true)); // closed
+        assert!(!shell_incomplete("greet() {\n  echo hi\n}", true)); // closed multi-line
+    }
+
+    #[test]
+    fn function_def_continues_then_completes() {
+        assert!(is_incomplete("greet() {"));
+        assert!(!is_incomplete("greet() { echo hi; }"));
     }
 
     #[test]
