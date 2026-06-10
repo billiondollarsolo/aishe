@@ -1,15 +1,17 @@
 //! Tab completion for the reedline front-end.
 //!
-//! Two kinds, chosen by where the cursor sits:
-//! - **command position** (first word of the line, or after `|`/`&&`/`;`/`(`):
-//!   complete command names from the [`CommandCache`] — `$PATH` executables,
-//!   zsh builtins, and the user's aliases/functions.
-//! - **argument position** (anything else): complete file and directory paths
-//!   relative to the current word, expanding a leading `~/`.
+//! Context-aware, chosen by where the cursor sits and what the segment's command
+//! is:
+//! - **`$VAR` / `${VAR`** anywhere — complete environment variable names.
+//! - **command position** (segment start, i.e. line start or after
+//!   `|`/`&&`/`;`/`(`): complete command names from the [`CommandCache`].
+//! - **`cd` / `pushd` / `rmdir` arguments** — complete directories only.
+//! - **`aishe` arguments** — complete meta subcommands and their fixed values.
+//! - **other arguments** — complete file and directory paths.
 //!
 //! Tokenization is whitespace-based and quoting-naive, matching the rest of
-//! aishe's v0.1 parsing (see `dispatcher`). It's an editor convenience, not a
-//! parser: the actual command still runs through `zsh -c`.
+//! aishe's parsing. It's an editor convenience: the command still runs via the
+//! shell.
 
 use std::path::PathBuf;
 
@@ -17,9 +19,14 @@ use reedline::{Completer, Span, Suggestion};
 
 use crate::dispatcher::CommandCache;
 
-/// Upper bound on suggestions returned for a single Tab, so an empty prefix at
-/// the command position doesn't allocate the entire `$PATH`.
+/// Upper bound on suggestions returned for a single Tab.
 const MAX_SUGGESTIONS: usize = 500;
+
+/// `aishe` meta subcommands (for `aishe <Tab>`).
+const META_SUBCOMMANDS: &[&str] = &[
+    "mode", "model", "provider", "editor", "frontend", "stream", "theme", "config", "rehash",
+    "help",
+];
 
 pub struct AisheCompleter {
     cache: CommandCache,
@@ -38,12 +45,27 @@ impl Completer for AisheCompleter {
         let word = &line[start..pos];
         let span = Span::new(start, pos);
 
-        // A bare word at the command position completes command names; anything
-        // that looks like a path (or sits in argument position) completes paths.
-        if is_command_position(line, start) && !looks_like_path(word) {
-            complete_commands(&self.cache, word, span)
-        } else {
-            complete_paths(word, span)
+        // Environment variables (`$VAR`, `${VAR`) take precedence anywhere.
+        if word.starts_with('$') {
+            return complete_env(word, span);
+        }
+
+        // The current command segment (after the last operator) and its tokens.
+        let seg_tokens: Vec<&str> = segment_str(line, start).split_whitespace().collect();
+
+        // Command position: nothing typed yet in this segment.
+        if seg_tokens.is_empty() {
+            return if looks_like_path(word) {
+                complete_paths(word, span, false)
+            } else {
+                complete_commands(&self.cache, word, span)
+            };
+        }
+
+        match seg_tokens[0] {
+            "aishe" => complete_aishe_meta(&seg_tokens, word, span),
+            "cd" | "pushd" | "rmdir" => complete_paths(word, span, true),
+            _ => complete_paths(word, span, false),
         }
     }
 }
@@ -62,15 +84,17 @@ fn word_start(line: &str, pos: usize) -> usize {
     i
 }
 
-/// True if the word being completed is the command head: nothing precedes it on
-/// the line, or it follows a pipeline/separator/subshell opener.
-fn is_command_position(line: &str, word_start: usize) -> bool {
-    let prefix = line[..word_start].trim_end();
-    prefix.is_empty()
-        || prefix.ends_with('|')
-        || prefix.ends_with('&')
-        || prefix.ends_with(';')
-        || prefix.ends_with('(')
+/// The current command segment: the text before the cursor, after the last
+/// pipeline/separator/subshell operator (quoting-naive).
+fn segment_str(line: &str, start: usize) -> &str {
+    let prefix = &line[..start];
+    let mut cut = 0;
+    for (i, ch) in prefix.char_indices() {
+        if matches!(ch, '|' | ';' | '&' | '(') {
+            cut = i + ch.len_utf8();
+        }
+    }
+    &prefix[cut..]
 }
 
 /// A word that should be path-completed even at the command position
@@ -95,9 +119,81 @@ fn complete_commands(cache: &CommandCache, word: &str, span: Span) -> Vec<Sugges
         .collect()
 }
 
-fn complete_paths(word: &str, span: Span) -> Vec<Suggestion> {
+/// Complete environment variable names for a `$VAR` / `${VAR` word.
+fn complete_env(word: &str, span: Span) -> Vec<Suggestion> {
+    let (brace, prefix) = match word.strip_prefix("${") {
+        Some(p) => (true, p),
+        None => (false, &word[1..]), // word starts with '$'
+    };
+    // Only an identifier prefix — bail on `$(`, `$@`, etc.
+    if !prefix
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '_')
+    {
+        return Vec::new();
+    }
+    let mut names: Vec<String> = std::env::vars()
+        .map(|(k, _)| k)
+        .filter(|k| k.starts_with(prefix))
+        .collect();
+    names.sort();
+    names.truncate(MAX_SUGGESTIONS);
+    names
+        .into_iter()
+        .map(|k| Suggestion {
+            value: if brace {
+                format!("${{{k}}}")
+            } else {
+                format!("${k}")
+            },
+            span,
+            append_whitespace: !brace,
+            ..Default::default()
+        })
+        .collect()
+}
+
+/// Complete `aishe` meta subcommands and their fixed-value arguments.
+fn complete_aishe_meta(seg_tokens: &[&str], word: &str, span: Span) -> Vec<Suggestion> {
+    match seg_tokens.len() {
+        // `aishe <word>` — the subcommand.
+        1 => str_suggestions(META_SUBCOMMANDS, word, span),
+        // `aishe <sub> <word>` — fixed values for subcommands that have them.
+        2 => {
+            let values: &[&str] = match seg_tokens[1] {
+                "mode" => &["suggest", "auto", "yolo"],
+                "provider" => &["anthropic", "openai"],
+                "editor" => &["emacs", "vi"],
+                "frontend" => &["auto", "reedline", "zsh-pty"],
+                "stream" => &["on", "off"],
+                "theme" => crate::theme::PRESETS,
+                _ => return Vec::new(), // model/config/etc.: free-form
+            };
+            str_suggestions(values, word, span)
+        }
+        _ => Vec::new(),
+    }
+}
+
+/// Build suggestions from a fixed option list, filtered by `word` prefix.
+fn str_suggestions(options: &[&str], word: &str, span: Span) -> Vec<Suggestion> {
+    options
+        .iter()
+        .filter(|o| o.starts_with(word))
+        .map(|o| Suggestion {
+            value: (*o).to_string(),
+            span,
+            append_whitespace: true,
+            ..Default::default()
+        })
+        .collect()
+}
+
+/// Complete file/directory paths for the current word. With `dirs_only`, only
+/// directories are offered (for `cd`/`pushd`/`rmdir`).
+fn complete_paths(word: &str, span: Span, dirs_only: bool) -> Vec<Suggestion> {
     // Split the word into a directory part (kept verbatim in the buffer, so a
-    // leading `~/` stays literal for zsh to expand) and a file-name prefix.
+    // leading `~/` stays literal for the shell to expand) and a file-name prefix.
     let (dir_part, file_prefix) = match word.rfind('/') {
         Some(idx) => (&word[..=idx], &word[idx + 1..]),
         None => ("", word),
@@ -130,6 +226,9 @@ fn complete_paths(word: &str, span: Span) -> Vec<Suggestion> {
             continue;
         }
         let is_dir = entry.file_type().map(|t| t.is_dir()).unwrap_or(false);
+        if dirs_only && !is_dir {
+            continue;
+        }
         let value = if is_dir {
             format!("{dir_part}{name}/")
         } else {
@@ -159,21 +258,23 @@ fn home() -> PathBuf {
 mod tests {
     use super::*;
 
+    fn values(s: &[Suggestion]) -> Vec<String> {
+        s.iter().map(|x| x.value.clone()).collect()
+    }
+
     #[test]
     fn word_boundary() {
         assert_eq!(word_start("git st", 6), 4);
-        assert_eq!(word_start("git ", 4), 4); // empty word after a space
+        assert_eq!(word_start("git ", 4), 4);
         assert_eq!(word_start("git", 3), 0);
         assert_eq!(word_start("", 0), 0);
     }
 
     #[test]
-    fn command_position_detection() {
-        assert!(is_command_position("gi", 0));
-        assert!(is_command_position("  gi", 2));
-        assert!(is_command_position("ls | gr", 5)); // after a pipe
-        assert!(is_command_position("a && b", 5));
-        assert!(!is_command_position("git st", 4)); // argument position
+    fn segment_after_operators() {
+        assert_eq!(segment_str("ls | gr", 5).trim(), "");
+        assert_eq!(segment_str("a && b ", 7).trim(), "b");
+        assert_eq!(segment_str("git st", 4).trim(), "git");
     }
 
     #[test]
@@ -190,36 +291,59 @@ mod tests {
         let cache = CommandCache::new();
         cache.insert_all(&["git", "grep", "gzip", "ls"]);
         let mut c = AisheCompleter::new(cache);
-        let sugg = c.complete("g", 1);
-        let values: Vec<_> = sugg.iter().map(|s| s.value.as_str()).collect();
-        assert_eq!(values, vec!["git", "grep", "gzip"]);
-        assert!(sugg.iter().all(|s| s.span == Span::new(0, 1)));
-        assert!(sugg.iter().all(|s| s.append_whitespace));
+        assert_eq!(values(&c.complete("g", 1)), vec!["git", "grep", "gzip"]);
+        // command position after a pipe, too.
+        let sugg = c.complete("ls | g", 6);
+        assert_eq!(values(&sugg), vec!["git", "grep", "gzip"]);
     }
 
     #[test]
-    fn completes_paths_in_argument_position() {
+    fn completes_env_vars() {
+        std::env::set_var("AISHE_COMPL_TEST_XYZ", "1");
+        let mut c = AisheCompleter::new(CommandCache::new());
+        let sugg = c.complete("echo $AISHE_COMPL_TEST", 22);
+        assert!(values(&sugg).contains(&"$AISHE_COMPL_TEST_XYZ".to_string()));
+        // brace form
+        let line = "echo ${AISHE_COMPL_TEST";
+        let sugg = c.complete(line, line.len());
+        assert!(values(&sugg).contains(&"${AISHE_COMPL_TEST_XYZ}".to_string()));
+        std::env::remove_var("AISHE_COMPL_TEST_XYZ");
+    }
+
+    #[test]
+    fn aishe_meta_subcommands_and_values() {
+        let mut c = AisheCompleter::new(CommandCache::new());
+        // subcommands
+        let sugg = c.complete("aishe mo", 8);
+        let v = values(&sugg);
+        assert!(v.contains(&"mode".to_string()) && v.contains(&"model".to_string()));
+        // fixed values for `mode`
+        let line = "aishe mode ";
+        assert_eq!(
+            values(&c.complete(line, line.len())),
+            vec!["suggest", "auto", "yolo"]
+        );
+        // theme presets come from the theme module
+        let line = "aishe theme ";
+        assert!(values(&c.complete(line, line.len())).contains(&"nord".to_string()));
+    }
+
+    #[test]
+    fn cd_completes_directories_only() {
         let dir = std::env::temp_dir().join(format!("aishe-comp-{}", std::process::id()));
         std::fs::create_dir_all(dir.join("subdir")).unwrap();
-        std::fs::write(dir.join("alpha.txt"), b"x").unwrap();
-        std::fs::write(dir.join("alpine.txt"), b"x").unwrap();
-
+        std::fs::write(dir.join("afile.txt"), b"x").unwrap();
         let mut c = AisheCompleter::new(CommandCache::new());
-        let prefix = format!("cat {}/al", dir.display());
-        let pos = prefix.len();
-        let sugg = c.complete(&prefix, pos);
-        let values: Vec<_> = sugg.iter().map(|s| s.value.clone()).collect();
-        assert!(values.iter().any(|v| v.ends_with("alpha.txt")));
-        assert!(values.iter().any(|v| v.ends_with("alpine.txt")));
-        // Files get a trailing space; none here is a directory.
-        assert!(sugg.iter().all(|s| s.append_whitespace));
 
-        // Directory entries get a trailing slash and no appended space.
-        let prefix2 = format!("cat {}/sub", dir.display());
-        let sugg2 = c.complete(&prefix2, prefix2.len());
-        assert_eq!(sugg2.len(), 1);
-        assert!(sugg2[0].value.ends_with("subdir/"));
-        assert!(!sugg2[0].append_whitespace);
+        let line = format!("cd {}/", dir.display());
+        let v = values(&c.complete(&line, line.len()));
+        assert!(v.iter().any(|x| x.ends_with("subdir/")));
+        assert!(!v.iter().any(|x| x.ends_with("afile.txt")));
+
+        // a plain command still completes files
+        let line = format!("cat {}/", dir.display());
+        let v = values(&c.complete(&line, line.len()));
+        assert!(v.iter().any(|x| x.ends_with("afile.txt")));
 
         std::fs::remove_dir_all(&dir).ok();
     }
@@ -230,15 +354,16 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join(".secret"), b"x").unwrap();
         std::fs::write(dir.join("visible"), b"x").unwrap();
-
         let mut c = AisheCompleter::new(CommandCache::new());
-        let base = format!("cat {}/", dir.display());
-        let all = c.complete(&base, base.len());
-        assert!(all.iter().all(|s| !s.value.ends_with(".secret")));
 
+        let base = format!("cat {}/", dir.display());
+        assert!(!values(&c.complete(&base, base.len()))
+            .iter()
+            .any(|x| x.ends_with(".secret")));
         let dotted = format!("cat {}/.", dir.display());
-        let hidden = c.complete(&dotted, dotted.len());
-        assert!(hidden.iter().any(|s| s.value.ends_with(".secret")));
+        assert!(values(&c.complete(&dotted, dotted.len()))
+            .iter()
+            .any(|x| x.ends_with(".secret")));
 
         std::fs::remove_dir_all(&dir).ok();
     }

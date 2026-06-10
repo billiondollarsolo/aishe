@@ -141,9 +141,10 @@ the editor behind nushell). It reimplements the most-loved zsh niceties
 natively:
 
 - **Tab completion** — press `Tab` for a completion menu (`Shift-Tab` to go
-  back). Completes command names (from the `$PATH`/builtin/alias cache) at the
-  command position, and file/directory paths (with `~/` expansion) in argument
-  position.
+  back). Context-aware: command names at the command position (incl. after a
+  pipe); environment variables for `$VAR`/`${VAR`; directories-only for
+  `cd`/`pushd`/`rmdir`; `aishe` meta subcommands and their values; and
+  file/directory paths (with `~/` expansion) elsewhere.
 - **History autosuggestions** (like `zsh-autosuggestions`) — fish-style inline
   hints from your history.
 - **History search** — `Ctrl-R` opens a browsable, filterable menu of past

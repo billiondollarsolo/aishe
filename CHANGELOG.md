@@ -11,7 +11,9 @@ breaking changes can land in any release.
   with every native plugin (zsh-autosuggestions, zsh-syntax-highlighting, fzf-tab,
   powerlevel10k, oh-my-zsh) unmodified. Now the **default** (`front_end = "auto"`)
   when zsh is on `$PATH`, falling back to the built-in reedline editor.
-- **reedline editor parity** — tab completion (commands + file paths), `Ctrl-R`
+- **reedline editor parity** — context-aware tab completion (commands, file
+  paths, `$VAR` env vars, directories-only for `cd`/`pushd`, and `aishe`
+  subcommands/values), `Ctrl-R`
   history-search menu, multi-line continuation validator, emacs/vi keymaps
   (`edit_mode`, with `[I]`/`[N]` prompt tags in vi mode), and zsh-style history
   expansion (`!!`, `!$`, `!-N`, `^old^new`, …), **autocd** (bare directory name →
