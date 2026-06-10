@@ -53,6 +53,11 @@ breaking changes can land in any release.
   `aishe structured`.
 - **`aishe doctor`** — environment check for shell, config, front-end, provider,
   and API key.
+- **Slash-commands** — every meta command also works as `/mode`, `/config`, … and
+  **user-defined plugins/skills**: Markdown command files in
+  `~/.config/aishe/commands/` and `<project>/.aishe/commands/` (Claude-Code
+  style) define custom `/commands` that run as shell snippets or NL prompt
+  templates (`$ARGUMENTS`/`$1`), with `/commands` listing and tab-completion.
 - **CI** — cross-platform tests plus PTY smoke tests for both front-ends.
 
 ### Changed

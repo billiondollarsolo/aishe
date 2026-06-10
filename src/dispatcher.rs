@@ -403,6 +403,7 @@ pub fn is_meta_subcommand(w: &str) -> bool {
             | "theme"
             | "config"
             | "rehash"
+            | "commands"
             | "help"
     )
 }

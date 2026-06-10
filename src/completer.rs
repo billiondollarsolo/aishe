@@ -34,6 +34,7 @@ const META_SUBCOMMANDS: &[(&str, &str)] = &[
     ("theme", "color preset"),
     ("config", "print active config"),
     ("rehash", "rebuild the command cache"),
+    ("commands", "list custom slash-commands"),
     ("help", "show help"),
 ];
 
@@ -92,11 +93,22 @@ const NPM_SUBCOMMANDS: &[&str] = &[
 
 pub struct AisheCompleter {
     cache: CommandCache,
+    /// User-defined slash-commands (name, description) for `/` completion.
+    slash_commands: Vec<(String, String)>,
 }
 
 impl AisheCompleter {
     pub fn new(cache: CommandCache) -> Self {
-        Self { cache }
+        Self {
+            cache,
+            slash_commands: Vec::new(),
+        }
+    }
+
+    /// Add user-defined slash-commands to the `/` completion set.
+    pub fn with_slash_commands(mut self, cmds: Vec<(String, String)>) -> Self {
+        self.slash_commands = cmds;
+        self
     }
 }
 
@@ -118,7 +130,7 @@ impl Completer for AisheCompleter {
         // Command position: nothing typed yet in this segment.
         if seg_tokens.is_empty() {
             // `/<meta>` slash-commands (only when it isn't an absolute path).
-            if let Some(s) = slash_command_suggestions(word, span) {
+            if let Some(s) = self.slash_command_suggestions(word, span) {
                 return s;
             }
             return if looks_like_path(word) {
@@ -281,30 +293,36 @@ fn complete_env(word: &str, span: Span) -> Vec<Suggestion> {
         .collect()
 }
 
-/// Complete `/<meta>` slash-commands. Returns `None` when `word` isn't a
-/// slash-command prefix (e.g. an absolute path like `/usr/…`), so path/command
-/// completion can take over.
-fn slash_command_suggestions(word: &str, span: Span) -> Option<Vec<Suggestion>> {
-    let rest = word.strip_prefix('/')?;
-    if rest.contains('/') {
-        return None; // an absolute path, not a slash-command
-    }
-    let lw = rest.to_lowercase();
-    let matches: Vec<Suggestion> = META_SUBCOMMANDS
-        .iter()
-        .filter(|(name, _)| name.to_lowercase().starts_with(&lw))
-        .map(|(name, desc)| Suggestion {
-            value: format!("/{name}"),
-            description: Some((*desc).to_string()),
-            span,
-            append_whitespace: true,
-            ..Default::default()
-        })
-        .collect();
-    if matches.is_empty() {
-        None
-    } else {
-        Some(matches)
+impl AisheCompleter {
+    /// Complete `/<meta>` and `/<custom>` slash-commands. Returns `None` when
+    /// `word` isn't a slash-command prefix (e.g. an absolute path `/usr/…`), so
+    /// path/command completion can take over.
+    fn slash_command_suggestions(&self, word: &str, span: Span) -> Option<Vec<Suggestion>> {
+        let rest = word.strip_prefix('/')?;
+        if rest.contains('/') {
+            return None; // an absolute path, not a slash-command
+        }
+        let lw = rest.to_lowercase();
+        let builtins = META_SUBCOMMANDS
+            .iter()
+            .map(|(n, d)| (n.to_string(), d.to_string()));
+        let custom = self.slash_commands.iter().cloned();
+        let matches: Vec<Suggestion> = builtins
+            .chain(custom)
+            .filter(|(name, _)| name.to_lowercase().starts_with(&lw))
+            .map(|(name, desc)| Suggestion {
+                value: format!("/{name}"),
+                description: Some(desc),
+                span,
+                append_whitespace: true,
+                ..Default::default()
+            })
+            .collect();
+        if matches.is_empty() {
+            None
+        } else {
+            Some(matches)
+        }
     }
 }
 

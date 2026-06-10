@@ -102,6 +102,31 @@ Each meta command also works as a **slash-command** (Claude-Code style), e.g.
 `/mode auto`, `/config`, `/help` — tab-completable, and `/`-prefixed paths like
 `/usr/bin/x` still run normally.
 
+---
+
+## Plugins & skills (custom slash-commands)
+
+Drop Markdown files into `~/.config/aishe/commands/` (user) or
+`<project>/.aishe/commands/` (project — overrides user) to add your own
+`/commands`, à la Claude Code. The file name is the command (`bigfiles.md` →
+`/bigfiles`); `/commands` lists them and they tab-complete. See
+[`examples/commands/`](examples/commands/).
+
+```md
+---
+description: Suggest a command to find the biggest files
+mode: suggest            # suggest | auto | yolo (NL commands); default = current mode
+# shell: true            # run the body as a shell command instead of an NL request
+---
+Show the 10 largest files under $ARGUMENTS, human-readable, largest first.
+```
+
+- **NL commands** expand the template and run it as a natural-language request in
+  the chosen mode — reusable "skills" (`/fixup`, `/bigfiles`, …).
+- **Shell commands** (`shell: true`) run the expanded body directly — handy
+  parameterized aliases (`/gitsync`).
+- Templating: `$ARGUMENTS` = all args; `$1`..`$9` = positional args.
+
 Exit with `exit`, `quit`, or `Ctrl-D`.
 
 ---

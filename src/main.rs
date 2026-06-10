@@ -15,6 +15,7 @@ use reedline::{
     Keybindings, ListMenu, MenuBuilder, Reedline, ReedlineEvent, ReedlineMenu, Signal, Vi,
 };
 
+use aishe::commands::CommandRegistry;
 use aishe::completer::AisheCompleter;
 use aishe::config::Config;
 use aishe::dispatcher::{self, CommandCache, Dispatch};
@@ -196,12 +197,22 @@ fn run() -> Result<u8> {
         return auto_line(&line, &mut executor, provider.as_deref(), &config);
     }
 
+    // User-defined slash-commands (plugins/skills).
+    let commands = CommandRegistry::load();
+
     // Non-interactive single-shot mode (-c).
     if let Some(input) = args.command {
-        return one_shot(&input, &mut executor, &mut provider, &config, &cache);
+        return one_shot(
+            &input,
+            &mut executor,
+            &mut provider,
+            &config,
+            &cache,
+            &commands,
+        );
     }
 
-    repl(&mut executor, &mut provider, &mut config, &cache)
+    repl(&mut executor, &mut provider, &mut config, &cache, &commands)
 }
 
 /// Environment check (`aishe doctor`): report shell, config, front-end,
@@ -393,10 +404,15 @@ fn one_shot(
     provider: &mut Option<Box<dyn Provider>>,
     config: &Config,
     cache: &CommandCache,
+    commands: &CommandRegistry,
 ) -> Result<u8> {
     let trimmed = input.trim();
     if trimmed.is_empty() {
         return Ok(0);
+    }
+    // User-defined /slash-commands work in -c too.
+    if try_custom_command(trimmed, commands, executor, provider.as_deref(), config)? {
+        return Ok(executor.last_exit as u8);
     }
     match dispatcher::dispatch(trimmed, cache) {
         Dispatch::Shell(line) => Ok(executor.run(&line) as u8),
@@ -479,6 +495,7 @@ fn repl(
     provider: &mut Option<Box<dyn Provider>>,
     config: &mut Config,
     cache: &CommandCache,
+    commands: &CommandRegistry,
 ) -> Result<u8> {
     // One-time hint in the interactive shell if LLM features are unavailable.
     if provider.is_none() {
@@ -511,7 +528,9 @@ fn repl(
 
     let mut line_editor = Reedline::create()
         .with_history(history)
-        .with_completer(Box::new(AisheCompleter::new(cache.clone())))
+        .with_completer(Box::new(
+            AisheCompleter::new(cache.clone()).with_slash_commands(commands.list()),
+        ))
         .with_menu(ReedlineMenu::EngineCompleter(completion_menu))
         .with_menu(ReedlineMenu::HistoryMenu(history_menu))
         .with_validator(Box::new(AisheValidator::new(cache.clone())))
@@ -559,7 +578,7 @@ fn repl(
                         continue;
                     }
                 };
-                if handle_line(&line, executor, provider, config, cache)? {
+                if handle_line(&line, executor, provider, config, cache, commands)? {
                     return Ok(executor.last_exit as u8);
                 }
             }
@@ -586,7 +605,13 @@ fn handle_line(
     provider: &mut Option<Box<dyn Provider>>,
     config: &mut Config,
     cache: &CommandCache,
+    commands: &CommandRegistry,
 ) -> Result<bool> {
+    // User-defined /slash-commands (plugins/skills) run before everything else.
+    if try_custom_command(line, commands, executor, provider.as_deref(), config)? {
+        return Ok(false);
+    }
+
     // autocd: a bare directory name (that isn't a known command) means `cd`
     // there, like zsh's AUTO_CD.
     if let Some(dir) = autocd_target(line, executor.cwd(), cache) {
@@ -608,27 +633,84 @@ fn handle_line(
         }
         Dispatch::Builtin(tokens) => match tokens[0].as_str() {
             "exit" | "quit" => return Ok(true),
-            "aishe" => handle_meta(&tokens, config, provider, executor, cache),
+            "aishe" => handle_meta(&tokens, config, provider, executor, cache, commands),
             _ => {
                 executor.run_builtin(&tokens);
             }
         },
         Dispatch::NaturalLanguage(nl) => {
-            let Some(p) = provider.as_deref() else {
-                eprintln!(
-                    "{}",
-                    "aishe: LLM not configured — set your API key env var".dim()
-                );
-                return Ok(false);
-            };
-            match config.aishe.mode.as_str() {
-                "yolo" => modes::yolo::run(&nl, p, executor, config, &INTERRUPTED)?,
-                "auto" => modes::suggest::run(&nl, p, executor, config, false, true)?,
-                _ => modes::suggest::run(&nl, p, executor, config, false, false)?,
-            }
+            run_nl(
+                &nl,
+                &config.aishe.mode,
+                provider.as_deref(),
+                executor,
+                config,
+            )?;
         }
     }
     Ok(false)
+}
+
+/// Parse a `/name arg…` slash-command line into (name, args).
+fn parse_slash(line: &str) -> Option<(&str, Vec<&str>)> {
+    let rest = line.trim().strip_prefix('/')?;
+    let mut parts = rest.split_whitespace();
+    let name = parts.next()?;
+    Some((name, parts.collect()))
+}
+
+/// Run a user-defined `/slash-command` if `line` names one. Returns whether it
+/// was handled. Built-in meta subcommands are left for normal dispatch.
+fn try_custom_command(
+    line: &str,
+    commands: &CommandRegistry,
+    executor: &mut Executor,
+    provider: Option<&dyn Provider>,
+    config: &Config,
+) -> Result<bool> {
+    let Some((name, args)) = parse_slash(line) else {
+        return Ok(false);
+    };
+    if dispatcher::is_meta_subcommand(name) {
+        return Ok(false);
+    }
+    let Some(cmd) = commands.get(name) else {
+        return Ok(false);
+    };
+    let ex = cmd.expand(&args);
+    if ex.text.is_empty() {
+        return Ok(true);
+    }
+    if ex.shell {
+        executor.run(&ex.text);
+    } else {
+        let mode = ex.mode.as_deref().unwrap_or(config.aishe.mode.as_str());
+        run_nl(&ex.text, mode, provider, executor, config)?;
+    }
+    Ok(true)
+}
+
+/// Run a natural-language request in the given mode.
+fn run_nl(
+    nl: &str,
+    mode: &str,
+    provider: Option<&dyn Provider>,
+    executor: &mut Executor,
+    config: &Config,
+) -> Result<()> {
+    let Some(p) = provider else {
+        eprintln!(
+            "{}",
+            "aishe: LLM not configured — set your API key env var".dim()
+        );
+        return Ok(());
+    };
+    match mode {
+        "yolo" => modes::yolo::run(nl, p, executor, config, &INTERRUPTED)?,
+        "auto" => modes::suggest::run(nl, p, executor, config, false, true)?,
+        _ => modes::suggest::run(nl, p, executor, config, false, false)?,
+    }
+    Ok(())
 }
 
 /// zsh `AUTO_CD`: if `line` is a bare token (no whitespace/sigil) that names an
@@ -676,9 +758,20 @@ fn handle_meta(
     provider: &mut Option<Box<dyn Provider>>,
     executor: &Executor,
     cache: &CommandCache,
+    commands: &CommandRegistry,
 ) {
     let sub = tokens.get(1).map(|s| s.as_str()).unwrap_or("help");
     match sub {
+        "commands" => {
+            if commands.is_empty() {
+                println!("no custom commands (add *.md files to ~/.config/aishe/commands/)");
+            } else {
+                println!("custom slash-commands:");
+                for (name, desc) in commands.list() {
+                    println!("\x20 /{name}  —  {desc}");
+                }
+            }
+        }
         "mode" => {
             if let Some(m) = tokens.get(2) {
                 if matches!(m.as_str(), "suggest" | "auto" | "yolo") {
