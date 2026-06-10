@@ -125,6 +125,12 @@ natively:
   position.
 - **History autosuggestions** (like `zsh-autosuggestions`) — fish-style inline
   hints from your history.
+- **History search** — `Ctrl-R` opens a browsable, filterable menu of past
+  commands (type to narrow, arrows to pick).
+- **Multi-line continuation** — pressing Enter on an unterminated *shell* line
+  (open quote, trailing `\`, or unbalanced `(`) drops to a continuation line
+  instead of submitting, like zsh's `quote>`. Natural-language input is never
+  trapped — apostrophes in `what's eating my disk` still submit normally.
 - **Syntax highlighting** (like `zsh-syntax-highlighting`) — the command head is
   colored by whether it's a known command, with distinct colors for flags,
   quoted strings, operators (`| && ; > <`), paths, env assignments, and the

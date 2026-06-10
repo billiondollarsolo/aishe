@@ -11,7 +11,7 @@ use clap::{Parser, Subcommand};
 use crossterm::style::Stylize;
 use reedline::{
     default_emacs_keybindings, ColumnarMenu, DefaultHinter, Emacs, FileBackedHistory, KeyCode,
-    KeyModifiers, MenuBuilder, Reedline, ReedlineEvent, ReedlineMenu, Signal,
+    KeyModifiers, ListMenu, MenuBuilder, Reedline, ReedlineEvent, ReedlineMenu, Signal,
 };
 
 use llmsh::completer::LlmshCompleter;
@@ -23,6 +23,7 @@ use llmsh::prompt::LlmshPrompt;
 use llmsh::providers::{self, Provider};
 use llmsh::safety::{self, Risk};
 use llmsh::theme::Theme;
+use llmsh::validator::LlmshValidator;
 use llmsh::{context, integration, modes};
 
 /// Exit code from `--auto-line` when the suggested command is dangerous: the
@@ -340,15 +341,28 @@ fn repl(
         KeyCode::BackTab,
         ReedlineEvent::MenuPrevious,
     );
+    // Ctrl-R → browsable, filterable history menu (upgrade over the default
+    // single-line incremental search): type to filter, arrows to pick.
+    keybindings.add_binding(
+        KeyModifiers::CONTROL,
+        KeyCode::Char('r'),
+        ReedlineEvent::UntilFound(vec![
+            ReedlineEvent::Menu("history_menu".to_string()),
+            ReedlineEvent::MenuNext,
+        ]),
+    );
     let edit_mode = Box::new(Emacs::new(keybindings));
     let theme = Theme::from_config(&config.theme);
 
     let completion_menu = Box::new(ColumnarMenu::default().with_name("completion_menu"));
+    let history_menu = Box::new(ListMenu::default().with_name("history_menu"));
 
     let mut line_editor = Reedline::create()
         .with_history(history)
         .with_completer(Box::new(LlmshCompleter::new(cache.clone())))
         .with_menu(ReedlineMenu::EngineCompleter(completion_menu))
+        .with_menu(ReedlineMenu::HistoryMenu(history_menu))
+        .with_validator(Box::new(LlmshValidator::new(cache.clone())))
         .with_hinter(Box::new(DefaultHinter::default()))
         .with_highlighter(Box::new(CmdHighlighter::new(cache.clone(), theme)))
         .with_edit_mode(edit_mode);

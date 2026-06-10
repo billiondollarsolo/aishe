@@ -15,3 +15,4 @@ pub mod providers;
 pub mod pty;
 pub mod safety;
 pub mod theme;
+pub mod validator;
