@@ -155,9 +155,11 @@ natively:
   word selection) plus `^old^new` quick substitution. (`!cmd` stays aishe's
   force-shell prefix — `!`-prefix history matching is intentionally not used.)
 - **Multi-line continuation** — pressing Enter on an unterminated *shell* line
-  (open quote, trailing `\`, or unbalanced `(`) drops to a continuation line
-  instead of submitting, like zsh's `quote>`. Natural-language input is never
-  trapped — apostrophes in `what's eating my disk` still submit normally.
+  (open quote, trailing `\`, unbalanced `(`, an open function body, or an open
+  control structure like `for … do` / `if … then`) drops to a continuation line
+  instead of submitting, like zsh's `quote>`. Loops, conditionals, `case`, and
+  function definitions can be typed across lines and run. Natural-language input
+  is never trapped — apostrophes in `what's eating my disk` still submit.
 - **Syntax highlighting** (like `zsh-syntax-highlighting`) — the command head is
   colored by whether it's a known command, with distinct colors for flags,
   quoted strings, operators (`| && ; > <`), paths, env assignments, and the

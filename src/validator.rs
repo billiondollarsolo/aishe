@@ -89,7 +89,80 @@ fn shell_incomplete(line: &str, func: bool) -> bool {
 
     let base = in_single || in_double || escaped || paren > 0;
     // A function definition isn't done until its body has opened and closed.
-    base || (func && (brace > 0 || !saw_brace))
+    // A control structure isn't done until its keywords balance.
+    base || (func && (brace > 0 || !saw_brace)) || control_depth(line) > 0
+}
+
+/// Net depth of shell control constructs: openers (`if`/`for`/`while`/`until`/
+/// `case`/`select`) minus closers (`fi`/`done`/`esac`), counting keywords only
+/// at *statement start*. This keeps the same words used as arguments
+/// (`grep if x`, `echo done`) from being miscounted.
+fn control_depth(line: &str) -> i32 {
+    let mut depth = 0i32;
+    let mut at_start = true; // the next word begins a statement
+    let mut word = String::new();
+    let mut in_single = false;
+    let mut in_double = false;
+    let mut escaped = false;
+
+    for c in line.chars() {
+        if in_single {
+            word.push(c);
+            if c == '\'' {
+                in_single = false;
+            }
+            continue;
+        }
+        if escaped {
+            word.push(c);
+            escaped = false;
+            continue;
+        }
+        match c {
+            '\\' => escaped = true,
+            '\'' => {
+                in_single = true;
+                word.push(c);
+            }
+            '"' => {
+                in_double = !in_double;
+                word.push(c);
+            }
+            _ if in_double => word.push(c),
+            ' ' | '\t' | '\n' => {
+                at_start = classify_word(&word, at_start, &mut depth);
+                word.clear();
+                if c == '\n' {
+                    at_start = true; // newline separates statements
+                }
+            }
+            ';' | '&' | '|' | '(' => {
+                classify_word(&word, at_start, &mut depth);
+                word.clear();
+                at_start = true; // operators separate statements
+            }
+            _ => word.push(c),
+        }
+    }
+    classify_word(&word, at_start, &mut depth);
+    depth
+}
+
+/// Apply a flushed word's effect on construct depth (only when it's at a
+/// statement start) and return whether the *next* word is at a statement start.
+fn classify_word(word: &str, at_start: bool, depth: &mut i32) -> bool {
+    if word.is_empty() {
+        return at_start;
+    }
+    if at_start {
+        match word {
+            "if" | "for" | "while" | "until" | "case" | "select" => *depth += 1,
+            "fi" | "done" | "esac" => *depth -= 1,
+            _ => {}
+        }
+    }
+    // `do`/`then`/`else`/`elif` introduce a new statement after them.
+    matches!(word, "do" | "then" | "else" | "elif")
 }
 
 #[cfg(test)]
@@ -143,6 +216,27 @@ mod tests {
     fn function_def_continues_then_completes() {
         assert!(is_incomplete("greet() {"));
         assert!(!is_incomplete("greet() { echo hi; }"));
+    }
+
+    #[test]
+    fn control_structures_continue_then_complete() {
+        // openers continue…
+        assert!(is_incomplete("for i in 1 2 3; do"));
+        assert!(is_incomplete("if true; then"));
+        assert!(is_incomplete("while read l; do echo $l"));
+        assert!(is_incomplete("case $x in"));
+        // …and complete once closed.
+        assert!(!is_incomplete("for i in 1 2 3; do echo $i; done"));
+        assert!(!is_incomplete("if true; then echo hi; fi"));
+        assert!(!is_incomplete("case $x in a) echo a;; esac"));
+    }
+
+    #[test]
+    fn keywords_as_arguments_do_not_continue() {
+        assert_eq!(control_depth("grep if file"), 0);
+        assert_eq!(control_depth("echo done"), 0);
+        assert_eq!(control_depth("echo 'for'"), 0);
+        assert_eq!(control_depth("ls && echo then"), 0);
     }
 
     #[test]

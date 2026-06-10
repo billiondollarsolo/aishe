@@ -148,6 +148,12 @@ pub fn dispatch(line: &str, cache: &CommandCache) -> Dispatch {
         return Dispatch::Shell(trimmed.to_string());
     }
 
+    // 4c. Shell control structures (`for`/`while`/`if`/`case`/…, `[[`, `((`,
+    //     `{`) — route to shell so loops/conditionals can be typed and run.
+    if is_shell_construct_head(trimmed) {
+        return Dispatch::Shell(trimmed.to_string());
+    }
+
     // Env assignments: `FOO=bar cmd`. A pure assignment line is shell.
     let effective_first = effective_command_token(&tokens);
     if let EffectiveHead::Assignment = effective_first {
@@ -250,6 +256,20 @@ fn is_valid_func_name(s: &str) -> bool {
     }
     s.chars()
         .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+}
+
+/// True if the line begins a shell control structure / compound command, so it
+/// should run as shell (and the validator can continue it across lines).
+pub fn is_shell_construct_head(line: &str) -> bool {
+    let t = line.trim_start();
+    if t.starts_with("[[") || t.starts_with("((") || t.starts_with('{') {
+        return true;
+    }
+    let first = t.split(|c: char| c.is_whitespace()).next().unwrap_or("");
+    matches!(
+        first,
+        "if" | "for" | "while" | "until" | "case" | "select" | "function" | "time"
+    )
 }
 
 fn starts_with_shell_syntax(line: &str) -> bool {
@@ -492,6 +512,28 @@ mod tests {
         assert_eq!(function_def_name("echo (hi)"), None);
         assert_eq!(function_def_name("a=$(date)"), None);
         assert_eq!(function_def_name("git status"), None);
+    }
+
+    #[test]
+    fn control_structures_route_to_shell() {
+        let c = cache_with(&[]);
+        assert!(matches!(
+            dispatch("for i in 1 2 3; do", &c),
+            Dispatch::Shell(_)
+        ));
+        assert!(matches!(dispatch("if true; then", &c), Dispatch::Shell(_)));
+        assert!(matches!(
+            dispatch("while read l; do", &c),
+            Dispatch::Shell(_)
+        ));
+        assert!(matches!(dispatch("case $x in", &c), Dispatch::Shell(_)));
+        assert!(matches!(dispatch("[[ -f x ]]", &c), Dispatch::Shell(_)));
+        assert!(matches!(dispatch("{ echo hi; }", &c), Dispatch::Shell(_)));
+        // a normal command that merely mentions a keyword is not a construct
+        assert!(matches!(
+            dispatch("show me the iframe", &c),
+            Dispatch::NaturalLanguage(_)
+        ));
     }
 
     #[test]

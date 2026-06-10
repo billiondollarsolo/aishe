@@ -12,8 +12,10 @@ breaking changes can land in any release.
   powerlevel10k, oh-my-zsh) unmodified. Now the **default** (`front_end = "auto"`)
   when zsh is on `$PATH`, falling back to the built-in reedline editor.
 - **reedline editor parity** — context-aware tab completion (commands, file
-  paths, `$VAR` env vars, directories-only for `cd`/`pushd`, and `aishe`
-  subcommands/values), `Ctrl-R`
+  paths, `$VAR` env vars, directories-only for `cd`/`pushd`, `aishe`
+  subcommands/values, and per-command subcommands for git/cargo/docker/npm with
+  live git-branch completion), multi-line continuation for **control structures**
+  (`for`/`while`/`if`/`case`) and function definitions, `Ctrl-R`
   history-search menu, multi-line continuation validator, emacs/vi keymaps
   (`edit_mode`, with `[I]`/`[N]` prompt tags in vi mode), and zsh-style history
   expansion (`!!`, `!$`, `!-N`, `^old^new`, …), **autocd** (bare directory name →

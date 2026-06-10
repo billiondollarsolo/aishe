@@ -229,6 +229,14 @@ def main():
         if not sh.expect("FUNC_42"):
             fail("interactively-defined function did not persist/run", sh)
 
+        # 4e) a multi-line for-loop continues across lines and runs. LOOP_3 only
+        #     appears when the loop body executes.
+        sh.send("for n in 1 2 3; do")
+        sh.send("echo LOOP_$n")
+        sh.send("done")
+        if not sh.expect("LOOP_3"):
+            fail("multi-line control structure did not run", sh)
+
         # 5) clean exit.
         sh.send("exit")
         code = sh.wait_exit(timeout=10)
