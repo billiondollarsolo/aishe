@@ -815,6 +815,8 @@ fn print_meta_help() {
 \x20 aishe rehash                rebuild the command cache\n\
 \x20 aishe help                  show this help\n\
 \n\
+(each also works as a slash-command, e.g. /mode auto, /config, /help)\n\
+\n\
 input prefixes:\n\
 \x20 ?<text>   force natural-language\n\
 \x20 !<cmd>    force shell (safety-exempt)\n\

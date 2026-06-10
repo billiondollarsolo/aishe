@@ -138,6 +138,17 @@ pub fn dispatch(line: &str, cache: &CommandCache) -> Dispatch {
         return Dispatch::Shell(rest.trim().to_string());
     }
 
+    // 2b. Slash-commands: `/<meta> …` is an alias for `aishe <meta> …`. Only a
+    //     known meta subcommand intercepts, so `/usr/bin/x` stays a shell path.
+    if let Some(rest) = trimmed.strip_prefix('/') {
+        let sub = rest.split_whitespace().next().unwrap_or("");
+        if is_meta_subcommand(sub) {
+            let mut toks = vec!["aishe".to_string()];
+            toks.extend(rest.split_whitespace().map(str::to_string));
+            return Dispatch::Builtin(toks);
+        }
+    }
+
     let tokens = tokenize(trimmed);
     let first = tokens.first().map(|s| s.as_str()).unwrap_or("");
 
@@ -377,6 +388,25 @@ fn split_top_level(line: &str) -> Vec<String> {
         .collect()
 }
 
+/// `aishe` meta subcommands (also reachable as `/<name>` slash-commands). Keep
+/// in sync with `handle_meta` in main.rs and the completer's list.
+pub fn is_meta_subcommand(w: &str) -> bool {
+    matches!(
+        w,
+        "mode"
+            | "model"
+            | "provider"
+            | "editor"
+            | "frontend"
+            | "stream"
+            | "structured"
+            | "theme"
+            | "config"
+            | "rehash"
+            | "help"
+    )
+}
+
 /// Shell reserved words / compound-command heads that are valid segment heads
 /// even when not in the command cache (so control structures route to shell).
 fn is_reserved_word(w: &str) -> bool {
@@ -592,6 +622,25 @@ mod tests {
         assert!(matches!(
             dispatch("find big files | wat", &c),
             Dispatch::NaturalLanguage(_)
+        ));
+    }
+
+    #[test]
+    fn slash_commands_route_to_meta() {
+        let c = cache_with(&[]);
+        assert_eq!(
+            dispatch("/mode auto", &c),
+            Dispatch::Builtin(vec!["aishe".into(), "mode".into(), "auto".into()])
+        );
+        assert_eq!(
+            dispatch("/help", &c),
+            Dispatch::Builtin(vec!["aishe".into(), "help".into()])
+        );
+        // an absolute path is NOT a slash-command
+        assert!(matches!(dispatch("/usr/bin/env", &c), Dispatch::Shell(_)));
+        assert!(matches!(
+            dispatch("/notacmd", &c),
+            Dispatch::NaturalLanguage(_) | Dispatch::Shell(_)
         ));
     }
 

@@ -98,6 +98,10 @@ aishe rehash                     rebuild the command cache
 aishe help                       show help
 ```
 
+Each meta command also works as a **slash-command** (Claude-Code style), e.g.
+`/mode auto`, `/config`, `/help` — tab-completable, and `/`-prefixed paths like
+`/usr/bin/x` still run normally.
+
 Exit with `exit`, `quit`, or `Ctrl-D`.
 
 ---

@@ -117,6 +117,10 @@ impl Completer for AisheCompleter {
 
         // Command position: nothing typed yet in this segment.
         if seg_tokens.is_empty() {
+            // `/<meta>` slash-commands (only when it isn't an absolute path).
+            if let Some(s) = slash_command_suggestions(word, span) {
+                return s;
+            }
             return if looks_like_path(word) {
                 complete_paths(word, span, false)
             } else {
@@ -275,6 +279,33 @@ fn complete_env(word: &str, span: Span) -> Vec<Suggestion> {
             ..Default::default()
         })
         .collect()
+}
+
+/// Complete `/<meta>` slash-commands. Returns `None` when `word` isn't a
+/// slash-command prefix (e.g. an absolute path like `/usr/…`), so path/command
+/// completion can take over.
+fn slash_command_suggestions(word: &str, span: Span) -> Option<Vec<Suggestion>> {
+    let rest = word.strip_prefix('/')?;
+    if rest.contains('/') {
+        return None; // an absolute path, not a slash-command
+    }
+    let lw = rest.to_lowercase();
+    let matches: Vec<Suggestion> = META_SUBCOMMANDS
+        .iter()
+        .filter(|(name, _)| name.to_lowercase().starts_with(&lw))
+        .map(|(name, desc)| Suggestion {
+            value: format!("/{name}"),
+            description: Some((*desc).to_string()),
+            span,
+            append_whitespace: true,
+            ..Default::default()
+        })
+        .collect();
+    if matches.is_empty() {
+        None
+    } else {
+        Some(matches)
+    }
 }
 
 /// Complete `aishe` meta subcommands and their fixed-value arguments.
@@ -490,6 +521,16 @@ mod tests {
         // theme presets come from the theme module
         let line = "aishe theme ";
         assert!(values(&c.complete(line, line.len())).contains(&"nord".to_string()));
+    }
+
+    #[test]
+    fn slash_commands_complete() {
+        let mut c = AisheCompleter::new(CommandCache::new());
+        let v = values(&c.complete("/mo", 3));
+        assert!(v.contains(&"/mode".to_string()) && v.contains(&"/model".to_string()));
+        // an absolute-path word is not a slash-command (falls through to paths)
+        let v = values(&c.complete("/us", 3));
+        assert!(!v.iter().any(|x| x.starts_with("/m")));
     }
 
     #[test]
