@@ -70,10 +70,12 @@ is tagged `(reedline)` so we can re-scope quickly.
   first).
 - [ ] **Richer history**: dedup (`HIST_IGNORE_DUPS`), timestamps, cross-session
   sharing, `HISTIGNORE`. (reedline)
-- [ ] **Prompt depth**: git dirty, staged, ahead-behind, and stash indicators, an
-  exit-status glyph, command duration (`REPORTTIME`), async vcs_info. (reedline)
-- [ ] **Spelling correction** (`CORRECT`), named dirs (`~proj`), `cdpath`,
-  `AUTO_PUSHD`, global and suffix aliases. (reedline)
+- [~] **Prompt depth**: command duration (`report_time`) and git dirty +
+  ahead/behind (`git_status`) shipped; an exit-status glyph already colors the
+  prompt. Staged/stash indicators and async vcs_info still open. (reedline)
+- [~] **Spelling correction** (`CORRECT`), named dirs (`~proj`), `cdpath`,
+  global and suffix aliases still open. `AUTO_PUSHD` shipped (`auto_pushd`,
+  `cd -N`/`cd +N`, `dirs -v`). (reedline)
 - [ ] **Completion depth**: closer to zsh compsys, with descriptions for
   arbitrary commands, file completion with glob qualifiers, and completion from
   man pages or `--help`. (reedline)

@@ -663,13 +663,26 @@ fn repl(
     // Conversation memory for natural-language turns this session.
     let mut session = Session::new(config.aishe.memory);
 
+    // zsh AUTO_PUSHD for the directory stack.
+    executor.set_auto_pushd(config.aishe.auto_pushd);
+
     loop {
-        // Computed once per prompt (not per keystroke), reading .git/HEAD.
+        // Computed once per prompt (not per keystroke). The branch comes from
+        // .git/HEAD (cheap); the dirty/ahead-behind markers run a short, timed
+        // `git status` when `git_status` is on.
         let git = if config.aishe.git_prompt {
-            aishe::prompt::git_segment(executor.cwd())
+            aishe::prompt::git_segment_full(executor.cwd(), config.aishe.git_status)
         } else {
             None
         };
+        // Last command's duration, shown when it ran at least `report_time` secs.
+        let duration = executor
+            .last_duration()
+            .filter(|d| {
+                config.aishe.report_time > 0
+                    && *d >= std::time::Duration::from_secs(config.aishe.report_time)
+            })
+            .map(aishe::prompt::format_duration);
         let prompt = AishePrompt::new(
             executor.cwd().clone(),
             &config.aishe.mode,
@@ -679,6 +692,7 @@ fn repl(
             theme,
             config.aishe.prompt_format.as_deref(),
             git,
+            duration,
         );
 
         INTERRUPTED.store(false, Ordering::SeqCst);

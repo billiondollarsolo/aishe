@@ -25,6 +25,10 @@ pub struct Executor {
     cwd: PathBuf,
     prev_cwd: Option<PathBuf>,
     pub last_exit: i32,
+    /// Wall-clock duration of the last delegated command (`None` for builtins).
+    last_duration: Option<Duration>,
+    /// zsh `AUTO_PUSHD`: push the previous dir onto the stack on every `cd`.
+    auto_pushd: bool,
     /// Last 10 (command, exit_code) pairs, for LLM context.
     pub history: VecDeque<(String, i32)>,
     /// Temp rc file sourced into every delegated command: the user's `.aishrc`
@@ -51,6 +55,8 @@ impl Executor {
             cwd,
             prev_cwd: None,
             last_exit: 0,
+            last_duration: None,
+            auto_pushd: false,
             history: VecDeque::with_capacity(10),
             session_rc: init_session_rc().ok(),
             dir_stack: Vec::new(),
@@ -62,6 +68,16 @@ impl Executor {
     }
     pub fn cwd(&self) -> &PathBuf {
         &self.cwd
+    }
+    /// Wall-clock time of the last delegated command (`None` for builtins, which
+    /// are instant). Used by the prompt's command-duration segment.
+    pub fn last_duration(&self) -> Option<Duration> {
+        self.last_duration
+    }
+    /// Enable zsh-style `AUTO_PUSHD`: every `cd` pushes the previous directory
+    /// onto the directory stack.
+    pub fn set_auto_pushd(&mut self, on: bool) {
+        self.auto_pushd = on;
     }
 
     /// Configure a `zsh -c`/`bash -c` invocation to source the session rc (user
@@ -129,7 +145,9 @@ impl Executor {
             .stdin(Stdio::inherit())
             .stdout(Stdio::inherit())
             .stderr(Stdio::inherit());
+        let start = Instant::now();
         let status = cmd.status();
+        self.last_duration = Some(start.elapsed());
 
         let code = match status {
             Ok(s) => exit_code(&s),
@@ -217,6 +235,8 @@ impl Executor {
 
     /// Handle an intercepted builtin. Returns the resulting exit code.
     pub fn run_builtin(&mut self, tokens: &[String]) -> i32 {
+        // Builtins are effectively instant; don't carry a stale command duration.
+        self.last_duration = None;
         let code = match tokens[0].as_str() {
             "cd" => self.builtin_cd(tokens.get(1).map(|s| s.as_str())),
             "export" => self.builtin_export(&tokens[1..]),
@@ -224,7 +244,7 @@ impl Executor {
             "source" | "." => self.builtin_source(tokens.get(1).map(|s| s.as_str())),
             "pushd" => self.builtin_pushd(tokens.get(1).map(|s| s.as_str())),
             "popd" => self.builtin_popd(),
-            "dirs" => self.builtin_dirs(),
+            "dirs" => self.builtin_dirs(&tokens[1..]),
             other => {
                 eprintln!("aishe: builtin not handled: {other}");
                 1
@@ -265,6 +285,7 @@ impl Executor {
             return match self.prev_cwd.clone() {
                 Some(p) => {
                     println!("{}", p.display());
+                    self.maybe_pushd();
                     self.set_cwd(p);
                     0
                 }
@@ -274,8 +295,15 @@ impl Executor {
                 }
             };
         }
+        // `cd -N` / `cd +N`: jump to entry N in the `dirs -v` numbering.
+        if let Some(n) = arg.and_then(stack_index) {
+            return self.cd_stack_index(n);
+        }
         match self.resolve_dir(arg.unwrap_or("")) {
             Ok(dir) => {
+                if dir != self.cwd {
+                    self.maybe_pushd();
+                }
                 self.set_cwd(dir);
                 0
             }
@@ -286,6 +314,37 @@ impl Executor {
         }
     }
 
+    /// Push the current dir onto the stack when `AUTO_PUSHD` is on, skipping a
+    /// duplicate of the current top and capping the stack.
+    fn maybe_pushd(&mut self) {
+        if !self.auto_pushd {
+            return;
+        }
+        if self.dir_stack.first() == Some(&self.cwd) {
+            return;
+        }
+        self.dir_stack.insert(0, self.cwd.clone());
+        self.dir_stack.truncate(32);
+    }
+
+    /// `cd -N` / `cd +N`: move to the Nth entry of the `dirs -v` listing (0 is the
+    /// cwd; 1.. index into the stack), rotating the popped dir to the front.
+    fn cd_stack_index(&mut self, n: usize) -> i32 {
+        if n == 0 {
+            println!("{}", self.cwd.display());
+            return 0;
+        }
+        if n > self.dir_stack.len() {
+            eprintln!("cd: no such entry in directory stack: {n}");
+            return 1;
+        }
+        let target = self.dir_stack.remove(n - 1);
+        self.dir_stack.insert(0, self.cwd.clone());
+        println!("{}", target.display());
+        self.set_cwd(target);
+        0
+    }
+
     /// `pushd [dir]`: with a dir, push the cwd and cd into it; with no arg, swap
     /// the cwd with the top of the stack. Prints the stack afterwards.
     fn builtin_pushd(&mut self, arg: Option<&str>) -> i32 {
@@ -294,7 +353,7 @@ impl Executor {
                 Ok(target) => {
                     self.dir_stack.insert(0, self.cwd.clone());
                     self.set_cwd(target);
-                    self.builtin_dirs()
+                    self.builtin_dirs(&[])
                 }
                 Err(e) => {
                     eprintln!("pushd: {e}");
@@ -311,7 +370,7 @@ impl Executor {
                 self.dir_stack.insert(0, old);
                 self.env
                     .insert("PWD".to_string(), self.cwd.display().to_string());
-                self.builtin_dirs()
+                self.builtin_dirs(&[])
             }
         }
     }
@@ -324,18 +383,24 @@ impl Executor {
         }
         let top = self.dir_stack.remove(0);
         self.set_cwd(top);
-        self.builtin_dirs()
+        self.builtin_dirs(&[])
     }
 
-    /// `dirs`: print the directory stack (cwd first), `~`-abbreviated.
-    fn builtin_dirs(&mut self) -> i32 {
-        let mut entries = vec![abbreviate_home(&self.cwd, &self.home())];
-        entries.extend(
-            self.dir_stack
-                .iter()
-                .map(|p| abbreviate_home(p, &self.home())),
-        );
-        println!("{}", entries.join(" "));
+    /// `dirs [-v]`: print the directory stack (cwd first), `~`-abbreviated. With
+    /// `-v`, print one numbered entry per line (`cd -N` / `cd +N` jump there).
+    fn builtin_dirs(&mut self, args: &[String]) -> i32 {
+        let home = self.home();
+        let entries: Vec<String> = std::iter::once(&self.cwd)
+            .chain(self.dir_stack.iter())
+            .map(|p| abbreviate_home(p, &home))
+            .collect();
+        if args.iter().any(|a| a == "-v") {
+            for (i, e) in entries.iter().enumerate() {
+                println!("{i}\t{e}");
+            }
+        } else {
+            println!("{}", entries.join(" "));
+        }
         0
     }
 
@@ -522,6 +587,16 @@ fn abbreviate_home(path: &Path, home: &Path) -> String {
     }
 }
 
+/// Parse a `cd -N` / `cd +N` argument into a directory-stack index. Returns
+/// `None` for a bare `-`/`+` or a non-numeric argument.
+fn stack_index(arg: &str) -> Option<usize> {
+    let digits = arg.strip_prefix('-').or_else(|| arg.strip_prefix('+'))?;
+    if digits.is_empty() {
+        return None;
+    }
+    digits.parse::<usize>().ok()
+}
+
 /// Single-quote a path for safe interpolation into a shell command.
 fn single_quote(path: &std::path::Path) -> String {
     format!("'{}'", path.display().to_string().replace('\'', r"'\''"))
@@ -639,6 +714,45 @@ mod tests {
 
         // popd on an empty stack is an error.
         assert_eq!(ex.run_builtin(&["popd".into()]), 1);
+    }
+
+    #[test]
+    fn stack_index_parses() {
+        assert_eq!(stack_index("-2"), Some(2));
+        assert_eq!(stack_index("+3"), Some(3));
+        assert_eq!(stack_index("-"), None);
+        assert_eq!(stack_index("foo"), None);
+        assert_eq!(stack_index("-x"), None);
+    }
+
+    #[test]
+    fn auto_pushd_and_cd_stack_navigation() {
+        let mut ex = Executor::new().unwrap();
+        ex.set_auto_pushd(true);
+        let start = ex.cwd().canonicalize().unwrap();
+        let tmp = std::env::temp_dir().canonicalize().unwrap();
+
+        // AUTO_PUSHD: cd into tmp pushes the start dir onto the stack.
+        assert_eq!(ex.run_builtin(&["cd".into(), tmp.display().to_string()]), 0);
+        assert_eq!(ex.cwd().canonicalize().unwrap(), tmp);
+        assert_eq!(ex.dir_stack.len(), 1);
+
+        // `cd -1` jumps back to the start dir (stack entry 1).
+        assert_eq!(ex.run_builtin(&["cd".into(), "-1".into()]), 0);
+        assert_eq!(ex.cwd().canonicalize().unwrap(), start);
+
+        // out-of-range index is an error.
+        assert_eq!(ex.run_builtin(&["cd".into(), "-9".into()]), 1);
+    }
+
+    #[test]
+    fn dirs_verbose_numbers_entries() {
+        let mut ex = Executor::new().unwrap();
+        ex.set_auto_pushd(true);
+        let tmp = std::env::temp_dir().display().to_string();
+        ex.run_builtin(&["cd".into(), tmp]);
+        // `dirs -v` returns 0; the numbered output goes to stdout.
+        assert_eq!(ex.run_builtin(&["dirs".into(), "-v".into()]), 0);
     }
 
     #[test]

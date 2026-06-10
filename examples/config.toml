@@ -36,6 +36,18 @@ show_right_prompt = true
 # Show a git branch segment in the right prompt (reedline front-end).
 git_prompt = true
 
+# Add a dirty marker (*) and ahead/behind counts to the git segment (one short
+# `git status` per prompt). Turn off in very large repos.
+git_status = true
+
+# Show the last command's duration on the right when it ran at least this many
+# seconds (like zsh REPORTTIME). 0 disables.
+report_time = 3
+
+# zsh AUTO_PUSHD: every `cd` pushes the previous directory onto the stack.
+# Navigate with `cd -N` / `cd +N`, list with `dirs -v`.
+auto_pushd = false
+
 # Custom reedline left prompt. Placeholders: {cwd} {mode} {model} {exit}.
 # Leave commented out for the default (just the cwd).
 # prompt_format = "[{mode}] {cwd}"

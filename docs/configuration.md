@@ -28,6 +28,9 @@ which persist your choice back to the file.
 | `max_yolo_iterations` | integer | `10` | Maximum tool-use steps for one yolo request. |
 | `show_right_prompt` | bool | `true` | Show "model and mode" on the right (reedline). |
 | `git_prompt` | bool | `true` | Show a git branch segment in the right prompt (reedline). |
+| `git_status` | bool | `true` | Add dirty (`*`) and ahead/behind (`⇡`/`⇣`) markers to the git segment (one `git status` per prompt). |
+| `report_time` | integer | `3` | Show the last command's duration when it ran at least this many seconds. `0` disables. |
+| `auto_pushd` | bool | `false` | zsh `AUTO_PUSHD`: every `cd` pushes the previous dir (`cd -N`/`cd +N`, `dirs -v`). |
 | `prompt_format` | string | unset | Custom left prompt. Placeholders: `{cwd}`, `{mode}`, `{model}`, `{exit}`. |
 | `structured` | string | `schema` | Suggest output format: `schema`, `json`, or `prompt`. |
 | `stream` | bool | `false` | Stream answers token-by-token in the REPL (suggest and auto). |

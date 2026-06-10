@@ -3,6 +3,7 @@
 
 use std::borrow::Cow;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use reedline::{
     Prompt, PromptEditMode, PromptHistorySearch, PromptHistorySearchStatus, PromptViMode,
@@ -32,6 +33,7 @@ impl AishePrompt {
         theme: Theme,
         prompt_format: Option<&str>,
         git: Option<String>,
+        duration: Option<String>,
     ) -> Self {
         let glyph = match mode {
             "yolo" => '⚡',
@@ -39,10 +41,16 @@ impl AishePrompt {
             _ => '❯',
         };
         let cwd_display = abbreviate_home(&cwd);
-        let right = match git {
-            Some(branch) => format!("⎇ {branch}  {model} · {mode}"),
-            None => format!("{model} · {mode}"),
-        };
+        // Right prompt: git segment, command duration, then "model · mode".
+        let mut parts: Vec<String> = Vec::new();
+        if let Some(g) = git {
+            parts.push(g);
+        }
+        if let Some(d) = duration {
+            parts.push(d);
+        }
+        parts.push(format!("{model} · {mode}"));
+        let right = parts.join("  ");
         let left = match prompt_format {
             Some(fmt) => apply_format(fmt, &cwd_display, mode, &model, last_exit),
             None => cwd_display,
@@ -56,6 +64,100 @@ impl AishePrompt {
             left,
         }
     }
+}
+
+/// Git status flags for the prompt segment.
+#[derive(Debug, Default, PartialEq, Eq)]
+struct GitStatus {
+    dirty: bool,
+    ahead: u32,
+    behind: u32,
+}
+
+/// The full git prompt segment: branch (from `.git/HEAD`, cheap) plus, when
+/// `show_status` is set, a `*` for a dirty tree and `⇡N`/`⇣N` ahead/behind the
+/// upstream (one short, time-limited `git status` call). `None` outside a repo.
+pub fn git_segment_full(cwd: &Path, show_status: bool) -> Option<String> {
+    let branch = git_segment(cwd)?;
+    let mut out = format!("⎇ {branch}");
+    if show_status {
+        if let Some(st) = git_status(cwd) {
+            if st.dirty {
+                out.push('*');
+            }
+            if st.ahead > 0 {
+                out.push_str(&format!("⇡{}", st.ahead));
+            }
+            if st.behind > 0 {
+                out.push_str(&format!("⇣{}", st.behind));
+            }
+        }
+    }
+    Some(out)
+}
+
+/// Run `git status --porcelain=v2 --branch` with a short timeout and parse the
+/// dirty flag and ahead/behind counts. Best-effort: `None` on error/timeout, so a
+/// slow or huge repo never freezes the prompt.
+fn git_status(cwd: &Path) -> Option<GitStatus> {
+    use std::sync::mpsc;
+    let (tx, rx) = mpsc::channel();
+    let dir = cwd.to_path_buf();
+    std::thread::spawn(move || {
+        let out = std::process::Command::new("git")
+            .arg("-C")
+            .arg(&dir)
+            .args([
+                "status",
+                "--porcelain=v2",
+                "--branch",
+                "--untracked-files=no",
+            ])
+            .output();
+        let _ = tx.send(out);
+    });
+    let out = match rx.recv_timeout(Duration::from_millis(250)) {
+        Ok(Ok(o)) if o.status.success() => o.stdout,
+        _ => return None,
+    };
+    let text = String::from_utf8_lossy(&out);
+    Some(parse_git_status(&text))
+}
+
+/// Parse `git status --porcelain=v2 --branch` output.
+fn parse_git_status(text: &str) -> GitStatus {
+    let mut st = GitStatus::default();
+    for line in text.lines() {
+        if let Some(ab) = line.strip_prefix("# branch.ab ") {
+            for tok in ab.split_whitespace() {
+                if let Some(n) = tok.strip_prefix('+') {
+                    st.ahead = n.parse().unwrap_or(0);
+                } else if let Some(n) = tok.strip_prefix('-') {
+                    st.behind = n.parse().unwrap_or(0);
+                }
+            }
+        } else if line.starts_with("1 ") || line.starts_with("2 ") || line.starts_with("u ") {
+            st.dirty = true;
+        }
+    }
+    st
+}
+
+/// Format a command duration compactly: `850ms`, `3.2s`, `1m05s`, `1h02m`.
+pub fn format_duration(d: Duration) -> String {
+    let ms = d.as_millis();
+    if ms < 1000 {
+        return format!("{ms}ms");
+    }
+    let secs = d.as_secs();
+    if secs < 60 {
+        let tenths = (ms % 1000) / 100;
+        return format!("{secs}.{tenths}s");
+    }
+    if secs < 3600 {
+        return format!("{}m{:02}s", secs / 60, secs % 60);
+    }
+    format!("{}h{:02}m", secs / 3600, (secs % 3600) / 60)
 }
 
 /// Substitute `{cwd}` / `{mode}` / `{model}` / `{exit}` placeholders in a custom
@@ -193,6 +295,29 @@ mod tests {
         assert_eq!(git_segment(&sub).as_deref(), Some("0123456"));
 
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn format_duration_scales() {
+        assert_eq!(format_duration(Duration::from_millis(850)), "850ms");
+        assert_eq!(format_duration(Duration::from_millis(3200)), "3.2s");
+        assert_eq!(format_duration(Duration::from_secs(65)), "1m05s");
+        assert_eq!(format_duration(Duration::from_secs(3720)), "1h02m");
+    }
+
+    #[test]
+    fn parse_git_status_reads_dirty_and_ab() {
+        let out = "# branch.oid abc\n# branch.head main\n# branch.ab +2 -1\n1 .M N... file\n";
+        let st = parse_git_status(out);
+        assert!(st.dirty);
+        assert_eq!(st.ahead, 2);
+        assert_eq!(st.behind, 1);
+
+        let clean = "# branch.head main\n# branch.ab +0 -0\n";
+        let st = parse_git_status(clean);
+        assert!(!st.dirty);
+        assert_eq!(st.ahead, 0);
+        assert_eq!(st.behind, 0);
     }
 
     #[test]

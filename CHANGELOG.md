@@ -29,6 +29,12 @@ breaking changes can land in any release.
   the provider).
 
 ### Added
+- **Deeper zsh parity (reedline prompt and navigation).** The right prompt now
+  shows the **last command's duration** (`report_time`, like zsh REPORTTIME) and
+  **git dirty/ahead-behind markers** (`*`, `⇡N`/`⇣N`, via `git_status`). Added
+  **`AUTO_PUSHD`** (`auto_pushd`): every `cd` pushes the previous directory, with
+  `cd -N`/`cd +N` to jump and `dirs -v` to list the numbered stack. (Full job
+  control remains the zsh-PTY front-end's domain, where it works natively.)
 - **Inline AI ghost text.** In the reedline front-end, aishe can predict the rest
   of your command as you type and show it as dim ghost text (accept with the Right
   arrow), Copilot/Warp style. A background worker (debounced, cached) keeps typing

@@ -21,7 +21,7 @@ result is easy to move around.
 From a checkout of the repository:
 
 ```sh
-git clone https://github.com/mjtechguy/aishe
+git clone https://github.com/billiondollarsolo/aishe
 cd aishe
 cargo install --path .
 ```

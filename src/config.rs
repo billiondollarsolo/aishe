@@ -80,6 +80,18 @@ pub struct AisheConfig {
     /// Show a git branch segment in the right prompt (reedline front-end).
     #[serde(default = "default_true")]
     pub git_prompt: bool,
+    /// Add dirty (`*`) and ahead/behind (`⇡`/`⇣`) markers to the git segment
+    /// (one short `git status` call per prompt). Disable in huge repos.
+    #[serde(default = "default_true")]
+    pub git_status: bool,
+    /// Show the last command's duration in the right prompt when it took at least
+    /// this many seconds. `0` disables it.
+    #[serde(default = "default_report_time")]
+    pub report_time: u64,
+    /// zsh `AUTO_PUSHD`: every `cd` pushes the previous directory onto the stack
+    /// (navigate with `cd -N` / `cd +N`, list with `dirs -v`).
+    #[serde(default)]
+    pub auto_pushd: bool,
     /// Structured-output strategy for suggest mode: "schema" (strict JSON schema,
     /// default), "json" (any JSON object), or "prompt" (unconstrained).
     #[serde(default = "default_structured")]
@@ -145,6 +157,9 @@ fn default_true() -> bool {
 fn default_max_iters() -> u32 {
     10
 }
+fn default_report_time() -> u64 {
+    3
+}
 fn default_front_end() -> String {
     "auto".to_string()
 }
@@ -183,6 +198,9 @@ impl Default for AisheConfig {
             edit_mode: default_edit_mode(),
             prompt_format: None,
             git_prompt: true,
+            git_status: true,
+            report_time: default_report_time(),
+            auto_pushd: false,
             structured: default_structured(),
             stream: false,
             show_usage: true,

@@ -27,12 +27,26 @@ For a full powerlevel10k or oh-my-zsh prompt, use the zsh-PTY front-end.
 - `show_right_prompt = true` shows "model and mode" on the right.
 - `git_prompt = true` shows the current git branch (for example `⎇ main`), read
   directly from `.git/HEAD` without spawning git.
+- `git_status = true` adds a dirty marker (`*`) and ahead/behind counts
+  (`⇡N`/`⇣N`) to the git segment, via one short, time-limited `git status` call
+  per prompt. Turn it off in very large repos.
+- `report_time` shows the **last command's duration** on the right when it ran at
+  least that many seconds (default 3; `0` disables it). For example `3.2s`,
+  `1m05s`.
 
 ```toml
 [aishe]
 show_right_prompt = true
 git_prompt = true
+git_status = true
+report_time = 3
 ```
+
+A full right prompt looks like: `⎇ main*⇡1  3.2s  claude-sonnet · suggest`.
+
+Note: reedline hides the right prompt when it would not fit alongside your input,
+so on a narrow terminal (or with a long branch and model name) parts may not
+appear.
 
 ## Mode glyphs
 

@@ -66,7 +66,12 @@ Features:
   paths, env assignments, and the `?` and `!` sigils. Themeable, see
   [Prompt and theming](prompt-and-theming.md).
 - **autocd**: type a bare directory name to cd into it.
-- **Directory stack**: `pushd`, `popd`, and `dirs` persist across commands.
+- **Directory stack**: `pushd`, `popd`, and `dirs` persist across commands. With
+  `auto_pushd = true` (zsh `AUTO_PUSHD`), every `cd` pushes the previous directory
+  onto the stack; navigate it with `cd -N` / `cd +N` and list it with `dirs -v`
+  (numbered).
+- **Command duration and git status in the prompt** (see
+  [Prompt and theming](prompt-and-theming.md)).
 - **emacs or vi keymap** via `edit_mode` (or `aishe editor vi`). In vi mode the
   prompt shows `[I]` and `[N]` for insert and normal. Takes effect next session.
 - **Custom prompt** via `prompt_format`, and a git branch segment in the right
