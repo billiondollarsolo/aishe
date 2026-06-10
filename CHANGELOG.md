@@ -29,6 +29,11 @@ breaking changes can land in any release.
   the provider).
 
 ### Added
+- **Conversation memory.** The interactive REPL now remembers recent
+  natural-language turns (across suggest, auto, and yolo) so follow-ups like "now
+  do the same for the other file" have context. It stores requests and replies
+  (not the full tool transcript), is size-capped, and is never written to disk.
+  Clear it with `aishe reset` (`/reset`); disable with `memory = false`.
 - **Syntax-highlighted code blocks.** Rendered model answers now highlight fenced
   code blocks by language (via syntect, pure-Rust fancy-regex), for both streamed
   and non-streamed output. On by default; build `--no-default-features` for a

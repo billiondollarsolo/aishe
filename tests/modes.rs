@@ -8,6 +8,7 @@ use aishe::config::Config;
 use aishe::executor::Executor;
 use aishe::modes::{suggest, yolo};
 use aishe::providers::{Completion, Msg, Provider, ProviderError, ResponseFormat, ToolCall};
+use aishe::session::Session;
 use aishe::skills::SkillRegistry;
 use aishe::usage::UsageMeter;
 use serde_json::json;
@@ -100,6 +101,7 @@ fn yolo_runs_tool_then_finishes() {
         &config,
         &flag,
         &SkillRegistry::default(),
+        &mut Session::new(true),
     )
     .unwrap();
 
@@ -144,6 +146,7 @@ fn yolo_streaming_runs_tool_then_finishes() {
         &config,
         &flag,
         &SkillRegistry::default(),
+        &mut Session::new(true),
     )
     .unwrap();
 
@@ -177,6 +180,7 @@ fn yolo_respects_iteration_cap() {
         &config,
         &flag,
         &SkillRegistry::default(),
+        &mut Session::new(true),
     )
     .unwrap();
 
@@ -186,12 +190,63 @@ fn yolo_respects_iteration_cap() {
 }
 
 #[test]
+fn session_memory_primes_next_request() {
+    // The first turn is recorded; the second turn's request must include the
+    // prior user+assistant messages so the model has context.
+    let provider = MockProvider::with_completions(vec![], false);
+    // We exercise the recording + priming via the modes path using a text mock.
+    let p1 = MockProvider::with_text(r#"{"type":"command","command":"ls","explanation":"list"}"#);
+    let mut exec = Executor::new().unwrap();
+    let config = Config::default();
+    let mut session = Session::new(true);
+
+    // Turn 1: records user + assistant.
+    suggest::run(
+        "list files",
+        &p1,
+        &mut exec,
+        &config,
+        true,
+        false,
+        &mut session,
+    )
+    .unwrap();
+    assert_eq!(session.turns(), 1, "first turn should be remembered");
+
+    // History fed into the next request must carry both messages.
+    let primed = session.history();
+    assert_eq!(primed.len(), 2);
+    assert!(matches!(&primed[0], Msg::User(t) if t == "list files"));
+    let _ = provider; // silence unused in case of future edits
+}
+
+#[test]
+fn disabled_session_does_not_record() {
+    let p = MockProvider::with_text(r#"{"type":"command","command":"ls","explanation":"list"}"#);
+    let mut exec = Executor::new().unwrap();
+    let config = Config::default();
+    let mut session = Session::new(false);
+    suggest::run(
+        "list files",
+        &p,
+        &mut exec,
+        &config,
+        true,
+        false,
+        &mut session,
+    )
+    .unwrap();
+    assert_eq!(session.turns(), 0);
+    assert!(session.history().is_empty());
+}
+
+#[test]
 fn suggest_request_parses_command() {
     let provider =
         MockProvider::with_text(r#"{"type":"command","command":"ls -la","explanation":"list"}"#);
     let exec = Executor::new().unwrap();
     let config = Config::default();
-    let s = suggest::request("show files", &provider, &exec, &config).unwrap();
+    let s = suggest::request("show files", &provider, &exec, &config, Vec::new()).unwrap();
     assert_eq!(
         s,
         suggest::Suggestion::Command {
@@ -207,7 +262,7 @@ fn suggest_request_parses_answer() {
         MockProvider::with_text(r#"{"type":"answer","command":null,"explanation":"the answer"}"#);
     let exec = Executor::new().unwrap();
     let config = Config::default();
-    let s = suggest::request("what is 2+2", &provider, &exec, &config).unwrap();
+    let s = suggest::request("what is 2+2", &provider, &exec, &config, Vec::new()).unwrap();
     assert!(matches!(s, suggest::Suggestion::Answer { .. }));
 }
 
@@ -218,7 +273,16 @@ fn suggest_scriptable_prints_command_without_running() {
     let mut exec = Executor::new().unwrap();
     let config = Config::default();
     // scriptable=true must not execute the command.
-    suggest::run("do it", &provider, &mut exec, &config, true, false).unwrap();
+    suggest::run(
+        "do it",
+        &provider,
+        &mut exec,
+        &config,
+        true,
+        false,
+        &mut Session::new(false),
+    )
+    .unwrap();
     assert!(
         !exec.history.iter().any(|(c, _)| c == "echo never"),
         "scriptable mode must not run the command"

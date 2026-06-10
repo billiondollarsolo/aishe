@@ -113,6 +113,24 @@ yolo mode uses tool calling for the same reliability. Regardless of what the
 model returns, the deterministic [safety gate](safety.md) decides what actually
 runs. The model's output is never trusted to be safe.
 
+## Conversation memory
+
+In the interactive REPL, aishe remembers recent natural-language turns so
+follow-ups have context. After "create a file alpha.txt containing apple", a
+follow-up like "now do the same for beta.txt" knows that "the same" means
+"containing apple".
+
+- Memory applies across suggest, auto, and yolo turns in one session.
+- It stores your requests and the assistant's replies (a suggested command or
+  answer, or a yolo run's final summary), not the full tool-by-tool transcript,
+  so it stays small. It is capped by an approximate size budget and is never
+  written to disk.
+- It lives only for the interactive process. One-shot `-c` runs and the shell
+  hook do not carry memory between invocations.
+- Clear it any time with `aishe reset` (or `/reset`).
+- Turn it off with `memory = false` in config. Note that more history means more
+  input tokens per request; see [Token usage and cost](usage-and-cost.md).
+
 ## Input prefixes
 
 - `?<text>` forces natural-language, for example `?how do I find large files`.

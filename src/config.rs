@@ -66,6 +66,11 @@ pub struct AisheConfig {
     /// `0` = unlimited. Only enforced when the model's price is known.
     #[serde(default)]
     pub budget_usd: f64,
+    /// Remember recent natural-language turns in the interactive REPL so
+    /// follow-ups ("now do the same for the other file") have context. Clear it
+    /// with `aishe reset`.
+    #[serde(default = "default_true")]
+    pub memory: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -146,6 +151,7 @@ impl Default for AisheConfig {
             stream: false,
             show_usage: true,
             budget_usd: 0.0,
+            memory: true,
         }
     }
 }

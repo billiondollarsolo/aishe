@@ -56,6 +56,10 @@ show_usage = true
 # 0 = unlimited. Only enforced when the model's price is known.
 budget_usd = 0.0
 
+# Remember recent natural-language turns in the interactive REPL so follow-ups
+# ("now do the same for the other file") have context. Clear with `aishe reset`.
+memory = true
+
 # ---------------------------------------------------------------------------
 # Providers. Only the one named by `provider` above is used, but you can keep
 # both configured and switch with `aishe provider ...`.

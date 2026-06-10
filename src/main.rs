@@ -24,6 +24,7 @@ use aishe::highlight::CmdHighlighter;
 use aishe::prompt::AishePrompt;
 use aishe::providers::{self, Provider};
 use aishe::safety::{self, Risk};
+use aishe::session::Session;
 use aishe::skills::SkillRegistry;
 use aishe::theme::Theme;
 use aishe::validator::AisheValidator;
@@ -326,7 +327,8 @@ fn suggest_line(
         eprintln!("aishe: LLM not configured");
         return Ok(1);
     };
-    match modes::suggest::request(line, p, executor, config)? {
+    // Shell-hook calls are one per process, so there is no in-session memory.
+    match modes::suggest::request(line, p, executor, config, Vec::new())? {
         modes::suggest::Suggestion::Command {
             command,
             explanation,
@@ -360,7 +362,16 @@ fn yolo_line(
         eprintln!("aishe: LLM not configured");
         return Ok(1);
     };
-    modes::yolo::run(line, p, executor, config, &INTERRUPTED, skills)?;
+    let mut session = Session::new(false);
+    modes::yolo::run(
+        line,
+        p,
+        executor,
+        config,
+        &INTERRUPTED,
+        skills,
+        &mut session,
+    )?;
     Ok(0)
 }
 
@@ -382,7 +393,7 @@ fn auto_line(
         eprintln!("aishe: LLM not configured");
         return Ok(1);
     };
-    match modes::suggest::request(line, p, executor, config)? {
+    match modes::suggest::request(line, p, executor, config, Vec::new())? {
         modes::suggest::Suggestion::Command {
             command,
             explanation,
@@ -422,6 +433,8 @@ fn one_shot(
     if trimmed.is_empty() {
         return Ok(0);
     }
+    // One-shot runs are a single process: no cross-line memory.
+    let mut session = Session::new(false);
     // User-defined /slash-commands work in -c too.
     if try_custom_command(
         trimmed,
@@ -430,6 +443,7 @@ fn one_shot(
         provider.as_deref(),
         config,
         skills,
+        &mut session,
     )? {
         return Ok(executor.last_exit as u8);
     }
@@ -484,10 +498,26 @@ fn one_shot(
         Dispatch::NaturalLanguage(nl) => match provider {
             Some(p) => {
                 if config.aishe.mode == "yolo" {
-                    modes::yolo::run(&nl, p.as_ref(), executor, config, &INTERRUPTED, skills)?;
+                    modes::yolo::run(
+                        &nl,
+                        p.as_ref(),
+                        executor,
+                        config,
+                        &INTERRUPTED,
+                        skills,
+                        &mut session,
+                    )?;
                 } else {
                     // -c + NL in suggest/auto mode: print suggested command, don't run.
-                    modes::suggest::run(&nl, p.as_ref(), executor, config, true, false)?;
+                    modes::suggest::run(
+                        &nl,
+                        p.as_ref(),
+                        executor,
+                        config,
+                        true,
+                        false,
+                        &mut session,
+                    )?;
                 }
                 Ok(0)
             }
@@ -593,6 +623,9 @@ fn repl(
         .with_highlighter(Box::new(CmdHighlighter::new(cache.clone(), theme)))
         .with_edit_mode(edit_mode);
 
+    // Conversation memory for natural-language turns this session.
+    let mut session = Session::new(config.aishe.memory);
+
     loop {
         // Computed once per prompt (not per keystroke), reading .git/HEAD.
         let git = if config.aishe.git_prompt {
@@ -633,7 +666,16 @@ fn repl(
                         continue;
                     }
                 };
-                if handle_line(&line, executor, provider, config, cache, commands, skills)? {
+                if handle_line(
+                    &line,
+                    executor,
+                    provider,
+                    config,
+                    cache,
+                    commands,
+                    skills,
+                    &mut session,
+                )? {
                     return Ok(executor.last_exit as u8);
                 }
             }
@@ -654,6 +696,7 @@ fn repl(
 }
 
 /// Handle one input line. Returns Ok(true) if the shell should exit.
+#[allow(clippy::too_many_arguments)]
 fn handle_line(
     line: &str,
     executor: &mut Executor,
@@ -662,6 +705,7 @@ fn handle_line(
     cache: &CommandCache,
     commands: &CommandRegistry,
     skills: &SkillRegistry,
+    session: &mut Session,
 ) -> Result<bool> {
     // User-defined /slash-commands (plugins/skills) run before everything else.
     if try_custom_command(
@@ -671,6 +715,7 @@ fn handle_line(
         provider.as_deref(),
         config,
         skills,
+        session,
     )? {
         return Ok(false);
     }
@@ -696,7 +741,9 @@ fn handle_line(
         }
         Dispatch::Builtin(tokens) => match tokens[0].as_str() {
             "exit" | "quit" => return Ok(true),
-            "aishe" => handle_meta(&tokens, config, provider, executor, cache, commands, skills),
+            "aishe" => handle_meta(
+                &tokens, config, provider, executor, cache, commands, skills, session,
+            ),
             _ => {
                 executor.run_builtin(&tokens);
             }
@@ -709,6 +756,7 @@ fn handle_line(
                 executor,
                 config,
                 skills,
+                session,
             )?;
         }
     }
@@ -732,6 +780,7 @@ fn try_custom_command(
     provider: Option<&dyn Provider>,
     config: &Config,
     skills: &SkillRegistry,
+    session: &mut Session,
 ) -> Result<bool> {
     let Some((name, args)) = parse_slash(line) else {
         return Ok(false);
@@ -750,7 +799,7 @@ fn try_custom_command(
         executor.run(&ex.text);
     } else {
         let mode = ex.mode.as_deref().unwrap_or(config.aishe.mode.as_str());
-        run_nl(&ex.text, mode, provider, executor, config, skills)?;
+        run_nl(&ex.text, mode, provider, executor, config, skills, session)?;
     }
     Ok(true)
 }
@@ -763,6 +812,7 @@ fn run_nl(
     executor: &mut Executor,
     config: &Config,
     skills: &SkillRegistry,
+    session: &mut Session,
 ) -> Result<()> {
     let Some(p) = provider else {
         eprintln!(
@@ -772,9 +822,9 @@ fn run_nl(
         return Ok(());
     };
     match mode {
-        "yolo" => modes::yolo::run(nl, p, executor, config, &INTERRUPTED, skills)?,
-        "auto" => modes::suggest::run(nl, p, executor, config, false, true)?,
-        _ => modes::suggest::run(nl, p, executor, config, false, false)?,
+        "yolo" => modes::yolo::run(nl, p, executor, config, &INTERRUPTED, skills, session)?,
+        "auto" => modes::suggest::run(nl, p, executor, config, false, true, session)?,
+        _ => modes::suggest::run(nl, p, executor, config, false, false, session)?,
     }
     Ok(())
 }
@@ -818,6 +868,7 @@ fn alias_name(cmd: &str) -> Option<&str> {
 }
 
 /// Handle `aishe ...` meta commands.
+#[allow(clippy::too_many_arguments)]
 fn handle_meta(
     tokens: &[String],
     config: &mut Config,
@@ -826,9 +877,22 @@ fn handle_meta(
     cache: &CommandCache,
     commands: &CommandRegistry,
     skills: &SkillRegistry,
+    session: &mut Session,
 ) {
     let sub = tokens.get(1).map(|s| s.as_str()).unwrap_or("help");
     match sub {
+        "reset" => {
+            let n = session.turns();
+            session.clear();
+            if session.enabled() {
+                println!(
+                    "conversation memory cleared ({n} turn{} forgotten)",
+                    if n == 1 { "" } else { "s" }
+                );
+            } else {
+                println!("conversation memory is off (set memory = true to enable)");
+            }
+        }
         "commands" => {
             if commands.is_empty() {
                 println!("no custom commands (add *.md files to ~/.config/aishe/commands/)");
@@ -1009,6 +1073,7 @@ fn print_meta_help() {
 \x20 aishe commands              list custom /slash-commands\n\
 \x20 aishe skills                list model-invoked skills (yolo)\n\
 \x20 aishe usage                 session token & cost usage\n\
+\x20 aishe reset                 clear conversation memory\n\
 \x20 aishe config                print active config\n\
 \x20 aishe rehash                rebuild the command cache\n\
 \x20 aishe help                  show this help\n\

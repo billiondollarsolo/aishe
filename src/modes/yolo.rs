@@ -13,9 +13,11 @@ use crate::context;
 use crate::executor::{Executor, DEFAULT_CAPTURE_TIMEOUT};
 use crate::providers::{AssistantMsg, Completion, Msg, Provider};
 use crate::safety::{self, Risk};
+use crate::session::Session;
 use crate::skills::SkillRegistry;
 
-/// Run the yolo agentic loop for one user request.
+/// Run the yolo agentic loop for one user request, priming and recording session
+/// memory so follow-up requests have context.
 pub fn run(
     input: &str,
     provider: &dyn Provider,
@@ -23,7 +25,36 @@ pub fn run(
     config: &Config,
     interrupt: &AtomicBool,
     skills: &SkillRegistry,
+    session: &mut Session,
 ) -> Result<()> {
+    let history = session.history();
+    let outcome = run_loop(
+        input, provider, executor, config, interrupt, skills, history,
+    );
+    super::report_usage(provider, config);
+    let final_text = outcome?;
+    session.record_user(input);
+    session.record_assistant(
+        final_text
+            .as_deref()
+            .unwrap_or("(yolo task ended without a final summary)"),
+    );
+    Ok(())
+}
+
+/// The agentic loop itself. Returns the model's final answer text (when it
+/// finished with a no-tool turn), or `None` if it was aborted, hit the budget, or
+/// reached the iteration cap. Usage reporting and session recording happen in
+/// [`run`].
+fn run_loop(
+    input: &str,
+    provider: &dyn Provider,
+    executor: &mut Executor,
+    config: &Config,
+    interrupt: &AtomicBool,
+    skills: &SkillRegistry,
+    history: Vec<Msg>,
+) -> Result<Option<String>> {
     let ctx = context::build(executor);
     // Offer the use_skill tool (and advertise the catalog) only when skills exist.
     let tools: Vec<_> = if skills.is_empty() {
@@ -40,20 +71,19 @@ pub fn run(
             skills.catalog()
         )
     };
-    let mut messages: Vec<Msg> = vec![Msg::User(format!("{ctx}\nUser request: {input}"))];
+    let mut messages: Vec<Msg> = history;
+    messages.push(Msg::User(format!("{ctx}\nUser request: {input}")));
 
     interrupt.store(false, Ordering::SeqCst);
 
     for iteration in 0..config.aishe.max_yolo_iterations {
         if interrupt.load(Ordering::SeqCst) {
             println!("  {}", "aborted".dim());
-            super::report_usage(provider, config);
-            return Ok(());
+            return Ok(None);
         }
         // Stop before the next model call if the session budget is spent.
         if super::budget_reached(provider, config) {
-            super::report_usage(provider, config);
-            return Ok(());
+            return Ok(None);
         }
 
         // Stream the assistant's prose live when streaming is on; otherwise wait
@@ -76,7 +106,7 @@ pub fn run(
                     println!();
                 }
                 eprintln!("{}", format!("aishe: {e}").red());
-                return Ok(());
+                return Ok(None);
             }
         };
 
@@ -89,8 +119,7 @@ pub fn run(
                 (Some(text), false) => render_markdown(text),
                 _ => {}
             }
-            super::report_usage(provider, config);
-            return Ok(());
+            return Ok(completion.text);
         }
 
         // Interim turn that emitted prose before its tool calls: end the line so
@@ -112,7 +141,7 @@ pub fn run(
                     content: "Interrupted by user.".to_string(),
                 });
                 println!("  {}", "aborted".dim());
-                return Ok(());
+                return Ok(None);
             }
 
             // Skill loading (progressive disclosure): return the skill body so
@@ -197,8 +226,7 @@ pub fn run(
         }
     }
 
-    super::report_usage(provider, config);
-    Ok(())
+    Ok(None)
 }
 
 const YOLO_SYSTEM: &str = super::YOLO_SYSTEM_PROMPT;

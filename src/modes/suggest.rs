@@ -12,6 +12,7 @@ use crate::config::Config;
 use crate::context;
 use crate::executor::Executor;
 use crate::providers::{Msg, Provider, ResponseFormat};
+use crate::session::Session;
 
 /// The model's structured response.
 #[derive(Debug, Clone, PartialEq)]
@@ -80,6 +81,7 @@ pub fn run(
     config: &Config,
     scriptable: bool,
     auto: bool,
+    session: &mut Session,
 ) -> Result<()> {
     if super::budget_reached(provider, config) {
         return Ok(());
@@ -87,15 +89,41 @@ pub fn run(
     // Interactive streaming: render answers token-by-token. Not used for the
     // scriptable (`-c`) path, whose stdout is consumed by the shell hook.
     let result = if config.aishe.stream && !scriptable {
-        run_stream(input, provider, executor, config, auto)
+        run_stream(input, provider, executor, config, auto, session)
     } else {
-        match request(input, provider, executor, config) {
-            Ok(suggestion) => handle_suggestion(suggestion, executor, scriptable, auto),
+        match request(input, provider, executor, config, session.history()) {
+            Ok(suggestion) => {
+                record_turn(session, input, &suggestion);
+                handle_suggestion(suggestion, executor, scriptable, auto)
+            }
             Err(e) => Err(e),
         }
     };
     super::report_usage(provider, config);
     result
+}
+
+/// Record a completed suggest turn into session memory: the user's request and
+/// the assistant's reply (the proposed command + explanation, or the answer).
+fn record_turn(session: &mut Session, input: &str, suggestion: &Suggestion) {
+    let reply = match suggestion {
+        Suggestion::Command {
+            command,
+            explanation,
+        } => {
+            if explanation.is_empty() {
+                command.clone()
+            } else {
+                format!("{command}\n{explanation}")
+            }
+        }
+        Suggestion::Answer { explanation } => explanation.clone(),
+    };
+    if reply.is_empty() {
+        return;
+    }
+    session.record_user(input);
+    session.record_assistant(&reply);
 }
 
 /// Streaming variant of [`run`]: uses the sentinel-protocol system prompt and
@@ -107,6 +135,7 @@ fn run_stream(
     executor: &mut Executor,
     config: &Config,
     auto: bool,
+    session: &mut Session,
 ) -> Result<()> {
     let _ = config; // streaming needs no further per-request tuning yet
     let ctx = context::build(executor);
@@ -116,19 +145,16 @@ fn run_stream(
         .map(|s| s.to_string_lossy().to_string())
         .unwrap_or_else(|| "sh".to_string());
     let system = super::suggest_stream_system_prompt(&shell, std::env::consts::OS);
-    let user = format!("{ctx}\nUser request: {input}");
+    let mut messages = session.history();
+    messages.push(Msg::User(format!("{ctx}\nUser request: {input}")));
 
     let mut streamer = AnswerStreamer::new();
     let mut out = std::io::stdout();
     // Streaming uses the CMD:/WHY: sentinel protocol, not JSON — unconstrained.
-    let result = provider.complete_stream(
-        &system,
-        &[Msg::User(user)],
-        &ResponseFormat::Text,
-        &mut |delta| {
+    let result =
+        provider.complete_stream(&system, &messages, &ResponseFormat::Text, &mut |delta| {
             streamer.push(delta, &mut out);
-        },
-    );
+        });
     let full = match result {
         Ok(f) => f,
         Err(e) => {
@@ -143,6 +169,14 @@ fn run_stream(
         if command.is_empty() {
             return Ok(());
         }
+        record_turn(
+            session,
+            input,
+            &Suggestion::Command {
+                command: command.clone(),
+                explanation: explanation.clone(),
+            },
+        );
         if auto {
             auto_run(&command, &explanation, executor)
         } else {
@@ -152,6 +186,13 @@ fn run_stream(
         // A prose answer was streamed live as raw text; re-render it as markdown
         // in place (code blocks, lists, emphasis) now that it is complete.
         super::rerender_streamed_markdown(&full);
+        record_turn(
+            session,
+            input,
+            &Suggestion::Answer {
+                explanation: full.trim().to_string(),
+            },
+        );
         Ok(())
     }
 }
@@ -269,12 +310,14 @@ fn suggestion_schema() -> serde_json::Value {
     })
 }
 
-/// Ask the provider for a suggestion given the user's input + context.
+/// Ask the provider for a suggestion given the user's input + context, primed
+/// with any prior conversation turns in `history`.
 pub fn request(
     input: &str,
     provider: &dyn Provider,
     executor: &Executor,
     config: &Config,
+    history: Vec<Msg>,
 ) -> Result<Suggestion> {
     let ctx = context::build(executor);
     let shell = executor
@@ -284,9 +327,10 @@ pub fn request(
         .unwrap_or_else(|| "sh".to_string());
     let os = std::env::consts::OS;
     let system = super::suggest_system_prompt(&shell, os);
-    let user = format!("{ctx}\nUser request: {input}");
+    let mut messages = history;
+    messages.push(Msg::User(format!("{ctx}\nUser request: {input}")));
 
-    match provider.complete(&system, &[Msg::User(user)], &suggestion_format(config)) {
+    match provider.complete(&system, &messages, &suggestion_format(config)) {
         Ok(text) => Ok(parse_suggestion(&text)),
         Err(e) => {
             eprintln!("{}", format!("aishe: {e}").red());

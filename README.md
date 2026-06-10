@@ -147,6 +147,7 @@ aishe stream [on|off]             show or toggle token streaming
 aishe structured [schema|json|prompt]   output-format strategy (default: schema)
 aishe theme [PRESET]              show or set the color preset
 aishe usage                       session token and cost usage
+aishe reset                       clear conversation memory
 aishe commands                    list custom slash-commands
 aishe skills                      list model-invoked skills
 aishe config                      print the active config
@@ -158,6 +159,14 @@ Each meta command also works as a slash-command (Claude Code style), for example
 `/mode auto`, `/config`, `/help`. They are tab-completable, and `/`-prefixed
 paths like `/usr/bin/x` still run normally. Full reference in
 [docs/commands.md](docs/commands.md).
+
+## Conversation memory
+
+In the interactive REPL, aishe remembers recent natural-language turns so
+follow-ups have context: after "create alpha.txt containing apple", a follow-up
+"now do the same for beta.txt" knows what "the same" means. Memory lives only for
+the session (never written to disk), is capped in size, and is cleared with
+`aishe reset`. Turn it off with `memory = false`. See [docs/modes.md](docs/modes.md).
 
 ## Custom commands and skills
 

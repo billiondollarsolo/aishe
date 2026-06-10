@@ -37,6 +37,7 @@ const META_SUBCOMMANDS: &[(&str, &str)] = &[
     ("commands", "list custom slash-commands"),
     ("skills", "list model-invoked skills"),
     ("usage", "session token & cost usage"),
+    ("reset", "clear conversation memory"),
     ("help", "show help"),
 ];
 

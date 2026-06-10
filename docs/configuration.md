@@ -33,6 +33,7 @@ which persist your choice back to the file.
 | `stream` | bool | `false` | Stream answers token-by-token in the REPL (suggest and auto). |
 | `show_usage` | bool | `true` | Print a per-session token and cost line after each interaction. |
 | `budget_usd` | float | `0.0` | Stop calling the model past this session cost. `0` = unlimited. |
+| `memory` | bool | `true` | Remember recent natural-language turns in the REPL so follow-ups have context. Clear with `aishe reset`. |
 
 ## `[providers.anthropic]` and `[providers.openai]`
 

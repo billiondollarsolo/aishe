@@ -17,6 +17,7 @@ pub mod prompt;
 pub mod providers;
 pub mod pty;
 pub mod safety;
+pub mod session;
 pub mod skills;
 pub mod theme;
 pub mod usage;
