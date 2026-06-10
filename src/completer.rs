@@ -30,6 +30,7 @@ const META_SUBCOMMANDS: &[(&str, &str)] = &[
     ("editor", "line-editor keymap: emacs|vi"),
     ("frontend", "auto|reedline|zsh-pty"),
     ("stream", "toggle token streaming"),
+    ("structured", "output format: schema|json|prompt"),
     ("theme", "color preset"),
     ("config", "print active config"),
     ("rehash", "rebuild the command cache"),
@@ -299,6 +300,7 @@ fn complete_aishe_meta(seg_tokens: &[&str], word: &str, span: Span) -> Vec<Sugge
                 "editor" => &["emacs", "vi"],
                 "frontend" => &["auto", "reedline", "zsh-pty"],
                 "stream" => &["on", "off"],
+                "structured" => &["schema", "json", "prompt"],
                 "theme" => crate::theme::PRESETS,
                 _ => return Vec::new(), // model/config/etc.: free-form
             };

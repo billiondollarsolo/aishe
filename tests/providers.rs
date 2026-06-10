@@ -2,7 +2,9 @@
 
 use aishe::providers::anthropic::AnthropicProvider;
 use aishe::providers::openai_compat::OpenAiProvider;
-use aishe::providers::{AssistantMsg, Msg, Provider, ProviderError, ToolCall, ToolDef};
+use aishe::providers::{
+    AssistantMsg, Msg, Provider, ProviderError, ResponseFormat, ToolCall, ToolDef,
+};
 use mockito::Matcher;
 use serde_json::json;
 
@@ -36,7 +38,9 @@ fn anthropic_complete_request_and_parse() {
         .create();
 
     let p = AnthropicProvider::new(server.url(), "secret".into(), "claude-x".into());
-    let out = p.complete("SYS", &[Msg::User("hi".into())], true).unwrap();
+    let out = p
+        .complete("SYS", &[Msg::User("hi".into())], &ResponseFormat::Json)
+        .unwrap();
     assert_eq!(out, "hello world");
     m.assert();
 }
@@ -87,7 +91,7 @@ fn anthropic_401_message() {
 
     let p = AnthropicProvider::new(server.url(), "bad".into(), "m".into());
     let err = p
-        .complete("s", &[Msg::User("x".into())], false)
+        .complete("s", &[Msg::User("x".into())], &ResponseFormat::Text)
         .unwrap_err();
     match err {
         ProviderError::Api { status, message } => {
@@ -111,7 +115,7 @@ fn anthropic_retries_on_429() {
 
     let p = AnthropicProvider::new(server.url(), "k".into(), "m".into());
     let err = p
-        .complete("s", &[Msg::User("x".into())], false)
+        .complete("s", &[Msg::User("x".into())], &ResponseFormat::Text)
         .unwrap_err();
     assert!(matches!(err, ProviderError::Api { status: 429, .. }));
     m.assert();
@@ -140,9 +144,12 @@ fn anthropic_streams_text_deltas() {
     let p = AnthropicProvider::new(server.url(), "k".into(), "m".into());
     let mut chunks: Vec<String> = Vec::new();
     let full = p
-        .complete_stream("SYS", &[Msg::User("hi".into())], false, &mut |d| {
-            chunks.push(d.to_string())
-        })
+        .complete_stream(
+            "SYS",
+            &[Msg::User("hi".into())],
+            &ResponseFormat::Text,
+            &mut |d| chunks.push(d.to_string()),
+        )
         .unwrap();
     assert_eq!(full, "Hello world");
     assert_eq!(chunks, vec!["Hello", " world"]);
@@ -168,9 +175,12 @@ fn openai_streams_content_deltas() {
     let p = OpenAiProvider::new(server.url(), "tok".into(), "gpt-x".into());
     let mut got = String::new();
     let full = p
-        .complete_stream("SYS", &[Msg::User("hi".into())], false, &mut |d| {
-            got.push_str(d)
-        })
+        .complete_stream(
+            "SYS",
+            &[Msg::User("hi".into())],
+            &ResponseFormat::Text,
+            &mut |d| got.push_str(d),
+        )
         .unwrap();
     assert_eq!(full, "Hello");
     assert_eq!(got, "Hello");
@@ -194,9 +204,64 @@ fn openai_system_first_and_json_mode() {
         .create();
 
     let p = OpenAiProvider::new(server.url(), "tok".into(), "gpt-x".into());
-    let out = p.complete("SYS", &[Msg::User("hi".into())], true).unwrap();
+    let out = p
+        .complete("SYS", &[Msg::User("hi".into())], &ResponseFormat::Json)
+        .unwrap();
     assert!(out.contains("ok"));
     m.assert();
+}
+
+#[test]
+fn openai_json_schema_format() {
+    let mut server = mockito::Server::new();
+    let m = server
+        .mock("POST", "/v1/chat/completions")
+        .match_body(Matcher::PartialJson(json!({
+            "response_format": {"type": "json_schema", "json_schema": {"strict": true}}
+        })))
+        .with_status(200)
+        .with_body(r#"{"choices":[{"message":{"content":"{\"type\":\"answer\"}"}}]}"#)
+        .create();
+
+    let p = OpenAiProvider::new(server.url(), "k".into(), "m".into());
+    let fmt = ResponseFormat::JsonSchema {
+        name: "aishe_suggestion".into(),
+        schema: json!({"type": "object"}),
+    };
+    p.complete("SYS", &[Msg::User("hi".into())], &fmt).unwrap();
+    m.assert();
+}
+
+#[test]
+fn openai_steps_down_when_schema_unsupported() {
+    let mut server = mockito::Server::new();
+    // json_schema rejected → provider should retry with json_object.
+    let schema_mock = server
+        .mock("POST", "/v1/chat/completions")
+        .match_body(Matcher::PartialJson(
+            json!({"response_format": {"type": "json_schema"}}),
+        ))
+        .with_status(400)
+        .with_body(r#"{"error":{"message":"response_format json_schema not supported"}}"#)
+        .create();
+    let json_mock = server
+        .mock("POST", "/v1/chat/completions")
+        .match_body(Matcher::PartialJson(
+            json!({"response_format": {"type": "json_object"}}),
+        ))
+        .with_status(200)
+        .with_body(r#"{"choices":[{"message":{"content":"{\"ok\":1}"}}]}"#)
+        .create();
+
+    let p = OpenAiProvider::new(server.url(), "k".into(), "m".into());
+    let fmt = ResponseFormat::JsonSchema {
+        name: "s".into(),
+        schema: json!({"type": "object"}),
+    };
+    let out = p.complete("SYS", &[Msg::User("hi".into())], &fmt).unwrap();
+    assert!(out.contains("ok"));
+    schema_mock.assert();
+    json_mock.assert();
 }
 
 #[test]

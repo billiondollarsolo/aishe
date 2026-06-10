@@ -3,8 +3,8 @@
 use serde_json::{json, Value};
 
 use super::{
-    read_sse, stream_post, Completion, Msg, Provider, ProviderError, ToolCall, ToolDef,
-    HTTP_TIMEOUT_SECS, MAX_TOKENS,
+    read_sse, stream_post, Completion, Msg, Provider, ProviderError, ResponseFormat, ToolCall,
+    ToolDef, HTTP_TIMEOUT_SECS, MAX_TOKENS,
 };
 
 const ANTHROPIC_VERSION: &str = "2023-06-01";
@@ -144,9 +144,9 @@ impl Provider for AnthropicProvider {
         &self,
         system: &str,
         messages: &[Msg],
-        _json_mode: bool,
+        _format: &ResponseFormat,
     ) -> Result<String, ProviderError> {
-        // Anthropic has no native JSON mode; we rely on the prompt + defensive parsing.
+        // Anthropic has no native JSON/schema mode; rely on the prompt + parse.
         let body = self.build_body(system, messages, &[]);
         let resp = self.post(&body)?;
         let completion = Self::parse_completion(&resp)?;
@@ -168,7 +168,7 @@ impl Provider for AnthropicProvider {
         &self,
         system: &str,
         messages: &[Msg],
-        _json_mode: bool,
+        _format: &ResponseFormat,
         sink: &mut dyn FnMut(&str),
     ) -> Result<String, ProviderError> {
         let mut body = self.build_body(system, messages, &[]);

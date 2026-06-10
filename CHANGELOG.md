@@ -46,6 +46,11 @@ breaking changes can land in any release.
   `vivid`, `mono`, `nord`, `gruvbox`) with an `aishe theme` command.
 - **Fuzzy completion** — case-insensitive matching with a subsequence fallback
   (`gco`→`git-checkout`).
+- **Structured output** for suggest mode (`structured` = `schema` | `json` |
+  `prompt`, default strict `schema`): requests a strict JSON Schema on providers
+  that support it, auto-stepping down (schema → json → prompt) when a provider
+  rejects it, on top of the existing defensive parsing. Configurable live via
+  `aishe structured`.
 - **`aishe doctor`** — environment check for shell, config, front-end, provider,
   and API key.
 - **CI** — cross-platform tests plus PTY smoke tests for both front-ends.

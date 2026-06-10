@@ -61,6 +61,18 @@ model commits to a command instead, aishe falls back to the usual confirm/run
 flow (a command is never half-printed). Works with both providers (Anthropic and
 OpenAI-compatible SSE); endpoints without SSE simply deliver the answer at once.
 
+### Structured output (reliability)
+
+To get dependable, actionable results from the model, suggest mode asks for a
+**strict JSON schema** by default (`structured = "schema"`) on providers that
+support it (OpenAI/Groq/…), which guarantees the `{type, command, explanation}`
+shape. If a provider rejects it, aishe automatically steps down to a plain JSON
+object, then to prompt-only — and **always parses defensively** (unrecognized
+output becomes a plain answer, never a crash). yolo mode uses **tool calling**
+for the same reason. And regardless of what the model returns, the deterministic
+**safety gate** decides what actually runs — the model's output is never trusted
+to be safe. Set `structured` to `json` or `prompt` to loosen the constraint.
+
 ### Input prefixes
 
 - `?<text>` — force natural-language (e.g. `?how do I find large files`)
@@ -79,6 +91,7 @@ aishe model [NAME]               show or set the model
 aishe provider [anthropic|openai] show or set the provider
 aishe editor [emacs|vi]          show or set the line-editor keymap
 aishe stream [on|off]            show or toggle token streaming
+aishe structured [schema|json|prompt]  output-format strategy (default: schema)
 aishe theme [PRESET]             show or set the color preset
 aishe config                     print the active config
 aishe rehash                     rebuild the command cache
@@ -287,6 +300,7 @@ show_right_prompt = true        # show "model · mode" on the right
 git_prompt = true               # show "⎇ branch" in the right prompt (reedline)
 # prompt_format = "[{mode}] {cwd}"  # custom reedline left prompt: {cwd} {mode} {model} {exit}
 stream = false                  # stream answers token-by-token (suggest/auto)
+structured = "schema"           # suggest output: schema (strict) | json | prompt
 
 [providers.anthropic]
 base_url = "https://api.anthropic.com"

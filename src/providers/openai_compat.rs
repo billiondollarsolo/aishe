@@ -5,8 +5,8 @@
 use serde_json::{json, Value};
 
 use super::{
-    read_sse, stream_post, Completion, Msg, Provider, ProviderError, ToolCall, ToolDef,
-    HTTP_TIMEOUT_SECS, MAX_TOKENS,
+    read_sse, stream_post, Completion, Msg, Provider, ProviderError, ResponseFormat, ToolCall,
+    ToolDef, HTTP_TIMEOUT_SECS, MAX_TOKENS,
 };
 
 pub struct OpenAiProvider {
@@ -79,7 +79,7 @@ impl OpenAiProvider {
         system: &str,
         messages: &[Msg],
         tools: &[ToolDef],
-        json_mode: bool,
+        format: &ResponseFormat,
     ) -> Value {
         let mut body = json!({
             "model": self.model,
@@ -102,8 +102,17 @@ impl OpenAiProvider {
                 .collect();
             body["tools"] = json!(tool_defs);
         }
-        if json_mode {
-            body["response_format"] = json!({"type": "json_object"});
+        match format {
+            ResponseFormat::Text => {}
+            ResponseFormat::Json => {
+                body["response_format"] = json!({"type": "json_object"});
+            }
+            ResponseFormat::JsonSchema { name, schema } => {
+                body["response_format"] = json!({
+                    "type": "json_schema",
+                    "json_schema": {"name": name, "strict": true, "schema": schema},
+                });
+            }
         }
         body
     }
@@ -163,23 +172,30 @@ impl Provider for OpenAiProvider {
         &self,
         system: &str,
         messages: &[Msg],
-        json_mode: bool,
+        format: &ResponseFormat,
     ) -> Result<String, ProviderError> {
-        let body = self.build_body(system, messages, &[], json_mode);
-        let resp = match self.post(&body) {
-            Ok(r) => r,
-            // Ollama and some compat servers reject response_format; retry without it.
-            Err(ProviderError::Api {
-                status: 400,
-                message,
-            }) if json_mode && message.contains("response_format") => {
-                let body = self.build_body(system, messages, &[], false);
-                self.post(&body)?
+        // Try the requested format; on a `response_format`/schema rejection (a
+        // server that doesn't support it), step down to a looser one and retry.
+        let mut fmt = format.clone();
+        loop {
+            let body = self.build_body(system, messages, &[], &fmt);
+            match self.post(&body) {
+                Ok(resp) => return Ok(Self::parse_completion(&resp)?.text.unwrap_or_default()),
+                Err(ProviderError::Api {
+                    status: 400,
+                    message,
+                }) if is_format_error(&message) => match step_down(&fmt) {
+                    Some(next) => fmt = next,
+                    None => {
+                        return Err(ProviderError::Api {
+                            status: 400,
+                            message,
+                        })
+                    }
+                },
+                Err(e) => return Err(e),
             }
-            Err(e) => return Err(e),
-        };
-        let completion = Self::parse_completion(&resp)?;
-        Ok(completion.text.unwrap_or_default())
+        }
     }
 
     fn complete_with_tools(
@@ -188,7 +204,7 @@ impl Provider for OpenAiProvider {
         messages: &[Msg],
         tools: &[ToolDef],
     ) -> Result<Completion, ProviderError> {
-        let body = self.build_body(system, messages, tools, false);
+        let body = self.build_body(system, messages, tools, &ResponseFormat::Text);
         let resp = self.post(&body)?;
         Self::parse_completion(&resp)
     }
@@ -197,7 +213,7 @@ impl Provider for OpenAiProvider {
         &self,
         system: &str,
         messages: &[Msg],
-        json_mode: bool,
+        format: &ResponseFormat,
         sink: &mut dyn FnMut(&str),
     ) -> Result<String, ProviderError> {
         let auth = format!("Bearer {}", self.api_key);
@@ -205,21 +221,26 @@ impl Provider for OpenAiProvider {
             ("Authorization", auth.as_str()),
             ("content-type", "application/json"),
         ];
-        let mut body = self.build_body(system, messages, &[], json_mode);
-        body["stream"] = json!(true);
-
-        let resp = match stream_post(&self.endpoint(), &headers, &body) {
-            Ok(r) => r,
-            // Some compat servers (Ollama, …) reject response_format; retry plain.
-            Err(ProviderError::Api {
-                status: 400,
-                message,
-            }) if json_mode && message.contains("response_format") => {
-                let mut body = self.build_body(system, messages, &[], false);
-                body["stream"] = json!(true);
-                stream_post(&self.endpoint(), &headers, &body)?
+        let mut fmt = format.clone();
+        let resp = loop {
+            let mut body = self.build_body(system, messages, &[], &fmt);
+            body["stream"] = json!(true);
+            match stream_post(&self.endpoint(), &headers, &body) {
+                Ok(r) => break r,
+                Err(ProviderError::Api {
+                    status: 400,
+                    message,
+                }) if is_format_error(&message) => match step_down(&fmt) {
+                    Some(next) => fmt = next,
+                    None => {
+                        return Err(ProviderError::Api {
+                            status: 400,
+                            message,
+                        })
+                    }
+                },
+                Err(e) => return Err(e),
             }
-            Err(e) => return Err(e),
         };
 
         let mut full = String::new();
@@ -231,6 +252,21 @@ impl Provider for OpenAiProvider {
         })?;
         Ok(full)
     }
+}
+
+/// The next looser response format to retry with (schema → json → text → none).
+fn step_down(f: &ResponseFormat) -> Option<ResponseFormat> {
+    match f {
+        ResponseFormat::JsonSchema { .. } => Some(ResponseFormat::Json),
+        ResponseFormat::Json => Some(ResponseFormat::Text),
+        ResponseFormat::Text => None,
+    }
+}
+
+/// Does a 400 message indicate the server rejected our `response_format`?
+fn is_format_error(message: &str) -> bool {
+    let m = message.to_lowercase();
+    m.contains("response_format") || m.contains("json_schema") || m.contains("schema")
 }
 
 impl OpenAiProvider {

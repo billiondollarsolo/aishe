@@ -7,7 +7,7 @@ use std::sync::Mutex;
 use aishe::config::Config;
 use aishe::executor::Executor;
 use aishe::modes::{suggest, yolo};
-use aishe::providers::{Completion, Msg, Provider, ProviderError, ToolCall};
+use aishe::providers::{Completion, Msg, Provider, ProviderError, ResponseFormat, ToolCall};
 use serde_json::json;
 
 /// A provider that replays scripted responses. When `repeat_last` is set and
@@ -38,7 +38,7 @@ impl MockProvider {
 }
 
 impl Provider for MockProvider {
-    fn complete(&self, _s: &str, _m: &[Msg], _j: bool) -> Result<String, ProviderError> {
+    fn complete(&self, _s: &str, _m: &[Msg], _f: &ResponseFormat) -> Result<String, ProviderError> {
         Ok(self.texts.lock().unwrap().pop_front().unwrap_or_default())
     }
     fn complete_with_tools(

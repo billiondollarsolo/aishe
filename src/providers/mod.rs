@@ -67,15 +67,32 @@ pub enum ProviderError {
     Parse(String),
 }
 
+/// How the model's output should be constrained (best-effort; providers that
+/// don't support a level silently fall back, and callers always parse
+/// defensively).
+#[derive(Clone, Debug)]
+pub enum ResponseFormat {
+    /// Unconstrained text.
+    Text,
+    /// Any syntactically valid JSON object (`response_format: json_object`).
+    Json,
+    /// Strict JSON Schema (`response_format: json_schema`) — guarantees shape on
+    /// providers that support it.
+    JsonSchema {
+        name: String,
+        schema: serde_json::Value,
+    },
+}
+
 /// The provider interface used by the suggest and yolo modes.
 pub trait Provider {
-    /// Single-shot completion. `json_mode` requests a JSON object back where the
-    /// provider supports it; callers must still parse defensively.
+    /// Single-shot completion constrained to `format` where supported. Callers
+    /// must still parse defensively.
     fn complete(
         &self,
         system: &str,
         messages: &[Msg],
-        json_mode: bool,
+        format: &ResponseFormat,
     ) -> Result<String, ProviderError>;
 
     /// Streaming completion: invokes `sink` with text deltas as they arrive and
@@ -86,10 +103,10 @@ pub trait Provider {
         &self,
         system: &str,
         messages: &[Msg],
-        json_mode: bool,
+        format: &ResponseFormat,
         sink: &mut dyn FnMut(&str),
     ) -> Result<String, ProviderError> {
-        let full = self.complete(system, messages, json_mode)?;
+        let full = self.complete(system, messages, format)?;
         sink(&full);
         Ok(full)
     }

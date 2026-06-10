@@ -11,7 +11,7 @@ use super::{extract_json, render_markdown, safety_gate, GateOutcome};
 use crate::config::Config;
 use crate::context;
 use crate::executor::Executor;
-use crate::providers::{Msg, Provider};
+use crate::providers::{Msg, Provider, ResponseFormat};
 
 /// The model's structured response.
 #[derive(Debug, Clone, PartialEq)]
@@ -112,9 +112,15 @@ fn run_stream(
 
     let mut streamer = AnswerStreamer::new();
     let mut out = std::io::stdout();
-    let result = provider.complete_stream(&system, &[Msg::User(user)], false, &mut |delta| {
-        streamer.push(delta, &mut out);
-    });
+    // Streaming uses the CMD:/WHY: sentinel protocol, not JSON — unconstrained.
+    let result = provider.complete_stream(
+        &system,
+        &[Msg::User(user)],
+        &ResponseFormat::Text,
+        &mut |delta| {
+            streamer.push(delta, &mut out);
+        },
+    );
     let full = match result {
         Ok(f) => f,
         Err(e) => {
@@ -227,6 +233,33 @@ fn parse_cmd_protocol(text: &str) -> (String, String) {
     (command, explanation)
 }
 
+/// The response-format strategy for suggest mode, per config (`structured`):
+/// strict `schema` (default) → `json` object → unconstrained `prompt`.
+fn suggestion_format(config: &Config) -> ResponseFormat {
+    match config.aishe.structured.as_str() {
+        "json" => ResponseFormat::Json,
+        "prompt" => ResponseFormat::Text,
+        _ => ResponseFormat::JsonSchema {
+            name: "aishe_suggestion".to_string(),
+            schema: suggestion_schema(),
+        },
+    }
+}
+
+/// Strict JSON Schema for a suggestion (matches `RawSuggestion`).
+fn suggestion_schema() -> serde_json::Value {
+    serde_json::json!({
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+            "type": {"type": "string", "enum": ["command", "answer"]},
+            "command": {"type": ["string", "null"]},
+            "explanation": {"type": "string"}
+        },
+        "required": ["type", "command", "explanation"]
+    })
+}
+
 /// Ask the provider for a suggestion given the user's input + context.
 pub fn request(
     input: &str,
@@ -244,8 +277,7 @@ pub fn request(
     let system = super::suggest_system_prompt(&shell, os);
     let user = format!("{ctx}\nUser request: {input}");
 
-    let _ = config; // reserved for future per-request tuning
-    match provider.complete(&system, &[Msg::User(user)], true) {
+    match provider.complete(&system, &[Msg::User(user)], &suggestion_format(config)) {
         Ok(text) => Ok(parse_suggestion(&text)),
         Err(e) => {
             eprintln!("{}", format!("aishe: {e}").red());

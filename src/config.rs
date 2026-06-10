@@ -48,6 +48,10 @@ pub struct AisheConfig {
     /// Show a git branch segment in the right prompt (reedline front-end).
     #[serde(default = "default_true")]
     pub git_prompt: bool,
+    /// Structured-output strategy for suggest mode: "schema" (strict JSON schema,
+    /// default), "json" (any JSON object), or "prompt" (unconstrained).
+    #[serde(default = "default_structured")]
+    pub structured: String,
     /// Stream answers token-by-token in the interactive REPL (suggest/auto).
     #[serde(default)]
     pub stream: bool,
@@ -95,6 +99,9 @@ fn default_front_end() -> String {
 fn default_edit_mode() -> String {
     "emacs".to_string()
 }
+fn default_structured() -> String {
+    "schema".to_string()
+}
 
 fn default_anthropic() -> ProviderConfig {
     ProviderConfig {
@@ -124,6 +131,7 @@ impl Default for AisheConfig {
             edit_mode: default_edit_mode(),
             prompt_format: None,
             git_prompt: true,
+            structured: default_structured(),
             stream: false,
         }
     }

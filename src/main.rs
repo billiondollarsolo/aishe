@@ -750,6 +750,15 @@ fn handle_meta(
             Some(_) => eprintln!("aishe: stream must be 'on' or 'off'"),
             None => println!("stream: {}", if config.aishe.stream { "on" } else { "off" }),
         },
+        "structured" => match tokens.get(2).map(|s| s.as_str()) {
+            Some(v @ ("schema" | "json" | "prompt")) => {
+                config.aishe.structured = v.to_string();
+                persist(config);
+                println!("structured → {v}");
+            }
+            Some(_) => eprintln!("aishe: structured must be 'schema', 'json', or 'prompt'"),
+            None => println!("structured: {}", config.aishe.structured),
+        },
         "frontend" => {
             if let Some(f) = tokens.get(2) {
                 if matches!(f.as_str(), "auto" | "reedline" | "zsh-pty") {
@@ -800,6 +809,7 @@ fn print_meta_help() {
 \x20 aishe editor [emacs|vi]     show or set the line-editor keymap\n\
 \x20 aishe frontend [auto|reedline|zsh-pty]  show or set the front-end\n\
 \x20 aishe stream [on|off]       show or toggle token streaming\n\
+\x20 aishe structured [schema|json|prompt]  output-format strategy\n\
 \x20 aishe theme [PRESET]        show or set the color preset\n\
 \x20 aishe config                print active config\n\
 \x20 aishe rehash                rebuild the command cache\n\
