@@ -2,6 +2,7 @@
 //! (`POST {base_url}/v1/chat/completions`). Works with OpenAI, Ollama,
 //! OpenRouter, Together, etc. via `base_url`.
 
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use serde_json::{json, Value};
@@ -215,6 +216,99 @@ impl Provider for OpenAiProvider {
         let body = self.build_body(system, messages, tools, &ResponseFormat::Text);
         let resp = self.post(&body)?;
         Self::parse_completion(&resp)
+    }
+
+    fn complete_with_tools_stream(
+        &self,
+        system: &str,
+        messages: &[Msg],
+        tools: &[ToolDef],
+        sink: &mut dyn FnMut(&str),
+    ) -> Result<Completion, ProviderError> {
+        let auth = format!("Bearer {}", self.api_key);
+        let headers = [
+            ("Authorization", auth.as_str()),
+            ("content-type", "application/json"),
+        ];
+        let mut body = self.build_body(system, messages, tools, &ResponseFormat::Text);
+        body["stream"] = json!(true);
+        body["stream_options"] = json!({"include_usage": true});
+        let resp = match stream_post(&self.endpoint(), &headers, &body) {
+            Ok(r) => r,
+            // Fall back to the non-streaming call if streaming setup fails.
+            Err(_) => return self.complete_with_tools(system, messages, tools),
+        };
+
+        let mut text = String::new();
+        // tool calls keyed by their `index`: (id, name, arguments-fragment).
+        let mut calls: BTreeMap<u64, (String, String, String)> = BTreeMap::new();
+        let (mut input, mut output) = (0u64, 0u64);
+        read_sse(resp, |data| {
+            let v: Value = match serde_json::from_str(data) {
+                Ok(v) => v,
+                Err(_) => return,
+            };
+            let (i, o) = usage_from_value(&v);
+            if i > 0 {
+                input = i;
+            }
+            if o > 0 {
+                output = o;
+            }
+            let delta = v.pointer("/choices/0/delta");
+            if let Some(t) = delta
+                .and_then(|d| d.get("content"))
+                .and_then(|c| c.as_str())
+                .filter(|s| !s.is_empty())
+            {
+                text.push_str(t);
+                sink(t);
+            }
+            if let Some(tcs) = delta
+                .and_then(|d| d.get("tool_calls"))
+                .and_then(|t| t.as_array())
+            {
+                for tc in tcs {
+                    let idx = tc.get("index").and_then(|i| i.as_u64()).unwrap_or(0);
+                    let entry = calls.entry(idx).or_default();
+                    if let Some(id) = tc
+                        .get("id")
+                        .and_then(|s| s.as_str())
+                        .filter(|s| !s.is_empty())
+                    {
+                        entry.0 = id.to_string();
+                    }
+                    let func = tc.get("function");
+                    if let Some(name) = func
+                        .and_then(|f| f.get("name"))
+                        .and_then(|s| s.as_str())
+                        .filter(|s| !s.is_empty())
+                    {
+                        entry.1 = name.to_string();
+                    }
+                    if let Some(args) = func
+                        .and_then(|f| f.get("arguments"))
+                        .and_then(|s| s.as_str())
+                    {
+                        entry.2.push_str(args);
+                    }
+                }
+            }
+        })?;
+        self.meter.record(input, output);
+
+        let tool_calls = calls
+            .into_values()
+            .map(|(id, name, args)| ToolCall {
+                id,
+                name,
+                arguments: serde_json::from_str(&args).unwrap_or_else(|_| json!({})),
+            })
+            .collect();
+        Ok(Completion {
+            text: (!text.is_empty()).then_some(text),
+            tool_calls,
+        })
     }
 
     fn complete_stream(

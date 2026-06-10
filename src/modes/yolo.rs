@@ -1,6 +1,7 @@
 //! Yolo mode: an agentic loop where the model drives `run_command` until it has
 //! accomplished the task, then summarizes.
 
+use std::io::Write;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use anyhow::Result;
@@ -55,10 +56,25 @@ pub fn run(
             return Ok(());
         }
 
-        let completion: Completion = match provider.complete_with_tools(&system, &messages, &tools)
-        {
+        // Stream the assistant's prose live when streaming is on; otherwise wait
+        // for the whole turn. `streamed` tracks whether any text was printed.
+        let mut streamed = false;
+        let result = if config.aishe.stream {
+            let mut out = std::io::stdout();
+            provider.complete_with_tools_stream(&system, &messages, &tools, &mut |delta| {
+                streamed = true;
+                print!("{delta}");
+                let _ = out.flush();
+            })
+        } else {
+            provider.complete_with_tools(&system, &messages, &tools)
+        };
+        let completion: Completion = match result {
             Ok(c) => c,
             Err(e) => {
+                if streamed {
+                    println!();
+                }
                 eprintln!("{}", format!("aishe: {e}").red());
                 return Ok(());
             }
@@ -66,11 +82,21 @@ pub fn run(
 
         // No tool calls → final answer.
         if completion.tool_calls.is_empty() {
-            if let Some(text) = &completion.text {
-                render_markdown(text);
+            match (&completion.text, streamed) {
+                // Re-render the streamed raw text as proper markdown in place.
+                (Some(text), true) => super::rerender_streamed_markdown(text),
+                // Not streamed: render markdown directly.
+                (Some(text), false) => render_markdown(text),
+                _ => {}
             }
             super::report_usage(provider, config);
             return Ok(());
+        }
+
+        // Interim turn that emitted prose before its tool calls: end the line so
+        // the upcoming tool-call lines start fresh.
+        if streamed {
+            println!();
         }
 
         // Record the assistant turn (text + tool calls) before tool results.

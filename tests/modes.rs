@@ -115,6 +115,48 @@ fn yolo_runs_tool_then_finishes() {
 }
 
 #[test]
+fn yolo_streaming_runs_tool_then_finishes() {
+    // With stream = true, yolo uses complete_with_tools_stream. The MockProvider
+    // does not override it, so the default (fall back to non-streaming + sink the
+    // text) applies; the loop must still run the tool and finish.
+    let provider = MockProvider::with_completions(
+        vec![
+            Completion {
+                text: Some("let me run it".into()),
+                tool_calls: vec![tool_call("echo streamed-yolo")],
+            },
+            Completion {
+                text: Some("# Done\n\nAll good.".into()),
+                tool_calls: vec![],
+            },
+        ],
+        false,
+    );
+    let mut exec = Executor::new().unwrap();
+    let mut config = Config::default();
+    config.aishe.stream = true;
+    let flag = AtomicBool::new(false);
+
+    yolo::run(
+        "do a thing",
+        &provider,
+        &mut exec,
+        &config,
+        &flag,
+        &SkillRegistry::default(),
+    )
+    .unwrap();
+
+    assert!(
+        exec.history
+            .iter()
+            .any(|(cmd, code)| cmd == "echo streamed-yolo" && *code == 0),
+        "expected the streamed tool command to have run: {:?}",
+        exec.history
+    );
+}
+
+#[test]
 fn yolo_respects_iteration_cap() {
     let provider = MockProvider::with_completions(
         vec![Completion {

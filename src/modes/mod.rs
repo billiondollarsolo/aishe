@@ -142,6 +142,52 @@ pub fn render_markdown(text: &str) {
     skin.print_text(text);
 }
 
+/// After a final answer has been streamed to the screen as raw text, re-render it
+/// as markdown in place so code fences, lists, and emphasis look right. We move
+/// the cursor back up over the streamed block (a relative move, robust to the
+/// terminal having scrolled) and clear it before rendering. If the streamed block
+/// was taller than the screen, the top scrolled off and cannot be erased, so we
+/// just terminate the line and keep the raw text.
+pub fn rerender_streamed_markdown(text: &str) {
+    use crossterm::{cursor, terminal, ExecutableCommand};
+    use std::io::IsTerminal;
+    // In a pipe/file there is no cursor to move; the raw markdown already streamed
+    // out, so just end the line and leave it.
+    if !std::io::stdout().is_terminal() {
+        println!();
+        return;
+    }
+    let (cols, rows) = terminal::size().unwrap_or((80, 24));
+    let used = streamed_rows(text, cols);
+    if used + 1 < rows as usize {
+        let mut out = std::io::stdout();
+        let _ = out.execute(cursor::MoveToColumn(0));
+        if used > 1 {
+            let _ = out.execute(cursor::MoveUp((used - 1) as u16));
+        }
+        let _ = out.execute(terminal::Clear(terminal::ClearType::FromCursorDown));
+        render_markdown(text);
+    } else {
+        println!();
+    }
+}
+
+/// Estimate how many terminal rows a raw streamed string occupied, accounting for
+/// line wrapping at `cols`. Used to reposition the cursor for re-rendering.
+fn streamed_rows(text: &str, cols: u16) -> usize {
+    let cols = cols.max(1) as usize;
+    text.split('\n')
+        .map(|line| {
+            let w = line.chars().count();
+            if w == 0 {
+                1
+            } else {
+                w.div_ceil(cols)
+            }
+        })
+        .sum()
+}
+
 /// Strip code fences and slice from the first `{` to the last `}` so we can
 /// parse JSON even when the model wraps it in prose or fences.
 pub fn extract_json(raw: &str) -> Option<String> {

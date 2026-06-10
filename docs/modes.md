@@ -60,7 +60,7 @@ is done or it hits `max_yolo_iterations`. Key points:
 
 ## Streaming
 
-Enable token streaming so prose answers render live as they arrive:
+Enable token streaming so answers render live as they arrive:
 
 ```sh
 aishe stream on        # or stream = true in config
@@ -68,9 +68,23 @@ aishe stream on        # or stream = true in config
 
 In suggest and auto mode, an answer streams to the screen as it is generated.
 Once the model commits to a command instead of prose, aishe falls back to the
-normal confirm or run flow, so a command is never half-printed. Streaming works
-with both providers over SSE; endpoints without SSE simply deliver the whole
-answer at once. Streaming is not used for the scriptable `-c` path.
+normal confirm or run flow, so a command is never half-printed.
+
+In yolo mode, the agentic loop streams the model's text live too, so long runs no
+longer look frozen: you see the reasoning and the final answer as they arrive,
+interleaved with the tool-call lines. When a turn is the final answer, aishe
+re-renders the streamed text as markdown in place once it completes, so headers,
+lists, emphasis, and code blocks look right. If the streamed answer was taller
+than the screen, the raw text is kept as-is (it cannot be safely re-rendered after
+scrolling).
+
+Streaming works with both providers over SSE, including streamed tool calls.
+Endpoints without SSE simply deliver the whole answer at once (aishe falls back
+automatically). Streaming is not used for the scriptable suggest `-c` path.
+
+Note on syntax highlighting: code blocks are rendered as styled blocks, but
+per-language syntax highlighting inside a code block is not done yet (it is on the
+roadmap and would apply to both streaming and non-streaming output).
 
 ## Structured output
 

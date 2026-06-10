@@ -29,6 +29,11 @@ breaking changes can land in any release.
   the provider).
 
 ### Added
+- **Yolo streaming.** The agentic loop now streams the model's text live (over
+  Anthropic and OpenAI-compatible SSE, including streamed tool calls), so long
+  runs no longer look frozen. A streamed final answer is re-rendered as markdown
+  in place when it fit on screen; piped or non-tty output stays plain. Providers
+  without streaming tool support fall back to a single non-streaming call.
 - **Token & cost accounting** — every model call's `usage` is metered; a dim
   `N in · N out · N req · ~$cost` line prints after each interaction (toggle with
   `show_usage`), and `aishe usage` (`/usage`) shows the session total. Cost uses a

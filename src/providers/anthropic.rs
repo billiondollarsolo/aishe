@@ -1,5 +1,6 @@
 //! Anthropic Messages API provider (`POST {base_url}/v1/messages`).
 
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use serde_json::{json, Value};
@@ -170,6 +171,113 @@ impl Provider for AnthropicProvider {
         let body = self.build_body(system, messages, tools);
         let resp = self.post(&body)?;
         Self::parse_completion(&resp)
+    }
+
+    fn complete_with_tools_stream(
+        &self,
+        system: &str,
+        messages: &[Msg],
+        tools: &[ToolDef],
+        sink: &mut dyn FnMut(&str),
+    ) -> Result<Completion, ProviderError> {
+        let mut body = self.build_body(system, messages, tools);
+        body["stream"] = json!(true);
+        let resp = match stream_post(
+            &self.endpoint(),
+            &[
+                ("x-api-key", &self.api_key),
+                ("anthropic-version", ANTHROPIC_VERSION),
+                ("content-type", "application/json"),
+            ],
+            &body,
+        ) {
+            Ok(r) => r,
+            // Fall back to the non-streaming call if streaming setup fails.
+            Err(_) => return self.complete_with_tools(system, messages, tools),
+        };
+
+        let mut text = String::new();
+        // tool_use blocks keyed by content index: (id, name, partial_json).
+        let mut blocks: BTreeMap<u64, (String, String, String)> = BTreeMap::new();
+        let (mut input, mut output) = (0u64, 0u64);
+        read_sse(resp, |data| {
+            let v: Value = match serde_json::from_str(data) {
+                Ok(v) => v,
+                Err(_) => return,
+            };
+            match v.get("type").and_then(|t| t.as_str()) {
+                Some("message_start") => {
+                    if let Some(n) = v
+                        .pointer("/message/usage/input_tokens")
+                        .and_then(|n| n.as_u64())
+                    {
+                        input = n;
+                    }
+                }
+                Some("content_block_start") => {
+                    let idx = v.get("index").and_then(|i| i.as_u64()).unwrap_or(0);
+                    let cb = v.get("content_block");
+                    if cb.and_then(|c| c.get("type")).and_then(|t| t.as_str()) == Some("tool_use") {
+                        let id = cb
+                            .and_then(|c| c.get("id"))
+                            .and_then(|s| s.as_str())
+                            .unwrap_or_default()
+                            .to_string();
+                        let name = cb
+                            .and_then(|c| c.get("name"))
+                            .and_then(|s| s.as_str())
+                            .unwrap_or_default()
+                            .to_string();
+                        blocks.insert(idx, (id, name, String::new()));
+                    }
+                }
+                Some("content_block_delta") => {
+                    let idx = v.get("index").and_then(|i| i.as_u64()).unwrap_or(0);
+                    let delta = v.get("delta");
+                    match delta.and_then(|d| d.get("type")).and_then(|t| t.as_str()) {
+                        Some("text_delta") => {
+                            if let Some(t) =
+                                delta.and_then(|d| d.get("text")).and_then(|t| t.as_str())
+                            {
+                                text.push_str(t);
+                                sink(t);
+                            }
+                        }
+                        Some("input_json_delta") => {
+                            if let Some(p) = delta
+                                .and_then(|d| d.get("partial_json"))
+                                .and_then(|t| t.as_str())
+                            {
+                                if let Some(b) = blocks.get_mut(&idx) {
+                                    b.2.push_str(p);
+                                }
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                Some("message_delta") => {
+                    if let Some(n) = v.pointer("/usage/output_tokens").and_then(|n| n.as_u64()) {
+                        output = n;
+                    }
+                }
+                _ => {}
+            }
+        })?;
+        self.meter.record(input, output);
+
+        let tool_calls = blocks
+            .into_values()
+            .map(|(id, name, partial)| ToolCall {
+                id,
+                name,
+                arguments: serde_json::from_str(&partial).unwrap_or_else(|_| json!({})),
+            })
+            .collect();
+        Ok(Completion {
+            text: (!text.is_empty()).then_some(text),
+            tool_calls,
+        })
     }
 
     fn complete_stream(

@@ -119,6 +119,25 @@ pub trait Provider {
         tools: &[ToolDef],
     ) -> Result<Completion, ProviderError>;
 
+    /// Streaming tool-use completion: invokes `sink` with assistant *text* deltas
+    /// as they arrive, accumulates any tool calls, and returns the full
+    /// `Completion`. The default falls back to the non-streaming call (emitting
+    /// the whole text at once), so providers without streaming tool support still
+    /// work.
+    fn complete_with_tools_stream(
+        &self,
+        system: &str,
+        messages: &[Msg],
+        tools: &[ToolDef],
+        sink: &mut dyn FnMut(&str),
+    ) -> Result<Completion, ProviderError> {
+        let completion = self.complete_with_tools(system, messages, tools)?;
+        if let Some(text) = &completion.text {
+            sink(text);
+        }
+        Ok(completion)
+    }
+
     /// The shared token meter this provider records usage into. Callers read it
     /// for cost display and budget enforcement.
     fn meter(&self) -> std::sync::Arc<crate::usage::UsageMeter>;
