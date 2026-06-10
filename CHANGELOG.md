@@ -70,7 +70,12 @@ breaking changes can land in any release.
   `~/.config/aishe/commands/` unchanged; aishe reads the `name`/`description`
   frontmatter and ignores keys it doesn't use (`allowed-tools`, `model`,
   `license`, …). Verified end-to-end against a live model.
-- **CI** — cross-platform tests plus PTY smoke tests for both front-ends.
+- **CI** — cross-platform tests plus PTY smoke tests for both front-ends. The
+  validation harness (`tests/admin_validation.py`) gained a deterministic
+  plugins suite (meta `/commands`·`/skills`·`/config`·`/help`, custom-command
+  discovery + `shell:`/`$ARGUMENTS` execution) and model-gated checks for custom
+  NL commands and model-invoked skills (progressive disclosure verified via a
+  unique skill-body token).
 
 ### Changed
 - **Renamed the project from `llmsh` to `aishe`** — binary, command, config dir

@@ -1,18 +1,23 @@
 #!/usr/bin/env python3
 """Repeatable admin / validation harness for aishe.
 
-Three suites:
+Four suites:
   1. Shell pass-through — run ~100 common Linux commands & shell constructs
      through `aishe -c` and compare to the raw shell (proves "Linux still works
      like Linux": aishe delegates faithfully). Run with NO api key, so anything
      misrouted to the LLM shows up as a mismatch.
   2. Admin file ops — create/edit/move/permission/delete files via aishe and
      verify the resulting on-disk state.
+  4. Plugins, slash-commands & skills (deterministic) — meta slash-commands
+     (`/commands`, `/skills`, `/config`, `/help`), custom command discovery and
+     `shell:`/`$ARGUMENTS` templating execution. No model needed.
   3. Natural language (optional; needs an API key) — suggest / yolo / mode
-     switching against the real model.
+     switching, custom NL commands, and model-invoked skills (progressive
+     disclosure) against the real model.
 
 Writes a timestamped Markdown report to test-results/ and prints a summary.
-Designed to be extended: add rows to SHELL_CASES / FILE_OPS / NL_SUGGEST / etc.
+Designed to be extended: add rows to SHELL_CASES / FILE_OPS / NL_SUGGEST, or
+plugin/skill fixtures in install_plugins().
 
 Usage:  python3 tests/admin_validation.py [path/to/aishe]
 The API key (for suite 3) is read from $GROQ_API_KEY or /tmp/aishe-secrets.env.
@@ -193,6 +198,61 @@ NL_QUESTIONS = [
 ]
 
 
+# ----- plugins: custom /slash-commands & model-invoked skills ------------------
+# A unique token that lives *only* inside the skill body, so a successful yolo
+# run proves the model actually loaded the skill (progressive disclosure) rather
+# than guessing. Mirrors the Claude Code skill format byte-for-byte.
+SKILL_TOKEN = "PROJECT_STAMP_42"
+
+
+def install_plugins(cfgroot):
+    """Drop Claude-Code-style command and skill files into the temp config so
+    the suite exercises discovery + execution without touching the real ~."""
+    cdir = os.path.join(cfgroot, "aishe", "commands")
+    sdir = os.path.join(cfgroot, "aishe", "skills", "file-stamper")
+    os.makedirs(cdir, exist_ok=True)
+    os.makedirs(sdir, exist_ok=True)
+
+    # 1. A *shell* custom command — deterministic, no model needed. Exercises
+    #    $ARGUMENTS / $1 templating and `shell: true` execution.
+    with open(os.path.join(cdir, "echo-args.md"), "w") as f:
+        f.write(
+            "---\n"
+            "description: echo back the arguments (templating smoke test)\n"
+            "shell: true\n"
+            "---\n"
+            "echo args=$ARGUMENTS first=$1\n"
+        )
+
+    # 2. An *NL* custom command (prompt template) — used in the key-gated suite.
+    with open(os.path.join(cdir, "bigfiles.md"), "w") as f:
+        f.write(
+            "---\n"
+            "description: suggest a command to find the biggest files\n"
+            "mode: suggest\n"
+            "---\n"
+            "Show the 10 largest files under $ARGUMENTS, human-readable, "
+            "largest first.\n"
+        )
+
+    # 3. A model-invoked skill (Claude Code `SKILL.md` format). Carries an extra
+    #    `license:` key (like real anthropics/skills) to prove aishe ignores it.
+    #    The body holds a unique token to verify progressive disclosure.
+    with open(os.path.join(sdir, "SKILL.md"), "w") as f:
+        f.write(
+            "---\n"
+            "name: file-stamper\n"
+            "description: Use this skill whenever the user asks to stamp, mark, "
+            "or brand a file with the project marker / project stamp.\n"
+            "license: Apache-2.0 (compat-test fixture)\n"
+            "---\n"
+            "# Stamping files with the project marker\n\n"
+            "To stamp (mark/brand) a file with the project marker, write the "
+            f"exact text `{SKILL_TOKEN}` as the file's contents using a shell "
+            "command (e.g. printf). Do not write anything else.\n"
+        )
+
+
 def key():
     if os.environ.get("GROQ_API_KEY"):
         return os.environ["GROQ_API_KEY"]
@@ -237,6 +297,7 @@ def main():
         sys.exit("no zsh/bash on PATH")
 
     cfgroot = make_config()
+    install_plugins(cfgroot)
     fixture = tempfile.mkdtemp(prefix="aishe-fixture-")
     # fixture files
     open(f"{fixture}/a.txt", "w").write("foo\nbar\nfoo\nbaz\n")
@@ -292,6 +353,35 @@ def main():
         add(f"fileop: {cmd}", ok, "" if ok else f"(rc={rc} err={err.strip()!r})")
     shutil.rmtree(opdir, ignore_errors=True)
 
+    # ---- Suite 4: plugins / slash-commands / skills (deterministic) ----
+    section("Suite 4 — Plugins, slash-commands & skills (no model needed)")
+
+    # Read-only meta commands work under `-c`.
+    report.append("\n**Meta slash-commands (`-c`):**\n")
+    rc, out, err = run([BIN, "-c", "/commands"], env_local, cwd=fixture)
+    add("slash: /commands lists customs", rc == 0 and "echo-args" in out and "bigfiles" in out,
+        "" if "echo-args" in out else f"(out={out.strip()!r})")
+    rc, out, err = run([BIN, "-c", "/skills"], env_local, cwd=fixture)
+    add("slash: /skills lists skills", rc == 0 and "file-stamper" in out,
+        "" if "file-stamper" in out else f"(out={out.strip()!r})")
+    rc, out, err = run([BIN, "-c", "/config"], env_local, cwd=fixture)
+    add("slash: /config prints config", rc == 0 and "[aishe]" in out,
+        "" if "[aishe]" in out else f"(out={out.strip()!r})")
+    rc, out, err = run([BIN, "-c", "/help"], env_local, cwd=fixture)
+    add("slash: /help prints help", rc == 0 and "meta commands" in out.lower())
+
+    # Custom *shell* command: $ARGUMENTS / $1 templating + `shell: true` exec.
+    report.append("\n**Custom command execution (shell + templating):**\n")
+    rc, out, err = run([BIN, "-c", "/echo-args hello world"], env_local, cwd=fixture)
+    ok = rc == 0 and "args=hello world" in out and "first=hello" in out
+    add("plugin: /echo-args hello world", ok, f"→ `{out.strip()}`" if out.strip() else f"(rc={rc} err={err.strip()!r})")
+    # No-arg invocation should still run (empty expansion).
+    rc, out, err = run([BIN, "-c", "/echo-args"], env_local, cwd=fixture)
+    add("plugin: /echo-args (no args)", rc == 0 and "args=" in out, f"→ `{out.strip()}`")
+    # Unknown slash command should not crash (falls through gracefully).
+    rc, out, err = run([BIN, "-c", "/nonexistent-cmd-xyz"], env_local, cwd=fixture)
+    add("plugin: unknown /command handled", rc is not None)
+
     # ---- Suite 3: natural language (needs key) ----
     section("Suite 3 — Natural language (real model)")
     k = key()
@@ -337,6 +427,32 @@ def main():
             rc, out, err = run([BIN, "--mode", mode, "-c", "echo mode-ok"], env_llm, cwd=fixture)
             add(f"mode-flag: --mode {mode}", rc == 0 and "mode-ok" in out)
 
+        # NL custom command (prompt template) → command suggestion.
+        report.append("\n**Custom NL command (`/bigfiles`, expands $ARGUMENTS):**\n")
+        rc, out, err = run([BIN, "-c", "/bigfiles src"], env_llm, cwd=fixture, timeout=60)
+        cmd = out.strip().splitlines()[-1].strip() if out.strip() else ""
+        add("plugin-nl: /bigfiles src", bool(cmd) and "LLM not configured" not in err,
+            f"→ `{cmd}`" if cmd else f"(err={err.strip()!r})")
+
+        # Model-invoked skill (progressive disclosure): a request matching the
+        # skill description should make the model load the skill and use its
+        # unique token — proving the body reached context.
+        report.append("\n**Model-invoked skill (`use_skill`, progressive disclosure):**\n")
+        skill_dir = tempfile.mkdtemp(prefix="aishe-skill-")
+        target = f"{skill_dir}/stamped.txt"
+        rc, out, err = run(
+            [BIN, "--mode", "yolo", "-c", f"stamp the file {target} with the project marker"],
+            env_llm, cwd=fixture, timeout=120)
+        invoked = "skill: file-stamper" in out or "📖" in out
+        try:
+            stamped = os.path.exists(target) and SKILL_TOKEN in open(target).read()
+        except Exception:
+            stamped = False
+        add("skill: use_skill invoked (📖)", invoked, "" if invoked else f"(out tail={out.strip()[-160:]!r})")
+        add("skill: body token written to file", stamped,
+            "" if stamped else f"(exists={os.path.exists(target)})")
+        shutil.rmtree(skill_dir, ignore_errors=True)
+
     # ---- write report ----
     ts = datetime.datetime.utcnow().strftime("%Y%m%dT%H%M%SZ")
     total_ok = sum(v[0] for v in counts.values())
@@ -367,9 +483,14 @@ def main():
 
     print(f"wrote {path}")
     print(f"{total_ok}/{total} checks passed; shell-suite failures: {s1_fail}")
-    # Critical = shell + file suites must pass; NL is informational.
-    critical = counts.get("shell", [0, 0])[0] == counts.get("shell", [0, 0])[1] and \
-               counts.get("fileop", [0, 0])[0] == counts.get("fileop", [0, 0])[1]
+    # Critical = deterministic suites must pass fully (shell + file ops +
+    # plugin/slash discovery & execution). NL/skill suites need a model and are
+    # informational.
+    def full(name):
+        c = counts.get(name, [0, 0])
+        return c[1] > 0 and c[0] == c[1]
+
+    critical = full("shell") and full("fileop") and full("slash") and full("plugin")
     sys.exit(0 if critical else 1)
 
 
