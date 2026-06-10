@@ -12,8 +12,9 @@ breaking changes can land in any release.
   powerlevel10k, oh-my-zsh) unmodified. Now the **default** (`front_end = "auto"`)
   when zsh is on `$PATH`, falling back to the built-in reedline editor.
 - **reedline editor parity** — tab completion (commands + file paths), `Ctrl-R`
-  history-search menu, multi-line continuation validator, and emacs/vi keymaps
-  (`edit_mode`, with `[I]`/`[N]` prompt tags in vi mode).
+  history-search menu, multi-line continuation validator, emacs/vi keymaps
+  (`edit_mode`, with `[I]`/`[N]` prompt tags in vi mode), and zsh-style history
+  expansion (`!!`, `!$`, `!-N`, `^old^new`, …).
 - **Native shell hook niceties** — `auto`-mode runs safe commands directly via
   `eval` (state persists), dangerous ones are pre-filled; force-NL keybinding
   (Alt-Enter / Ctrl-G).

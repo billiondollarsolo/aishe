@@ -148,6 +148,9 @@ natively:
   hints from your history.
 - **History search** — `Ctrl-R` opens a browsable, filterable menu of past
   commands (type to narrow, arrows to pick).
+- **History expansion** — zsh-style `!!`, `!$`, `!^`, `!*`, `!-N` (and `!!:N`
+  word selection) plus `^old^new` quick substitution. (`!cmd` stays aishe's
+  force-shell prefix — `!`-prefix history matching is intentionally not used.)
 - **Multi-line continuation** — pressing Enter on an unterminated *shell* line
   (open quote, trailing `\`, or unbalanced `(`) drops to a continuation line
   instead of submitting, like zsh's `quote>`. Natural-language input is never

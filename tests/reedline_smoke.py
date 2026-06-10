@@ -211,6 +211,14 @@ def main():
         if not sh.expect("theme → nord"):
             fail("aishe theme command did not set the preset", sh)
 
+        # 4c) history expansion: `!$` becomes the previous command's last word.
+        #     "got NUMBER_42" only appears if !$ expanded to NUMBER_42.
+        sh.send("echo NUMBER_42")
+        sh.settle(1.5)
+        sh.send("echo got !$")
+        if not sh.expect("got NUMBER_42"):
+            fail("history expansion (!$) did not work", sh)
+
         # 5) clean exit.
         sh.send("exit")
         code = sh.wait_exit(timeout=10)

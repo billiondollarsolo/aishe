@@ -8,6 +8,7 @@ pub mod context;
 pub mod dispatcher;
 pub mod executor;
 pub mod highlight;
+pub mod history_expand;
 pub mod integration;
 pub mod modes;
 pub mod prompt;

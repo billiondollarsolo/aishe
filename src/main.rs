@@ -25,7 +25,7 @@ use aishe::providers::{self, Provider};
 use aishe::safety::{self, Risk};
 use aishe::theme::Theme;
 use aishe::validator::AisheValidator;
-use aishe::{context, integration, modes};
+use aishe::{context, history_expand, integration, modes};
 
 /// Exit code from `--auto-line` when the suggested command is dangerous: the
 /// shell hook treats any non-zero code as "pre-fill for review" instead of
@@ -530,7 +530,21 @@ fn repl(
                 if line.is_empty() {
                     continue;
                 }
-                if handle_line(line, executor, provider, config, cache)? {
+                // zsh-style history expansion (!!, !$, ^a^b, …) before dispatch.
+                let hist: Vec<String> = executor.history.iter().map(|(c, _)| c.clone()).collect();
+                let line: String = match history_expand::expand(line, &hist) {
+                    Ok(Some(expanded)) => {
+                        // Echo the expanded line, as zsh does.
+                        println!("{}", expanded.as_str().dim());
+                        expanded
+                    }
+                    Ok(None) => line.to_string(),
+                    Err(e) => {
+                        eprintln!("{}", format!("aishe: {e}").red());
+                        continue;
+                    }
+                };
+                if handle_line(&line, executor, provider, config, cache)? {
                     return Ok(executor.last_exit as u8);
                 }
             }
