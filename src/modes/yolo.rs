@@ -46,6 +46,12 @@ pub fn run(
     for iteration in 0..config.aishe.max_yolo_iterations {
         if interrupt.load(Ordering::SeqCst) {
             println!("  {}", "aborted".dim());
+            super::report_usage(provider, config);
+            return Ok(());
+        }
+        // Stop before the next model call if the session budget is spent.
+        if super::budget_reached(provider, config) {
+            super::report_usage(provider, config);
             return Ok(());
         }
 
@@ -63,6 +69,7 @@ pub fn run(
             if let Some(text) = &completion.text {
                 render_markdown(text);
             }
+            super::report_usage(provider, config);
             return Ok(());
         }
 
@@ -164,6 +171,7 @@ pub fn run(
         }
     }
 
+    super::report_usage(provider, config);
     Ok(())
 }
 

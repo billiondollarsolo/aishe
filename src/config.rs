@@ -17,6 +17,10 @@ pub struct Config {
     pub providers: Providers,
     #[serde(default)]
     pub theme: ThemeConfig,
+    /// Per-model price overrides (USD per 1M tokens) for cost estimates, keyed by
+    /// model name or substring. Falls back to a built-in table; see `usage.rs`.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub pricing: std::collections::BTreeMap<String, crate::usage::Price>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -55,6 +59,13 @@ pub struct AisheConfig {
     /// Stream answers token-by-token in the interactive REPL (suggest/auto).
     #[serde(default)]
     pub stream: bool,
+    /// Print a dim per-session token/cost line after each model interaction.
+    #[serde(default = "default_true")]
+    pub show_usage: bool,
+    /// Stop calling the model once estimated session cost reaches this many USD.
+    /// `0` = unlimited. Only enforced when the model's price is known.
+    #[serde(default)]
+    pub budget_usd: f64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -133,6 +144,8 @@ impl Default for AisheConfig {
             git_prompt: true,
             structured: default_structured(),
             stream: false,
+            show_usage: true,
+            budget_usd: 0.0,
         }
     }
 }

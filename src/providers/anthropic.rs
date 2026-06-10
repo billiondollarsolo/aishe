@@ -1,11 +1,14 @@
 //! Anthropic Messages API provider (`POST {base_url}/v1/messages`).
 
+use std::sync::Arc;
+
 use serde_json::{json, Value};
 
 use super::{
-    read_sse, stream_post, Completion, Msg, Provider, ProviderError, ResponseFormat, ToolCall,
-    ToolDef, HTTP_TIMEOUT_SECS, MAX_TOKENS,
+    read_sse, stream_post, usage_from_value, Completion, Msg, Provider, ProviderError,
+    ResponseFormat, ToolCall, ToolDef, HTTP_TIMEOUT_SECS, MAX_TOKENS,
 };
+use crate::usage::UsageMeter;
 
 const ANTHROPIC_VERSION: &str = "2023-06-01";
 
@@ -13,6 +16,7 @@ pub struct AnthropicProvider {
     base_url: String,
     api_key: String,
     model: String,
+    meter: Arc<UsageMeter>,
 }
 
 impl AnthropicProvider {
@@ -21,6 +25,7 @@ impl AnthropicProvider {
             base_url: base_url.trim_end_matches('/').to_string(),
             api_key,
             model,
+            meter: Arc::new(UsageMeter::default()),
         }
     }
 
@@ -90,7 +95,10 @@ impl AnthropicProvider {
     }
 
     fn post(&self, body: &Value) -> Result<Value, ProviderError> {
-        post_with_retry(&self.endpoint(), &self.api_key, body)
+        let resp = post_with_retry(&self.endpoint(), &self.api_key, body)?;
+        let (i, o) = usage_from_value(&resp);
+        self.meter.record(i, o);
+        Ok(resp)
     }
 
     /// Parse Anthropic's `content[]` blocks into our `Completion`.
@@ -183,13 +191,29 @@ impl Provider for AnthropicProvider {
             &body,
         )?;
         let mut full = String::new();
+        let (mut input, mut output) = (0u64, 0u64);
         read_sse(resp, |data| {
             if let Some(t) = Self::text_delta(data) {
                 full.push_str(&t);
                 sink(&t);
             }
+            // `message_start` carries input_tokens; `message_delta` the running
+            // output_tokens. Capture both for the meter.
+            if let Some((i, o)) = Self::stream_usage(data) {
+                if i > 0 {
+                    input = i;
+                }
+                if o > 0 {
+                    output = o;
+                }
+            }
         })?;
+        self.meter.record(input, output);
         Ok(full)
+    }
+
+    fn meter(&self) -> Arc<UsageMeter> {
+        Arc::clone(&self.meter)
     }
 }
 
@@ -204,6 +228,26 @@ impl AnthropicProvider {
             .and_then(|d| d.get("text"))
             .and_then(|t| t.as_str())
             .map(|s| s.to_string())
+    }
+
+    /// Extract `(input, output)` token counts from `message_start` /
+    /// `message_delta` SSE events (either may be 0/absent).
+    fn stream_usage(data: &str) -> Option<(u64, u64)> {
+        let v: Value = serde_json::from_str(data).ok()?;
+        let usage = match v.get("type").and_then(|t| t.as_str()) {
+            Some("message_start") => v.get("message")?.get("usage")?,
+            Some("message_delta") => v.get("usage")?,
+            _ => return None,
+        };
+        let i = usage
+            .get("input_tokens")
+            .and_then(|n| n.as_u64())
+            .unwrap_or(0);
+        let o = usage
+            .get("output_tokens")
+            .and_then(|n| n.as_u64())
+            .unwrap_or(0);
+        Some((i, o))
     }
 }
 

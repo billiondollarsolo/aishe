@@ -19,4 +19,5 @@ pub mod pty;
 pub mod safety;
 pub mod skills;
 pub mod theme;
+pub mod usage;
 pub mod validator;

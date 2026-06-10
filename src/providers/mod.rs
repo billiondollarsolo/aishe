@@ -118,6 +118,32 @@ pub trait Provider {
         messages: &[Msg],
         tools: &[ToolDef],
     ) -> Result<Completion, ProviderError>;
+
+    /// The shared token meter this provider records usage into. Callers read it
+    /// for cost display and budget enforcement.
+    fn meter(&self) -> std::sync::Arc<crate::usage::UsageMeter>;
+}
+
+/// Pull `(input, output)` token counts from a response body, handling both the
+/// Anthropic (`usage.input_tokens`/`output_tokens`) and OpenAI
+/// (`usage.prompt_tokens`/`completion_tokens`) shapes. Missing → 0.
+pub(crate) fn usage_from_value(v: &Value) -> (u64, u64) {
+    let u = match v.get("usage") {
+        Some(u) => u,
+        None => return (0, 0),
+    };
+    let get = |keys: &[&str]| -> u64 {
+        for k in keys {
+            if let Some(n) = u.get(*k).and_then(|x| x.as_u64()) {
+                return n;
+            }
+        }
+        0
+    };
+    (
+        get(&["input_tokens", "prompt_tokens"]),
+        get(&["output_tokens", "completion_tokens"]),
+    )
 }
 
 /// POST a request for a Server-Sent Events stream, retrying once on 429/5xx or a

@@ -9,8 +9,52 @@ use std::io::Write;
 use crossterm::style::Stylize;
 use serde_json::json;
 
-use crate::providers::ToolDef;
+use crate::config::Config;
+use crate::providers::{Provider, ToolDef};
 use crate::safety::{self, Risk};
+use crate::usage;
+
+/// `true` if the session has reached the configured `budget_usd`. When it has,
+/// prints a one-line notice (so the caller can simply stop).
+pub fn budget_reached(provider: &dyn Provider, config: &Config) -> bool {
+    let snap = provider.meter().snapshot();
+    if usage::over_budget(
+        snap,
+        config.active_model(),
+        &config.pricing,
+        config.aishe.budget_usd,
+    ) {
+        eprintln!(
+            "  {}",
+            format!(
+                "budget reached (~${:.2} ≥ ${:.2}); raise `budget_usd` to continue",
+                usage::price_for(config.active_model(), &config.pricing)
+                    .map(|p| usage::cost(snap, p))
+                    .unwrap_or(0.0),
+                config.aishe.budget_usd,
+            )
+            .red()
+        );
+        return true;
+    }
+    false
+}
+
+/// Print a dim per-session token/cost line, when `show_usage` is on and at least
+/// one request has been made.
+pub fn report_usage(provider: &dyn Provider, config: &Config) {
+    if !config.aishe.show_usage {
+        return;
+    }
+    let snap = provider.meter().snapshot();
+    if snap.is_empty() {
+        return;
+    }
+    eprintln!(
+        "  {}",
+        usage::summary(snap, config.active_model(), &config.pricing).dim()
+    );
+}
 
 /// System prompt for suggest mode (PRD Appendix A.1).
 pub fn suggest_system_prompt(shell: &str, os: &str) -> String {

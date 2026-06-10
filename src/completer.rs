@@ -36,6 +36,7 @@ const META_SUBCOMMANDS: &[(&str, &str)] = &[
     ("rehash", "rebuild the command cache"),
     ("commands", "list custom slash-commands"),
     ("skills", "list model-invoked skills"),
+    ("usage", "session token & cost usage"),
     ("help", "show help"),
 ];
 

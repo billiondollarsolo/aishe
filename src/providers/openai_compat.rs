@@ -2,17 +2,21 @@
 //! (`POST {base_url}/v1/chat/completions`). Works with OpenAI, Ollama,
 //! OpenRouter, Together, etc. via `base_url`.
 
+use std::sync::Arc;
+
 use serde_json::{json, Value};
 
 use super::{
-    read_sse, stream_post, Completion, Msg, Provider, ProviderError, ResponseFormat, ToolCall,
-    ToolDef, HTTP_TIMEOUT_SECS, MAX_TOKENS,
+    read_sse, stream_post, usage_from_value, Completion, Msg, Provider, ProviderError,
+    ResponseFormat, ToolCall, ToolDef, HTTP_TIMEOUT_SECS, MAX_TOKENS,
 };
+use crate::usage::UsageMeter;
 
 pub struct OpenAiProvider {
     base_url: String,
     api_key: String,
     model: String,
+    meter: Arc<UsageMeter>,
 }
 
 impl OpenAiProvider {
@@ -21,6 +25,7 @@ impl OpenAiProvider {
             base_url: base_url.trim_end_matches('/').to_string(),
             api_key,
             model,
+            meter: Arc::new(UsageMeter::default()),
         }
     }
 
@@ -118,7 +123,10 @@ impl OpenAiProvider {
     }
 
     fn post(&self, body: &Value) -> Result<Value, ProviderError> {
-        post_with_retry(&self.endpoint(), &self.api_key, body)
+        let resp = post_with_retry(&self.endpoint(), &self.api_key, body)?;
+        let (i, o) = usage_from_value(&resp);
+        self.meter.record(i, o);
+        Ok(resp)
     }
 
     /// Parse `choices[0].message` into our `Completion`. Tool-call arguments
@@ -225,6 +233,9 @@ impl Provider for OpenAiProvider {
         let resp = loop {
             let mut body = self.build_body(system, messages, &[], &fmt);
             body["stream"] = json!(true);
+            // Ask for a trailing usage chunk (supported by OpenAI, Groq, …);
+            // servers that ignore it simply omit usage.
+            body["stream_options"] = json!({"include_usage": true});
             match stream_post(&self.endpoint(), &headers, &body) {
                 Ok(r) => break r,
                 Err(ProviderError::Api {
@@ -244,13 +255,28 @@ impl Provider for OpenAiProvider {
         };
 
         let mut full = String::new();
+        let (mut input, mut output) = (0u64, 0u64);
         read_sse(resp, |data| {
             if let Some(t) = Self::content_delta(data) {
                 full.push_str(&t);
                 sink(&t);
             }
+            if let Ok(v) = serde_json::from_str::<Value>(data) {
+                let (i, o) = usage_from_value(&v);
+                if i > 0 {
+                    input = i;
+                }
+                if o > 0 {
+                    output = o;
+                }
+            }
         })?;
+        self.meter.record(input, output);
         Ok(full)
+    }
+
+    fn meter(&self) -> Arc<UsageMeter> {
+        Arc::clone(&self.meter)
     }
 }
 

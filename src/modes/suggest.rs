@@ -81,13 +81,21 @@ pub fn run(
     scriptable: bool,
     auto: bool,
 ) -> Result<()> {
+    if super::budget_reached(provider, config) {
+        return Ok(());
+    }
     // Interactive streaming: render answers token-by-token. Not used for the
     // scriptable (`-c`) path, whose stdout is consumed by the shell hook.
-    if config.aishe.stream && !scriptable {
-        return run_stream(input, provider, executor, config, auto);
-    }
-    let suggestion = request(input, provider, executor, config)?;
-    handle_suggestion(suggestion, executor, scriptable, auto)
+    let result = if config.aishe.stream && !scriptable {
+        run_stream(input, provider, executor, config, auto)
+    } else {
+        match request(input, provider, executor, config) {
+            Ok(suggestion) => handle_suggestion(suggestion, executor, scriptable, auto),
+            Err(e) => Err(e),
+        }
+    };
+    super::report_usage(provider, config);
+    result
 }
 
 /// Streaming variant of [`run`]: uses the sentinel-protocol system prompt and

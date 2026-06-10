@@ -29,6 +29,15 @@ breaking changes can land in any release.
   the provider).
 
 ### Added
+- **Token & cost accounting** — every model call's `usage` is metered; a dim
+  `N in · N out · N req · ~$cost` line prints after each interaction (toggle with
+  `show_usage`), and `aishe usage` (`/usage`) shows the session total. Cost uses a
+  built-in price table (USD/Mtok) overridable per model in `[pricing]`.
+- **Budget cap** — set `budget_usd` to stop calling the model once the estimated
+  session cost reaches it (e.g. a runaway yolo loop halts cleanly). `0` =
+  unlimited; only enforced when the model's price is known.
+- **`docs/ROADMAP.md`** — the tracked backlog (AI-shell features, zsh parity,
+  trust/safety, test surface).
 - **zsh-PTY front-end** — drive your real interactive zsh inside a pseudo-terminal
   with every native plugin (zsh-autosuggestions, zsh-syntax-highlighting, fzf-tab,
   powerlevel10k, oh-my-zsh) unmodified. Now the **default** (`front_end = "auto"`)

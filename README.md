@@ -93,9 +93,26 @@ aishe editor [emacs|vi]          show or set the line-editor keymap
 aishe stream [on|off]            show or toggle token streaming
 aishe structured [schema|json|prompt]  output-format strategy (default: schema)
 aishe theme [PRESET]             show or set the color preset
+aishe usage                      session token & cost usage
 aishe config                     print the active config
 aishe rehash                     rebuild the command cache
 aishe help                       show help
+```
+
+### Token usage & cost
+
+aishe meters every model call. After each interaction it prints a dim
+`N in · N out · N req · ~$cost` line (disable with `show_usage = false`), and
+`aishe usage` / `/usage` shows the session total. Costs come from a built-in
+price table (USD per 1M tokens); override any model in `[pricing]`:
+
+```toml
+[aishe]
+budget_usd = 0.50          # stop calling the model past ~$0.50/session (0 = off)
+
+[pricing."openai/gpt-oss-120b"]
+input = 0.15
+output = 0.60
 ```
 
 Each meta command also works as a **slash-command** (Claude-Code style), e.g.

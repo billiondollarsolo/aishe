@@ -474,6 +474,7 @@ fn one_shot(
                             Err(e) => eprintln!("aishe: {e}"),
                         }
                     }
+                    Some("usage") => print_usage_summary(provider.as_deref(), config),
                     _ => println!("aishe meta commands are interactive-only"),
                 }
                 return Ok(0);
@@ -965,7 +966,32 @@ fn handle_meta(
             cache.rehash(executor.shell());
             println!("rehashed ({} commands cached)", cache.len());
         }
+        "usage" => print_usage_summary(provider.as_deref(), config),
         _ => print_meta_help(),
+    }
+}
+
+/// Print the session token/cost summary (`aishe usage` / `/usage`).
+fn print_usage_summary(provider: Option<&dyn Provider>, config: &Config) {
+    match provider {
+        Some(p) => {
+            let snap = p.meter().snapshot();
+            if snap.is_empty() {
+                println!("usage: no model calls yet this session");
+            } else {
+                println!(
+                    "usage: {}",
+                    aishe::usage::summary(snap, config.active_model(), &config.pricing)
+                );
+            }
+            if config.aishe.budget_usd > 0.0 {
+                println!(
+                    "budget: ${:.2} (set budget_usd=0 for unlimited)",
+                    config.aishe.budget_usd
+                );
+            }
+        }
+        None => println!("usage: provider not configured"),
     }
 }
 
@@ -982,6 +1008,7 @@ fn print_meta_help() {
 \x20 aishe theme [PRESET]        show or set the color preset\n\
 \x20 aishe commands              list custom /slash-commands\n\
 \x20 aishe skills                list model-invoked skills (yolo)\n\
+\x20 aishe usage                 session token & cost usage\n\
 \x20 aishe config                print active config\n\
 \x20 aishe rehash                rebuild the command cache\n\
 \x20 aishe help                  show this help\n\

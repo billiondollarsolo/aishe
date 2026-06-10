@@ -2,13 +2,14 @@
 
 use std::collections::VecDeque;
 use std::sync::atomic::AtomicBool;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use aishe::config::Config;
 use aishe::executor::Executor;
 use aishe::modes::{suggest, yolo};
 use aishe::providers::{Completion, Msg, Provider, ProviderError, ResponseFormat, ToolCall};
 use aishe::skills::SkillRegistry;
+use aishe::usage::UsageMeter;
 use serde_json::json;
 
 /// A provider that replays scripted responses. When `repeat_last` is set and
@@ -17,6 +18,7 @@ struct MockProvider {
     completions: Mutex<VecDeque<Completion>>,
     texts: Mutex<VecDeque<String>>,
     repeat_last: bool,
+    meter: Arc<UsageMeter>,
 }
 
 impl MockProvider {
@@ -25,6 +27,7 @@ impl MockProvider {
             completions: Mutex::new(items.into()),
             texts: Mutex::new(VecDeque::new()),
             repeat_last,
+            meter: Arc::new(UsageMeter::default()),
         }
     }
     fn with_text(text: &str) -> Self {
@@ -34,12 +37,14 @@ impl MockProvider {
             completions: Mutex::new(VecDeque::new()),
             texts: Mutex::new(q),
             repeat_last: false,
+            meter: Arc::new(UsageMeter::default()),
         }
     }
 }
 
 impl Provider for MockProvider {
     fn complete(&self, _s: &str, _m: &[Msg], _f: &ResponseFormat) -> Result<String, ProviderError> {
+        self.meter.record(10, 5);
         Ok(self.texts.lock().unwrap().pop_front().unwrap_or_default())
     }
     fn complete_with_tools(
@@ -48,11 +53,15 @@ impl Provider for MockProvider {
         _m: &[Msg],
         _t: &[aishe::providers::ToolDef],
     ) -> Result<Completion, ProviderError> {
+        self.meter.record(10, 5);
         let mut q = self.completions.lock().unwrap();
         if self.repeat_last && q.len() == 1 {
             return Ok(q.front().unwrap().clone());
         }
         Ok(q.pop_front().unwrap_or_default())
+    }
+    fn meter(&self) -> Arc<UsageMeter> {
+        Arc::clone(&self.meter)
     }
 }
 
