@@ -103,6 +103,10 @@ pub struct AisheConfig {
     /// environment context block sent to the model. On by default.
     #[serde(default = "default_true")]
     pub redact_secrets: bool,
+    /// Inline AI ghost-text autosuggestion in the reedline front-end. Off by
+    /// default (it spends tokens as you type). Toggle with `aishe ghost`.
+    #[serde(default)]
+    pub ghost_text: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -185,6 +189,7 @@ impl Default for AisheConfig {
             budget_usd: 0.0,
             memory: true,
             redact_secrets: true,
+            ghost_text: false,
         }
     }
 }

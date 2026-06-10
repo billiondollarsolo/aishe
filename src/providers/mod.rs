@@ -84,8 +84,10 @@ pub enum ResponseFormat {
     },
 }
 
-/// The provider interface used by the suggest and yolo modes.
-pub trait Provider {
+/// The provider interface used by the suggest and yolo modes. `Send + Sync` so a
+/// single provider can be shared (via `Arc`) with the background ghost-text
+/// worker, keeping token usage and the budget unified.
+pub trait Provider: Send + Sync {
     /// Single-shot completion constrained to `format` where supported. Callers
     /// must still parse defensively.
     fn complete(
@@ -247,12 +249,13 @@ pub(crate) fn error_message(resp: ureq::Response) -> String {
 }
 
 /// Build the configured provider, reading the API key from the configured env var.
-pub fn make(config: &Config) -> Result<Box<dyn Provider>> {
+/// Returned behind an `Arc` so it can be shared with the ghost-text worker.
+pub fn make(config: &Config) -> Result<std::sync::Arc<dyn Provider>> {
     match config.aishe.provider.as_str() {
         "anthropic" => {
             let p = &config.providers.anthropic;
             let key = read_key(&p.api_key_env)?;
-            Ok(Box::new(anthropic::AnthropicProvider::new(
+            Ok(std::sync::Arc::new(anthropic::AnthropicProvider::new(
                 p.base_url.clone(),
                 key,
                 p.model.clone(),
@@ -261,7 +264,7 @@ pub fn make(config: &Config) -> Result<Box<dyn Provider>> {
         "openai" => {
             let p = &config.providers.openai;
             let key = read_key(&p.api_key_env)?;
-            Ok(Box::new(openai_compat::OpenAiProvider::new(
+            Ok(std::sync::Arc::new(openai_compat::OpenAiProvider::new(
                 p.base_url.clone(),
                 key,
                 p.model.clone(),

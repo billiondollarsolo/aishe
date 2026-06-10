@@ -16,6 +16,7 @@ aishe structured [schema|json|prompt]   output-format strategy
 aishe theme [PRESET]              show or set the color preset
 aishe usage                       session token and cost usage
 aishe reset                       clear conversation memory
+aishe ghost [on|off]              inline AI ghost-text autosuggestion
 aishe commands                    list custom slash-commands
 aishe skills                      list model-invoked skills
 aishe config                      print the active config

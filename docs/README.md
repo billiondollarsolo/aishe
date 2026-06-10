@@ -13,6 +13,7 @@ If you are new, start with [Installation](installation.md) and then
 - [Getting started](getting-started.md) - first run, the wizard, your first requests
 - [Modes](modes.md) - suggest, auto, yolo, streaming, structured output
 - [Front-ends](front-ends.md) - zsh-PTY, the reedline editor, and the native hook
+- [Inline AI ghost text](ghost-text.md) - predicted command completions as you type
 - [Providers](providers.md) - Anthropic, OpenAI, Groq, Ollama, and others
 - [Configuration reference](configuration.md) - every field in config.toml
 - [Commands and slash-commands](commands.md) - meta commands and input prefixes

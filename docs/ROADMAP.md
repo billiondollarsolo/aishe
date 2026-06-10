@@ -31,9 +31,11 @@ is tagged `(reedline)` so we can re-scope quickly.
 - [ ] **Session memory.** NL and yolo invocations start cold each time. Keep a
   rolling conversation transcript in the interactive REPL so follow-ups work
   ("now do the same for the other file"); cap or summarize to control cost. Next.
-- [ ] **Inline ghost-text AI autosuggestion.** Warp or Copilot style: as you
-  type, asynchronously propose a completion of the current command, accept with
-  the right arrow. Needs debounce, cancellation, and a cost guard. Later (biggest).
+- [x] **Inline ghost-text AI autosuggestion.** Warp/Copilot style: a background
+  worker (debounced, cached, budget-aware, shared provider) predicts the rest of
+  the command; reedline shows it as dim ghost text, accept with the Right arrow.
+  Off by default (`aishe ghost on`). See `src/ghost.rs` and docs/ghost-text.md.
+  Done. (Live-during-pause repaint is a possible future polish.)
 - [ ] **Richer yolo toolset and MCP.** Beyond `run_command`: `read_file`,
   `apply_patch`, web fetch; an optional MCP client so external tool servers plug
   in. Later.

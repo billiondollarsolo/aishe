@@ -38,6 +38,7 @@ const META_SUBCOMMANDS: &[(&str, &str)] = &[
     ("skills", "list model-invoked skills"),
     ("usage", "session token & cost usage"),
     ("reset", "clear conversation memory"),
+    ("ghost", "inline AI ghost text: on|off"),
     ("help", "show help"),
 ];
 

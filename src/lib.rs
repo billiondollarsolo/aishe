@@ -10,6 +10,7 @@ pub mod context;
 pub mod dispatcher;
 pub mod executor;
 pub mod fuzzy;
+pub mod ghost;
 pub mod highlight;
 pub mod history_expand;
 pub mod integration;

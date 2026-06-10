@@ -5,14 +5,15 @@
 
 use std::process::ExitCode;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 use crossterm::style::Stylize;
 use reedline::{
     default_emacs_keybindings, default_vi_insert_keybindings, default_vi_normal_keybindings,
-    ColumnarMenu, DefaultHinter, EditMode, Emacs, FileBackedHistory, KeyCode, KeyModifiers,
-    Keybindings, ListMenu, MenuBuilder, Reedline, ReedlineEvent, ReedlineMenu, Signal, Vi,
+    ColumnarMenu, EditMode, Emacs, FileBackedHistory, KeyCode, KeyModifiers, Keybindings, ListMenu,
+    MenuBuilder, Reedline, ReedlineEvent, ReedlineMenu, Signal, Vi,
 };
 
 use aishe::commands::CommandRegistry;
@@ -181,7 +182,7 @@ fn run() -> Result<u8> {
     // Build the provider, but keep the shell fully usable without it. We do NOT
     // warn here: local commands shouldn't print LLM noise, and the NL paths
     // (REPL, -c, hooks) each report a missing provider at the point of use.
-    let mut provider: Option<Box<dyn Provider>> = providers::make(&config).ok();
+    let mut provider: Option<Arc<dyn Provider>> = providers::make(&config).ok();
 
     // Install a non-fatal SIGINT handler (see INTERRUPTED docs).
     unsafe {
@@ -454,7 +455,7 @@ fn auto_line(
 fn one_shot(
     input: &str,
     executor: &mut Executor,
-    provider: &mut Option<Box<dyn Provider>>,
+    provider: &mut Option<Arc<dyn Provider>>,
     config: &Config,
     cache: &CommandCache,
     commands: &CommandRegistry,
@@ -607,7 +608,7 @@ fn build_edit_mode(edit_mode: &str) -> Box<dyn EditMode> {
 
 fn repl(
     executor: &mut Executor,
-    provider: &mut Option<Box<dyn Provider>>,
+    provider: &mut Option<Arc<dyn Provider>>,
     config: &mut Config,
     cache: &CommandCache,
     commands: &CommandRegistry,
@@ -642,6 +643,11 @@ fn repl(
     let completion_menu = Box::new(ColumnarMenu::default().with_name("completion_menu"));
     let history_menu = Box::new(ListMenu::default().with_name("history_menu"));
 
+    // Inline AI ghost-text autosuggestion (shares the provider, so its tokens
+    // count in the session usage and budget). The worker only runs when a
+    // provider exists; the hinter falls back to history hints otherwise.
+    let ghost = aishe::ghost::Ghost::new(config.aishe.ghost_text, provider.clone(), config.clone());
+
     let mut line_editor = Reedline::create()
         .with_history(history)
         .with_completer(Box::new(
@@ -650,7 +656,7 @@ fn repl(
         .with_menu(ReedlineMenu::EngineCompleter(completion_menu))
         .with_menu(ReedlineMenu::HistoryMenu(history_menu))
         .with_validator(Box::new(AisheValidator::new(cache.clone())))
-        .with_hinter(Box::new(DefaultHinter::default()))
+        .with_hinter(ghost.hinter(aishe::ghost::default_style()))
         .with_highlighter(Box::new(CmdHighlighter::new(cache.clone(), theme)))
         .with_edit_mode(edit_mode);
 
@@ -679,6 +685,8 @@ fn repl(
         let sig = line_editor.read_line(&prompt);
         match sig {
             Ok(Signal::Success(buffer)) => {
+                // The line is submitted; don't let the ghost worker predict for it.
+                ghost.reset();
                 let line = buffer.trim();
                 if line.is_empty() {
                     continue;
@@ -706,6 +714,7 @@ fn repl(
                     commands,
                     skills,
                     &mut session,
+                    &ghost,
                 )? {
                     return Ok(executor.last_exit as u8);
                 }
@@ -731,12 +740,13 @@ fn repl(
 fn handle_line(
     line: &str,
     executor: &mut Executor,
-    provider: &mut Option<Box<dyn Provider>>,
+    provider: &mut Option<Arc<dyn Provider>>,
     config: &mut Config,
     cache: &CommandCache,
     commands: &CommandRegistry,
     skills: &SkillRegistry,
     session: &mut Session,
+    ghost: &aishe::ghost::Ghost,
 ) -> Result<bool> {
     // User-defined /slash-commands (plugins/skills) run before everything else.
     if try_custom_command(
@@ -773,7 +783,7 @@ fn handle_line(
         Dispatch::Builtin(tokens) => match tokens[0].as_str() {
             "exit" | "quit" => return Ok(true),
             "aishe" => handle_meta(
-                &tokens, config, provider, executor, cache, commands, skills, session,
+                &tokens, config, provider, executor, cache, commands, skills, session, ghost,
             ),
             _ => {
                 executor.run_builtin(&tokens);
@@ -903,15 +913,39 @@ fn alias_name(cmd: &str) -> Option<&str> {
 fn handle_meta(
     tokens: &[String],
     config: &mut Config,
-    provider: &mut Option<Box<dyn Provider>>,
+    provider: &mut Option<Arc<dyn Provider>>,
     executor: &Executor,
     cache: &CommandCache,
     commands: &CommandRegistry,
     skills: &SkillRegistry,
     session: &mut Session,
+    ghost: &aishe::ghost::Ghost,
 ) {
     let sub = tokens.get(1).map(|s| s.as_str()).unwrap_or("help");
     match sub {
+        "ghost" => match tokens.get(2).map(|s| s.as_str()) {
+            Some("on") | Some("true") => {
+                config.aishe.ghost_text = true;
+                persist(config);
+                ghost.set_enabled(true);
+                if provider.is_none() {
+                    println!("ghost-text → on (no provider configured; set your API key)");
+                } else {
+                    println!("ghost-text → on");
+                }
+            }
+            Some("off") | Some("false") => {
+                config.aishe.ghost_text = false;
+                persist(config);
+                ghost.set_enabled(false);
+                println!("ghost-text → off");
+            }
+            Some(_) => eprintln!("aishe: ghost must be 'on' or 'off'"),
+            None => println!(
+                "ghost-text: {}",
+                if ghost.is_enabled() { "on" } else { "off" }
+            ),
+        },
         "reset" => {
             let n = session.turns();
             session.clear();
@@ -1105,6 +1139,7 @@ fn print_meta_help() {
 \x20 aishe skills                list model-invoked skills (yolo)\n\
 \x20 aishe usage                 session token & cost usage\n\
 \x20 aishe reset                 clear conversation memory\n\
+\x20 aishe ghost [on|off]        inline AI ghost-text autosuggestion\n\
 \x20 aishe config                print active config\n\
 \x20 aishe rehash                rebuild the command cache\n\
 \x20 aishe help                  show this help\n\
@@ -1119,7 +1154,7 @@ exit with `exit`, `quit`, or Ctrl-D."
     );
 }
 
-fn rebuild_provider(config: &Config, provider: &mut Option<Box<dyn Provider>>) {
+fn rebuild_provider(config: &Config, provider: &mut Option<Arc<dyn Provider>>) {
     match providers::make(config) {
         Ok(p) => *provider = Some(p),
         Err(e) => {

@@ -29,6 +29,12 @@ breaking changes can land in any release.
   the provider).
 
 ### Added
+- **Inline AI ghost text.** In the reedline front-end, aishe can predict the rest
+  of your command as you type and show it as dim ghost text (accept with the Right
+  arrow), Copilot/Warp style. A background worker (debounced, cached) keeps typing
+  non-blocking; it shares the main provider so ghost tokens count in `aishe usage`
+  and respect `budget_usd`, and the calls are audit-logged as `mode: ghost`. Off
+  by default; toggle with `aishe ghost on` / `ghost_text`.
 - **Hardened the safety gate against bypasses, with an adversarial corpus.** The
   gate now strips leading wrappers and env assignments before judging a command
   (`sudo -i rm -rf /`, `FOO=bar rm -rf /`, `env`/`time`/`nohup`/`nice`/`timeout`

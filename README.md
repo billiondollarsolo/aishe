@@ -112,7 +112,8 @@ Details in [docs/front-ends.md](docs/front-ends.md).
 2. **Built-in reedline editor.** A self-contained line editor with
    context-aware tab completion, history autosuggestions, `Ctrl-R` history
    search, history expansion, multi-line continuation, syntax highlighting,
-   autocd, a directory stack, and emacs or vi keymaps.
+   autocd, a directory stack, emacs or vi keymaps, and optional
+   [inline AI ghost text](docs/ghost-text.md) (`aishe ghost on`).
 
 3. **Native zsh/bash hook.** Add `eval "$(aishe init zsh)"` to your `~/.zshrc`
    (or `~/.bashrc` with `init bash`) to keep your own shell and editor while
@@ -148,6 +149,7 @@ aishe structured [schema|json|prompt]   output-format strategy (default: schema)
 aishe theme [PRESET]              show or set the color preset
 aishe usage                       session token and cost usage
 aishe reset                       clear conversation memory
+aishe ghost [on|off]              inline AI ghost-text autosuggestion
 aishe commands                    list custom slash-commands
 aishe skills                      list model-invoked skills
 aishe config                      print the active config
@@ -307,6 +309,7 @@ The [docs/](docs/) directory has the full user guide:
 - [Getting started](docs/getting-started.md)
 - [Modes](docs/modes.md)
 - [Front-ends](docs/front-ends.md)
+- [Inline AI ghost text](docs/ghost-text.md)
 - [Providers](docs/providers.md)
 - [Configuration reference](docs/configuration.md)
 - [Commands and slash-commands](docs/commands.md)

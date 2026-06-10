@@ -442,6 +442,7 @@ pub fn is_meta_subcommand(w: &str) -> bool {
             | "skills"
             | "usage"
             | "reset"
+            | "ghost"
             | "help"
     )
 }
