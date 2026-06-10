@@ -67,6 +67,11 @@ pub struct AisheConfig {
     pub yolo_confirm_dangerous: bool,
     #[serde(default = "default_max_iters")]
     pub max_yolo_iterations: u32,
+    /// Offer the built-in file tools (`read_file`/`write_file`/`edit_file`/
+    /// `list_dir`) to yolo, so it can work with files directly instead of via the
+    /// shell. On by default.
+    #[serde(default = "default_true")]
+    pub file_tools: bool,
     #[serde(default = "default_true")]
     pub show_right_prompt: bool,
     /// Front-end: "auto" (default — zsh-pty when zsh is on $PATH, else
@@ -217,6 +222,7 @@ impl Default for AisheConfig {
             provider: default_provider(),
             yolo_confirm_dangerous: true,
             max_yolo_iterations: default_max_iters(),
+            file_tools: true,
             show_right_prompt: true,
             front_end: default_front_end(),
             edit_mode: default_edit_mode(),

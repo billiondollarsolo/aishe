@@ -44,19 +44,25 @@ protecting against destructive operations.
 
 ## yolo
 
-yolo is an agentic loop. The model is given a tool to run commands. It runs one,
-reads the captured output, and decides what to do next, repeating until the task
-is done or it hits `max_yolo_iterations`. Key points:
+yolo is an agentic loop. The model is given tools, calls one, reads the result,
+and decides what to do next, repeating until the task is done or it hits
+`max_yolo_iterations`. Key points:
 
-- Commands run with stdin closed (non-interactive). The model is instructed to
-  use non-interactive flags.
-- Captured output is shown to you and truncated to the last several thousand
-  characters for the model.
-- Each command times out after a fixed limit.
+- The core tool is `run_command`: it runs a shell command with stdin closed
+  (non-interactive flags), the captured output is shown to you and truncated for
+  the model, and each command times out after a fixed limit.
+- **File tools** (`file_tools = true`, on by default): the model can also call
+  `read_file`, `write_file`, `edit_file`, and `list_dir` to work with files
+  precisely, instead of round-tripping through `cat`/`sed`/heredocs (which it
+  gets wrong more often). A write or edit to a path outside the working tree
+  (absolute, `~`, or `..`-escaping) is confirmed when `yolo_confirm_dangerous` is
+  on.
 - With `yolo_confirm_dangerous = true`, the safety gate still pauses for
   dangerous commands.
 - If skills are present, the model can pull a skill's instructions into context
   on demand. See [Custom commands and skills](custom-commands-and-skills.md).
+- Every tool call is recorded in the [audit log](logging.md) (`run_command` as an
+  `action`, file tools as `yolo:read_file` etc.).
 
 ## Streaming
 

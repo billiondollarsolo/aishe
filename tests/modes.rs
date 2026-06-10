@@ -74,6 +74,69 @@ fn tool_call(cmd: &str) -> ToolCall {
     }
 }
 
+fn named_tool_call(name: &str, args: serde_json::Value) -> ToolCall {
+    ToolCall {
+        id: "call".into(),
+        name: name.into(),
+        arguments: args,
+    }
+}
+
+#[test]
+fn yolo_file_tools_write_and_read() {
+    let dir = std::env::temp_dir().join(format!("aishe-ft-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let target = dir.join("out.txt");
+    // Turn 1: write_file with exact content. Turn 2: read it back. Turn 3: finish.
+    let provider = MockProvider::with_completions(
+        vec![
+            Completion {
+                text: None,
+                tool_calls: vec![named_tool_call(
+                    "write_file",
+                    json!({"path": target.to_str().unwrap(), "content": "exact-content-42"}),
+                )],
+            },
+            Completion {
+                text: None,
+                tool_calls: vec![named_tool_call(
+                    "read_file",
+                    json!({"path": target.to_str().unwrap()}),
+                )],
+            },
+            Completion {
+                text: Some("done".into()),
+                tool_calls: vec![],
+            },
+        ],
+        false,
+    );
+    let mut exec = Executor::new().unwrap();
+    let mut config = Config::default();
+    // Absolute temp path is "outside the tree"; disable the write confirm so the
+    // test doesn't block on stdin.
+    config.aishe.yolo_confirm_dangerous = false;
+    let flag = AtomicBool::new(false);
+
+    yolo::run(
+        "make the file",
+        &provider,
+        &mut exec,
+        &config,
+        &flag,
+        &SkillRegistry::default(),
+        &mut Session::new(false),
+    )
+    .unwrap();
+
+    assert!(target.exists(), "write_file tool did not create the file");
+    assert_eq!(
+        std::fs::read_to_string(&target).unwrap(),
+        "exact-content-42"
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
 #[test]
 fn yolo_runs_tool_then_finishes() {
     let provider = MockProvider::with_completions(

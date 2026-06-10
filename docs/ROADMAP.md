@@ -36,9 +36,10 @@ is tagged `(reedline)` so we can re-scope quickly.
   the command; reedline shows it as dim ghost text, accept with the Right arrow.
   Off by default (`aishe ghost on`). See `src/ghost.rs` and docs/ghost-text.md.
   Done. (Live-during-pause repaint is a possible future polish.)
-- [ ] **Richer yolo toolset and MCP.** Beyond `run_command`: `read_file`,
-  `apply_patch`, web fetch; an optional MCP client so external tool servers plug
-  in. Later.
+- [~] **Richer yolo toolset and MCP.** Built-in file tools shipped:
+  `read_file`/`write_file`/`edit_file`/`list_dir` (`file_tools`, on by default,
+  see `src/tools.rs`). Web fetch and an MCP client (so external tool servers plug
+  in) still open. Building now.
 - [ ] **Dry-run or plan preview for yolo.** Show the planned steps and let the
   user approve the batch before execution. Later.
 - [ ] **Response caching.** Cache identical (prompt, context) suggestions briefly

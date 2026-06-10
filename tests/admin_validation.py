@@ -643,6 +643,7 @@ hist_ignore_space = true
 hist_ignore = ["ls", "cd *"]
 cdpath = ["/tmp", "/srv"]
 correct = true
+file_tools = false
 max_yolo_iterations = 5
 yolo_confirm_dangerous = false
 
@@ -863,6 +864,7 @@ def main():
         "report_time = 7",
         "auto_pushd = true",
         "correct = true",
+        "file_tools = false",
         "budget_usd = 1.5",
         "hist_ignore_space = true",
         "ghost_text = true",

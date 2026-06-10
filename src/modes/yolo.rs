@@ -56,21 +56,29 @@ fn run_loop(
     history: Vec<Msg>,
 ) -> Result<Option<String>> {
     let ctx = context::build(executor, config.aishe.redact_secrets);
-    // Offer the use_skill tool (and advertise the catalog) only when skills exist.
-    let tools: Vec<_> = if skills.is_empty() {
-        vec![run_command_tool()]
-    } else {
-        vec![run_command_tool(), use_skill_tool()]
-    };
-    let system = if skills.is_empty() {
-        YOLO_SYSTEM.to_string()
-    } else {
-        format!(
-            "{YOLO_SYSTEM}\n\nAvailable skills (call use_skill to load one's \
-             instructions when relevant):\n{}",
+    // Tools: always run_command; the built-in file tools when enabled; use_skill
+    // when skills exist.
+    let mut tools = vec![run_command_tool()];
+    if config.aishe.file_tools {
+        tools.extend(crate::tools::file_tool_defs());
+    }
+    if !skills.is_empty() {
+        tools.push(use_skill_tool());
+    }
+    let mut system = YOLO_SYSTEM.to_string();
+    if config.aishe.file_tools {
+        system.push_str(
+            "\n\nFor files, prefer the read_file / write_file / edit_file / list_dir \
+             tools over shell cat/sed/heredoc (they are exact and avoid quoting issues).",
+        );
+    }
+    if !skills.is_empty() {
+        system.push_str(&format!(
+            "\n\nAvailable skills (call use_skill to load one's instructions when \
+             relevant):\n{}",
             skills.catalog()
-        )
-    };
+        ));
+    }
     let mut messages: Vec<Msg> = history;
     messages.push(Msg::User(format!("{ctx}\nUser request: {input}")));
 
@@ -170,6 +178,23 @@ fn run_loop(
                     }
                     None => format!("No skill named '{name}'."),
                 };
+                messages.push(Msg::ToolResult {
+                    call_id: call.id.clone(),
+                    content,
+                });
+                continue;
+            }
+
+            // Built-in file tools (read/write/edit/list) operate directly on the
+            // filesystem, relative to the cwd.
+            if crate::tools::is_file_tool(&call.name) {
+                let (label, content) = crate::tools::execute(
+                    &call.name,
+                    &call.arguments,
+                    executor.cwd(),
+                    config.aishe.yolo_confirm_dangerous,
+                );
+                crate::audit::action(&format!("yolo:{}", call.name), &label, None);
                 messages.push(Msg::ToolResult {
                     call_id: call.id.clone(),
                     content,

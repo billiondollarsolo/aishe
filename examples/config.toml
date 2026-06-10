@@ -30,6 +30,10 @@ yolo_confirm_dangerous = true
 # Maximum tool-use iterations for a single yolo request.
 max_yolo_iterations = 10
 
+# Offer the built-in file tools (read_file / write_file / edit_file / list_dir)
+# to yolo, so it edits files precisely instead of via cat/sed/heredocs.
+file_tools = true
+
 # Show "model and mode" on the right of the reedline prompt.
 show_right_prompt = true
 

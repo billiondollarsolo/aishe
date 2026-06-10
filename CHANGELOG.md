@@ -36,6 +36,11 @@ breaking changes can land in any release.
   the provider).
 
 ### Added
+- **Built-in file tools for yolo.** Beyond `run_command`, the agentic loop can
+  now call `read_file`, `write_file`, `edit_file`, and `list_dir` to work with
+  files precisely instead of round-tripping through `cat`/`sed`/heredocs. Writes
+  outside the working tree are confirmed (when `yolo_confirm_dangerous`), and each
+  call is audit-logged. On by default (`file_tools`).
 - **Spelling correction and named directories (reedline).** With `correct = true`
   (zsh `CORRECT`), a mistyped first word that is a near-miss of a known command
   prompts `correct 'gti' to 'git'? [Y/n]` instead of going to the LLM (uses

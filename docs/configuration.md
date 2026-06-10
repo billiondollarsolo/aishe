@@ -26,6 +26,7 @@ which persist your choice back to the file.
 | `edit_mode` | string | `emacs` | reedline keymap: `emacs` or `vi`. |
 | `yolo_confirm_dangerous` | bool | `true` | In yolo, confirm commands the safety gate flags. |
 | `max_yolo_iterations` | integer | `10` | Maximum tool-use steps for one yolo request. |
+| `file_tools` | bool | `true` | Offer the built-in `read_file`/`write_file`/`edit_file`/`list_dir` tools to yolo. |
 | `show_right_prompt` | bool | `true` | Show "model and mode" on the right (reedline). |
 | `git_prompt` | bool | `true` | Show a git branch segment in the right prompt (reedline). |
 | `git_status` | bool | `true` | Add dirty (`*`) and ahead/behind (`⇡`/`⇣`) markers to the git segment (one `git status` per prompt). |
