@@ -70,4 +70,4 @@ jobs:
         run: cargo build --release
 
       - name: Drive real zsh through the PTY front-end
-        run: python3 tests/pty_smoke.py target/release/llmsh
+        run: python3 tests/pty_smoke.py target/release/aishe

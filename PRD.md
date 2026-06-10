@@ -1,22 +1,22 @@
-# PRD: `llmsh` — A Natural-Language-Aware Shell (Rust)
+# PRD: `aishe` — A Natural-Language-Aware Shell (Rust)
 
 **Version:** 1.1
 **Status:** Implemented (v0.1)
-**Target:** Working v0.1, single repo, single static binary, `cargo install llmsh`
+**Target:** Working v0.1, single repo, single static binary, `cargo install aishe`
 
-> This document is the design spec that `llmsh` v0.1 was built against. For
+> This document is the design spec that `aishe` v0.1 was built against. For
 > usage, see [README.md](README.md).
 
 ## 1. Overview
 
-`llmsh` is an interactive shell REPL that behaves like zsh for valid shell
+`aishe` is an interactive shell REPL that behaves like zsh for valid shell
 commands, but treats anything that is *not* a recognizable command as a
 natural-language request, interpreted by an LLM (Anthropic Messages API or any
 OpenAI-compatible Chat Completions API). The LLM either **suggests** a command
 for confirmation, or **executes autonomously** ("yolo mode") via a tool-use
 loop.
 
-`llmsh` does NOT reimplement a shell grammar. It owns the prompt/input loop and
+`aishe` does NOT reimplement a shell grammar. It owns the prompt/input loop and
 **delegates execution of shell lines to `zsh -c`** (fallback `bash -c`), so
 pipes, globs, redirection, subshells, and interactive child programs (vim, ssh,
 top) work unmodified.
@@ -42,20 +42,20 @@ SDK crates.
   completion (command names + file paths), `Ctrl-R` history-search menu,
   multi-line continuation for unterminated shell lines, an emacs or vi keymap
   (`edit_mode`), themeable syntax highlighting, and a custom prompt.
-- `zsh-pty` (`llmsh zsh` / `--pty` / `front_end = "zsh-pty"`) — drives the user's
+- `zsh-pty` (`aishe zsh` / `--pty` / `front_end = "zsh-pty"`) — drives the user's
   real interactive zsh inside a pseudo-terminal with their full config and all
   plugins loaded; injects a `command_not_found_handler` for NL routing. No
   plugin is forked or reimplemented.
-- Native hook (`eval "$(llmsh init zsh|bash)"`) — same `command_not_found`
+- Native hook (`eval "$(aishe init zsh|bash)"`) — same `command_not_found`
   routing inside the user's own shell session.
 
 Hook ergonomics (shared by `zsh-pty` and the native zsh hook):
-- **auto-run safe via `eval`.** In `auto` mode the hook calls `llmsh --auto-line`,
+- **auto-run safe via `eval`.** In `auto` mode the hook calls `aishe --auto-line`,
   which prints the suggested command and exits `0` if the safety gate deems it
   safe (hook `eval`s it in the real shell; `cd`/`export` persist, recorded in
   history) or a non-zero code if dangerous (hook pre-fills it for review). bash
   runs `command_not_found_handle` in a subshell, so it keeps the pre-fill path.
-- **force-NL keybinding.** A ZLE widget (zsh, default Alt-Enter, `LLMSH_NL_KEY`
+- **force-NL keybinding.** A ZLE widget (zsh, default Alt-Enter, `AISHE_NL_KEY`
   override) / `bind -x` on Ctrl-G (bash) routes the current line to the LLM as
   natural language even when it is also a valid command.
 

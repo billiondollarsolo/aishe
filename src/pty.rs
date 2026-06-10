@@ -1,12 +1,12 @@
 //! PTY front-end: launch the user's *real* interactive zsh inside a
 //! pseudo-terminal, with their full configuration and plugins loaded, plus the
-//! llmsh AI hook injected.
+//! aishe AI hook injected.
 //!
-//! This is how `llmsh` supports *every* zsh extension — zsh-autosuggestions,
+//! This is how `aishe` supports *every* zsh extension — zsh-autosuggestions,
 //! zsh-syntax-highlighting, fzf-tab, powerlevel10k, oh-my-zsh — without forking
 //! or reimplementing any of them: it runs the genuine zsh ZLE and merely proxies
 //! the terminal. Natural-language interception happens inside that zsh via the
-//! injected `command_not_found_handler`, which calls back into `llmsh`.
+//! injected `command_not_found_handler`, which calls back into `aishe`.
 
 use std::io::{Read, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -27,7 +27,7 @@ pub fn run_zsh(config: &Config) -> Result<u8> {
     })?;
 
     // Build an isolated ZDOTDIR whose startup files load the user's real config
-    // and then append the llmsh hook.
+    // and then append the aishe hook.
     let zdotdir = make_zdotdir().context("preparing zsh integration dir")?;
     let real_zdotdir = std::env::var("ZDOTDIR").unwrap_or_else(|_| {
         dirs::home_dir()
@@ -49,9 +49,9 @@ pub fn run_zsh(config: &Config) -> Result<u8> {
     let mut cmd = CommandBuilder::new(&zsh);
     cmd.arg("-i");
     cmd.env("ZDOTDIR", &zdotdir);
-    cmd.env("LLMSH_OUR_ZDOTDIR", &zdotdir);
-    cmd.env("LLMSH_REAL_ZDOTDIR", &real_zdotdir);
-    cmd.env("LLMSH_MODE", &config.llmsh.mode);
+    cmd.env("AISHE_OUR_ZDOTDIR", &zdotdir);
+    cmd.env("AISHE_REAL_ZDOTDIR", &real_zdotdir);
+    cmd.env("AISHE_MODE", &config.aishe.mode);
     if let Ok(cwd) = std::env::current_dir() {
         cmd.cwd(cwd);
     }
@@ -143,9 +143,9 @@ pub fn run_zsh(config: &Config) -> Result<u8> {
 }
 
 /// Create a temp ZDOTDIR containing `.zshenv` and `.zshrc` that load the user's
-/// real config and then the llmsh hook.
+/// real config and then the aishe hook.
 fn make_zdotdir() -> Result<std::path::PathBuf> {
-    let dir = std::env::temp_dir().join(format!("llmsh-zdotdir-{}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("aishe-zdotdir-{}", std::process::id()));
     std::fs::create_dir_all(&dir)?;
     std::fs::write(dir.join(".zshenv"), integration::WRAPPER_ZSHENV)?;
     std::fs::write(dir.join(".zshrc"), integration::wrapper_zshrc())?;

@@ -106,7 +106,7 @@ pub fn request(
     match provider.complete(&system, &[Msg::User(user)], true) {
         Ok(text) => Ok(parse_suggestion(&text)),
         Err(e) => {
-            eprintln!("{}", format!("llmsh: {e}").red());
+            eprintln!("{}", format!("aishe: {e}").red());
             // Surface the failure as an empty answer so the REPL keeps going.
             Ok(Suggestion::Answer {
                 explanation: String::new(),

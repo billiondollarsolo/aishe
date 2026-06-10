@@ -27,7 +27,7 @@ pub fn run(
 
     interrupt.store(false, Ordering::SeqCst);
 
-    for iteration in 0..config.llmsh.max_yolo_iterations {
+    for iteration in 0..config.aishe.max_yolo_iterations {
         if interrupt.load(Ordering::SeqCst) {
             println!("  {}", "aborted".dim());
             return Ok(());
@@ -37,7 +37,7 @@ pub fn run(
             match provider.complete_with_tools(YOLO_SYSTEM, &messages, &tools) {
                 Ok(c) => c,
                 Err(e) => {
-                    eprintln!("{}", format!("llmsh: {e}").red());
+                    eprintln!("{}", format!("aishe: {e}").red());
                     return Ok(());
                 }
             };
@@ -95,7 +95,7 @@ pub fn run(
             }
 
             // Safety gate: confirm dangerous commands when configured.
-            if config.llmsh.yolo_confirm_dangerous {
+            if config.aishe.yolo_confirm_dangerous {
                 if let Risk::Dangerous(_) = safety::assess(&command) {
                     if let GateOutcome::Declined = safety_gate(&command) {
                         messages.push(Msg::ToolResult {
@@ -114,12 +114,12 @@ pub fn run(
             });
         }
 
-        if iteration + 1 == config.llmsh.max_yolo_iterations {
+        if iteration + 1 == config.aishe.max_yolo_iterations {
             println!(
                 "  {}",
                 format!(
                     "reached max iterations ({})",
-                    config.llmsh.max_yolo_iterations
+                    config.aishe.max_yolo_iterations
                 )
                 .yellow()
             );

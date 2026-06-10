@@ -1,8 +1,8 @@
 //! Provider HTTP tests using mockito, asserting request shapes for both APIs.
 
-use llmsh::providers::anthropic::AnthropicProvider;
-use llmsh::providers::openai_compat::OpenAiProvider;
-use llmsh::providers::{AssistantMsg, Msg, Provider, ProviderError, ToolCall, ToolDef};
+use aishe::providers::anthropic::AnthropicProvider;
+use aishe::providers::openai_compat::OpenAiProvider;
+use aishe::providers::{AssistantMsg, Msg, Provider, ProviderError, ToolCall, ToolDef};
 use mockito::Matcher;
 use serde_json::json;
 

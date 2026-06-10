@@ -21,7 +21,7 @@ pub enum Dispatch {
 
 /// Builtins we handle in-process to persist shell state.
 const INTERCEPTED: &[&str] = &[
-    "cd", "export", "unset", "source", ".", "exit", "quit", "llmsh",
+    "cd", "export", "unset", "source", ".", "exit", "quit", "aishe",
 ];
 
 /// Hardcoded fallback list of zsh builtins, used if querying zsh fails.
@@ -77,7 +77,7 @@ impl CommandCache {
         });
     }
 
-    /// Rebuild synchronously (used by `llmsh rehash`).
+    /// Rebuild synchronously (used by `aishe rehash`).
     pub fn rehash(&self, shell: &Path) {
         let mut fresh: HashSet<String> = scan_path();
         fresh.extend(INTERCEPTED.iter().map(|s| s.to_string()));
@@ -301,7 +301,7 @@ fn fetch_aliases_and_functions(shell: &Path) -> HashSet<String> {
             .filter(|l| !l.is_empty())
             .collect(),
         None => {
-            eprintln!("\x1b[2mllmsh: aliases/functions query timed out; continuing\x1b[0m");
+            eprintln!("\x1b[2maishe: aliases/functions query timed out; continuing\x1b[0m");
             HashSet::new()
         }
     }
@@ -374,7 +374,7 @@ mod tests {
             Dispatch::Builtin(vec!["cd".into(), "/tmp".into()])
         );
         assert!(matches!(dispatch("export FOO=1", &c), Dispatch::Builtin(_)));
-        assert!(matches!(dispatch("llmsh help", &c), Dispatch::Builtin(_)));
+        assert!(matches!(dispatch("aishe help", &c), Dispatch::Builtin(_)));
     }
 
     #[test]

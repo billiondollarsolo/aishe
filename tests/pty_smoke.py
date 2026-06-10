@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""PTY smoke test for the llmsh zsh front-end.
+"""PTY smoke test for the aishe zsh front-end.
 
-Drives `llmsh zsh` through a real pseudo-terminal and asserts that the wrapper
-launches the user's genuine interactive zsh with the llmsh integration injected.
+Drives `aishe zsh` through a real pseudo-terminal and asserts that the wrapper
+launches the user's genuine interactive zsh with the aishe integration injected.
 It verifies, *without needing an API key or network*:
 
   1. native commands run through the wrapped zsh (the PTY proxy works),
@@ -11,8 +11,8 @@ It verifies, *without needing an API key or network*:
   4. the force-NL ZLE widget is defined and bound to a key,
   5. zsh exits cleanly.
 
-Usage:  python3 tests/pty_smoke.py [path/to/llmsh]
-Default binary: target/release/llmsh
+Usage:  python3 tests/pty_smoke.py [path/to/aishe]
+Default binary: target/release/aishe
 Exit code 0 on success, non-zero on the first failed assertion.
 """
 
@@ -26,7 +26,7 @@ import sys
 import tempfile
 import time
 
-BINARY = sys.argv[1] if len(sys.argv) > 1 else "target/release/llmsh"
+BINARY = sys.argv[1] if len(sys.argv) > 1 else "target/release/aishe"
 TIMEOUT = 30.0  # generous: CI shells can be slow to start
 
 
@@ -107,13 +107,13 @@ class Pty:
 
 def make_env():
     """An isolated HOME/XDG so no real config or wizard interferes."""
-    home = tempfile.mkdtemp(prefix="llmsh-smoke-")
-    cfgdir = os.path.join(home, ".config", "llmsh")
+    home = tempfile.mkdtemp(prefix="aishe-smoke-")
+    cfgdir = os.path.join(home, ".config", "aishe")
     os.makedirs(cfgdir, exist_ok=True)
     # Pre-write a config so the first-run wizard never blocks the PTY.
     with open(os.path.join(cfgdir, "config.toml"), "w") as f:
         f.write(
-            "[llmsh]\n"
+            "[aishe]\n"
             'mode = "suggest"\n'
             'provider = "anthropic"\n'
             'front_end = "reedline"\n'
@@ -171,13 +171,13 @@ def main():
 
         # 4) the force-NL widget is defined and bound. The widget name appears in
         #    the typed echo for the first probe, so match the value (user:...).
-        sh.send("print -r -- WIDGET=${widgets[llmsh-nl-widget]}")
-        if not sh.expect("user:llmsh-nl-widget"):
+        sh.send("print -r -- WIDGET=${widgets[aishe-nl-widget]}")
+        if not sh.expect("user:aishe-nl-widget"):
             fail("force-NL ZLE widget not defined", sh)
         # The keybinding probe's typed text does not contain the widget name, so
         # matching it confirms the binding line in the output.
         sh.send("bindkey '^[^M'")
-        if not sh.expect("llmsh-nl-widget"):
+        if not sh.expect("aishe-nl-widget"):
             fail("force-NL key not bound", sh)
 
         # 5) clean exit: zsh should terminate on its own after `exit`.
@@ -187,7 +187,7 @@ def main():
             fail("zsh did not exit after `exit`", sh)
         if code != 0:
             sys.stderr.write("WARN: zsh exited with code %r\n" % code)
-        print("PASS: llmsh zsh PTY smoke test")
+        print("PASS: aishe zsh PTY smoke test")
         sys.exit(0)
     finally:
         sh.close()

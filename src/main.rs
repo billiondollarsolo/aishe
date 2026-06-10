@@ -1,4 +1,4 @@
-//! llmsh — a natural-language-aware shell.
+//! aishe — a natural-language-aware shell.
 //!
 //! Behaves like zsh for recognizable commands; anything else is treated as a
 //! natural-language request handled by an LLM (suggest or yolo mode).
@@ -15,17 +15,17 @@ use reedline::{
     Keybindings, ListMenu, MenuBuilder, Reedline, ReedlineEvent, ReedlineMenu, Signal, Vi,
 };
 
-use llmsh::completer::LlmshCompleter;
-use llmsh::config::Config;
-use llmsh::dispatcher::{self, CommandCache, Dispatch};
-use llmsh::executor::Executor;
-use llmsh::highlight::CmdHighlighter;
-use llmsh::prompt::LlmshPrompt;
-use llmsh::providers::{self, Provider};
-use llmsh::safety::{self, Risk};
-use llmsh::theme::Theme;
-use llmsh::validator::LlmshValidator;
-use llmsh::{context, integration, modes};
+use aishe::completer::AisheCompleter;
+use aishe::config::Config;
+use aishe::dispatcher::{self, CommandCache, Dispatch};
+use aishe::executor::Executor;
+use aishe::highlight::CmdHighlighter;
+use aishe::prompt::AishePrompt;
+use aishe::providers::{self, Provider};
+use aishe::safety::{self, Risk};
+use aishe::theme::Theme;
+use aishe::validator::AisheValidator;
+use aishe::{context, integration, modes};
 
 /// Exit code from `--auto-line` when the suggested command is dangerous: the
 /// shell hook treats any non-zero code as "pre-fill for review" instead of
@@ -40,7 +40,7 @@ extern "C" fn handle_sigint(_sig: libc::c_int) {
 }
 
 #[derive(Parser, Debug)]
-#[command(name = "llmsh", version, about = "A natural-language-aware shell")]
+#[command(name = "aishe", version, about = "A natural-language-aware shell")]
 struct Args {
     /// Override the interaction mode for this session.
     #[arg(long, value_parser = ["suggest", "auto", "yolo"])]
@@ -80,12 +80,12 @@ struct Args {
 
 #[derive(Subcommand, Debug)]
 enum Cmd {
-    /// Print a shell integration snippet: `eval "$(llmsh init zsh)"`.
+    /// Print a shell integration snippet: `eval "$(aishe init zsh)"`.
     Init {
         /// Shell to emit integration for (zsh or bash).
         shell: String,
     },
-    /// Launch your real interactive zsh (with all native plugins) under llmsh.
+    /// Launch your real interactive zsh (with all native plugins) under aishe.
     Zsh,
 }
 
@@ -93,7 +93,7 @@ fn main() -> ExitCode {
     match run() {
         Ok(code) => ExitCode::from(code),
         Err(e) => {
-            eprintln!("{}", format!("llmsh: {e}").red());
+            eprintln!("{}", format!("aishe: {e}").red());
             ExitCode::from(1)
         }
     }
@@ -111,7 +111,7 @@ fn run() -> Result<u8> {
             }
             None => {
                 eprintln!(
-                    "llmsh: no integration for '{shell}' (supported: {})",
+                    "aishe: no integration for '{shell}' (supported: {})",
                     integration::SUPPORTED.join(", ")
                 );
                 Ok(1)
@@ -121,10 +121,10 @@ fn run() -> Result<u8> {
 
     let mut config = Config::load_or_init()?;
     if let Some(m) = &args.mode {
-        config.llmsh.mode = m.clone();
+        config.aishe.mode = m.clone();
     }
     if let Some(p) = &args.provider {
-        config.llmsh.provider = p.clone();
+        config.aishe.provider = p.clone();
     }
     if let Some(m) = &args.model {
         config.set_active_model(m.clone());
@@ -149,14 +149,14 @@ fn run() -> Result<u8> {
         } else if args.no_pty {
             false
         } else {
-            match config.llmsh.front_end.as_str() {
+            match config.aishe.front_end.as_str() {
                 "zsh-pty" => true,
                 "reedline" => false,
-                _ => llmsh::executor::which("zsh").is_some(),
+                _ => aishe::executor::which("zsh").is_some(),
             }
         };
     if want_pty {
-        return llmsh::pty::run_zsh(&config);
+        return aishe::pty::run_zsh(&config);
     }
 
     let mut executor = Executor::new()?;
@@ -169,7 +169,7 @@ fn run() -> Result<u8> {
     let mut provider: Option<Box<dyn Provider>> = match providers::make(&config) {
         Ok(p) => Some(p),
         Err(e) => {
-            eprintln!("{}", format!("llmsh: LLM disabled — {e}").dim());
+            eprintln!("{}", format!("aishe: LLM disabled — {e}").dim());
             None
         }
     };
@@ -182,7 +182,7 @@ fn run() -> Result<u8> {
         );
     }
 
-    // Shell-hook helpers (called by `llmsh init` integration).
+    // Shell-hook helpers (called by `aishe init` integration).
     if let Some(line) = args.suggest_line {
         return suggest_line(&line, &mut executor, provider.as_deref(), &config);
     }
@@ -210,7 +210,7 @@ fn suggest_line(
     config: &Config,
 ) -> Result<u8> {
     let Some(p) = provider else {
-        eprintln!("llmsh: LLM not configured");
+        eprintln!("aishe: LLM not configured");
         return Ok(1);
     };
     match modes::suggest::request(line, p, executor, config)? {
@@ -243,7 +243,7 @@ fn yolo_line(
     config: &Config,
 ) -> Result<u8> {
     let Some(p) = provider else {
-        eprintln!("llmsh: LLM not configured");
+        eprintln!("aishe: LLM not configured");
         return Ok(1);
     };
     modes::yolo::run(line, p, executor, config, &INTERRUPTED)?;
@@ -265,7 +265,7 @@ fn auto_line(
     config: &Config,
 ) -> Result<u8> {
     let Some(p) = provider else {
-        eprintln!("llmsh: LLM not configured");
+        eprintln!("aishe: LLM not configured");
         return Ok(1);
     };
     match modes::suggest::request(line, p, executor, config)? {
@@ -312,16 +312,16 @@ fn one_shot(
             if matches!(tokens[0].as_str(), "exit" | "quit") {
                 return Ok(executor.last_exit as u8);
             }
-            if tokens[0] == "llmsh" {
+            if tokens[0] == "aishe" {
                 // Meta commands are no-ops worth nothing in -c; print help-ish.
-                println!("llmsh meta commands are interactive-only");
+                println!("aishe meta commands are interactive-only");
                 return Ok(0);
             }
             Ok(executor.run_builtin(&tokens) as u8)
         }
         Dispatch::NaturalLanguage(nl) => match provider {
             Some(p) => {
-                if config.llmsh.mode == "yolo" {
+                if config.aishe.mode == "yolo" {
                     modes::yolo::run(&nl, p.as_ref(), executor, config, &INTERRUPTED)?;
                 } else {
                     // -c + NL in suggest/auto mode: print suggested command, don't run.
@@ -330,16 +330,16 @@ fn one_shot(
                 Ok(0)
             }
             None => {
-                eprintln!("llmsh: LLM not configured");
+                eprintln!("aishe: LLM not configured");
                 Ok(1)
             }
         },
     }
 }
 
-/// Add llmsh's menu keybindings — Tab/Shift-Tab completion menu and Ctrl-R
+/// Add aishe's menu keybindings — Tab/Shift-Tab completion menu and Ctrl-R
 /// history menu — to a keymap. Shared by the emacs and vi keymaps.
-fn add_llmsh_bindings(kb: &mut Keybindings) {
+fn add_aishe_bindings(kb: &mut Keybindings) {
     kb.add_binding(
         KeyModifiers::NONE,
         KeyCode::Tab,
@@ -366,18 +366,18 @@ fn add_llmsh_bindings(kb: &mut Keybindings) {
 }
 
 /// Build the reedline edit mode for the configured keymap. "vi" gives modal
-/// editing (Esc for normal mode); anything else is emacs. llmsh's menu bindings
+/// editing (Esc for normal mode); anything else is emacs. aishe's menu bindings
 /// are added to both vi sub-keymaps so completion/history work in either mode.
 fn build_edit_mode(edit_mode: &str) -> Box<dyn EditMode> {
     if edit_mode == "vi" {
         let mut insert = default_vi_insert_keybindings();
         let mut normal = default_vi_normal_keybindings();
-        add_llmsh_bindings(&mut insert);
-        add_llmsh_bindings(&mut normal);
+        add_aishe_bindings(&mut insert);
+        add_aishe_bindings(&mut normal);
         Box::new(Vi::new(insert, normal))
     } else {
         let mut kb = default_emacs_keybindings();
-        add_llmsh_bindings(&mut kb);
+        add_aishe_bindings(&mut kb);
         Box::new(Emacs::new(kb))
     }
 }
@@ -399,7 +399,7 @@ fn repl(
 
     // Tab → completion menu (command names / file paths), Shift-Tab → previous,
     // Ctrl-R → browsable history menu. Applied to whichever keymap is active.
-    let edit_mode = build_edit_mode(&config.llmsh.edit_mode);
+    let edit_mode = build_edit_mode(&config.aishe.edit_mode);
     let theme = Theme::from_config(&config.theme);
 
     let completion_menu = Box::new(ColumnarMenu::default().with_name("completion_menu"));
@@ -407,21 +407,21 @@ fn repl(
 
     let mut line_editor = Reedline::create()
         .with_history(history)
-        .with_completer(Box::new(LlmshCompleter::new(cache.clone())))
+        .with_completer(Box::new(AisheCompleter::new(cache.clone())))
         .with_menu(ReedlineMenu::EngineCompleter(completion_menu))
         .with_menu(ReedlineMenu::HistoryMenu(history_menu))
-        .with_validator(Box::new(LlmshValidator::new(cache.clone())))
+        .with_validator(Box::new(AisheValidator::new(cache.clone())))
         .with_hinter(Box::new(DefaultHinter::default()))
         .with_highlighter(Box::new(CmdHighlighter::new(cache.clone(), theme)))
         .with_edit_mode(edit_mode);
 
     loop {
-        let prompt = LlmshPrompt::new(
+        let prompt = AishePrompt::new(
             executor.cwd().clone(),
-            &config.llmsh.mode,
+            &config.aishe.mode,
             executor.last_exit,
             config.active_model().to_string(),
-            config.llmsh.show_right_prompt,
+            config.aishe.show_right_prompt,
             theme,
         );
 
@@ -446,7 +446,7 @@ fn repl(
                 return Ok(executor.last_exit as u8);
             }
             Err(e) => {
-                eprintln!("llmsh: input error: {e}");
+                eprintln!("aishe: input error: {e}");
                 return Ok(1);
             }
         }
@@ -467,7 +467,7 @@ fn handle_line(
         }
         Dispatch::Builtin(tokens) => match tokens[0].as_str() {
             "exit" | "quit" => return Ok(true),
-            "llmsh" => handle_meta(&tokens, config, provider, executor, cache),
+            "aishe" => handle_meta(&tokens, config, provider, executor, cache),
             _ => {
                 executor.run_builtin(&tokens);
             }
@@ -476,11 +476,11 @@ fn handle_line(
             let Some(p) = provider.as_deref() else {
                 eprintln!(
                     "{}",
-                    "llmsh: LLM not configured — set your API key env var".dim()
+                    "aishe: LLM not configured — set your API key env var".dim()
                 );
                 return Ok(false);
             };
-            match config.llmsh.mode.as_str() {
+            match config.aishe.mode.as_str() {
                 "yolo" => modes::yolo::run(&nl, p, executor, config, &INTERRUPTED)?,
                 "auto" => modes::suggest::run(&nl, p, executor, config, false, true)?,
                 _ => modes::suggest::run(&nl, p, executor, config, false, false)?,
@@ -490,7 +490,7 @@ fn handle_line(
     Ok(false)
 }
 
-/// Handle `llmsh ...` meta commands.
+/// Handle `aishe ...` meta commands.
 fn handle_meta(
     tokens: &[String],
     config: &mut Config,
@@ -503,14 +503,14 @@ fn handle_meta(
         "mode" => {
             if let Some(m) = tokens.get(2) {
                 if matches!(m.as_str(), "suggest" | "auto" | "yolo") {
-                    config.llmsh.mode = m.clone();
+                    config.aishe.mode = m.clone();
                     persist(config);
                     println!("mode → {m}");
                 } else {
-                    eprintln!("llmsh: mode must be 'suggest', 'auto', or 'yolo'");
+                    eprintln!("aishe: mode must be 'suggest', 'auto', or 'yolo'");
                 }
             } else {
-                println!("mode: {}", config.llmsh.mode);
+                println!("mode: {}", config.aishe.mode);
             }
         }
         "model" => {
@@ -526,48 +526,48 @@ fn handle_meta(
         "provider" => {
             if let Some(p) = tokens.get(2) {
                 if p == "anthropic" || p == "openai" {
-                    config.llmsh.provider = p.clone();
+                    config.aishe.provider = p.clone();
                     persist(config);
                     rebuild_provider(config, provider);
                     println!("provider → {p}");
                 } else {
-                    eprintln!("llmsh: provider must be 'anthropic' or 'openai'");
+                    eprintln!("aishe: provider must be 'anthropic' or 'openai'");
                 }
             } else {
-                println!("provider: {}", config.llmsh.provider);
+                println!("provider: {}", config.aishe.provider);
             }
         }
         "config" => {
             println!("config file: {}", Config::path().display());
             match toml::to_string_pretty(config) {
                 Ok(t) => println!("\n{t}"),
-                Err(e) => eprintln!("llmsh: {e}"),
+                Err(e) => eprintln!("aishe: {e}"),
             }
         }
         "editor" => {
             if let Some(m) = tokens.get(2) {
                 if matches!(m.as_str(), "emacs" | "vi") {
-                    config.llmsh.edit_mode = m.clone();
+                    config.aishe.edit_mode = m.clone();
                     persist(config);
-                    println!("editor → {m} (restart llmsh to apply)");
+                    println!("editor → {m} (restart aishe to apply)");
                 } else {
-                    eprintln!("llmsh: editor must be 'emacs' or 'vi'");
+                    eprintln!("aishe: editor must be 'emacs' or 'vi'");
                 }
             } else {
-                println!("editor: {}", config.llmsh.edit_mode);
+                println!("editor: {}", config.aishe.edit_mode);
             }
         }
         "frontend" => {
             if let Some(f) = tokens.get(2) {
                 if matches!(f.as_str(), "auto" | "reedline" | "zsh-pty") {
-                    config.llmsh.front_end = f.clone();
+                    config.aishe.front_end = f.clone();
                     persist(config);
-                    println!("front-end → {f} (restart llmsh to apply)");
+                    println!("front-end → {f} (restart aishe to apply)");
                 } else {
-                    eprintln!("llmsh: front-end must be 'auto', 'reedline', or 'zsh-pty'");
+                    eprintln!("aishe: front-end must be 'auto', 'reedline', or 'zsh-pty'");
                 }
             } else {
-                println!("front-end: {}", config.llmsh.front_end);
+                println!("front-end: {}", config.aishe.front_end);
             }
         }
         "rehash" => {
@@ -580,15 +580,15 @@ fn handle_meta(
 
 fn print_meta_help() {
     println!(
-        "llmsh meta commands:\n\
-\x20 llmsh mode [suggest|auto|yolo]  show or set interaction mode\n\
-\x20 llmsh model [NAME]          show or set the model\n\
-\x20 llmsh provider [a|o]        show or set the provider\n\
-\x20 llmsh editor [emacs|vi]     show or set the line-editor keymap\n\
-\x20 llmsh frontend [auto|reedline|zsh-pty]  show or set the front-end\n\
-\x20 llmsh config                print active config\n\
-\x20 llmsh rehash                rebuild the command cache\n\
-\x20 llmsh help                  show this help\n\
+        "aishe meta commands:\n\
+\x20 aishe mode [suggest|auto|yolo]  show or set interaction mode\n\
+\x20 aishe model [NAME]          show or set the model\n\
+\x20 aishe provider [a|o]        show or set the provider\n\
+\x20 aishe editor [emacs|vi]     show or set the line-editor keymap\n\
+\x20 aishe frontend [auto|reedline|zsh-pty]  show or set the front-end\n\
+\x20 aishe config                print active config\n\
+\x20 aishe rehash                rebuild the command cache\n\
+\x20 aishe help                  show this help\n\
 \n\
 input prefixes:\n\
 \x20 ?<text>   force natural-language\n\
@@ -602,7 +602,7 @@ fn rebuild_provider(config: &Config, provider: &mut Option<Box<dyn Provider>>) {
     match providers::make(config) {
         Ok(p) => *provider = Some(p),
         Err(e) => {
-            eprintln!("{}", format!("llmsh: {e}").dim());
+            eprintln!("{}", format!("aishe: {e}").dim());
             *provider = None;
         }
     }
@@ -610,12 +610,12 @@ fn rebuild_provider(config: &Config, provider: &mut Option<Box<dyn Provider>>) {
 
 fn persist(config: &Config) {
     if let Err(e) = config.save() {
-        eprintln!("{}", format!("llmsh: could not save config: {e}").dim());
+        eprintln!("{}", format!("aishe: could not save config: {e}").dim());
     }
 }
 
 fn data_dir() -> std::path::PathBuf {
     dirs::data_dir()
         .unwrap_or_else(|| std::path::PathBuf::from("."))
-        .join("llmsh")
+        .join("aishe")
 }

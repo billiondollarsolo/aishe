@@ -1,4 +1,4 @@
-//! Configuration: TOML at `~/.config/llmsh/config.toml`, with an interactive
+//! Configuration: TOML at `~/.config/aishe/config.toml`, with an interactive
 //! first-run wizard when missing and graceful recovery when malformed.
 
 use std::io::Write;
@@ -12,7 +12,7 @@ use crate::theme::ThemeConfig;
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Config {
     #[serde(default)]
-    pub llmsh: LlmshConfig,
+    pub aishe: AisheConfig,
     #[serde(default)]
     pub providers: Providers,
     #[serde(default)]
@@ -20,7 +20,7 @@ pub struct Config {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct LlmshConfig {
+pub struct AisheConfig {
     /// "suggest" | "yolo"
     #[serde(default = "default_mode")]
     pub mode: String,
@@ -105,7 +105,7 @@ fn default_openai() -> ProviderConfig {
     }
 }
 
-impl Default for LlmshConfig {
+impl Default for AisheConfig {
     fn default() -> Self {
         Self {
             mode: default_mode(),
@@ -127,11 +127,11 @@ impl Default for ProviderConfig {
 }
 
 impl Config {
-    /// Path to the config file (`~/.config/llmsh/config.toml`).
+    /// Path to the config file (`~/.config/aishe/config.toml`).
     pub fn path() -> PathBuf {
         dirs::config_dir()
             .unwrap_or_else(|| PathBuf::from("."))
-            .join("llmsh")
+            .join("aishe")
             .join("config.toml")
     }
 
@@ -185,7 +185,7 @@ impl Config {
 
     /// The active provider's model name.
     pub fn active_model(&self) -> &str {
-        match self.llmsh.provider.as_str() {
+        match self.aishe.provider.as_str() {
             "openai" => &self.providers.openai.model,
             _ => &self.providers.anthropic.model,
         }
@@ -193,7 +193,7 @@ impl Config {
 
     /// Set the active provider's model name.
     pub fn set_active_model(&mut self, model: String) {
-        match self.llmsh.provider.as_str() {
+        match self.aishe.provider.as_str() {
             "openai" => self.providers.openai.model = model,
             _ => self.providers.anthropic.model = model,
         }
@@ -201,7 +201,7 @@ impl Config {
 }
 
 fn run_wizard() -> Result<Config> {
-    println!("\n  llmsh — first-run setup\n  ───────────────────────");
+    println!("\n  aishe — first-run setup\n  ───────────────────────");
     let mut cfg = Config::default();
 
     let provider = prompt_choice(
@@ -212,7 +212,7 @@ fn run_wizard() -> Result<Config> {
         ],
         "anthropic",
     )?;
-    cfg.llmsh.provider = provider.clone();
+    cfg.aishe.provider = provider.clone();
 
     let default_env = if provider == "openai" {
         "OPENAI_API_KEY"
@@ -240,7 +240,7 @@ fn run_wizard() -> Result<Config> {
         ],
         "suggest",
     )?;
-    cfg.llmsh.mode = mode;
+    cfg.aishe.mode = mode;
 
     if provider == "openai" {
         cfg.providers.openai.api_key_env = key_env;
@@ -325,24 +325,24 @@ mod tests {
         let cfg = Config::default();
         let text = toml::to_string_pretty(&cfg).unwrap();
         let parsed: Config = toml::from_str(&text).unwrap();
-        assert_eq!(parsed.llmsh.mode, "suggest");
-        assert_eq!(parsed.llmsh.provider, "anthropic");
+        assert_eq!(parsed.aishe.mode, "suggest");
+        assert_eq!(parsed.aishe.provider, "anthropic");
         assert_eq!(parsed.providers.anthropic.api_key_env, "ANTHROPIC_API_KEY");
         assert_eq!(parsed.providers.openai.model, "gpt-4o");
-        assert!(parsed.llmsh.yolo_confirm_dangerous);
-        assert_eq!(parsed.llmsh.max_yolo_iterations, 10);
+        assert!(parsed.aishe.yolo_confirm_dangerous);
+        assert_eq!(parsed.aishe.max_yolo_iterations, 10);
     }
 
     #[test]
     fn partial_config_fills_defaults() {
         let text = r#"
-            [llmsh]
+            [aishe]
             mode = "yolo"
         "#;
         let cfg: Config = toml::from_str(text).unwrap();
-        assert_eq!(cfg.llmsh.mode, "yolo");
+        assert_eq!(cfg.aishe.mode, "yolo");
         // Unspecified fields fall back to defaults.
-        assert_eq!(cfg.llmsh.provider, "anthropic");
+        assert_eq!(cfg.aishe.provider, "anthropic");
         assert_eq!(cfg.providers.openai.base_url, "https://api.openai.com");
     }
 
@@ -350,7 +350,7 @@ mod tests {
     fn active_model_tracks_provider() {
         let mut cfg = Config::default();
         assert_eq!(cfg.active_model(), "claude-sonnet-4-20250514");
-        cfg.llmsh.provider = "openai".into();
+        cfg.aishe.provider = "openai".into();
         assert_eq!(cfg.active_model(), "gpt-4o");
         cfg.set_active_model("gpt-4o-mini".into());
         assert_eq!(cfg.providers.openai.model, "gpt-4o-mini");

@@ -85,7 +85,7 @@ pub trait Provider {
 
 /// Build the configured provider, reading the API key from the configured env var.
 pub fn make(config: &Config) -> Result<Box<dyn Provider>> {
-    match config.llmsh.provider.as_str() {
+    match config.aishe.provider.as_str() {
         "anthropic" => {
             let p = &config.providers.anthropic;
             let key = read_key(&p.api_key_env)?;

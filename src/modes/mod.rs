@@ -15,7 +15,7 @@ use crate::safety::{self, Risk};
 /// System prompt for suggest mode (PRD Appendix A.1).
 pub fn suggest_system_prompt(shell: &str, os: &str) -> String {
     format!(
-        "You are llmsh, an expert command-line assistant embedded in the user's shell.\n\
+        "You are aishe, an expert command-line assistant embedded in the user's shell.\n\
 The user typed natural language instead of a command. Using the provided\n\
 environment context, respond with ONLY a JSON object, no markdown fences:\n\n\
 {{\"type\": \"command\", \"command\": \"<single shell line for {shell} on {os}>\",\n\
@@ -31,7 +31,7 @@ clearly required."
 
 /// System prompt for yolo mode (PRD Appendix A.2).
 pub const YOLO_SYSTEM_PROMPT: &str =
-    "You are llmsh in autonomous mode. Accomplish the user's request by calling the \
+    "You are aishe in autonomous mode. Accomplish the user's request by calling the \
 run_command tool. Inspect output, adapt, and iterate. Environment context is \
 provided. Rules: act rather than ask, unless the request is destructive or \
 genuinely ambiguous; commands run with stdin closed, so always use \

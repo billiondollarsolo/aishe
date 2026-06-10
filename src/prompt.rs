@@ -10,7 +10,7 @@ use reedline::{
 
 use crate::theme::Theme;
 
-pub struct LlmshPrompt {
+pub struct AishePrompt {
     cwd_display: String,
     glyph: char,
     last_exit: i32,
@@ -19,7 +19,7 @@ pub struct LlmshPrompt {
     theme: Theme,
 }
 
-impl LlmshPrompt {
+impl AishePrompt {
     pub fn new(
         cwd: PathBuf,
         mode: &str,
@@ -59,7 +59,7 @@ fn abbreviate_home(cwd: &std::path::Path) -> String {
     cwd.display().to_string()
 }
 
-impl Prompt for LlmshPrompt {
+impl Prompt for AishePrompt {
     fn render_prompt_left(&self) -> Cow<'_, str> {
         Cow::Owned(self.cwd_display.clone())
     }

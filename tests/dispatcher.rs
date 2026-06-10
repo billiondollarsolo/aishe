@@ -1,6 +1,6 @@
 //! Dispatcher integration tests against a manually-seeded cache.
 
-use llmsh::dispatcher::{dispatch, CommandCache, Dispatch};
+use aishe::dispatcher::{dispatch, CommandCache, Dispatch};
 
 /// Build a cache seeded by a real PATH scan plus a few known names.
 fn seeded_cache() -> CommandCache {

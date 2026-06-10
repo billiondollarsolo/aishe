@@ -4,10 +4,10 @@ use std::collections::VecDeque;
 use std::sync::atomic::AtomicBool;
 use std::sync::Mutex;
 
-use llmsh::config::Config;
-use llmsh::executor::Executor;
-use llmsh::modes::{suggest, yolo};
-use llmsh::providers::{Completion, Msg, Provider, ProviderError, ToolCall};
+use aishe::config::Config;
+use aishe::executor::Executor;
+use aishe::modes::{suggest, yolo};
+use aishe::providers::{Completion, Msg, Provider, ProviderError, ToolCall};
 use serde_json::json;
 
 /// A provider that replays scripted responses. When `repeat_last` is set and
@@ -45,7 +45,7 @@ impl Provider for MockProvider {
         &self,
         _s: &str,
         _m: &[Msg],
-        _t: &[llmsh::providers::ToolDef],
+        _t: &[aishe::providers::ToolDef],
     ) -> Result<Completion, ProviderError> {
         let mut q = self.completions.lock().unwrap();
         if self.repeat_last && q.len() == 1 {
@@ -80,7 +80,7 @@ fn yolo_runs_tool_then_finishes() {
     );
     let mut exec = Executor::new().unwrap();
     let mut config = Config::default();
-    config.llmsh.max_yolo_iterations = 10;
+    config.aishe.max_yolo_iterations = 10;
     let flag = AtomicBool::new(false);
 
     yolo::run("do a thing", &provider, &mut exec, &config, &flag).unwrap();
@@ -107,7 +107,7 @@ fn yolo_respects_iteration_cap() {
     );
     let mut exec = Executor::new().unwrap();
     let mut config = Config::default();
-    config.llmsh.max_yolo_iterations = 3;
+    config.aishe.max_yolo_iterations = 3;
     let flag = AtomicBool::new(false);
 
     yolo::run("loop forever", &provider, &mut exec, &config, &flag).unwrap();

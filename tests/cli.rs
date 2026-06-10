@@ -8,13 +8,13 @@ use predicates::str::contains;
 /// Write a minimal valid config into a temp XDG_CONFIG_HOME so the binary does
 /// not invoke the interactive first-run wizard.
 fn temp_config_home() -> std::path::PathBuf {
-    let dir = std::env::temp_dir().join(format!("llmsh-cli-{}", std::process::id()));
-    let cfg_dir = dir.join("llmsh");
+    let dir = std::env::temp_dir().join(format!("aishe-cli-{}", std::process::id()));
+    let cfg_dir = dir.join("aishe");
     std::fs::create_dir_all(&cfg_dir).unwrap();
     let mut f = std::fs::File::create(cfg_dir.join("config.toml")).unwrap();
     writeln!(
         f,
-        r#"[llmsh]
+        r#"[aishe]
 mode = "suggest"
 provider = "anthropic"
 
@@ -36,30 +36,30 @@ model = "gpt-x"
 #[test]
 fn dash_c_runs_forced_shell_command() {
     let home = temp_config_home();
-    Command::cargo_bin("llmsh")
+    Command::cargo_bin("aishe")
         .unwrap()
         .env("XDG_CONFIG_HOME", &home)
         .env("XDG_DATA_HOME", home.join("data"))
         .arg("-c")
-        .arg("!echo hi-from-llmsh")
+        .arg("!echo hi-from-aishe")
         .assert()
         .success()
-        .stdout(contains("hi-from-llmsh"));
+        .stdout(contains("hi-from-aishe"));
 }
 
 #[test]
 fn version_flag_works() {
-    Command::cargo_bin("llmsh")
+    Command::cargo_bin("aishe")
         .unwrap()
         .arg("--version")
         .assert()
         .success()
-        .stdout(contains("llmsh"));
+        .stdout(contains("aishe"));
 }
 
 #[test]
 fn init_zsh_emits_integration() {
-    Command::cargo_bin("llmsh")
+    Command::cargo_bin("aishe")
         .unwrap()
         .args(["init", "zsh"])
         .assert()
@@ -70,7 +70,7 @@ fn init_zsh_emits_integration() {
 
 #[test]
 fn init_unsupported_shell_fails() {
-    Command::cargo_bin("llmsh")
+    Command::cargo_bin("aishe")
         .unwrap()
         .args(["init", "fish"])
         .assert()

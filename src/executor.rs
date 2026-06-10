@@ -79,7 +79,7 @@ impl Executor {
         let code = match status {
             Ok(s) => exit_code(&s),
             Err(e) => {
-                eprintln!("llmsh: failed to launch shell: {e}");
+                eprintln!("aishe: failed to launch shell: {e}");
                 127
             }
         };
@@ -103,7 +103,7 @@ impl Executor {
         let mut child = match child {
             Ok(c) => c,
             Err(e) => {
-                let msg = format!("llmsh: failed to launch shell: {e}");
+                let msg = format!("aishe: failed to launch shell: {e}");
                 eprintln!("{msg}");
                 self.record(line, 127);
                 return (127, msg);
@@ -146,7 +146,7 @@ impl Executor {
         let mut output = collected.lock().unwrap().join("\n");
         if timed_out {
             let note = format!(
-                "\n[llmsh: command timed out after {}s and was killed]",
+                "\n[aishe: command timed out after {}s and was killed]",
                 timeout.as_secs()
             );
             output.push_str(&note);
@@ -164,7 +164,7 @@ impl Executor {
             "unset" => self.builtin_unset(&tokens[1..]),
             "source" | "." => self.builtin_source(tokens.get(1).map(|s| s.as_str())),
             other => {
-                eprintln!("llmsh: builtin not handled: {other}");
+                eprintln!("aishe: builtin not handled: {other}");
                 1
             }
         };

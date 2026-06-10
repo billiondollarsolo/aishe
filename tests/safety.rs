@@ -1,6 +1,6 @@
 //! Safety-gate integration table test (≥20 dangerous, ≥20 safe).
 
-use llmsh::safety::{assess, Risk};
+use aishe::safety::{assess, Risk};
 
 #[test]
 fn dangerous_table() {

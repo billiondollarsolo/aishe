@@ -2,7 +2,7 @@
 
 use std::time::Duration;
 
-use llmsh::executor::Executor;
+use aishe::executor::Executor;
 
 #[test]
 fn cd_persists_across_commands() {
@@ -20,10 +20,10 @@ fn cd_persists_across_commands() {
 #[test]
 fn exported_var_visible_in_child() {
     let mut exec = Executor::new().unwrap();
-    let code = exec.run_builtin(&["export".into(), "LLMSH_TEST=hello123".into()]);
+    let code = exec.run_builtin(&["export".into(), "AISHE_TEST=hello123".into()]);
     assert_eq!(code, 0);
 
-    let (code, out) = exec.run_captured("echo $LLMSH_TEST", Duration::from_secs(10));
+    let (code, out) = exec.run_captured("echo $AISHE_TEST", Duration::from_secs(10));
     assert_eq!(code, 0);
     assert!(out.contains("hello123"), "output was: {out}");
 }
@@ -31,9 +31,9 @@ fn exported_var_visible_in_child() {
 #[test]
 fn unset_removes_var() {
     let mut exec = Executor::new().unwrap();
-    exec.run_builtin(&["export".into(), "LLMSH_GONE=x".into()]);
-    exec.run_builtin(&["unset".into(), "LLMSH_GONE".into()]);
-    let (_, out) = exec.run_captured("echo [$LLMSH_GONE]", Duration::from_secs(10));
+    exec.run_builtin(&["export".into(), "AISHE_GONE=x".into()]);
+    exec.run_builtin(&["unset".into(), "AISHE_GONE".into()]);
+    let (_, out) = exec.run_captured("echo [$AISHE_GONE]", Duration::from_secs(10));
     assert!(out.contains("[]"), "output was: {out}");
 }
 

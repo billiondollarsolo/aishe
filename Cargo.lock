@@ -18,6 +18,30 @@ dependencies = [
 ]
 
 [[package]]
+name = "aishe"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "assert_cmd",
+ "clap",
+ "crossterm 0.28.1",
+ "dirs",
+ "libc",
+ "mockito",
+ "nu-ansi-term",
+ "portable-pty",
+ "predicates",
+ "reedline",
+ "regex",
+ "serde",
+ "serde_json",
+ "termimad",
+ "thiserror 2.0.18",
+ "toml",
+ "ureq",
+]
+
+[[package]]
 name = "android_system_properties"
 version = "0.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -982,30 +1006,6 @@ name = "litrs"
 version = "1.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "11d3d7f243d5c5a8b9bb5d6dd2b1602c0cb0b9db1621bafc7ed66e35ff9fe092"
-
-[[package]]
-name = "llmsh"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "assert_cmd",
- "clap",
- "crossterm 0.28.1",
- "dirs",
- "libc",
- "mockito",
- "nu-ansi-term",
- "portable-pty",
- "predicates",
- "reedline",
- "regex",
- "serde",
- "serde_json",
- "termimad",
- "thiserror 2.0.18",
- "toml",
- "ureq",
-]
 
 [[package]]
 name = "lock_api"

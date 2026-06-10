@@ -134,7 +134,7 @@ mod tests {
 
     #[test]
     fn directory_listing_respects_cap() {
-        let dir = std::env::temp_dir().join(format!("llmsh_ctx_{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("aishe_ctx_{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         for i in 0..80 {
             std::fs::write(dir.join(format!("f{i}.txt")), "x").unwrap();

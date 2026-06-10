@@ -14,17 +14,17 @@ use reedline::{ValidationResult, Validator};
 
 use crate::dispatcher::{self, CommandCache, Dispatch};
 
-pub struct LlmshValidator {
+pub struct AisheValidator {
     cache: CommandCache,
 }
 
-impl LlmshValidator {
+impl AisheValidator {
     pub fn new(cache: CommandCache) -> Self {
         Self { cache }
     }
 }
 
-impl Validator for LlmshValidator {
+impl Validator for AisheValidator {
     fn validate(&self, line: &str) -> ValidationResult {
         match dispatcher::dispatch(line, &self.cache) {
             // NL (and empty input) always submits — don't trap apostrophes.
@@ -84,7 +84,7 @@ mod tests {
 
     fn is_incomplete(line: &str) -> bool {
         matches!(
-            LlmshValidator::new(cache()).validate(line),
+            AisheValidator::new(cache()).validate(line),
             ValidationResult::Incomplete
         )
     }

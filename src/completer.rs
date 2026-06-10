@@ -8,7 +8,7 @@
 //!   relative to the current word, expanding a leading `~/`.
 //!
 //! Tokenization is whitespace-based and quoting-naive, matching the rest of
-//! llmsh's v0.1 parsing (see `dispatcher`). It's an editor convenience, not a
+//! aishe's v0.1 parsing (see `dispatcher`). It's an editor convenience, not a
 //! parser: the actual command still runs through `zsh -c`.
 
 use std::path::PathBuf;
@@ -21,17 +21,17 @@ use crate::dispatcher::CommandCache;
 /// the command position doesn't allocate the entire `$PATH`.
 const MAX_SUGGESTIONS: usize = 500;
 
-pub struct LlmshCompleter {
+pub struct AisheCompleter {
     cache: CommandCache,
 }
 
-impl LlmshCompleter {
+impl AisheCompleter {
     pub fn new(cache: CommandCache) -> Self {
         Self { cache }
     }
 }
 
-impl Completer for LlmshCompleter {
+impl Completer for AisheCompleter {
     fn complete(&mut self, line: &str, pos: usize) -> Vec<Suggestion> {
         let pos = pos.min(line.len());
         let start = word_start(line, pos);
@@ -189,7 +189,7 @@ mod tests {
     fn completes_command_names() {
         let cache = CommandCache::new();
         cache.insert_all(&["git", "grep", "gzip", "ls"]);
-        let mut c = LlmshCompleter::new(cache);
+        let mut c = AisheCompleter::new(cache);
         let sugg = c.complete("g", 1);
         let values: Vec<_> = sugg.iter().map(|s| s.value.as_str()).collect();
         assert_eq!(values, vec!["git", "grep", "gzip"]);
@@ -199,12 +199,12 @@ mod tests {
 
     #[test]
     fn completes_paths_in_argument_position() {
-        let dir = std::env::temp_dir().join(format!("llmsh-comp-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("aishe-comp-{}", std::process::id()));
         std::fs::create_dir_all(dir.join("subdir")).unwrap();
         std::fs::write(dir.join("alpha.txt"), b"x").unwrap();
         std::fs::write(dir.join("alpine.txt"), b"x").unwrap();
 
-        let mut c = LlmshCompleter::new(CommandCache::new());
+        let mut c = AisheCompleter::new(CommandCache::new());
         let prefix = format!("cat {}/al", dir.display());
         let pos = prefix.len();
         let sugg = c.complete(&prefix, pos);
@@ -226,12 +226,12 @@ mod tests {
 
     #[test]
     fn dotfiles_hidden_unless_prefixed() {
-        let dir = std::env::temp_dir().join(format!("llmsh-comp-hidden-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("aishe-comp-hidden-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join(".secret"), b"x").unwrap();
         std::fs::write(dir.join("visible"), b"x").unwrap();
 
-        let mut c = LlmshCompleter::new(CommandCache::new());
+        let mut c = AisheCompleter::new(CommandCache::new());
         let base = format!("cat {}/", dir.display());
         let all = c.complete(&base, base.len());
         assert!(all.iter().all(|s| !s.value.ends_with(".secret")));
