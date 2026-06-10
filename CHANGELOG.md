@@ -14,7 +14,8 @@ breaking changes can land in any release.
 - **reedline editor parity** — tab completion (commands + file paths), `Ctrl-R`
   history-search menu, multi-line continuation validator, emacs/vi keymaps
   (`edit_mode`, with `[I]`/`[N]` prompt tags in vi mode), and zsh-style history
-  expansion (`!!`, `!$`, `!-N`, `^old^new`, …).
+  expansion (`!!`, `!$`, `!-N`, `^old^new`, …), **autocd** (bare directory name →
+  cd), and a **directory stack** (`pushd`/`popd`/`dirs`).
 - **Native shell hook niceties** — `auto`-mode runs safe commands directly via
   `eval` (state persists), dangerous ones are pre-filled; force-NL keybinding
   (Alt-Enter / Ctrl-G).

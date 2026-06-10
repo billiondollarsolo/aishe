@@ -5,7 +5,7 @@
 use std::collections::{HashMap, VecDeque};
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::process::ExitStatusExt;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -31,6 +31,9 @@ pub struct Executor {
     /// files plus interactively-defined aliases/options replayed for persistence.
     /// `None` if it couldn't be created (commands then run without it).
     session_rc: Option<PathBuf>,
+    /// Directory stack for `pushd`/`popd`/`dirs` (most-recent first; the cwd is
+    /// not stored here — it's shown first by `dirs`).
+    dir_stack: Vec<PathBuf>,
 }
 
 impl Executor {
@@ -50,6 +53,7 @@ impl Executor {
             last_exit: 0,
             history: VecDeque::with_capacity(10),
             session_rc: init_session_rc().ok(),
+            dir_stack: Vec::new(),
         })
     }
 
@@ -205,6 +209,9 @@ impl Executor {
             "export" => self.builtin_export(&tokens[1..]),
             "unset" => self.builtin_unset(&tokens[1..]),
             "source" | "." => self.builtin_source(tokens.get(1).map(|s| s.as_str())),
+            "pushd" => self.builtin_pushd(tokens.get(1).map(|s| s.as_str())),
+            "popd" => self.builtin_popd(),
+            "dirs" => self.builtin_dirs(),
             other => {
                 eprintln!("aishe: builtin not handled: {other}");
                 1
@@ -214,20 +221,12 @@ impl Executor {
         code
     }
 
-    fn builtin_cd(&mut self, arg: Option<&str>) -> i32 {
-        let target: PathBuf = match arg {
-            None | Some("") | Some("~") => self.home(),
-            Some("-") => match &self.prev_cwd {
-                Some(p) => {
-                    println!("{}", p.display());
-                    p.clone()
-                }
-                None => {
-                    eprintln!("cd: no previous directory");
-                    return 1;
-                }
-            },
-            Some(p) => self.expand_tilde(p),
+    /// Resolve a `cd`/`pushd` argument to a canonical existing directory.
+    fn resolve_dir(&self, arg: &str) -> Result<PathBuf, String> {
+        let target = if arg.is_empty() || arg == "~" {
+            self.home()
+        } else {
+            self.expand_tilde(arg)
         };
         let target = if target.is_absolute() {
             target
@@ -235,22 +234,96 @@ impl Executor {
             self.cwd.join(target)
         };
         match target.canonicalize() {
-            Ok(canonical) if canonical.is_dir() => {
-                self.prev_cwd = Some(std::mem::replace(&mut self.cwd, canonical.clone()));
-                // Keep PWD in sync for child processes.
-                self.env
-                    .insert("PWD".to_string(), canonical.display().to_string());
+            Ok(c) if c.is_dir() => Ok(c),
+            Ok(_) => Err(format!("not a directory: {}", target.display())),
+            Err(e) => Err(format!("{}: {e}", target.display())),
+        }
+    }
+
+    /// Move to `new`, recording the previous dir and updating `$PWD`.
+    fn set_cwd(&mut self, new: PathBuf) {
+        self.env
+            .insert("PWD".to_string(), new.display().to_string());
+        self.prev_cwd = Some(std::mem::replace(&mut self.cwd, new));
+    }
+
+    fn builtin_cd(&mut self, arg: Option<&str>) -> i32 {
+        if arg == Some("-") {
+            return match self.prev_cwd.clone() {
+                Some(p) => {
+                    println!("{}", p.display());
+                    self.set_cwd(p);
+                    0
+                }
+                None => {
+                    eprintln!("cd: no previous directory");
+                    1
+                }
+            };
+        }
+        match self.resolve_dir(arg.unwrap_or("")) {
+            Ok(dir) => {
+                self.set_cwd(dir);
                 0
             }
-            Ok(_) => {
-                eprintln!("cd: not a directory: {}", target.display());
-                1
-            }
             Err(e) => {
-                eprintln!("cd: {}: {e}", target.display());
+                eprintln!("cd: {e}");
                 1
             }
         }
+    }
+
+    /// `pushd [dir]`: with a dir, push the cwd and cd into it; with no arg, swap
+    /// the cwd with the top of the stack. Prints the stack afterwards.
+    fn builtin_pushd(&mut self, arg: Option<&str>) -> i32 {
+        match arg {
+            Some(dir) if !dir.is_empty() => match self.resolve_dir(dir) {
+                Ok(target) => {
+                    self.dir_stack.insert(0, self.cwd.clone());
+                    self.set_cwd(target);
+                    self.builtin_dirs()
+                }
+                Err(e) => {
+                    eprintln!("pushd: {e}");
+                    1
+                }
+            },
+            _ => {
+                if self.dir_stack.is_empty() {
+                    eprintln!("pushd: no other directory");
+                    return 1;
+                }
+                let top = self.dir_stack.remove(0);
+                let old = std::mem::replace(&mut self.cwd, top);
+                self.dir_stack.insert(0, old);
+                self.env
+                    .insert("PWD".to_string(), self.cwd.display().to_string());
+                self.builtin_dirs()
+            }
+        }
+    }
+
+    /// `popd`: pop the top of the stack and cd into it.
+    fn builtin_popd(&mut self) -> i32 {
+        if self.dir_stack.is_empty() {
+            eprintln!("popd: directory stack empty");
+            return 1;
+        }
+        let top = self.dir_stack.remove(0);
+        self.set_cwd(top);
+        self.builtin_dirs()
+    }
+
+    /// `dirs`: print the directory stack (cwd first), `~`-abbreviated.
+    fn builtin_dirs(&mut self) -> i32 {
+        let mut entries = vec![abbreviate_home(&self.cwd, &self.home())];
+        entries.extend(
+            self.dir_stack
+                .iter()
+                .map(|p| abbreviate_home(p, &self.home())),
+        );
+        println!("{}", entries.join(" "));
+        0
     }
 
     fn builtin_export(&mut self, args: &[String]) -> i32 {
@@ -427,6 +500,15 @@ fn init_session_rc() -> std::io::Result<PathBuf> {
     Ok(path)
 }
 
+/// Render a path with a leading `$HOME` abbreviated to `~` (for `dirs`).
+fn abbreviate_home(path: &Path, home: &Path) -> String {
+    match path.strip_prefix(home) {
+        Ok(rest) if rest.as_os_str().is_empty() => "~".to_string(),
+        Ok(rest) => format!("~/{}", rest.display()),
+        Err(_) => path.display().to_string(),
+    }
+}
+
 /// Single-quote a path for safe interpolation into a shell command.
 fn single_quote(path: &std::path::Path) -> String {
     format!("'{}'", path.display().to_string().replace('\'', r"'\''"))
@@ -522,6 +604,36 @@ mod tests {
         assert_eq!(persistable_definition("ls -la"), None);
         assert_eq!(persistable_definition("alias g=git; rm -rf build"), None);
         assert_eq!(persistable_definition("alias g=git && echo hi"), None);
+    }
+
+    #[test]
+    fn dir_stack_pushd_popd() {
+        let mut ex = Executor::new().unwrap();
+        let start = ex.cwd().clone();
+        let tmp = std::env::temp_dir();
+
+        assert_eq!(
+            ex.run_builtin(&["pushd".into(), tmp.display().to_string()]),
+            0
+        );
+        assert_eq!(
+            ex.cwd().canonicalize().unwrap(),
+            tmp.canonicalize().unwrap()
+        );
+
+        assert_eq!(ex.run_builtin(&["popd".into()]), 0);
+        assert_eq!(ex.cwd(), &start);
+
+        // popd on an empty stack is an error.
+        assert_eq!(ex.run_builtin(&["popd".into()]), 1);
+    }
+
+    #[test]
+    fn abbreviate_home_works() {
+        let home = Path::new("/home/u");
+        assert_eq!(abbreviate_home(Path::new("/home/u"), home), "~");
+        assert_eq!(abbreviate_home(Path::new("/home/u/p"), home), "~/p");
+        assert_eq!(abbreviate_home(Path::new("/etc"), home), "/etc");
     }
 
     #[test]
