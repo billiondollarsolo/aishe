@@ -31,6 +31,8 @@ pub struct Executor {
     auto_pushd: bool,
     /// Extra base directories searched by `cd <name>` (zsh `cdpath`).
     cdpath: Vec<PathBuf>,
+    /// Named directories for `~name` expansion (zsh hashed dirs).
+    named_dirs: HashMap<String, PathBuf>,
     /// Last 10 (command, exit_code) pairs, for LLM context.
     pub history: VecDeque<(String, i32)>,
     /// Temp rc file sourced into every delegated command: the user's `.aishrc`
@@ -60,6 +62,7 @@ impl Executor {
             last_duration: None,
             auto_pushd: false,
             cdpath: Vec::new(),
+            named_dirs: HashMap::new(),
             history: VecDeque::with_capacity(10),
             session_rc: init_session_rc().ok(),
             dir_stack: Vec::new(),
@@ -86,6 +89,11 @@ impl Executor {
     /// Set the `cdpath`: extra base directories searched by `cd <name>`.
     pub fn set_cdpath(&mut self, dirs: Vec<PathBuf>) {
         self.cdpath = dirs;
+    }
+
+    /// Set named directories for `~name` expansion (zsh hashed dirs).
+    pub fn set_named_dirs(&mut self, dirs: HashMap<String, PathBuf>) {
+        self.named_dirs = dirs;
     }
 
     /// Configure a `zsh -c`/`bash -c` invocation to source the session rc (user
@@ -526,12 +534,25 @@ impl Executor {
 
     fn expand_tilde(&self, p: &str) -> PathBuf {
         if p == "~" {
-            self.home()
-        } else if let Some(rest) = p.strip_prefix("~/") {
-            self.home().join(rest)
-        } else {
-            PathBuf::from(p)
+            return self.home();
         }
+        if let Some(rest) = p.strip_prefix("~/") {
+            return self.home().join(rest);
+        }
+        // Named directory: `~name` or `~name/sub` (zsh hashed dirs).
+        if let Some(rest) = p.strip_prefix('~') {
+            let (name, sub) = match rest.split_once('/') {
+                Some((n, s)) => (n, Some(s)),
+                None => (rest, None),
+            };
+            if let Some(base) = self.named_dirs.get(name) {
+                return match sub {
+                    Some(s) => base.join(s),
+                    None => base.clone(),
+                };
+            }
+        }
+        PathBuf::from(p)
     }
 }
 
@@ -816,6 +837,38 @@ mod tests {
         );
         // a name that exists in neither cwd nor cdpath still errors.
         assert_eq!(ex.run_builtin(&["cd".into(), "no_such_dir_xyz".into()]), 1);
+
+        std::fs::remove_dir_all(&base).ok();
+    }
+
+    #[test]
+    fn named_dir_expansion() {
+        let base = std::env::temp_dir()
+            .join(format!("aishe-named-{}", std::process::id()))
+            .canonicalize()
+            .unwrap_or_else(|_| std::env::temp_dir());
+        let sub = base.join("sub");
+        std::fs::create_dir_all(&sub).unwrap();
+
+        let mut ex = Executor::new().unwrap();
+        ex.set_named_dirs(HashMap::from([("proj".to_string(), base.clone())]));
+
+        // `cd ~proj` lands in the named base directory.
+        assert_eq!(ex.run_builtin(&["cd".into(), "~proj".into()]), 0);
+        assert_eq!(
+            ex.cwd().canonicalize().unwrap(),
+            base.canonicalize().unwrap()
+        );
+
+        // `cd ~proj/sub` joins the subpath.
+        assert_eq!(ex.run_builtin(&["cd".into(), "~proj/sub".into()]), 0);
+        assert_eq!(
+            ex.cwd().canonicalize().unwrap(),
+            sub.canonicalize().unwrap()
+        );
+
+        // an unknown name is left literal (and fails to resolve).
+        assert_eq!(ex.run_builtin(&["cd".into(), "~nope/x".into()]), 1);
 
         std::fs::remove_dir_all(&base).ok();
     }

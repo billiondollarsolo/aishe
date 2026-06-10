@@ -29,6 +29,11 @@ breaking changes can land in any release.
   the provider).
 
 ### Added
+- **Spelling correction and named directories (reedline).** With `correct = true`
+  (zsh `CORRECT`), a mistyped first word that is a near-miss of a known command
+  prompts `correct 'gti' to 'git'? [Y/n]` instead of going to the LLM (uses
+  Damerau-Levenshtein so transpositions count as one typo). `[named_dirs]` adds
+  `~name` expansion in `cd` (`cd ~proj`, `cd ~proj/app`).
 - **Deeper zsh parity (reedline prompt, navigation, and history).** The right
   prompt now shows the **last command's duration** (`report_time`, like zsh
   REPORTTIME) and a richer **git segment**: `+` staged, `*` unstaged, `⇡N`/`⇣N`

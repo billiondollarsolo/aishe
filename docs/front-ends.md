@@ -72,6 +72,11 @@ Features:
   (numbered).
 - **cdpath**: `cd <name>` also searches the `cdpath` base directories (or
   `$CDPATH`) when the name is not under the current directory.
+- **Named directories**: `cd ~proj` / `cd ~proj/app` when `[named_dirs]` maps
+  `proj` to a path.
+- **Spelling correction** (`correct = true`, zsh `CORRECT`): when the first word
+  is a near-miss of a known command (for example `gti status`), aishe offers
+  `correct 'gti' to 'git'? [Y/n]` instead of sending the line to the LLM.
 - **History filtering**: consecutive-duplicate removal, ignore-space, and
   `HISTIGNORE` glob patterns (see
   [Shell integration and .aishrc](shell-integration.md)).

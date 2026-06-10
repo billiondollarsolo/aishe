@@ -51,6 +51,70 @@ pub fn subsequence_score(candidate: &str, query: &str) -> Option<i32> {
     Some(score)
 }
 
+/// Case-insensitive Damerau-Levenshtein (optimal string alignment) edit distance
+/// between `a` and `b`: single-character insertions, deletions, substitutions,
+/// and adjacent transpositions each cost 1. Transpositions cost 1 (not 2) because
+/// swapped letters (`gti` for `git`) are the most common typo.
+pub fn edit_distance(a: &str, b: &str) -> usize {
+    let a: Vec<char> = a.chars().flat_map(|c| c.to_lowercase()).collect();
+    let b: Vec<char> = b.chars().flat_map(|c| c.to_lowercase()).collect();
+    let (n, m) = (a.len(), b.len());
+    if n == 0 {
+        return m;
+    }
+    if m == 0 {
+        return n;
+    }
+    let mut d = vec![vec![0usize; m + 1]; n + 1];
+    for (i, row) in d.iter_mut().enumerate() {
+        row[0] = i;
+    }
+    for (j, v) in d[0].iter_mut().enumerate() {
+        *v = j;
+    }
+    for i in 1..=n {
+        for j in 1..=m {
+            let cost = usize::from(a[i - 1] != b[j - 1]);
+            let mut v = (d[i - 1][j] + 1)
+                .min(d[i][j - 1] + 1)
+                .min(d[i - 1][j - 1] + cost);
+            if i > 1 && j > 1 && a[i - 1] == b[j - 2] && a[i - 2] == b[j - 1] {
+                v = v.min(d[i - 2][j - 2] + 1);
+            }
+            d[i][j] = v;
+        }
+    }
+    d[n][m]
+}
+
+/// The best correction for `query` among `candidates`: the candidate with the
+/// smallest edit distance, when that distance is in `1..=max_dist` (so an exact
+/// match is never "corrected"). Ties break toward the shorter, then
+/// alphabetically-first candidate.
+pub fn correction<'a, I>(query: &str, candidates: I, max_dist: usize) -> Option<String>
+where
+    I: IntoIterator<Item = &'a str>,
+{
+    let mut best: Option<(usize, &str)> = None;
+    for cand in candidates {
+        let d = edit_distance(query, cand);
+        if d == 0 || d > max_dist {
+            continue;
+        }
+        let better = match best {
+            None => true,
+            Some((bd, bc)) => {
+                d < bd
+                    || (d == bd && (cand.len() < bc.len() || (cand.len() == bc.len() && cand < bc)))
+            }
+        };
+        if better {
+            best = Some((d, cand));
+        }
+    }
+    best.map(|(_, c)| c.to_string())
+}
+
 /// Filter and rank `items` by fuzzy score against `query` (best first; ties
 /// broken alphabetically).
 pub fn rank(items: Vec<String>, query: &str) -> Vec<String> {
@@ -93,5 +157,28 @@ mod tests {
     fn empty_query_keeps_all() {
         let ranked = rank(vec!["b".into(), "a".into()], "");
         assert_eq!(ranked, vec!["a", "b"]); // tie → alphabetical
+    }
+
+    #[test]
+    fn edit_distance_basics() {
+        assert_eq!(edit_distance("git", "git"), 0);
+        assert_eq!(edit_distance("gti", "git"), 1); // adjacent transposition = 1
+        assert_eq!(edit_distance("gut", "git"), 1); // one substitution
+        assert_eq!(edit_distance("dcoker", "docker"), 1); // transposition
+        assert_eq!(edit_distance("gitt", "git"), 1); // one insertion
+        assert_eq!(edit_distance("", "abc"), 3);
+    }
+
+    #[test]
+    fn correction_picks_closest() {
+        let cmds = ["git", "grep", "cd", "ls", "docker"];
+        // typo within max_dist → closest known command.
+        assert_eq!(correction("gitt", cmds, 2).as_deref(), Some("git"));
+        assert_eq!(correction("dcoker", cmds, 2).as_deref(), Some("docker"));
+        // too far → no correction.
+        assert_eq!(correction("zzzzz", cmds, 2), None);
+        // a distance-0 (exact) candidate is never returned; only OTHER close ones
+        // are considered (the caller skips correction for real commands).
+        assert_eq!(correction("git", ["git", "cd"], 2), None);
     }
 }

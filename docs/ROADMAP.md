@@ -74,9 +74,9 @@ is tagged `(reedline)` so we can re-scope quickly.
 - [~] **Prompt depth**: command duration (`report_time`) and git
   staged/unstaged/ahead-behind/stash (`git_status`) shipped; an exit-status glyph
   already colors the prompt. Async vcs_info still open. (reedline)
-- [~] **Spelling correction** (`CORRECT`), named dirs (`~proj`), global and
-  suffix aliases still open. `AUTO_PUSHD` and `cdpath` shipped (`auto_pushd`,
-  `cd -N`/`cd +N`, `dirs -v`, `cdpath`). (reedline)
+- [~] **Spelling correction** (`CORRECT`, `correct`) and **named dirs**
+  (`~proj`, `[named_dirs]`) shipped, along with `AUTO_PUSHD` and `cdpath`. Global
+  and suffix aliases still open. (reedline)
 - [ ] **Completion depth**: closer to zsh compsys, with descriptions for
   arbitrary commands, file completion with glob qualifiers, and completion from
   man pages or `--help`. (reedline)

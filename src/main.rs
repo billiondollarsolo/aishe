@@ -678,6 +678,14 @@ fn repl(
     executor.set_auto_pushd(config.aishe.auto_pushd);
     // cdpath: config entries, falling back to $CDPATH when none are configured.
     executor.set_cdpath(resolve_cdpath(config));
+    // Named directories for `~name` expansion.
+    executor.set_named_dirs(
+        config
+            .named_dirs
+            .iter()
+            .map(|(k, v)| (k.clone(), std::path::PathBuf::from(v)))
+            .collect(),
+    );
 
     loop {
         // Computed once per prompt (not per keystroke). The branch comes from
@@ -817,6 +825,16 @@ fn handle_line(
             }
         },
         Dispatch::NaturalLanguage(nl) => {
+            // zsh CORRECT: if the first word is a near-miss of a known command,
+            // offer to run the corrected command instead of treating it as NL.
+            if config.aishe.correct {
+                if let Some(c) = spell_correction(&nl, cache) {
+                    if confirm_correction(&c) {
+                        executor.run(&c.full);
+                        return Ok(false);
+                    }
+                }
+            }
             run_nl(
                 &nl,
                 &config.aishe.mode,
@@ -829,6 +847,66 @@ fn handle_line(
         }
     }
     Ok(false)
+}
+
+/// A proposed spelling correction of the first word of an input line.
+struct Correction {
+    /// The user's (mistyped) first word.
+    original: String,
+    /// The corrected command word.
+    corrected: String,
+    /// The full corrected line (corrected word + the remaining arguments).
+    full: String,
+}
+
+/// Propose a correction for `nl` when its first word is a close typo of a known
+/// command. Only triggers for command-shaped input (a single bare first token),
+/// never for sentences whose first word happens to be near a command.
+fn spell_correction(nl: &str, cache: &CommandCache) -> Option<Correction> {
+    let mut parts = nl.splitn(2, char::is_whitespace);
+    let first = parts.next()?.trim();
+    let rest = parts.next().unwrap_or("");
+    // Only plausible command words: short-ish, no path/sigil characters.
+    if first.len() < 2
+        || first.len() > 32
+        || !first
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.')
+        || cache.contains(first)
+    {
+        return None;
+    }
+    let max_dist = if first.len() <= 4 { 1 } else { 2 };
+    let corrected = cache.correction(first, max_dist)?;
+    let full = if rest.is_empty() {
+        corrected.clone()
+    } else {
+        format!("{corrected} {rest}")
+    };
+    Some(Correction {
+        original: first.to_string(),
+        corrected,
+        full,
+    })
+}
+
+/// Prompt `correct 'X' to 'Y'? [Y/n]`. Defaults to yes on Enter.
+fn confirm_correction(c: &Correction) -> bool {
+    use std::io::Write;
+    print!(
+        "  {} {} {} {}? [Y/n] ",
+        "correct".yellow(),
+        format!("'{}'", c.original).red(),
+        "to".dim(),
+        format!("'{}'", c.corrected).green(),
+    );
+    let _ = std::io::stdout().flush();
+    let mut line = String::new();
+    if std::io::stdin().read_line(&mut line).is_err() {
+        return false;
+    }
+    let a = line.trim();
+    a.is_empty() || a.eq_ignore_ascii_case("y") || a.eq_ignore_ascii_case("yes")
 }
 
 /// Parse a `/name arg…` slash-command line into (name, args).

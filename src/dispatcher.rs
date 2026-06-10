@@ -116,6 +116,14 @@ impl CommandCache {
         crate::fuzzy::rank(all, query)
     }
 
+    /// The closest known command to `token` within `max_dist` edits, if any (for
+    /// "did you mean" spelling correction). `None` when `token` is already a known
+    /// command or nothing is close enough.
+    pub fn correction(&self, token: &str, max_dist: usize) -> Option<String> {
+        let guard = self.inner.read().unwrap();
+        crate::fuzzy::correction(token, guard.iter().map(String::as_str), max_dist)
+    }
+
     /// Insert a set of command names (used by tests and seeding).
     pub fn insert_all(&self, items: &[&str]) {
         let mut w = self.inner.write().unwrap();

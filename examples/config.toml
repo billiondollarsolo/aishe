@@ -56,6 +56,11 @@ hist_ignore_space = false   # don't save commands that start with a space
 # Extra base directories searched by `cd <name>` (like zsh cdpath / $CDPATH).
 # cdpath = ["/home/me/projects", "/srv"]
 
+# zsh CORRECT: when an unknown first word is a near-miss of a known command,
+# offer to fix it ("correct 'gti' to 'git'? [Y/n]") instead of treating the line
+# as a natural-language request.
+correct = false
+
 # Custom reedline left prompt. Placeholders: {cwd} {mode} {model} {exit}.
 # Leave commented out for the default (just the cwd).
 # prompt_format = "[{mode}] {cwd}"
@@ -130,6 +135,15 @@ model = "gpt-4o"
 # [pricing."openai/gpt-oss-120b"]
 # input = 0.15
 # output = 0.60
+
+# ---------------------------------------------------------------------------
+# Optional: named directories for `~name` expansion in cd (zsh hashed dirs).
+# Then `cd ~proj` and `cd ~proj/app` work.
+# ---------------------------------------------------------------------------
+
+# [named_dirs]
+# proj = "/home/me/projects"
+# dl = "/home/me/Downloads"
 
 # ---------------------------------------------------------------------------
 # Optional: theming for the reedline prompt and syntax highlighter.

@@ -35,6 +35,19 @@ which persist your choice back to the file.
 | `hist_ignore_space` | bool | `false` | Don't save commands that start with a space (`HIST_IGNORE_SPACE`). |
 | `hist_ignore` | array | `[]` | Glob patterns of commands to keep out of history (`HISTIGNORE`), e.g. `["ls", "cd *"]`. |
 | `cdpath` | array | `[]` | Extra base dirs searched by `cd <name>` (`CDPATH`); falls back to `$CDPATH`. |
+| `correct` | bool | `false` | zsh `CORRECT`: offer to fix a near-miss command word instead of routing it to the LLM. |
+
+## `[named_dirs]` section (optional)
+
+Named directories for `~name` expansion in `cd` (zsh hashed dirs):
+
+```toml
+[named_dirs]
+proj = "/home/me/projects"
+dl = "/home/me/Downloads"
+```
+
+Then `cd ~proj` and `cd ~proj/app` work.
 | `prompt_format` | string | unset | Custom left prompt. Placeholders: `{cwd}`, `{mode}`, `{model}`, `{exit}`. |
 | `structured` | string | `schema` | Suggest output format: `schema`, `json`, or `prompt`. |
 | `stream` | bool | `false` | Stream answers token-by-token in the REPL (suggest and auto). |

@@ -23,6 +23,10 @@ pub struct Config {
     /// model name or substring. Falls back to a built-in table; see `usage.rs`.
     #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     pub pricing: std::collections::BTreeMap<String, crate::usage::Price>,
+    /// Named directories for `~name` expansion in `cd` (zsh hashed dirs), e.g.
+    /// `proj = "/home/me/projects"`.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub named_dirs: std::collections::BTreeMap<String, String>,
 }
 
 /// Audit logging of AI calls, responses, and AI-initiated actions.
@@ -107,6 +111,11 @@ pub struct AisheConfig {
     /// Extra base directories searched by `cd <name>` (`CDPATH`).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub cdpath: Vec<String>,
+    /// zsh `CORRECT`: when an unknown first word is a near-miss of a known
+    /// command, offer to correct it instead of treating the line as natural
+    /// language. Off by default.
+    #[serde(default)]
+    pub correct: bool,
     /// Structured-output strategy for suggest mode: "schema" (strict JSON schema,
     /// default), "json" (any JSON object), or "prompt" (unconstrained).
     #[serde(default = "default_structured")]
@@ -220,6 +229,7 @@ impl Default for AisheConfig {
             hist_ignore_space: false,
             hist_ignore: Vec::new(),
             cdpath: Vec::new(),
+            correct: false,
             structured: default_structured(),
             stream: false,
             show_usage: true,
