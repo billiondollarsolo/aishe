@@ -36,6 +36,14 @@ breaking changes can land in any release.
   the provider).
 
 ### Added
+- **MCP (Model Context Protocol) client.** Configure stdio MCP servers under
+  `[mcp_servers]` and their tools are offered to the yolo loop, namespaced
+  `mcp__<server>__<tool>` and proxied to the server when the model calls them.
+  aishe does the JSON-RPC handshake (`initialize` / `initialized` / `tools/list`)
+  over newline-delimited stdio, with a per-request timeout so a wedged server
+  can't hang the shell, and kills servers on exit. List connected tools with
+  `aishe mcp` (`/mcp`); each call is audit-logged. Any stdio server works
+  (`npx`/`uvx`/a binary/Docker). See `src/mcp.rs` and docs/mcp.md.
 - **Built-in web tool for yolo (`fetch_url`).** The agentic loop can now read a
   web page or docs directly: HTTP(S) GET, HTML stripped to readable text
   (`script`/`style` dropped, common entities decoded), with a read-time byte cap

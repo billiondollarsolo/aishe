@@ -36,6 +36,7 @@ const META_SUBCOMMANDS: &[(&str, &str)] = &[
     ("rehash", "rebuild the command cache"),
     ("commands", "list custom slash-commands"),
     ("skills", "list model-invoked skills"),
+    ("mcp", "list MCP tools"),
     ("usage", "session token & cost usage"),
     ("reset", "clear conversation memory"),
     ("ghost", "inline AI ghost text: on|off"),

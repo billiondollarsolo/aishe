@@ -110,6 +110,22 @@ output = 0.60
 
 See [Token usage and cost](usage-and-cost.md).
 
+## `[mcp_servers]` section (optional)
+
+Model Context Protocol servers whose tools are offered to the yolo loop, keyed by
+a short name used to namespace them (`mcp__<name>__<tool>`):
+
+```toml
+[mcp_servers.filesystem]
+command = "npx"
+args = ["-y", "@modelcontextprotocol/server-filesystem", "/home/me/projects"]
+# env = { KEY = "value" }   # extra environment for the server process
+# enabled = false           # keep configured but turned off (default true)
+```
+
+Per-server keys: `command` (required), `args`, `env`, `enabled`. List connected
+tools with `aishe mcp`. See [MCP servers](mcp.md).
+
 ## `[theme]` (optional)
 
 Colors for the reedline prompt and syntax highlighter. Pick a preset and override

@@ -27,6 +27,27 @@ pub struct Config {
     /// `proj = "/home/me/projects"`.
     #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     pub named_dirs: std::collections::BTreeMap<String, String>,
+    /// MCP (Model Context Protocol) servers whose tools are offered to yolo,
+    /// keyed by a short name used to namespace them (`mcp__<name>__<tool>`).
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub mcp_servers: std::collections::BTreeMap<String, McpServerConfig>,
+}
+
+/// A configured MCP stdio server: the command to launch and its environment.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct McpServerConfig {
+    /// Executable to spawn (e.g. `npx`, `uvx`, or an absolute path).
+    pub command: String,
+    /// Arguments passed to the command.
+    #[serde(default)]
+    pub args: Vec<String>,
+    /// Extra environment variables for the server process.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub env: std::collections::BTreeMap<String, String>,
+    /// Connect to this server. On by default; set `false` to keep it configured
+    /// but disabled.
+    #[serde(default = "default_true")]
+    pub enabled: bool,
 }
 
 /// Audit logging of AI calls, responses, and AI-initiated actions.

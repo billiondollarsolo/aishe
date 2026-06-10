@@ -666,6 +666,41 @@ proj = "/home/me/projects"
 """
 
 
+# A minimal MCP stdio server used by the deterministic MCP suite: echo + add.
+MCP_SERVER_PY = r'''
+import sys, json
+def send(o):
+    sys.stdout.write(json.dumps(o) + "\n"); sys.stdout.flush()
+TOOLS = [
+    {"name": "echo", "description": "Echo text uppercased.",
+     "inputSchema": {"type": "object", "properties": {"text": {"type": "string"}}}},
+    {"name": "add", "description": "Add two integers.",
+     "inputSchema": {"type": "object", "properties": {"a": {"type": "integer"}, "b": {"type": "integer"}}}},
+]
+for line in sys.stdin:
+    line = line.strip()
+    if not line:
+        continue
+    m = json.loads(line); mid = m.get("id"); method = m.get("method")
+    if method == "initialize":
+        send({"jsonrpc": "2.0", "id": mid, "result": {"protocolVersion": "2025-06-18", "capabilities": {"tools": {}}, "serverInfo": {"name": "t", "version": "0"}}})
+    elif method == "notifications/initialized":
+        pass
+    elif method == "tools/list":
+        send({"jsonrpc": "2.0", "id": mid, "result": {"tools": TOOLS}})
+    elif method == "tools/call":
+        p = m.get("params", {}); name = p.get("name"); a = p.get("arguments", {})
+        if name == "echo":
+            send({"jsonrpc": "2.0", "id": mid, "result": {"content": [{"type": "text", "text": str(a.get("text", "")).upper()}]}})
+        elif name == "add":
+            send({"jsonrpc": "2.0", "id": mid, "result": {"content": [{"type": "text", "text": str(a.get("a", 0) + a.get("b", 0))}]}})
+        else:
+            send({"jsonrpc": "2.0", "id": mid, "result": {"content": [{"type": "text", "text": "?"}], "isError": True}})
+    elif mid is not None:
+        send({"jsonrpc": "2.0", "id": mid, "error": {"code": -32601, "message": "no method"}})
+'''
+
+
 def write_config(text):
     """Create a temp config root containing `text` as config.toml."""
     root = tempfile.mkdtemp(prefix="aishe-cfg-")
@@ -907,6 +942,51 @@ def main():
     add("meta: /usage reports empty session", "no model calls" in out.lower() or "usage" in out.lower())
 
     shutil.rmtree(full_root, ignore_errors=True)
+
+    # ---- Suite 7: MCP client (deterministic, no model) ----
+    section("Suite 7 — MCP client (real stdio server, no model)")
+    report.append(
+        "\nA tiny Python MCP server (newline-delimited JSON-RPC 2.0) is spawned; "
+        "aishe must handshake, list its tools, and round-trip the config.\n"
+    )
+    mcp_root = tempfile.mkdtemp(prefix="aishe-mcp-")
+    server_py = os.path.join(mcp_root, "server.py")
+    with open(server_py, "w") as f:
+        f.write(MCP_SERVER_PY)
+    mcp_cfg = write_config(
+        '[aishe]\nmode = "yolo"\nprovider = "openai"\nfront_end = "reedline"\n'
+        "\n[providers.openai]\n"
+        'base_url = "https://api.groq.com/openai"\napi_key_env = "GROQ_API_KEY"\n'
+        'model = "openai/gpt-oss-120b"\n\n'
+        f'[mcp_servers.demo]\ncommand = "{sys.executable}"\nargs = ["{server_py}"]\n'
+    )
+    mcp_env = base_env(mcp_cfg, with_key=False)
+    # `/mcp` lists the namespaced tools (proves connect + handshake + tools/list).
+    rc, out, err = run([BIN, "-c", "/mcp"], mcp_env, timeout=30)
+    add("mcp: server connected", "connected (2 tools)" in err,
+        "" if "connected (2 tools)" in err else f"(err={err.strip()[:120]!r})")
+    for tool in ["mcp__demo__echo", "mcp__demo__add"]:
+        add(f"mcp: lists {tool}", tool in out,
+            "" if tool in out else f"(out={out.strip()[:120]!r})")
+    # The `[mcp_servers]` block round-trips through `/config`.
+    rc, out, err = run([BIN, "-c", "/config"], mcp_env, timeout=30)
+    add("mcp: [mcp_servers.demo] round-trips", "[mcp_servers.demo]" in out,
+        "" if "[mcp_servers.demo]" in out else "(missing from /config)")
+    # A disabled server is not connected.
+    mcp_off = write_config(
+        '[aishe]\nmode = "yolo"\nprovider = "openai"\nfront_end = "reedline"\n'
+        "\n[providers.openai]\n"
+        'base_url = "https://api.groq.com/openai"\napi_key_env = "GROQ_API_KEY"\n'
+        'model = "openai/gpt-oss-120b"\n\n'
+        f'[mcp_servers.demo]\ncommand = "{sys.executable}"\nargs = ["{server_py}"]\n'
+        "enabled = false\n"
+    )
+    rc, out, err = run([BIN, "-c", "/mcp"], base_env(mcp_off, with_key=False), timeout=30)
+    add("mcp: disabled server is skipped", "no MCP tools" in out,
+        "" if "no MCP tools" in out else f"(out={out.strip()[:120]!r})")
+    shutil.rmtree(mcp_off, ignore_errors=True)
+    shutil.rmtree(mcp_cfg, ignore_errors=True)
+    shutil.rmtree(mcp_root, ignore_errors=True)
 
     # ---- Suite 3: natural language (needs key) ----
     section("Suite 3 — Natural language (real model)")

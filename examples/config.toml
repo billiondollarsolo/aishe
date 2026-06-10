@@ -134,6 +134,22 @@ api_key_env = "OPENAI_API_KEY"
 model = "gpt-4o"
 
 # ---------------------------------------------------------------------------
+# Optional: MCP (Model Context Protocol) servers. Their tools are offered to the
+# yolo agentic loop, namespaced mcp__<name>__<tool>. Any stdio MCP server works
+# (npx, uvx, a binary, ...). See docs/mcp.md. List connected tools with `aishe mcp`.
+# ---------------------------------------------------------------------------
+
+# [mcp_servers.filesystem]
+# command = "npx"
+# args = ["-y", "@modelcontextprotocol/server-filesystem", "/home/me/projects"]
+
+# [mcp_servers.git]
+# command = "uvx"
+# args = ["mcp-server-git", "--repository", "/home/me/projects/aishe"]
+# env = { GIT_PAGER = "cat" }
+# enabled = true
+
+# ---------------------------------------------------------------------------
 # Optional: per-model price overrides for cost estimates (USD per 1M tokens).
 # Keys are matched by exact model name first, then by substring. Falls back to a
 # built-in table. Only needed if a model is missing from the table or priced

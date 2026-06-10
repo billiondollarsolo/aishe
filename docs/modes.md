@@ -61,6 +61,8 @@ and decides what to do next, repeating until the task is done or it hits
   to read a page or docs (HTTP GET over http/https only; HTML is stripped to
   readable text, the body is byte-capped while reading and char-capped before it
   goes to the model). Use this instead of `curl`/`wget` for reading the web.
+- **MCP tools**: if you configure [MCP servers](mcp.md), their tools are offered
+  too, namespaced `mcp__<server>__<tool>`, and proxied to the server when called.
 - With `yolo_confirm_dangerous = true`, the safety gate still pauses for
   dangerous commands.
 - If skills are present, the model can pull a skill's instructions into context

@@ -83,7 +83,8 @@ A full walkthrough is in [docs/getting-started.md](docs/getting-started.md).
 In yolo, beyond running commands the model can call built-in tools to edit files
 precisely (`read_file`/`write_file`/`edit_file`/`list_dir`, `file_tools`) and read
 the web (`fetch_url`, `web_tool`) instead of fighting `sed`/heredocs/`curl`; both
-are on by default.
+are on by default. Configure [MCP servers](docs/mcp.md) under `[mcp_servers]` and
+their tools join the loop too (`aishe mcp` lists them).
 
 Switch at any time with `aishe mode auto`, or start with `aishe --mode yolo`. See
 [docs/modes.md](docs/modes.md) for streaming, structured output, and input

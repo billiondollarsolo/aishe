@@ -195,13 +195,22 @@ fn run() -> Result<u8> {
     // User-defined slash-commands and model-invoked skills (plugins).
     let commands = CommandRegistry::load();
     let skills = aishe::skills::SkillRegistry::load();
+    // MCP servers (extra yolo tools). Empty/instant unless `[mcp_servers]` is set.
+    let mcp = aishe::mcp::McpRegistry::connect(&config.mcp_servers);
 
     // Shell-hook helpers (called by `aishe init` integration).
     if let Some(line) = args.suggest_line {
         return suggest_line(&line, &mut executor, provider.as_deref(), &config);
     }
     if let Some(line) = args.yolo_line {
-        return yolo_line(&line, &mut executor, provider.as_deref(), &config, &skills);
+        return yolo_line(
+            &line,
+            &mut executor,
+            provider.as_deref(),
+            &config,
+            &skills,
+            &mcp,
+        );
     }
     if let Some(line) = args.auto_line {
         return auto_line(&line, &mut executor, provider.as_deref(), &config);
@@ -217,6 +226,7 @@ fn run() -> Result<u8> {
             &cache,
             &commands,
             &skills,
+            &mcp,
         );
     }
 
@@ -227,6 +237,7 @@ fn run() -> Result<u8> {
         &cache,
         &commands,
         &skills,
+        &mcp,
     )
 }
 
@@ -389,6 +400,7 @@ fn yolo_line(
     provider: Option<&dyn Provider>,
     config: &Config,
     skills: &SkillRegistry,
+    mcp: &aishe::mcp::McpRegistry,
 ) -> Result<u8> {
     let Some(p) = provider else {
         eprintln!("aishe: LLM not configured");
@@ -402,6 +414,7 @@ fn yolo_line(
         config,
         &INTERRUPTED,
         skills,
+        mcp,
         &mut session,
     )?;
     Ok(0)
@@ -452,6 +465,7 @@ fn auto_line(
 }
 
 /// Run one dispatch cycle non-interactively for the `-c` flag.
+#[allow(clippy::too_many_arguments)]
 fn one_shot(
     input: &str,
     executor: &mut Executor,
@@ -460,6 +474,7 @@ fn one_shot(
     cache: &CommandCache,
     commands: &CommandRegistry,
     skills: &SkillRegistry,
+    mcp: &aishe::mcp::McpRegistry,
 ) -> Result<u8> {
     let trimmed = input.trim();
     if trimmed.is_empty() {
@@ -475,6 +490,7 @@ fn one_shot(
         provider.as_deref(),
         config,
         skills,
+        mcp,
         &mut session,
     )? {
         return Ok(executor.last_exit as u8);
@@ -513,6 +529,19 @@ fn one_shot(
                             }
                         }
                     }
+                    Some("mcp") => {
+                        if mcp.is_empty() {
+                            println!(
+                                "no MCP tools (configure servers under [mcp_servers] in config)"
+                            );
+                        } else {
+                            println!("MCP tools (yolo mode):");
+                            for (name, desc) in mcp.list() {
+                                let desc = desc.lines().next().unwrap_or("");
+                                println!("\x20 {name}  —  {desc}");
+                            }
+                        }
+                    }
                     Some("config") => {
                         println!("config file: {}", Config::path().display());
                         match toml::to_string_pretty(config) {
@@ -537,6 +566,7 @@ fn one_shot(
                         config,
                         &INTERRUPTED,
                         skills,
+                        mcp,
                         &mut session,
                     )?;
                 } else {
@@ -606,6 +636,7 @@ fn build_edit_mode(edit_mode: &str) -> Box<dyn EditMode> {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn repl(
     executor: &mut Executor,
     provider: &mut Option<Arc<dyn Provider>>,
@@ -613,6 +644,7 @@ fn repl(
     cache: &CommandCache,
     commands: &CommandRegistry,
     skills: &SkillRegistry,
+    mcp: &aishe::mcp::McpRegistry,
 ) -> Result<u8> {
     // One-time hint in the interactive shell if LLM features are unavailable.
     if provider.is_none() {
@@ -748,6 +780,7 @@ fn repl(
                     cache,
                     commands,
                     skills,
+                    mcp,
                     &mut session,
                     &ghost,
                 )? {
@@ -780,6 +813,7 @@ fn handle_line(
     cache: &CommandCache,
     commands: &CommandRegistry,
     skills: &SkillRegistry,
+    mcp: &aishe::mcp::McpRegistry,
     session: &mut Session,
     ghost: &aishe::ghost::Ghost,
 ) -> Result<bool> {
@@ -791,6 +825,7 @@ fn handle_line(
         provider.as_deref(),
         config,
         skills,
+        mcp,
         session,
     )? {
         return Ok(false);
@@ -818,7 +853,7 @@ fn handle_line(
         Dispatch::Builtin(tokens) => match tokens[0].as_str() {
             "exit" | "quit" => return Ok(true),
             "aishe" => handle_meta(
-                &tokens, config, provider, executor, cache, commands, skills, session, ghost,
+                &tokens, config, provider, executor, cache, commands, skills, mcp, session, ghost,
             ),
             _ => {
                 executor.run_builtin(&tokens);
@@ -842,6 +877,7 @@ fn handle_line(
                 executor,
                 config,
                 skills,
+                mcp,
                 session,
             )?;
         }
@@ -919,6 +955,7 @@ fn parse_slash(line: &str) -> Option<(&str, Vec<&str>)> {
 
 /// Run a user-defined `/slash-command` if `line` names one. Returns whether it
 /// was handled. Built-in meta subcommands are left for normal dispatch.
+#[allow(clippy::too_many_arguments)]
 fn try_custom_command(
     line: &str,
     commands: &CommandRegistry,
@@ -926,6 +963,7 @@ fn try_custom_command(
     provider: Option<&dyn Provider>,
     config: &Config,
     skills: &SkillRegistry,
+    mcp: &aishe::mcp::McpRegistry,
     session: &mut Session,
 ) -> Result<bool> {
     let Some((name, args)) = parse_slash(line) else {
@@ -945,12 +983,15 @@ fn try_custom_command(
         executor.run(&ex.text);
     } else {
         let mode = ex.mode.as_deref().unwrap_or(config.aishe.mode.as_str());
-        run_nl(&ex.text, mode, provider, executor, config, skills, session)?;
+        run_nl(
+            &ex.text, mode, provider, executor, config, skills, mcp, session,
+        )?;
     }
     Ok(true)
 }
 
 /// Run a natural-language request in the given mode.
+#[allow(clippy::too_many_arguments)]
 fn run_nl(
     nl: &str,
     mode: &str,
@@ -958,6 +999,7 @@ fn run_nl(
     executor: &mut Executor,
     config: &Config,
     skills: &SkillRegistry,
+    mcp: &aishe::mcp::McpRegistry,
     session: &mut Session,
 ) -> Result<()> {
     let Some(p) = provider else {
@@ -968,7 +1010,7 @@ fn run_nl(
         return Ok(());
     };
     match mode {
-        "yolo" => modes::yolo::run(nl, p, executor, config, &INTERRUPTED, skills, session)?,
+        "yolo" => modes::yolo::run(nl, p, executor, config, &INTERRUPTED, skills, mcp, session)?,
         "auto" => modes::suggest::run(nl, p, executor, config, false, true, session)?,
         _ => modes::suggest::run(nl, p, executor, config, false, false, session)?,
     }
@@ -1023,6 +1065,7 @@ fn handle_meta(
     cache: &CommandCache,
     commands: &CommandRegistry,
     skills: &SkillRegistry,
+    mcp: &aishe::mcp::McpRegistry,
     session: &mut Session,
     ghost: &aishe::ghost::Ghost,
 ) {
@@ -1079,6 +1122,17 @@ fn handle_meta(
             } else {
                 println!("model-invoked skills (yolo mode):");
                 for (name, desc) in skills.list() {
+                    println!("\x20 {name}  —  {desc}");
+                }
+            }
+        }
+        "mcp" => {
+            if mcp.is_empty() {
+                println!("no MCP tools (configure servers under [mcp_servers] in config)");
+            } else {
+                println!("MCP tools (yolo mode):");
+                for (name, desc) in mcp.list() {
+                    let desc = desc.lines().next().unwrap_or("");
                     println!("\x20 {name}  —  {desc}");
                 }
             }

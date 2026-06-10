@@ -11,6 +11,7 @@ use super::{render_markdown, run_command_tool, safety_gate, use_skill_tool, Gate
 use crate::config::Config;
 use crate::context;
 use crate::executor::{Executor, DEFAULT_CAPTURE_TIMEOUT};
+use crate::mcp::McpRegistry;
 use crate::providers::{AssistantMsg, Completion, Msg, Provider};
 use crate::safety::{self, Risk};
 use crate::session::Session;
@@ -18,6 +19,7 @@ use crate::skills::SkillRegistry;
 
 /// Run the yolo agentic loop for one user request, priming and recording session
 /// memory so follow-up requests have context.
+#[allow(clippy::too_many_arguments)]
 pub fn run(
     input: &str,
     provider: &dyn Provider,
@@ -25,11 +27,12 @@ pub fn run(
     config: &Config,
     interrupt: &AtomicBool,
     skills: &SkillRegistry,
+    mcp: &McpRegistry,
     session: &mut Session,
 ) -> Result<()> {
     let history = session.history();
     let outcome = run_loop(
-        input, provider, executor, config, interrupt, skills, history,
+        input, provider, executor, config, interrupt, skills, mcp, history,
     );
     super::report_usage(provider, config);
     let final_text = outcome?;
@@ -46,6 +49,7 @@ pub fn run(
 /// finished with a no-tool turn), or `None` if it was aborted, hit the budget, or
 /// reached the iteration cap. Usage reporting and session recording happen in
 /// [`run`].
+#[allow(clippy::too_many_arguments)]
 fn run_loop(
     input: &str,
     provider: &dyn Provider,
@@ -53,6 +57,7 @@ fn run_loop(
     config: &Config,
     interrupt: &AtomicBool,
     skills: &SkillRegistry,
+    mcp: &McpRegistry,
     history: Vec<Msg>,
 ) -> Result<Option<String>> {
     let ctx = context::build(executor, config.aishe.redact_secrets);
@@ -64,6 +69,9 @@ fn run_loop(
     }
     if config.aishe.web_tool {
         tools.extend(crate::tools::web_tool_defs());
+    }
+    if !mcp.is_empty() {
+        tools.extend(mcp.tool_defs());
     }
     if !skills.is_empty() {
         tools.push(use_skill_tool());
@@ -202,6 +210,18 @@ fn run_loop(
                     executor.cwd(),
                     config.aishe.yolo_confirm_dangerous,
                 );
+                crate::audit::action(&format!("yolo:{}", call.name), &label, None);
+                messages.push(Msg::ToolResult {
+                    call_id: call.id.clone(),
+                    content,
+                });
+                continue;
+            }
+
+            // MCP tools (namespaced mcp__server__tool) are proxied to the server.
+            if crate::mcp::is_mcp_tool(&call.name) {
+                println!("  🔌 {}", format!("mcp: {}", call.name).dim());
+                let (label, content) = mcp.call(&call.name, &call.arguments);
                 crate::audit::action(&format!("yolo:{}", call.name), &label, None);
                 messages.push(Msg::ToolResult {
                     call_id: call.id.clone(),

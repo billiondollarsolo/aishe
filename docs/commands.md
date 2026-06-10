@@ -19,6 +19,7 @@ aishe reset                       clear conversation memory
 aishe ghost [on|off]              inline AI ghost-text autosuggestion
 aishe commands                    list custom slash-commands
 aishe skills                      list model-invoked skills
+aishe mcp                         list MCP tools (yolo)
 aishe config                      print the active config
 aishe rehash                      rebuild the command cache
 aishe help                        show help
@@ -42,8 +43,8 @@ Slash-commands are tab-completable. A `/`-prefixed path such as `/usr/bin/x` is
 still treated as a normal command, because only known meta names and your own
 custom commands intercept the slash.
 
-The read-only listings (`/commands`, `/skills`, `/config`, `/usage`) also work in
-the non-interactive `-c` form:
+The read-only listings (`/commands`, `/skills`, `/mcp`, `/config`, `/usage`) also
+work in the non-interactive `-c` form:
 
 ```sh
 aishe -c "/skills"

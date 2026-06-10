@@ -36,11 +36,14 @@ is tagged `(reedline)` so we can re-scope quickly.
   the command; reedline shows it as dim ghost text, accept with the Right arrow.
   Off by default (`aishe ghost on`). See `src/ghost.rs` and docs/ghost-text.md.
   Done. (Live-during-pause repaint is a possible future polish.)
-- [~] **Richer yolo toolset and MCP.** Built-in file tools shipped:
-  `read_file`/`write_file`/`edit_file`/`list_dir` (`file_tools`, on by default).
-  Web fetch shipped: `fetch_url` reads pages/docs with HTML stripped to text
-  (`web_tool`, on by default, see `src/tools.rs`). An MCP client (so external
-  tool servers plug in) is the remaining big piece. Building now.
+- [x] **Richer yolo toolset and MCP.** Built-in file tools
+  (`read_file`/`write_file`/`edit_file`/`list_dir`, `file_tools`) and a web tool
+  (`fetch_url`, `web_tool`) ship on by default (`src/tools.rs`). The **MCP
+  client** (`src/mcp.rs`, `[mcp_servers]`, docs/mcp.md) connects stdio MCP servers
+  over JSON-RPC, lists their tools, and proxies `tools/call`, namespaced
+  `mcp__<server>__<tool>` so the MCP ecosystem plugs into the yolo loop. Done.
+  (Streamable-HTTP transport and consuming MCP prompts/resources are possible
+  follow-ups.)
 - [ ] **Dry-run or plan preview for yolo.** Show the planned steps and let the
   user approve the batch before execution. Later.
 - [ ] **Response caching.** Cache identical (prompt, context) suggestions briefly

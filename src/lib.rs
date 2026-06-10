@@ -15,6 +15,7 @@ pub mod highlight;
 pub mod histfilter;
 pub mod history_expand;
 pub mod integration;
+pub mod mcp;
 pub mod modes;
 pub mod prompt;
 pub mod providers;

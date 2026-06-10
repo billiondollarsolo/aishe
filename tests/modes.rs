@@ -6,6 +6,7 @@ use std::sync::{Arc, Mutex};
 
 use aishe::config::Config;
 use aishe::executor::Executor;
+use aishe::mcp::McpRegistry;
 use aishe::modes::{suggest, yolo};
 use aishe::providers::{Completion, Msg, Provider, ProviderError, ResponseFormat, ToolCall};
 use aishe::session::Session;
@@ -125,6 +126,7 @@ fn yolo_file_tools_write_and_read() {
         &config,
         &flag,
         &SkillRegistry::default(),
+        &McpRegistry::default(),
         &mut Session::new(false),
     )
     .unwrap();
@@ -171,6 +173,7 @@ fn yolo_web_tool_dispatch() {
         &config,
         &flag,
         &SkillRegistry::default(),
+        &McpRegistry::default(),
         &mut Session::new(false),
     )
     .unwrap();
@@ -209,6 +212,7 @@ fn yolo_runs_tool_then_finishes() {
         &config,
         &flag,
         &SkillRegistry::default(),
+        &McpRegistry::default(),
         &mut Session::new(true),
     )
     .unwrap();
@@ -254,6 +258,7 @@ fn yolo_streaming_runs_tool_then_finishes() {
         &config,
         &flag,
         &SkillRegistry::default(),
+        &McpRegistry::default(),
         &mut Session::new(true),
     )
     .unwrap();
@@ -288,6 +293,7 @@ fn yolo_respects_iteration_cap() {
         &config,
         &flag,
         &SkillRegistry::default(),
+        &McpRegistry::default(),
         &mut Session::new(true),
     )
     .unwrap();

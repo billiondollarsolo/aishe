@@ -18,6 +18,7 @@ If you are new, start with [Installation](installation.md) and then
 - [Configuration reference](configuration.md) - every field in config.toml
 - [Commands and slash-commands](commands.md) - meta commands and input prefixes
 - [Custom commands and skills](custom-commands-and-skills.md) - your own /commands and model skills
+- [MCP servers](mcp.md) - connect Model Context Protocol tool servers to yolo
 - [Token usage and cost](usage-and-cost.md) - metering, the price table, and budgets
 - [Safety gate](safety.md) - how dangerous commands are screened
 - [Logging and privacy](logging.md) - secret redaction and the audit log

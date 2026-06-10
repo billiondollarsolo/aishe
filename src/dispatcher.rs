@@ -533,6 +533,7 @@ pub fn is_meta_subcommand(w: &str) -> bool {
             | "rehash"
             | "commands"
             | "skills"
+            | "mcp"
             | "usage"
             | "reset"
             | "ghost"
