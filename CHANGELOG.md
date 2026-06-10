@@ -58,6 +58,10 @@ breaking changes can land in any release.
   `~/.config/aishe/commands/` and `<project>/.aishe/commands/` (Claude-Code
   style) define custom `/commands` that run as shell snippets or NL prompt
   templates (`$ARGUMENTS`/`$1`), with `/commands` listing and tab-completion.
+- **Skills (model-invoked)** — Markdown skill files in `~/.config/aishe/skills/`
+  / `<project>/.aishe/skills/` are advertised to the model in yolo mode; it pulls
+  a skill's full instructions into context on demand via a `use_skill` tool
+  (Claude-Code-style progressive disclosure).
 - **CI** — cross-platform tests plus PTY smoke tests for both front-ends.
 
 ### Changed

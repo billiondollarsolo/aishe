@@ -152,7 +152,7 @@ fn parse_command(name: &str, text: &str) -> CustomCommand {
 
 /// Split a `---`-fenced frontmatter block (simple `key: value` lines) from the
 /// body. If there's no frontmatter, returns an empty map and the whole text.
-fn split_frontmatter(text: &str) -> (BTreeMap<String, String>, String) {
+pub(crate) fn split_frontmatter(text: &str) -> (BTreeMap<String, String>, String) {
     let mut meta = BTreeMap::new();
     let trimmed = text.strip_prefix('\u{feff}').unwrap_or(text); // tolerate BOM
     let rest = match trimmed.strip_prefix("---") {

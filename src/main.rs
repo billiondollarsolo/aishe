@@ -24,6 +24,7 @@ use aishe::highlight::CmdHighlighter;
 use aishe::prompt::AishePrompt;
 use aishe::providers::{self, Provider};
 use aishe::safety::{self, Risk};
+use aishe::skills::SkillRegistry;
 use aishe::theme::Theme;
 use aishe::validator::AisheValidator;
 use aishe::{context, history_expand, integration, modes};
@@ -186,19 +187,20 @@ fn run() -> Result<u8> {
         );
     }
 
+    // User-defined slash-commands and model-invoked skills (plugins).
+    let commands = CommandRegistry::load();
+    let skills = aishe::skills::SkillRegistry::load();
+
     // Shell-hook helpers (called by `aishe init` integration).
     if let Some(line) = args.suggest_line {
         return suggest_line(&line, &mut executor, provider.as_deref(), &config);
     }
     if let Some(line) = args.yolo_line {
-        return yolo_line(&line, &mut executor, provider.as_deref(), &config);
+        return yolo_line(&line, &mut executor, provider.as_deref(), &config, &skills);
     }
     if let Some(line) = args.auto_line {
         return auto_line(&line, &mut executor, provider.as_deref(), &config);
     }
-
-    // User-defined slash-commands (plugins/skills).
-    let commands = CommandRegistry::load();
 
     // Non-interactive single-shot mode (-c).
     if let Some(input) = args.command {
@@ -209,10 +211,18 @@ fn run() -> Result<u8> {
             &config,
             &cache,
             &commands,
+            &skills,
         );
     }
 
-    repl(&mut executor, &mut provider, &mut config, &cache, &commands)
+    repl(
+        &mut executor,
+        &mut provider,
+        &mut config,
+        &cache,
+        &commands,
+        &skills,
+    )
 }
 
 /// Environment check (`aishe doctor`): report shell, config, front-end,
@@ -344,12 +354,13 @@ fn yolo_line(
     executor: &mut Executor,
     provider: Option<&dyn Provider>,
     config: &Config,
+    skills: &SkillRegistry,
 ) -> Result<u8> {
     let Some(p) = provider else {
         eprintln!("aishe: LLM not configured");
         return Ok(1);
     };
-    modes::yolo::run(line, p, executor, config, &INTERRUPTED)?;
+    modes::yolo::run(line, p, executor, config, &INTERRUPTED, skills)?;
     Ok(0)
 }
 
@@ -405,13 +416,21 @@ fn one_shot(
     config: &Config,
     cache: &CommandCache,
     commands: &CommandRegistry,
+    skills: &SkillRegistry,
 ) -> Result<u8> {
     let trimmed = input.trim();
     if trimmed.is_empty() {
         return Ok(0);
     }
     // User-defined /slash-commands work in -c too.
-    if try_custom_command(trimmed, commands, executor, provider.as_deref(), config)? {
+    if try_custom_command(
+        trimmed,
+        commands,
+        executor,
+        provider.as_deref(),
+        config,
+        skills,
+    )? {
         return Ok(executor.last_exit as u8);
     }
     match dispatcher::dispatch(trimmed, cache) {
@@ -430,7 +449,7 @@ fn one_shot(
         Dispatch::NaturalLanguage(nl) => match provider {
             Some(p) => {
                 if config.aishe.mode == "yolo" {
-                    modes::yolo::run(&nl, p.as_ref(), executor, config, &INTERRUPTED)?;
+                    modes::yolo::run(&nl, p.as_ref(), executor, config, &INTERRUPTED, skills)?;
                 } else {
                     // -c + NL in suggest/auto mode: print suggested command, don't run.
                     modes::suggest::run(&nl, p.as_ref(), executor, config, true, false)?;
@@ -496,6 +515,7 @@ fn repl(
     config: &mut Config,
     cache: &CommandCache,
     commands: &CommandRegistry,
+    skills: &SkillRegistry,
 ) -> Result<u8> {
     // One-time hint in the interactive shell if LLM features are unavailable.
     if provider.is_none() {
@@ -578,7 +598,7 @@ fn repl(
                         continue;
                     }
                 };
-                if handle_line(&line, executor, provider, config, cache, commands)? {
+                if handle_line(&line, executor, provider, config, cache, commands, skills)? {
                     return Ok(executor.last_exit as u8);
                 }
             }
@@ -606,9 +626,17 @@ fn handle_line(
     config: &mut Config,
     cache: &CommandCache,
     commands: &CommandRegistry,
+    skills: &SkillRegistry,
 ) -> Result<bool> {
     // User-defined /slash-commands (plugins/skills) run before everything else.
-    if try_custom_command(line, commands, executor, provider.as_deref(), config)? {
+    if try_custom_command(
+        line,
+        commands,
+        executor,
+        provider.as_deref(),
+        config,
+        skills,
+    )? {
         return Ok(false);
     }
 
@@ -645,6 +673,7 @@ fn handle_line(
                 provider.as_deref(),
                 executor,
                 config,
+                skills,
             )?;
         }
     }
@@ -667,6 +696,7 @@ fn try_custom_command(
     executor: &mut Executor,
     provider: Option<&dyn Provider>,
     config: &Config,
+    skills: &SkillRegistry,
 ) -> Result<bool> {
     let Some((name, args)) = parse_slash(line) else {
         return Ok(false);
@@ -685,7 +715,7 @@ fn try_custom_command(
         executor.run(&ex.text);
     } else {
         let mode = ex.mode.as_deref().unwrap_or(config.aishe.mode.as_str());
-        run_nl(&ex.text, mode, provider, executor, config)?;
+        run_nl(&ex.text, mode, provider, executor, config, skills)?;
     }
     Ok(true)
 }
@@ -697,6 +727,7 @@ fn run_nl(
     provider: Option<&dyn Provider>,
     executor: &mut Executor,
     config: &Config,
+    skills: &SkillRegistry,
 ) -> Result<()> {
     let Some(p) = provider else {
         eprintln!(
@@ -706,7 +737,7 @@ fn run_nl(
         return Ok(());
     };
     match mode {
-        "yolo" => modes::yolo::run(nl, p, executor, config, &INTERRUPTED)?,
+        "yolo" => modes::yolo::run(nl, p, executor, config, &INTERRUPTED, skills)?,
         "auto" => modes::suggest::run(nl, p, executor, config, false, true)?,
         _ => modes::suggest::run(nl, p, executor, config, false, false)?,
     }

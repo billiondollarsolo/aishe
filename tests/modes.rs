@@ -8,6 +8,7 @@ use aishe::config::Config;
 use aishe::executor::Executor;
 use aishe::modes::{suggest, yolo};
 use aishe::providers::{Completion, Msg, Provider, ProviderError, ResponseFormat, ToolCall};
+use aishe::skills::SkillRegistry;
 use serde_json::json;
 
 /// A provider that replays scripted responses. When `repeat_last` is set and
@@ -83,7 +84,15 @@ fn yolo_runs_tool_then_finishes() {
     config.aishe.max_yolo_iterations = 10;
     let flag = AtomicBool::new(false);
 
-    yolo::run("do a thing", &provider, &mut exec, &config, &flag).unwrap();
+    yolo::run(
+        "do a thing",
+        &provider,
+        &mut exec,
+        &config,
+        &flag,
+        &SkillRegistry::default(),
+    )
+    .unwrap();
 
     let ran = exec
         .history
@@ -110,7 +119,15 @@ fn yolo_respects_iteration_cap() {
     config.aishe.max_yolo_iterations = 3;
     let flag = AtomicBool::new(false);
 
-    yolo::run("loop forever", &provider, &mut exec, &config, &flag).unwrap();
+    yolo::run(
+        "loop forever",
+        &provider,
+        &mut exec,
+        &config,
+        &flag,
+        &SkillRegistry::default(),
+    )
+    .unwrap();
 
     // Exactly the cap number of commands should have run.
     let count = exec.history.iter().filter(|(c, _)| c == "true").count();

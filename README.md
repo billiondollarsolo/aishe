@@ -127,6 +127,26 @@ Show the 10 largest files under $ARGUMENTS, human-readable, largest first.
   parameterized aliases (`/gitsync`).
 - Templating: `$ARGUMENTS` = all args; `$1`..`$9` = positional args.
 
+### Skills (model-invoked)
+
+Where `/commands` are invoked by *you*, **skills are invoked by the model**
+(Claude-Code-style progressive disclosure). Put skill files in
+`~/.config/aishe/skills/` or `<project>/.aishe/skills/` as `<name>.md` or
+`<name>/SKILL.md`:
+
+```md
+---
+name: rust-release
+description: How to cut a Rust release (when to bump, tag, publish)
+---
+<full instructions the model loads on demand>
+```
+
+In **yolo** mode, aishe tells the model each skill's `name: description`; when
+your request matches, the model calls a `use_skill` tool to pull that skill's
+full instructions into context, then proceeds. Only the descriptions are always
+in context — bodies are loaded on demand. See [`examples/skills/`](examples/skills/).
+
 Exit with `exit`, `quit`, or `Ctrl-D`.
 
 ---

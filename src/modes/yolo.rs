@@ -6,12 +6,13 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use anyhow::Result;
 use crossterm::style::Stylize;
 
-use super::{render_markdown, run_command_tool, safety_gate, GateOutcome};
+use super::{render_markdown, run_command_tool, safety_gate, use_skill_tool, GateOutcome};
 use crate::config::Config;
 use crate::context;
 use crate::executor::{Executor, DEFAULT_CAPTURE_TIMEOUT};
 use crate::providers::{AssistantMsg, Completion, Msg, Provider};
 use crate::safety::{self, Risk};
+use crate::skills::SkillRegistry;
 
 /// Run the yolo agentic loop for one user request.
 pub fn run(
@@ -20,9 +21,24 @@ pub fn run(
     executor: &mut Executor,
     config: &Config,
     interrupt: &AtomicBool,
+    skills: &SkillRegistry,
 ) -> Result<()> {
     let ctx = context::build(executor);
-    let tools = [run_command_tool()];
+    // Offer the use_skill tool (and advertise the catalog) only when skills exist.
+    let tools: Vec<_> = if skills.is_empty() {
+        vec![run_command_tool()]
+    } else {
+        vec![run_command_tool(), use_skill_tool()]
+    };
+    let system = if skills.is_empty() {
+        YOLO_SYSTEM.to_string()
+    } else {
+        format!(
+            "{YOLO_SYSTEM}\n\nAvailable skills (call use_skill to load one's \
+             instructions when relevant):\n{}",
+            skills.catalog()
+        )
+    };
     let mut messages: Vec<Msg> = vec![Msg::User(format!("{ctx}\nUser request: {input}"))];
 
     interrupt.store(false, Ordering::SeqCst);
@@ -33,14 +49,14 @@ pub fn run(
             return Ok(());
         }
 
-        let completion: Completion =
-            match provider.complete_with_tools(YOLO_SYSTEM, &messages, &tools) {
-                Ok(c) => c,
-                Err(e) => {
-                    eprintln!("{}", format!("aishe: {e}").red());
-                    return Ok(());
-                }
-            };
+        let completion: Completion = match provider.complete_with_tools(&system, &messages, &tools)
+        {
+            Ok(c) => c,
+            Err(e) => {
+                eprintln!("{}", format!("aishe: {e}").red());
+                return Ok(());
+            }
+        };
 
         // No tool calls → final answer.
         if completion.tool_calls.is_empty() {
@@ -64,6 +80,28 @@ pub fn run(
                 });
                 println!("  {}", "aborted".dim());
                 return Ok(());
+            }
+
+            // Skill loading (progressive disclosure): return the skill body so
+            // the model has its instructions in context, then continue.
+            if call.name == "use_skill" {
+                let name = call
+                    .arguments
+                    .get("name")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+                let content = match skills.get(name) {
+                    Some(s) => {
+                        println!("  📖 {}", format!("skill: {name}").dim());
+                        s.body.clone()
+                    }
+                    None => format!("No skill named '{name}'."),
+                };
+                messages.push(Msg::ToolResult {
+                    call_id: call.id.clone(),
+                    content,
+                });
+                continue;
             }
 
             let command = call

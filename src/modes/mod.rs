@@ -58,6 +58,24 @@ genuinely ambiguous; commands run with stdin closed, so always use \
 non-interactive flags (-y, --no-input); when finished, reply with a brief \
 plain-text summary of what you did and the result. Keep total commands minimal.";
 
+/// Tool that loads a named skill's full instructions into context (progressive
+/// disclosure). Only offered to yolo when skills are available.
+pub fn use_skill_tool() -> ToolDef {
+    ToolDef {
+        name: "use_skill".to_string(),
+        description: "Load the full instructions for a named skill before acting, \
+            when the user's request matches one of the available skills."
+            .to_string(),
+        schema: json!({
+            "type": "object",
+            "properties": {
+                "name": {"type": "string", "description": "the skill name"}
+            },
+            "required": ["name"]
+        }),
+    }
+}
+
 /// The single tool exposed to yolo mode.
 pub fn run_command_tool() -> ToolDef {
     ToolDef {
