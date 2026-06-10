@@ -169,14 +169,23 @@ pub fn dispatch(line: &str, cache: &CommandCache) -> Dispatch {
         return Dispatch::Shell(trimmed.to_string());
     }
 
-    // 5. Pipeline check (before the single-token cache hit, so a cached head
-    //    followed by an uncached pipeline segment still routes to NL).
-    if contains_operator(trimmed) {
-        let heads = pipeline_heads(trimmed);
-        if !heads.is_empty() && heads.iter().all(|h| cache.contains(h)) {
-            return Dispatch::Shell(trimmed.to_string());
-        }
-        return Dispatch::NaturalLanguage(trimmed.to_string());
+    // 5. Pipelines / compound lines, split quote-aware on `|`/`;`/`&&`/`||`. It's
+    //    shell if every segment's head is a known command or a shell reserved
+    //    word (so `grep -E 'a|b'` stays one segment, and `x=1; while …; done`
+    //    routes to shell). Otherwise → natural language.
+    let segments = split_top_level(trimmed);
+    if segments.len() > 1 {
+        let all_shell = segments.iter().all(|seg| {
+            match effective_command_token(&tokenize(seg)) {
+                EffectiveHead::Token(t) => cache.contains(&t) || is_reserved_word(&t),
+                _ => true, // assignment-only or empty segment is fine
+            }
+        });
+        return if all_shell {
+            Dispatch::Shell(trimmed.to_string())
+        } else {
+            Dispatch::NaturalLanguage(trimmed.to_string())
+        };
     }
 
     // 6. Cache hit on the effective head.
@@ -289,28 +298,112 @@ fn starts_with_shell_syntax(line: &str) -> bool {
         || line.starts_with('(')
 }
 
-fn contains_operator(line: &str) -> bool {
-    line.contains('|') || line.contains("&&") || line.contains("||") || line.contains(';')
-}
-
-/// Split a line on `|`, `&&`, `||`, `;` and return the head token of each
-/// non-empty segment. Naive (ignores quoting), per PRD v0.1.
-fn pipeline_heads(line: &str) -> Vec<String> {
-    let normalized = line.replace("&&", "|").replace("||", "|").replace(';', "|");
-    let mut heads = Vec::new();
-    for segment in normalized.split('|') {
-        let seg = segment.trim();
-        if seg.is_empty() {
+/// Split a line into top-level segments on **unquoted** `|`, `||`, `&&`, `;`.
+/// Quote/escape-aware, so operators inside `'…'`/`"…"` (e.g. `grep -E 'a|b'`)
+/// don't split. Empty segments are dropped.
+fn split_top_level(line: &str) -> Vec<String> {
+    let chars: Vec<char> = line.chars().collect();
+    let mut segs = Vec::new();
+    let mut cur = String::new();
+    let (mut in_s, mut in_d, mut esc) = (false, false, false);
+    let mut i = 0;
+    while i < chars.len() {
+        let c = chars[i];
+        if esc {
+            cur.push(c);
+            esc = false;
+            i += 1;
             continue;
         }
-        let toks = tokenize(seg);
-        match effective_command_token(&toks) {
-            EffectiveHead::Token(t) => heads.push(t),
-            EffectiveHead::Assignment => {} // pure assignment segment; ignore
-            EffectiveHead::None => return Vec::new(),
+        if in_s {
+            cur.push(c);
+            if c == '\'' {
+                in_s = false;
+            }
+            i += 1;
+            continue;
+        }
+        if in_d {
+            if c == '\\' {
+                cur.push(c);
+                esc = true;
+            } else {
+                cur.push(c);
+                if c == '"' {
+                    in_d = false;
+                }
+            }
+            i += 1;
+            continue;
+        }
+        match c {
+            '\\' => {
+                cur.push(c);
+                esc = true;
+                i += 1;
+            }
+            '\'' => {
+                in_s = true;
+                cur.push(c);
+                i += 1;
+            }
+            '"' => {
+                in_d = true;
+                cur.push(c);
+                i += 1;
+            }
+            ';' => {
+                segs.push(std::mem::take(&mut cur));
+                i += 1;
+            }
+            '|' => {
+                segs.push(std::mem::take(&mut cur));
+                i += if chars.get(i + 1) == Some(&'|') { 2 } else { 1 };
+            }
+            '&' if chars.get(i + 1) == Some(&'&') => {
+                segs.push(std::mem::take(&mut cur));
+                i += 2;
+            }
+            _ => {
+                cur.push(c);
+                i += 1;
+            }
         }
     }
-    heads
+    segs.push(cur);
+    segs.into_iter()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect()
+}
+
+/// Shell reserved words / compound-command heads that are valid segment heads
+/// even when not in the command cache (so control structures route to shell).
+fn is_reserved_word(w: &str) -> bool {
+    matches!(
+        w,
+        "if" | "then"
+            | "elif"
+            | "else"
+            | "fi"
+            | "for"
+            | "while"
+            | "until"
+            | "do"
+            | "done"
+            | "case"
+            | "esac"
+            | "select"
+            | "function"
+            | "time"
+            | "in"
+            | "{"
+            | "}"
+            | "!"
+            | "[["
+            | "(("
+            | "["
+    )
 }
 
 /// Very small whitespace tokenizer (quoting-naive; sufficient for head checks).
@@ -499,6 +592,37 @@ mod tests {
         assert!(matches!(
             dispatch("find big files | wat", &c),
             Dispatch::NaturalLanguage(_)
+        ));
+    }
+
+    #[test]
+    fn quoted_operators_are_not_pipelines() {
+        let c = cache_with(&["grep", "sed", "awk"]);
+        // `|` / `;` inside quotes must NOT be treated as a pipeline → stays shell.
+        assert!(matches!(
+            dispatch("grep -E 'foo|bar' a.txt", &c),
+            Dispatch::Shell(_)
+        ));
+        assert!(matches!(
+            dispatch("sed 's/a/b/;s/c/d/' f", &c),
+            Dispatch::Shell(_)
+        ));
+        assert!(matches!(
+            dispatch(r#"awk -F'|' '{print $1}' f"#, &c),
+            Dispatch::Shell(_)
+        ));
+    }
+
+    #[test]
+    fn compound_with_reserved_words_is_shell() {
+        let c = cache_with(&["echo"]);
+        assert!(matches!(
+            dispatch("i=0; while [ $i -lt 3 ]; do echo $i; i=$((i+1)); done", &c),
+            Dispatch::Shell(_)
+        ));
+        assert!(matches!(
+            dispatch("echo a; if true; then echo b; fi", &c),
+            Dispatch::Shell(_)
         ));
     }
 
