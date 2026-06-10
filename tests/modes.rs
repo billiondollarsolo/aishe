@@ -138,6 +138,51 @@ fn yolo_file_tools_write_and_read() {
 }
 
 #[test]
+fn yolo_web_tool_dispatch() {
+    // Turn 1: call fetch_url with a non-http URL (rejected without touching the
+    // network). Turn 2: finish. This exercises the web-tool dispatch wiring.
+    let provider = MockProvider::with_completions(
+        vec![
+            Completion {
+                text: None,
+                tool_calls: vec![named_tool_call(
+                    "fetch_url",
+                    json!({"url": "file:///etc/passwd"}),
+                )],
+            },
+            Completion {
+                text: Some("could not fetch".into()),
+                tool_calls: vec![],
+            },
+        ],
+        false,
+    );
+    let mut exec = Executor::new().unwrap();
+    let mut config = Config::default();
+    config.aishe.web_tool = true;
+    let flag = AtomicBool::new(false);
+
+    // The loop must reach the finish turn (the rejected fetch is fed back, not
+    // run as a shell command).
+    yolo::run(
+        "read a file url",
+        &provider,
+        &mut exec,
+        &config,
+        &flag,
+        &SkillRegistry::default(),
+        &mut Session::new(false),
+    )
+    .unwrap();
+
+    assert!(
+        exec.history.is_empty(),
+        "fetch_url must not fall through to the shell: {:?}",
+        exec.history
+    );
+}
+
+#[test]
 fn yolo_runs_tool_then_finishes() {
     let provider = MockProvider::with_completions(
         vec![

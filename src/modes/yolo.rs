@@ -62,6 +62,9 @@ fn run_loop(
     if config.aishe.file_tools {
         tools.extend(crate::tools::file_tool_defs());
     }
+    if config.aishe.web_tool {
+        tools.extend(crate::tools::web_tool_defs());
+    }
     if !skills.is_empty() {
         tools.push(use_skill_tool());
     }
@@ -70,6 +73,11 @@ fn run_loop(
         system.push_str(
             "\n\nFor files, prefer the read_file / write_file / edit_file / list_dir \
              tools over shell cat/sed/heredoc (they are exact and avoid quoting issues).",
+        );
+    }
+    if config.aishe.web_tool {
+        system.push_str(
+            "\n\nTo read a web page or docs, use the fetch_url tool rather than curl/wget.",
         );
     }
     if !skills.is_empty() {
@@ -185,9 +193,9 @@ fn run_loop(
                 continue;
             }
 
-            // Built-in file tools (read/write/edit/list) operate directly on the
-            // filesystem, relative to the cwd.
-            if crate::tools::is_file_tool(&call.name) {
+            // Built-in tools (file read/write/edit/list, web fetch_url) run
+            // directly here, relative to the cwd where applicable.
+            if crate::tools::is_builtin_tool(&call.name) {
                 let (label, content) = crate::tools::execute(
                     &call.name,
                     &call.arguments,

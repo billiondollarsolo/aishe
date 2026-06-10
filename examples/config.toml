@@ -34,6 +34,10 @@ max_yolo_iterations = 10
 # to yolo, so it edits files precisely instead of via cat/sed/heredocs.
 file_tools = true
 
+# Offer the built-in web tool (fetch_url) to yolo, so it can read pages and docs
+# (HTTP GET, HTML stripped to text, size-capped) instead of curl/wget.
+web_tool = true
+
 # Show "model and mode" on the right of the reedline prompt.
 show_right_prompt = true
 

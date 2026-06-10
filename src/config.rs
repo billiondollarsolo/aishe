@@ -72,6 +72,10 @@ pub struct AisheConfig {
     /// shell. On by default.
     #[serde(default = "default_true")]
     pub file_tools: bool,
+    /// Offer the built-in `fetch_url` tool to yolo, so it can read web pages and
+    /// docs (HTTP GET, HTML stripped to text, size-capped). On by default.
+    #[serde(default = "default_true")]
+    pub web_tool: bool,
     #[serde(default = "default_true")]
     pub show_right_prompt: bool,
     /// Front-end: "auto" (default — zsh-pty when zsh is on $PATH, else
@@ -223,6 +227,7 @@ impl Default for AisheConfig {
             yolo_confirm_dangerous: true,
             max_yolo_iterations: default_max_iters(),
             file_tools: true,
+            web_tool: true,
             show_right_prompt: true,
             front_end: default_front_end(),
             edit_mode: default_edit_mode(),

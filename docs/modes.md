@@ -57,12 +57,16 @@ and decides what to do next, repeating until the task is done or it hits
   gets wrong more often). A write or edit to a path outside the working tree
   (absolute, `~`, or `..`-escaping) is confirmed when `yolo_confirm_dangerous` is
   on.
+- **Web tool** (`web_tool = true`, on by default): the model can call `fetch_url`
+  to read a page or docs (HTTP GET over http/https only; HTML is stripped to
+  readable text, the body is byte-capped while reading and char-capped before it
+  goes to the model). Use this instead of `curl`/`wget` for reading the web.
 - With `yolo_confirm_dangerous = true`, the safety gate still pauses for
   dangerous commands.
 - If skills are present, the model can pull a skill's instructions into context
   on demand. See [Custom commands and skills](custom-commands-and-skills.md).
 - Every tool call is recorded in the [audit log](logging.md) (`run_command` as an
-  `action`, file tools as `yolo:read_file` etc.).
+  `action`, the built-in tools as `yolo:read_file` / `yolo:fetch_url` etc.).
 
 ## Streaming
 

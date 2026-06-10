@@ -36,6 +36,12 @@ breaking changes can land in any release.
   the provider).
 
 ### Added
+- **Built-in web tool for yolo (`fetch_url`).** The agentic loop can now read a
+  web page or docs directly: HTTP(S) GET, HTML stripped to readable text
+  (`script`/`style` dropped, common entities decoded), with a read-time byte cap
+  and a char cap before the text reaches the model. Use it instead of
+  `curl`/`wget`. On by default (`web_tool`); each call is audit-logged as
+  `yolo:fetch_url`.
 - **Built-in file tools for yolo.** Beyond `run_command`, the agentic loop can
   now call `read_file`, `write_file`, `edit_file`, and `list_dir` to work with
   files precisely instead of round-tripping through `cat`/`sed`/heredocs. Writes
