@@ -140,9 +140,10 @@ pub struct AisheConfig {
     pub web_tool: bool,
     #[serde(default = "default_true")]
     pub show_right_prompt: bool,
-    /// Front-end: "auto" (default — zsh-pty when zsh is on $PATH, else
-    /// reedline), "reedline" (built-in editor), or "zsh-pty" (drive the user's
-    /// real interactive zsh in a PTY, so all native zsh plugins work).
+    /// Front-end: "auto"/"zsh-pty" (default) drive the user's real interactive
+    /// zsh in a PTY (requires zsh), so all native zsh plugins work; "reedline"
+    /// is the opt-in built-in editor (also `aishe --no-pty`) for environments
+    /// without zsh.
     #[serde(default = "default_front_end")]
     pub front_end: String,
     /// In the zsh-PTY front-end, override the prompt with aishe's branded prompt

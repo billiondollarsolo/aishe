@@ -176,33 +176,36 @@ fn run() -> Result<u8> {
         || args.yolo_line.is_some()
         || args.auto_line.is_some();
 
-    // zsh-PTY front-end: drive the user's real zsh. Smarts live in the injected
-    // command_not_found hook, so we don't need an in-process executor/provider.
-    // Resolution: an explicit `--pty`/`zsh`/`zsh-pty` wins; `--no-pty`/`reedline`
-    // forces the built-in editor; the default "auto" picks zsh-pty whenever zsh
-    // is on $PATH and falls back to reedline otherwise.
+    // The interactive shell is the zsh-PTY front-end: it drives the user's real
+    // zsh, with the AI injected via a command_not_found hook. zsh is required for
+    // it. The built-in reedline editor reimplements a shell and is now only used
+    // when explicitly requested (`--no-pty` or `front_end = "reedline"`).
     // Piped (non-tty) stdin with no `-c`: read commands from stdin instead of
-    // launching an interactive editor (which needs a terminal). An explicit
-    // `--pty`/`zsh` still wins.
+    // launching an interactive editor. An explicit `--pty`/`zsh` still wins.
     let piped_stdin = !non_interactive
         && !args.pty
         && !matches!(args.cmd, Some(Cmd::Zsh))
         && !std::io::stdin().is_terminal();
 
-    let want_pty = !non_interactive
-        && !piped_stdin
-        && if args.pty || matches!(args.cmd, Some(Cmd::Zsh)) {
-            true
-        } else if args.no_pty {
-            false
-        } else {
-            match config.aishe.front_end.as_str() {
-                "zsh-pty" => true,
-                "reedline" => false,
-                _ => aishe::executor::which("zsh").is_some(),
-            }
-        };
+    let explicit_pty = args.pty || matches!(args.cmd, Some(Cmd::Zsh));
+    // reedline is opt-in only (an explicit `--pty`/`zsh` overrides it).
+    let force_reedline = !explicit_pty && (args.no_pty || config.aishe.front_end == "reedline");
+    let want_pty = !non_interactive && !piped_stdin && !force_reedline;
+
     if want_pty {
+        if aishe::executor::which("zsh").is_none() {
+            eprintln!(
+                "{}",
+                "aishe: the interactive shell needs zsh, which isn't on your PATH.".red()
+            );
+            eprintln!(
+                "  Install zsh, then run aishe again:\n  \
+                   apt install zsh  |  dnf install zsh  |  brew install zsh  |  apk add zsh\n  \
+                 (the install.sh script also installs zsh for you.)\n  \
+                 Or use the limited built-in editor for this session:  aishe --no-pty"
+            );
+            return Ok(1);
+        }
         return aishe::pty::run_zsh(&config);
     }
 
@@ -352,17 +355,19 @@ fn doctor() -> u8 {
         }
     };
 
-    // Front-end resolution.
-    let resolved = match cfg.aishe.front_end.as_str() {
-        "zsh-pty" => "zsh-pty",
-        "reedline" => "reedline",
-        _ if zsh.is_some() => "zsh-pty (auto)",
-        _ => "reedline (auto — zsh not found)",
-    };
-    println!(
-        "{ok} front-end: {resolved}  [config: {}]",
-        cfg.aishe.front_end
-    );
+    // Front-end resolution. The interactive shell is zsh-PTY (requires zsh);
+    // reedline is opt-in via `--no-pty` / `front_end = "reedline"`.
+    if cfg.aishe.front_end == "reedline" {
+        println!("{ok} front-end: reedline (built-in editor)  [config: reedline]");
+    } else if zsh.is_some() {
+        println!("{ok} front-end: zsh-pty  [config: {}]", cfg.aishe.front_end);
+    } else {
+        println!(
+            "{bad} front-end: zsh-pty needs zsh, which is not installed \
+             (install it, or use `aishe --no-pty` for the built-in editor)"
+        );
+        critical_ok = false;
+    }
 
     // Provider, model, and API key.
     let (provider, model, key_env) = match cfg.aishe.provider.as_str() {

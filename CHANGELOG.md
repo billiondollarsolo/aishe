@@ -6,6 +6,16 @@ breaking changes can land in any release.
 
 ## [Unreleased]
 
+### Changed
+- **zsh-PTY is the interactive front-end; zsh is required for it.** The built-in
+  reedline editor reimplemented a shell and was the source of most terminal
+  fragility, so it is now opt-in only (`aishe --no-pty` or `front_end =
+  "reedline"`). When you start the interactive shell without zsh installed, aishe
+  now tells you to install it (the installer can) instead of silently dropping
+  into the reedline editor. `aishe -c …` and piped input are unaffected and still
+  work with just bash. `aishe doctor` reports zsh as required for the shell. This
+  is the first step of standardizing on the zsh-PTY front-end.
+
 ## [0.1.4] - 2026-06-11
 
 ### Added

@@ -6,9 +6,12 @@ source with Cargo.
 
 ## Requirements
 
-- Rust 1.80 or newer (install from [rustup.rs](https://rustup.rs)).
-- `zsh` or `bash` on your `PATH`. aishe delegates command execution to one of
-  these, preferring zsh.
+- Rust 1.80 or newer (only to build from source; the prebuilt binaries need no
+  toolchain). Install from [rustup.rs](https://rustup.rs).
+- **`zsh`** for the interactive shell: aishe drives your real zsh in a PTY. The
+  installer ensures it; on a manual install add it with your package manager
+  (`apt install zsh`, etc.). `bash` is enough for the non-interactive paths
+  (`aishe -c …` and piped input).
 - A network-reachable LLM endpoint and an API key, set in an environment
   variable. See [Providers](providers.md).
 - Platforms: macOS (arm64 and x86_64) and Linux (x86_64 and arm64). Windows is

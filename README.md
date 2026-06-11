@@ -38,8 +38,10 @@ all work unmodified.
 
 ## Install
 
-Needs `zsh` or `bash` on your `PATH`. Targets macOS (arm64 / x86_64) and Linux
-(x86_64 / arm64). No Rust toolchain required for the prebuilt binaries.
+Needs **`zsh`** on your `PATH` for the interactive shell (aishe drives your real
+zsh; the installer ensures it). `bash` suffices for `aishe -c …` and piped input.
+Targets macOS (arm64 / x86_64) and Linux (x86_64 / arm64). No Rust toolchain
+required for the prebuilt binaries.
 
 Quickest, on Linux or macOS (downloads the right prebuilt binary, verifies its
 checksum, installs it):

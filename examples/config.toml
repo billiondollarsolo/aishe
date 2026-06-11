@@ -15,10 +15,13 @@ mode = "suggest"
 # Which provider block below to use: "anthropic" or "openai".
 provider = "anthropic"
 
-# Front-end (input loop).
-#   auto     = zsh-PTY when zsh is on $PATH, else the reedline editor  (default)
-#   reedline = the built-in line editor
-#   zsh-pty  = always drive your real interactive zsh in a pseudo-terminal
+# Front-end (input loop). The interactive shell is the zsh-PTY front-end, which
+# drives your real zsh and therefore requires zsh.
+#   auto     = zsh-PTY (the default; needs zsh installed)
+#   zsh-pty  = same as auto
+#   reedline = the built-in line editor, opt-in only (also `aishe --no-pty`). It
+#              reimplements a shell and is more sensitive to terminal quirks; use
+#              it only where zsh cannot be installed.
 front_end = "auto"
 
 # In the zsh-PTY front-end, show aishe's branded prompt (`<cwd> <glyph>`, with the

@@ -9,9 +9,12 @@ order of real-zsh fidelity. The active one is chosen by `front_end` in the confi
 front_end = "auto"   # auto | reedline | zsh-pty
 ```
 
-- `auto`: use zsh-PTY when `zsh` is on `$PATH`, otherwise the reedline editor.
-- `reedline`: always use the built-in editor.
-- `zsh-pty`: always drive your real interactive zsh in a pseudo-terminal.
+- `auto` (default): the zsh-PTY front-end. **It requires zsh**; if zsh is not
+  installed, aishe tells you to install it rather than silently falling back.
+- `zsh-pty`: same as `auto`.
+- `reedline`: the opt-in built-in editor (also `aishe --no-pty`), for the rare
+  environment where zsh cannot be installed. It reimplements shell features and
+  is more sensitive to terminal quirks, so it is not the default.
 
 ## zsh-PTY front-end
 
