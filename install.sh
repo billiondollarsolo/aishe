@@ -8,6 +8,12 @@
 #   AISHE_VERSION   release tag to install (default: latest), e.g. v0.1.2
 #   AISHE_BIN_DIR   install directory (default: /usr/local/bin, or ~/.local/bin
 #                   if that is not writable)
+#   AISHE_SKIP_ZSH  set to 1 to skip ensuring zsh is installed
+#
+# aishe works best with zsh: when zsh is present it drives your real zsh in a
+# PTY (robust line editing, history, plugins); without it, it falls back to a
+# built-in editor that is more sensitive to terminal quirks. So this installer
+# also ensures zsh is installed (best effort; set AISHE_SKIP_ZSH=1 to opt out).
 #
 # On Linux this prefers the fully-static musl build, so there are no glibc
 # version requirements. For apt/dnf-managed installs, grab the .deb/.rpm from the
@@ -18,6 +24,58 @@ REPO="billiondollarsolo/aishe"
 VERSION="${AISHE_VERSION:-latest}"
 
 err() { printf 'aishe-install: %s\n' "$1" >&2; exit 1; }
+note() { printf 'aishe-install: %s\n' "$1" >&2; }
+
+# Best-effort: make sure zsh is installed (aishe drives it for the robust
+# front-end). Never fatal -- the binary is already installed by the time this
+# runs, and aishe still works (reedline front-end) without zsh.
+ensure_zsh() {
+  if command -v zsh >/dev/null 2>&1; then
+    note "zsh present ($(command -v zsh)); aishe will use the zsh front-end"
+    return 0
+  fi
+  if [ "${AISHE_SKIP_ZSH:-0}" = 1 ]; then
+    note "zsh not found; skipping (AISHE_SKIP_ZSH=1). Falling back to the reedline front-end."
+    return 0
+  fi
+  note "zsh not found; aishe is most robust with it. Attempting to install zsh..."
+
+  sudo_cmd=""
+  if [ "$(id -u)" != 0 ]; then
+    if command -v sudo >/dev/null 2>&1; then
+      sudo_cmd="sudo"
+    else
+      note "need root or sudo to install zsh; install it manually (e.g. 'apt install zsh'). aishe will use the reedline front-end until then."
+      return 0
+    fi
+  fi
+
+  if command -v apt-get >/dev/null 2>&1; then
+    $sudo_cmd apt-get update >/dev/null 2>&1 || true
+    $sudo_cmd apt-get install -y zsh || true
+  elif command -v dnf >/dev/null 2>&1; then
+    $sudo_cmd dnf install -y zsh || true
+  elif command -v yum >/dev/null 2>&1; then
+    $sudo_cmd yum install -y zsh || true
+  elif command -v zypper >/dev/null 2>&1; then
+    $sudo_cmd zypper --non-interactive install zsh || true
+  elif command -v pacman >/dev/null 2>&1; then
+    $sudo_cmd pacman -Sy --noconfirm zsh || true
+  elif command -v apk >/dev/null 2>&1; then
+    $sudo_cmd apk add zsh || true
+  elif command -v brew >/dev/null 2>&1; then
+    brew install zsh || true
+  else
+    note "no known package manager; please install zsh manually for the best experience."
+    return 0
+  fi
+
+  if command -v zsh >/dev/null 2>&1; then
+    note "zsh installed ($(command -v zsh))"
+  else
+    note "could not install zsh automatically; install it manually for the best experience. aishe will use the reedline front-end until then."
+  fi
+}
 
 # --- detect platform --------------------------------------------------------
 command -v uname >/dev/null 2>&1 || err "'uname' not found; cannot detect platform"
@@ -122,4 +180,8 @@ case ":$PATH:" in
   *":$bindir:"*) : ;;
   *) printf 'aishe-install: note: %s is not on your PATH\n' "$bindir" >&2 ;;
 esac
+
+# Ensure zsh for the robust front-end (best effort; opt out with AISHE_SKIP_ZSH=1).
+ensure_zsh
+
 "$bindir/aishe" --version || true

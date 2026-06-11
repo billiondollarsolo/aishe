@@ -25,6 +25,11 @@ it:
 curl -fsSL https://raw.githubusercontent.com/billiondollarsolo/aishe/main/install.sh | sh
 ```
 
+The script also ensures **zsh** is installed (best effort, via your system
+package manager), because aishe is most robust when it can drive your real zsh in
+a PTY; without zsh it falls back to a built-in editor that is more sensitive to
+terminal quirks. Opt out of the zsh step with `AISHE_SKIP_ZSH=1`.
+
 It installs to `/usr/local/bin` when writable, otherwise `~/.local/bin`. Override
 with environment variables:
 
