@@ -6,6 +6,31 @@ breaking changes can land in any release.
 
 ## [Unreleased]
 
+### Fixed
+- **`run_captured` no longer hangs past its timeout.** Captured commands now run
+  in their own process group, and the whole group is reaped on timeout or
+  completion. Previously a pipeline (`sleep 30 | cat`) or a backgrounded job
+  (`sleep 30 &`) left a child holding the output pipe, so the drainer threads
+  blocked forever and the timeout never fired (this is the path yolo uses to run
+  commands). The drain is also bounded so a re-parented daemon can't wedge it.
+
+### Security
+- **Safety gate now flags `mv` / recursive `chmod` / `chown` on system paths.**
+  `mv /etc /tmp`, `chmod -R 777 /etc`, `chown -R root /usr`, and similar were
+  classified Safe (only a bare `/` was caught), so in `auto`/`yolo` they ran
+  without confirmation. They now get the same path-aware treatment as `rm -rf`;
+  in-tree relative moves and recursive perm changes on the cwd stay Safe.
+- **Secret redaction now catches bare credential names.** `PASSWORD=`, `SECRET=`,
+  `TOKEN=`, `API_KEY=`, etc. (the keyword with no prefix) were not redacted from
+  the model-context block or the audit log; only prefixed names like
+  `DB_PASSWORD=` were. Bare unambiguous secret names are now redacted (the short,
+  common word `auth` stays prefix-only so `authors=`/`authority=` survive).
+- **yolo sandbox closes a `$HOME` write escape.** With the sandbox on, a write to
+  `$HOME/...` or `${TMPDIR}/...` was treated as in-tree; a variable-expanded
+  target is now correctly counted as out-of-tree, matching the safety gate.
+- **Provider retry honors but clamps `Retry-After`.** A `Retry-After: 0` no longer
+  triggers a zero-delay retry against a rate-limiting server (clamped to >= 1s).
+
 ## [0.1.6] - 2026-06-11
 
 ### Changed

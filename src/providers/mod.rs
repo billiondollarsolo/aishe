@@ -263,7 +263,9 @@ pub(crate) fn retry_after_secs(resp: &ureq::Response) -> Option<u64> {
 /// concurrent callers don't retry in lockstep.
 pub(crate) fn backoff(attempt: u32, retry_after: Option<u64>) -> Duration {
     if let Some(secs) = retry_after {
-        return Duration::from_secs(secs.min(15));
+        // Clamp to [1, 15]s: honor the hint but never retry with zero delay (a
+        // `Retry-After: 0` would otherwise hammer a rate-limiting server).
+        return Duration::from_secs(secs.clamp(1, 15));
     }
     let base_ms = 500u64.saturating_mul(1u64 << (attempt.saturating_sub(1)).min(3));
     Duration::from_millis(base_ms.min(4000) + jitter_ms())
@@ -369,9 +371,10 @@ mod tests {
 
     #[test]
     fn backoff_grows_and_honors_retry_after() {
-        // Retry-After wins (capped at 15s).
+        // Retry-After wins (clamped to [1, 15]s; a 0 never means "retry now").
         assert_eq!(backoff(1, Some(3)), Duration::from_secs(3));
         assert_eq!(backoff(1, Some(999)), Duration::from_secs(15));
+        assert_eq!(backoff(1, Some(0)), Duration::from_secs(1));
         // Exponential base (0.5s, 1s, 2s, 4s) plus <250ms jitter, capped at 4s+.
         let bare = |a| backoff(a, None).as_millis();
         assert!((500..750).contains(&bare(1)), "{}", bare(1));

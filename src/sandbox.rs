@@ -290,11 +290,15 @@ fn segment_is_network(segment: &str) -> bool {
 }
 
 /// A write target outside the working tree: absolute (`/...`), home-relative
-/// (`~...`), or escaping the tree via a `..` path segment. Mirrors the notion in
-/// [`crate::tools`] used by the file tools.
+/// (`~...`), a variable that can expand out of tree (`$HOME/...`, `${TMPDIR}/...`),
+/// or escaping the tree via a `..` path segment. Mirrors the notion in
+/// [`crate::tools`] used by the file tools, and the safety gate's `$`-target check.
 pub fn outside_tree(path: &str) -> bool {
     let p = unquote(path);
-    p.starts_with('/') || p.starts_with('~') || p.split('/').any(|seg| seg == "..")
+    p.starts_with('/')
+        || p.starts_with('~')
+        || p.starts_with('$')
+        || p.split('/').any(|seg| seg == "..")
 }
 
 /// Best-effort detection of a command that writes outside the working tree.
@@ -618,6 +622,16 @@ mod tests {
         assert_eq!(
             out_of_tree_write("echo hi >/var/log/x").as_deref(),
             Some("/var/log/x")
+        );
+        // A variable-expanded target can escape the tree, so it counts as
+        // out-of-tree (previously `$HOME/...` slipped through the sandbox).
+        assert_eq!(
+            out_of_tree_write("cp secret.txt $HOME/exfil").as_deref(),
+            Some("$HOME/exfil")
+        );
+        assert_eq!(
+            out_of_tree_write("echo hi > ${TMPDIR}/x").as_deref(),
+            Some("${TMPDIR}/x")
         );
         // In-tree writes are allowed.
         assert_eq!(out_of_tree_write("echo hi > out.txt"), None);

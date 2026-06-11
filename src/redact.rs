@@ -63,9 +63,21 @@ fn rules() -> &'static [Rule] {
             (r"([a-zA-Z][a-zA-Z0-9+.-]*://)[^/\s:@]+:[^/\s@]+@", "${1}<redacted>@"),
             // Authorization headers (curl -H "Authorization: Bearer ...").
             (r"(?i)(authorization:\s*)(?:bearer\s+|basic\s+)?[A-Za-z0-9._\-+/=]+", "${1}<redacted>"),
-            // Assignment whose NAME looks secret: FOO_TOKEN=..., DB_PASSWORD=...
+            // Assignment whose NAME *contains* a secret keyword behind a prefix:
+            // FOO_TOKEN=..., DB_PASSWORD=..., AUTH_HEADER=... The leading char is
+            // mandatory here, so `auth` only matches inside a longer name and
+            // does not swallow ordinary words like `authors=`.
             (
                 r"(?i)\b([A-Za-z_][A-Za-z0-9_]*(?:password|passwd|secret|token|api[_-]?key|access[_-]?key|private[_-]?key|credential|auth)[A-Za-z0-9_]*\s*=)\s*\S+",
+                "${1}<redacted>",
+            ),
+            // Assignment whose NAME *is* an unambiguous secret keyword with no
+            // prefix: PASSWORD=..., SECRET=..., TOKEN=..., API_KEY=... The rule
+            // above misses these because it requires a character before the
+            // keyword. `auth` is intentionally excluded here (it would match
+            // `authors=`/`authority=`).
+            (
+                r"(?i)\b((?:password|passwd|secret|token|api[_-]?key|access[_-]?key|private[_-]?key|credential)[A-Za-z0-9_]*\s*=)\s*\S+",
                 "${1}<redacted>",
             ),
             // Long-form credential flags: --password=..., --token x, --api-key=...
@@ -107,11 +119,29 @@ mod tests {
     }
 
     #[test]
+    fn redacts_bare_secret_named_assignment() {
+        // A name that *is* the secret keyword (no prefix) must also be redacted:
+        // these are exactly how top-level credential env vars are named.
+        assert_eq!(
+            redact("export PASSWORD=hunter2"),
+            "export PASSWORD=<redacted>"
+        );
+        assert_eq!(redact("SECRET=abc"), "SECRET=<redacted>");
+        assert_eq!(redact("TOKEN=xyz123"), "TOKEN=<redacted>");
+        assert_eq!(redact("API_KEY=abcdef"), "API_KEY=<redacted>");
+        assert_eq!(redact("APIKEY=abcdef"), "APIKEY=<redacted>");
+        assert_eq!(redact("password=p@ss"), "password=<redacted>");
+    }
+
+    #[test]
     fn keeps_ordinary_assignments() {
         // A non-secret name with a short ordinary value is left alone.
         assert_eq!(redact("EDITOR=nvim"), "EDITOR=nvim");
         assert_eq!(redact("count=5"), "count=5");
         assert_eq!(redact("PATH=/usr/bin:/bin"), "PATH=/usr/bin:/bin");
+        // `auth` is excluded from the no-prefix rule so common words survive.
+        assert_eq!(redact("authors=jane"), "authors=jane");
+        assert_eq!(redact("authority=local"), "authority=local");
     }
 
     #[test]

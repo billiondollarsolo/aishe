@@ -116,6 +116,15 @@ pub fn assess(command: &str) -> Risk {
         if let Some(reason) = rm_recursive_force_risk(seg) {
             return Risk::Dangerous(reason);
         }
+        // `mv` of a system/out-of-tree path, and recursive `chmod`/`chown` on
+        // one, are as destructive as `rm -rf` but the anchored patterns only
+        // catch a bare `/`. Path-aware checks mirror the `rm` logic.
+        if let Some(reason) = move_out_of_tree_risk(seg) {
+            return Risk::Dangerous(reason);
+        }
+        if let Some(reason) = recursive_perms_risk(seg) {
+            return Risk::Dangerous(reason);
+        }
         for (re, reason) in PATTERNS.iter() {
             if re.is_match(seg) {
                 return Risk::Dangerous(reason);
@@ -259,6 +268,81 @@ fn rm_recursive_force_risk(seg: &str) -> Option<&'static str> {
     None
 }
 
+/// `mv` whose source *or* destination is a system / out-of-tree path (moving a
+/// top-level system location, or moving something into one, is destructive).
+/// In-tree relative moves (`mv a b`, `mv src/ build/`) are left Safe.
+fn move_out_of_tree_risk(seg: &str) -> Option<&'static str> {
+    let mut tokens = seg.split_whitespace();
+    let mut head = tokens.next()?;
+    if head == "sudo" {
+        head = tokens.next()?;
+    }
+    if head != "mv" {
+        return None;
+    }
+    for tok in tokens {
+        // Skip options and `-`-prefixed flags; `--` is the end-of-options marker.
+        if tok == "--" || tok.starts_with('-') {
+            continue;
+        }
+        if is_out_of_tree_target(&unquote(tok)) {
+            return Some("move of a system or out-of-tree path");
+        }
+    }
+    None
+}
+
+/// A path operand that is *out of the working tree* for a move/copy/recursive
+/// permission change: like [`is_dangerous_path`] but excluding the cwd and
+/// in-cwd glob (`.`, `./`, `*`, `./*`), which are safe as a destination or as the
+/// root of an in-tree recursive operation. Absolute, home (`~`), variable (`$`),
+/// and `..`-escaping paths remain out-of-tree.
+fn is_out_of_tree_target(p: &str) -> bool {
+    if matches!(p, "." | "./" | "*" | "./*") {
+        return false;
+    }
+    is_dangerous_path(p)
+}
+
+/// Recursive `chmod`/`chown`/`chgrp` on a system / out-of-tree path. A recursive
+/// permission or ownership change on `/etc`, `/usr`, `~`, `$HOME`, or any
+/// absolute/out-of-tree target can brick the system; a recursive change on an
+/// in-tree relative path is left Safe.
+fn recursive_perms_risk(seg: &str) -> Option<&'static str> {
+    let mut tokens = seg.split_whitespace();
+    let mut head = tokens.next()?;
+    if head == "sudo" {
+        head = tokens.next()?;
+    }
+    if !matches!(head, "chmod" | "chown" | "chgrp") {
+        return None;
+    }
+    let mut recursive = false;
+    let mut targets: Vec<&str> = Vec::new();
+    for tok in tokens {
+        match tok {
+            "--recursive" => recursive = true,
+            _ if tok.starts_with("--") => {}
+            _ if tok.starts_with('-') => {
+                let flags = &tok[1..];
+                if flags.contains('R') || flags.contains('r') {
+                    recursive = true;
+                }
+            }
+            // The mode (`777`, `u+x`) and owner (`root:root`) are non-path
+            // operands; `is_dangerous_path` ignores them.
+            _ => targets.push(tok),
+        }
+    }
+    if !recursive {
+        return None;
+    }
+    if targets.iter().any(|t| is_out_of_tree_target(&unquote(t))) {
+        return Some("recursive permission/ownership change on a system or out-of-tree path");
+    }
+    None
+}
+
 /// Remove all quote characters from a token (so partial quoting like
 /// `"$HOME"/.config` is also neutralized for the path check).
 fn unquote(t: &str) -> String {
@@ -381,6 +465,19 @@ mod tests {
         dangerous("reboot");
         dangerous("find / -name '*.log' -delete");
         dangerous("find ~ -type f -exec rm {} +");
+        // Path-aware mv / recursive chmod-chown on system or out-of-tree paths
+        // (only a bare `/` was caught before).
+        dangerous("mv /etc /tmp/x");
+        dangerous("mv /usr/lib /tmp");
+        dangerous("mv build/ /var/www");
+        dangerous("mv ~/.config/foo .");
+        dangerous("sudo mv /boot /tmp");
+        dangerous("chmod -R 777 /etc");
+        dangerous("chmod -R 000 /usr");
+        dangerous("chown -R root:root /var");
+        dangerous("chgrp -R staff ~");
+        dangerous("chmod -R 755 $HOME");
+        dangerous("chown -R nobody ../sibling");
     }
 
     #[test]
@@ -414,5 +511,14 @@ mod tests {
         safe("kill -9 12345");
         safe("truncate -s 0 logfile.txt");
         safe("mv old.txt new.txt");
+        // In-tree moves and non-recursive / in-tree perm changes stay safe.
+        safe("mv src/old.rs src/new.rs");
+        safe("mv ./a ./b");
+        safe("mv report.txt ."); // moving into cwd is fine
+        safe("chmod -R 755 ./scripts");
+        safe("chmod -R +x bin");
+        safe("chmod -R 755 ."); // recursive on cwd itself is allowed
+        safe("chown -R me:me target");
+        safe("chmod 600 ~/.ssh/id_rsa"); // non-recursive single-file perm
     }
 }

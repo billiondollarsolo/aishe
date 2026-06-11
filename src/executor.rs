@@ -4,7 +4,7 @@
 
 use std::collections::{HashMap, VecDeque};
 use std::io::{BufRead, BufReader, Write};
-use std::os::unix::process::ExitStatusExt;
+use std::os::unix::process::{CommandExt, ExitStatusExt};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::{Arc, Mutex};
@@ -213,12 +213,19 @@ impl Executor {
     pub fn run_captured(&mut self, line: &str, timeout: Duration, tee: bool) -> (i32, String) {
         let mut cmd = Command::new(&self.shell);
         self.apply_rc(&mut cmd, line);
+        // Run the shell in its own process group so a timeout (or completion)
+        // can reap the *whole* process tree. Without this, `child.kill()` only
+        // kills the shell, and any surviving child (a pipeline stage, a
+        // backgrounded `cmd &`, a daemon) keeps the captured stdout/stderr pipe
+        // open, so the drainer threads block forever and `run_captured` hangs
+        // long past its timeout.
         let child = cmd
             .envs(&self.env)
             .current_dir(&self.cwd)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
+            .process_group(0)
             .spawn();
 
         let mut child = match child {
@@ -231,6 +238,8 @@ impl Executor {
             }
         };
 
+        // The shell's pid is also its process-group id (process_group(0)).
+        let pgid = child.id() as i32;
         let collected: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
         let mut drainers = Vec::new();
 
@@ -249,7 +258,7 @@ impl Executor {
                 Ok(Some(status)) => break exit_code(&status),
                 Ok(None) => {
                     if start.elapsed() >= timeout {
-                        let _ = child.kill();
+                        kill_process_group(pgid);
                         let _ = child.wait();
                         timed_out = true;
                         break 137; // 128 + SIGKILL(9)
@@ -260,9 +269,14 @@ impl Executor {
             }
         };
 
-        for d in drainers {
-            let _ = d.join();
-        }
+        // Reap any stragglers (a backgrounded or forked child of a command that
+        // otherwise exited cleanly) so they release the pipe and the drainers
+        // can finish. ESRCH (group already gone) is harmless.
+        kill_process_group(pgid);
+        // Bounded join: a well-behaved tree closes the pipes immediately once
+        // killed, but never block return on a pathological (e.g. SIGKILL-immune,
+        // re-parented) descendant.
+        join_drainers_bounded(drainers, Duration::from_secs(2));
 
         let mut output = collected.lock().unwrap().join("\n");
         if timed_out {
@@ -793,6 +807,47 @@ impl Executor {
             }
         }
         PathBuf::from(p)
+    }
+}
+
+/// SIGKILL an entire process group (`-pgid`). Used to tear down a captured
+/// command's whole subtree on timeout/completion. A missing group (ESRCH) is
+/// fine — it just means everything already exited.
+fn kill_process_group(pgid: i32) {
+    if pgid > 1 {
+        // Safety: `kill(2)` with a negative pid targets the process group; it has
+        // no memory-safety implications.
+        unsafe {
+            libc::kill(-pgid, libc::SIGKILL);
+        }
+    }
+}
+
+/// Join the pipe-drainer threads, but never block longer than `grace`. Once the
+/// process group is killed the pipes close and the threads finish promptly; the
+/// bound only guards against a descendant that escaped the kill (e.g. a daemon
+/// that re-parented to pid 1 holding the fd). Any straggler thread is abandoned;
+/// the output collected so far is still returned.
+fn join_drainers_bounded(drainers: Vec<std::thread::JoinHandle<()>>, grace: Duration) {
+    if drainers.is_empty() {
+        return;
+    }
+    let (tx, rx) = std::sync::mpsc::channel();
+    let n = drainers.len();
+    for d in drainers {
+        let tx = tx.clone();
+        std::thread::spawn(move || {
+            let _ = d.join();
+            let _ = tx.send(());
+        });
+    }
+    drop(tx);
+    let deadline = Instant::now() + grace;
+    for _ in 0..n {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if rx.recv_timeout(remaining).is_err() {
+            break;
+        }
     }
 }
 
