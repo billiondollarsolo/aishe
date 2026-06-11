@@ -36,6 +36,24 @@ SCALE = int(sys.argv[2]) if len(sys.argv) > 2 else 1
 TIMEOUT = 20.0
 SEED = 1234
 
+# Per-run results, written to a markdown report under test-results/.
+REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+REPORT_DIR = os.path.join(REPO_ROOT, "test-results")
+RUN = {
+    "start": None,
+    "counts": {},        # kind -> number of cases that passed
+    "samples": {},        # kind -> a few example inputs
+    "fail": None,         # (kind, input, why, recent_output) on failure
+}
+
+
+def _record(case):
+    k = case.get("kind", "?")
+    RUN["counts"][k] = RUN["counts"].get(k, 0) + 1
+    s = RUN["samples"].setdefault(k, [])
+    if len(s) < 6 and case.get("input") and case["input"] not in s:
+        s.append(case["input"])
+
 FORBIDDEN = [
     "parse error", "(eval):", "no matches found",
     "command not found: #", "command not found: ?",
@@ -155,9 +173,78 @@ def make_env(binary):
     return home, env, fakefile
 
 
+def write_report(status, total):
+    import datetime
+    os.makedirs(REPORT_DIR, exist_ok=True)
+    ts = datetime.datetime.utcnow().strftime("%Y%m%dT%H%M%SZ")
+    path = os.path.join(REPORT_DIR, "fuzz-%s.md" % ts)
+    dur = time.monotonic() - RUN["start"] if RUN["start"] else 0.0
+    kind_desc = {
+        "command": "real shell commands (pipes, redirects, globs, quoting, "
+                   "control structures, env vars), output matched exactly",
+        "nl-sigil": "`?`/`#`-forced natural language stuffed with shell "
+                    "metacharacters, must reach the AI and never reach zsh's parser",
+        "adv-cmd": "adversarial model responses (prose, malformed commands), must "
+                   "be surfaced as answers, never eval'd",
+        "adv-danger": "dangerous valid commands, must be held for review, never run",
+    }
+    lines = []
+    lines.append("# aishe zsh-PTY fuzz report")
+    lines.append("")
+    lines.append("- Date: %s" % ts)
+    lines.append("- Binary: `%s`" % BINARY)
+    lines.append("- Scale: %d   Seed: %d" % (SCALE, SEED))
+    lines.append("- Duration: %.1fs" % dur)
+    lines.append("- Result: **%s** (%d cases)" % (status, total))
+    lines.append("")
+    lines.append("Drives the real `aishe zsh` front-end through a pseudo-terminal "
+                 "with a deterministic fake model. After every case it asserts the "
+                 "shell is alive, routing is correct, and none of these ever leak: "
+                 + ", ".join("`%s`" % s for s in FORBIDDEN) + ".")
+    lines.append("")
+    lines.append("## Cases by category")
+    lines.append("")
+    lines.append("| Category | Passed | What it checks |")
+    lines.append("| --- | ---: | --- |")
+    for k in ("command", "nl-sigil", "adv-cmd", "adv-danger"):
+        if k in RUN["counts"]:
+            lines.append("| `%s` | %d | %s |" % (k, RUN["counts"][k], kind_desc.get(k, "")))
+    lines.append("")
+    lines.append("## Example generated inputs")
+    lines.append("")
+    for k in ("command", "nl-sigil", "adv-cmd", "adv-danger"):
+        if RUN["samples"].get(k):
+            lines.append("**%s**" % k)
+            lines.append("")
+            lines.append("```")
+            for s in RUN["samples"][k]:
+                lines.append(s)
+            lines.append("```")
+            lines.append("")
+    if RUN["fail"]:
+        kind, inp, why, recent = RUN["fail"]
+        lines.append("## Failure")
+        lines.append("")
+        lines.append("- Category: `%s`" % kind)
+        lines.append("- Input: `%s`" % inp)
+        lines.append("- Why: %s" % why)
+        lines.append("")
+        lines.append("```")
+        lines.append(recent)
+        lines.append("```")
+    with open(path, "w") as f:
+        f.write("\n".join(lines) + "\n")
+    sys.stdout.write("report: %s\n" % os.path.relpath(path, REPO_ROOT))
+    return path
+
+
 def fail(sh, case, why):
-    sys.stderr.write("\nFAIL [%s]: %s\n  case: %r\n---- recent ----\n%s\n----------------\n"
-                     % (case.get("kind", "?"), why, case.get("input", ""), sh.transcript[-2500:]))
+    import re
+    recent = re.sub(r"\x1b\[[0-9;?]*[A-Za-z]", "", sh.transcript[-2000:])
+    RUN["fail"] = (case.get("kind", "?"), case.get("input", ""), why, recent)
+    sys.stderr.write("\nFAIL [%s]: %s\n  case: %r\n" % (case.get("kind", "?"), why, case.get("input", "")))
+    total = sum(RUN["counts"].values())
+    write_report("FAIL", total)
     sh.close()
     sys.exit(1)
 
@@ -266,6 +353,7 @@ def main():
         sys.exit(1)
 
     rng = random.Random(SEED)
+    RUN["start"] = time.monotonic()
     home, env, fakefile = make_env(BINARY)
 
     def set_fake(payload):
@@ -290,6 +378,7 @@ def main():
             check_invariants(sh, case)
             if not ok:
                 fail(sh, case, "expected command output %r not seen" % case["want"])
+            _record(case)
             ran += 1
 
         # ---- sigil NL: a fixed fake answer; must always route, never error ----
@@ -302,6 +391,7 @@ def main():
             check_invariants(sh, case)
             if not ok:
                 fail(sh, case, "sigil NL did not reach the AI")
+            _record(case)
             ran += 1
 
         # ---- adversarial model responses: never an eval/parse error ----
@@ -314,6 +404,7 @@ def main():
             sh.drain_until_quiet()
             check_invariants(sh, case)  # the real invariant: no parse/glob/eval error
             sh.clear_line()  # drop any pre-filled buffer before the next case
+            _record(case)
             ran += 1
 
         set_fake("")
@@ -322,6 +413,7 @@ def main():
             fail(sh, {"kind": "final"}, "shell unresponsive after fuzzing")
         sys.stdout.write("OK: %d generated cases passed (scale=%d), no invariant breaches.\n"
                          % (ran, SCALE))
+        write_report("PASS", ran)
     finally:
         sh.close()
         shutil.rmtree(home, ignore_errors=True)
