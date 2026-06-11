@@ -7,6 +7,15 @@ breaking changes can land in any release.
 ## [Unreleased]
 
 ### Added
+- **First-run wizard: service presets and an endpoint prompt.** Choosing an
+  OpenAI-compatible provider now asks which service (OpenAI, Groq, OpenRouter,
+  Together, Ollama, or a custom endpoint) and confirms the API endpoint (base
+  URL), pre-filled from the preset along with a sensible default model and key
+  env var. This fixes setup for non-OpenAI services like Groq, which previously
+  always defaulted to `https://api.openai.com`. The wizard also prints a summary,
+  normalizes the base URL (adds a scheme, trims a trailing slash), and is skipped
+  with a default config written when aishe is not run interactively (a hook, a
+  pipe, CI), so it never hangs.
 - **Linux releases and packages.** The release workflow now produces, for every
   `v*` tag: static-musl and aarch64 Linux tarballs (built with `cargo-zigbuild`)
   in addition to the existing gnu/macOS ones; `.deb` and `.rpm` packages for

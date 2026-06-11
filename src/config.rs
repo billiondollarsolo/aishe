@@ -1,7 +1,7 @@
 //! Configuration: TOML at `~/.config/aishe/config.toml`, with an interactive
 //! first-run wizard when missing and graceful recovery when malformed.
 
-use std::io::Write;
+use std::io::{IsTerminal, Write};
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
@@ -370,7 +370,21 @@ impl Config {
             if let Some(cfg) = Self::migrate_legacy(&path)? {
                 return Ok(cfg);
             }
-            let cfg = run_wizard()?;
+            // Only prompt when attached to a terminal. Run from a hook, a pipe,
+            // or CI, the wizard would read EOF and silently pick defaults (or
+            // hang); instead write a default config and tell the user how to set
+            // it up properly.
+            let cfg = if std::io::stdin().is_terminal() {
+                run_wizard()?
+            } else {
+                eprintln!(
+                    "aishe: no config at {} and not running interactively; \
+                     writing defaults. Run `aishe` in a terminal to choose your \
+                     provider, model, and endpoint, or edit the file directly.",
+                    path.display()
+                );
+                Config::default()
+            };
             cfg.save()?;
             println!("Saved config to {}", path.display());
             return Ok(cfg);
@@ -475,6 +489,61 @@ impl Config {
     }
 }
 
+/// Known OpenAI-compatible services: (key, label, base_url, default_model,
+/// key_env). `base_url` is the host root; aishe appends `/v1/chat/completions`,
+/// so it must not include `/v1`. "other" is the escape hatch for any endpoint.
+const OPENAI_PRESETS: &[(&str, &str, &str, &str, &str)] = &[
+    (
+        "openai",
+        "OpenAI",
+        "https://api.openai.com",
+        "gpt-4o",
+        "OPENAI_API_KEY",
+    ),
+    (
+        "groq",
+        "Groq",
+        "https://api.groq.com/openai",
+        "llama-3.3-70b-versatile",
+        "GROQ_API_KEY",
+    ),
+    (
+        "openrouter",
+        "OpenRouter",
+        "https://openrouter.ai/api",
+        "openai/gpt-4o",
+        "OPENROUTER_API_KEY",
+    ),
+    (
+        "together",
+        "Together AI",
+        "https://api.together.xyz",
+        "meta-llama/Llama-3.3-70B-Instruct-Turbo",
+        "TOGETHER_API_KEY",
+    ),
+    (
+        "ollama",
+        "Ollama (local)",
+        "http://localhost:11434",
+        "llama3.1",
+        "OLLAMA_API_KEY",
+    ),
+    ("other", "Other / custom endpoint", "", "", "OPENAI_API_KEY"),
+];
+
+/// Tidy a user-entered base URL: trim spaces and a trailing slash, and add a
+/// scheme if the user omitted one (so "localhost:11434" still works).
+fn normalize_base_url(input: &str) -> String {
+    let s = input.trim().trim_end_matches('/');
+    if s.is_empty() {
+        "https://api.openai.com".to_string()
+    } else if s.contains("://") {
+        s.to_string()
+    } else {
+        format!("https://{s}")
+    }
+}
+
 fn run_wizard() -> Result<Config> {
     println!("\n  aishe — first-run setup\n  ───────────────────────");
     let mut cfg = Config::default();
@@ -483,28 +552,63 @@ fn run_wizard() -> Result<Config> {
         "Provider",
         &[
             ("anthropic", "Anthropic (Claude)"),
-            ("openai", "OpenAI-compatible (OpenAI, Ollama, …)"),
+            (
+                "openai",
+                "OpenAI-compatible (OpenAI, Groq, OpenRouter, Together, Ollama, …)",
+            ),
         ],
         "anthropic",
     )?;
     cfg.aishe.provider = provider.clone();
 
-    let default_env = if provider == "openai" {
-        "OPENAI_API_KEY"
-    } else {
-        "ANTHROPIC_API_KEY"
-    };
-    let key_env = prompt_text(
-        &format!("Env var holding your API key [{default_env}]"),
-        default_env,
-    )?;
+    // Provider-specific details. For OpenAI-compatible services the endpoint
+    // (base URL) is what distinguishes Groq / OpenRouter / Ollama / ... from
+    // OpenAI, so always confirm it, pre-filled from the chosen preset.
+    if provider == "openai" {
+        let preset_opts: Vec<(&str, &str)> = OPENAI_PRESETS.iter().map(|p| (p.0, p.1)).collect();
+        let preset = prompt_choice("Service", &preset_opts, "openai")?;
+        let row = OPENAI_PRESETS
+            .iter()
+            .find(|p| p.0 == preset.as_str())
+            .copied()
+            .unwrap_or(OPENAI_PRESETS[0]);
+        let (_, _, def_base, def_model, def_key_env) = row;
 
-    let default_model = if provider == "openai" {
-        "gpt-4o"
+        let base_default = if def_base.is_empty() {
+            "https://api.openai.com"
+        } else {
+            def_base
+        };
+        let base_url = prompt_text(
+            &format!("API endpoint (base URL) [{base_default}]"),
+            base_default,
+        )?;
+        cfg.providers.openai.base_url = normalize_base_url(&base_url);
+
+        let key_env = prompt_text(
+            &format!("Env var holding your API key [{def_key_env}]"),
+            def_key_env,
+        )?;
+        cfg.providers.openai.api_key_env = key_env;
+
+        let model_default = if def_model.is_empty() {
+            "gpt-4o"
+        } else {
+            def_model
+        };
+        let model = prompt_text(&format!("Model [{model_default}]"), model_default)?;
+        cfg.providers.openai.model = model;
     } else {
-        "claude-sonnet-4-20250514"
-    };
-    let model = prompt_text(&format!("Model [{default_model}]"), default_model)?;
+        let key_env = prompt_text(
+            "Env var holding your API key [ANTHROPIC_API_KEY]",
+            "ANTHROPIC_API_KEY",
+        )?;
+        cfg.providers.anthropic.api_key_env = key_env;
+
+        let default_model = "claude-sonnet-4-20250514";
+        let model = prompt_text(&format!("Model [{default_model}]"), default_model)?;
+        cfg.providers.anthropic.model = model;
+    }
 
     let mode = prompt_choice(
         "Default mode",
@@ -517,25 +621,32 @@ fn run_wizard() -> Result<Config> {
     )?;
     cfg.aishe.mode = mode;
 
-    if provider == "openai" {
-        cfg.providers.openai.api_key_env = key_env;
-        cfg.providers.openai.model = model;
+    // Recap what was chosen, and flag a missing API key before they hit it.
+    let (active_env, active_base, active_model) = if provider == "openai" {
+        (
+            cfg.providers.openai.api_key_env.as_str(),
+            cfg.providers.openai.base_url.as_str(),
+            cfg.providers.openai.model.as_str(),
+        )
     } else {
-        cfg.providers.anthropic.api_key_env = key_env;
-        cfg.providers.anthropic.model = model;
-    }
+        (
+            cfg.providers.anthropic.api_key_env.as_str(),
+            cfg.providers.anthropic.base_url.as_str(),
+            cfg.providers.anthropic.model.as_str(),
+        )
+    };
+    println!("\n  Summary");
+    println!("    provider: {provider}");
+    println!("    endpoint: {active_base}");
+    println!("    model:    {active_model}");
+    println!("    API key:  ${active_env}");
 
-    if std::env::var(default_env)
-        .map(|v| v.trim().is_empty())
-        .unwrap_or(true)
-    {
-        let env_name = if provider == "openai" {
-            &cfg.providers.openai.api_key_env
-        } else {
-            &cfg.providers.anthropic.api_key_env
-        };
+    let key_set = std::env::var(active_env)
+        .map(|v| !v.trim().is_empty())
+        .unwrap_or(false);
+    if !key_set {
         println!(
-            "\n  Note: ${env_name} is not set. Export it before using LLM features:\n    export {env_name}=...\n"
+            "\n  Note: ${active_env} is not set. Export it before using LLM features:\n    export {active_env}=...\n"
         );
     }
 
@@ -594,6 +705,41 @@ fn prompt_yes_no(label: &str) -> Result<bool> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn normalize_base_url_cases() {
+        assert_eq!(
+            normalize_base_url("https://api.groq.com/openai/"),
+            "https://api.groq.com/openai"
+        );
+        assert_eq!(normalize_base_url("  https://x.test  "), "https://x.test");
+        // A missing scheme gets https://; a bare host:port still works.
+        assert_eq!(
+            normalize_base_url("localhost:11434"),
+            "https://localhost:11434"
+        );
+        assert_eq!(
+            normalize_base_url("http://localhost:11434"),
+            "http://localhost:11434"
+        );
+        // Empty falls back to the OpenAI default.
+        assert_eq!(normalize_base_url("   "), "https://api.openai.com");
+    }
+
+    #[test]
+    fn openai_presets_are_well_formed() {
+        for (key, label, base, _model, key_env) in OPENAI_PRESETS {
+            assert!(!key.is_empty() && !label.is_empty() && !key_env.is_empty());
+            if *key == "other" {
+                continue; // intentionally blank base/model (prompted)
+            }
+            // base_url is the host root; the provider appends /v1, so presets
+            // must not bake it in.
+            assert!(base.contains("://"), "{key} base needs a scheme");
+            assert!(!base.ends_with("/v1"), "{key} base must not include /v1");
+            assert!(!base.ends_with('/'), "{key} base must not end with a slash");
+        }
+    }
 
     #[test]
     fn defaults_round_trip() {

@@ -189,11 +189,22 @@ jobs:
           ( cd dist && for f in *.deb *.rpm; do sha256sum "$f" > "$f.sha256"; done )
           ls -l dist/*.deb dist/*.rpm
 
+      # The packaging job runs last, so it sets the release body once (replacing,
+      # not appending) to a clean, deterministic description.
       - name: Attach packages to GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.ver.outputs.tag }}
-          generate_release_notes: true
+          append_body: false
+          body: |
+            aishe ${{ steps.ver.outputs.tag }}
+
+            Prebuilt binaries (Linux x86_64/aarch64 in gnu and static musl;
+            macOS arm64/x86_64) and Linux packages (.deb / .rpm for amd64 and
+            arm64) are attached below, each with a .sha256 checksum.
+
+            Install guide: https://github.com/billiondollarsolo/aishe/blob/main/docs/installation.md
+            Changelog: https://github.com/billiondollarsolo/aishe/blob/main/CHANGELOG.md
           files: |
             dist/*.deb
             dist/*.rpm

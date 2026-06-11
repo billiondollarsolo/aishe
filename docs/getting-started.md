@@ -26,10 +26,19 @@ aishe
 
 It asks for:
 
-- the provider (anthropic or openai),
+- the provider (anthropic or openai-compatible),
+- for an OpenAI-compatible provider, the **service** (OpenAI, Groq, OpenRouter,
+  Together, Ollama, or a custom endpoint) and the **API endpoint (base URL)**,
+  pre-filled from the chosen service,
 - the environment variable that holds your API key,
 - the model,
 - the default mode.
+
+The endpoint prompt is what lets you point at Groq, Ollama, or any other
+OpenAI-compatible service instead of OpenAI; pick the service and the base URL
+and model are filled in for you (editable). When aishe is not run from a
+terminal (a hook, a pipe, CI), the wizard is skipped and a default config is
+written instead, so it never blocks.
 
 You can re-run any of these later with the meta commands, or edit the config file
 directly. A fully annotated example config is at
