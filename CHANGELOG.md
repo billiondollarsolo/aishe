@@ -6,6 +6,13 @@ breaking changes can land in any release.
 
 ## [Unreleased]
 
+### Fixed
+- **Auto mode no longer evals a non-command.** When the model answered a question
+  with prose (or returned a malformed command) in `auto` mode, the hook ran it
+  through `eval`, producing an ugly `parse error` and pushing the junk into shell
+  history. The hook now syntax-checks the command first (`zsh -nc` / `bash -nc`)
+  and pre-fills it for review instead of eval'ing it when it is not valid shell.
+
 ## [0.1.5] - 2026-06-11
 
 ### Fixed

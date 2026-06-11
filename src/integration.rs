@@ -107,8 +107,18 @@ aishe_precmd() {
   command rm -f "$AISHE_PENDING_FILE"
   [[ -z "$cmd" ]] && return
   case "$action" in
-    run)  print -s -- "$cmd"; eval "$cmd" ;;  # main shell: cd/export persist
-    *)    print -z -- "$cmd" ;;               # pre-fill for confirm/edit
+    run)
+      # Only eval a syntactically valid command. If the model answered a question
+      # with prose (or returned a malformed command), eval would print an ugly
+      # parse error and pollute history; pre-fill it for review instead.
+      if command zsh -nc -- "$cmd" 2>/dev/null; then
+        print -s -- "$cmd"   # main shell: cd/export persist; record in history
+        eval "$cmd"
+      else
+        print -z -- "$cmd"
+      fi
+      ;;
+    *)  print -z -- "$cmd" ;;                 # pre-fill for confirm/edit
   esac
 }
 
@@ -260,7 +270,15 @@ __aishe_prompt() {
   command rm -f "$AISHE_PENDING_FILE"
   [ -z "$cmd" ] && return
   if [ "$action" = run ]; then
-    history -s "$cmd"; eval "$cmd"
+    # Only eval a syntactically valid command (a question answered as prose, or a
+    # malformed command, would otherwise print a parse error and pollute history).
+    if command bash -nc "$cmd" 2>/dev/null; then
+      history -s "$cmd"; eval "$cmd"
+    else
+      printf 'aishe suggests: %s  (Ctrl-X Ctrl-R to recall)\n' "$cmd"
+      export AISHE_PENDING="$cmd"
+      bind '"\C-x\C-r": "\C-a\C-k$AISHE_PENDING"' 2>/dev/null
+    fi
   else
     printf 'aishe suggests: %s  (Ctrl-X Ctrl-R to recall)\n' "$cmd"
     export AISHE_PENDING="$cmd"
