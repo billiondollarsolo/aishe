@@ -69,9 +69,11 @@ fn mcp_handshake_list_and_call() {
     configs.insert(
         "demo".to_string(),
         McpServerConfig {
-            command: py.to_string(),
+            command: Some(py.to_string()),
             args: vec![server.to_string_lossy().to_string()],
             env: BTreeMap::new(),
+            url: None,
+            headers: BTreeMap::new(),
             enabled: true,
         },
     );
@@ -113,9 +115,11 @@ fn mcp_bad_command_is_skipped() {
     configs.insert(
         "broken".to_string(),
         McpServerConfig {
-            command: "this-binary-does-not-exist-aishe".to_string(),
+            command: Some("this-binary-does-not-exist-aishe".to_string()),
             args: vec![],
             env: BTreeMap::new(),
+            url: None,
+            headers: BTreeMap::new(),
             enabled: true,
         },
     );

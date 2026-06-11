@@ -33,17 +33,28 @@ pub struct Config {
     pub mcp_servers: std::collections::BTreeMap<String, McpServerConfig>,
 }
 
-/// A configured MCP stdio server: the command to launch and its environment.
+/// A configured MCP server. Either a stdio server (launched via `command`) or a
+/// Streamable HTTP server (reached at `url`). A server is HTTP when `url` is set;
+/// otherwise it is stdio. If neither is set the server is invalid and skipped.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct McpServerConfig {
-    /// Executable to spawn (e.g. `npx`, `uvx`, or an absolute path).
-    pub command: String,
-    /// Arguments passed to the command.
+    /// Executable to spawn for a stdio server (e.g. `npx`, `uvx`, or an absolute
+    /// path). Optional: omit it for an HTTP server.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub command: Option<String>,
+    /// Arguments passed to the command (stdio servers only).
     #[serde(default)]
     pub args: Vec<String>,
-    /// Extra environment variables for the server process.
+    /// Extra environment variables for the server process (stdio servers only).
     #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     pub env: std::collections::BTreeMap<String, String>,
+    /// Endpoint URL for an MCP Streamable HTTP server. When set, the server is
+    /// reached over HTTP instead of stdio.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
+    /// Extra HTTP request headers for an HTTP server (e.g. `Authorization`).
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub headers: std::collections::BTreeMap<String, String>,
     /// Connect to this server. On by default; set `false` to keep it configured
     /// but disabled.
     #[serde(default = "default_true")]

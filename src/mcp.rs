@@ -1,16 +1,22 @@
-//! Minimal MCP (Model Context Protocol) client. Spawns the stdio servers named
+//! Minimal MCP (Model Context Protocol) client. Connects to the servers named
 //! in `[mcp_servers]`, does the JSON-RPC handshake, lists their tools, and
 //! proxies `tools/call`. Tools are exposed to the yolo loop under a namespaced
 //! name (`mcp__<server>__<tool>`) so the whole MCP ecosystem plugs in alongside
 //! the built-in tools.
 //!
-//! The transport is newline-delimited JSON-RPC 2.0 over the child's stdin/stdout
-//! (the MCP stdio transport). Each server runs on its own reader thread; calls
-//! are synchronous request/response, matched by id, with a timeout so a wedged
-//! server can't hang the shell. Servers are killed when the registry drops.
+//! Two transports are supported behind a small [`Transport`] abstraction:
+//!
+//! - **stdio**: newline-delimited JSON-RPC 2.0 over a child process's
+//!   stdin/stdout. Each server runs on its own reader thread; calls are
+//!   synchronous request/response, matched by id, with a timeout so a wedged
+//!   server can't hang the shell. The child is killed when the registry drops.
+//! - **Streamable HTTP**: JSON-RPC 2.0 POSTed to a URL, with the response
+//!   delivered either as a single JSON object or as a `text/event-stream` (SSE)
+//!   we read until the matching id arrives. The `Mcp-Session-Id` returned by
+//!   `initialize` is echoed on later requests.
 
 use std::collections::BTreeMap;
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader, Read, Write};
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::mpsc::{self, Receiver};
 use std::sync::Mutex;
@@ -26,8 +32,15 @@ use crate::providers::ToolDef;
 /// they only speak an older one.
 const PROTOCOL_VERSION: &str = "2025-06-18";
 
-/// How long a single request waits for its matching response before giving up.
+/// How long a single stdio request waits for its matching response before giving up.
 const RPC_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// HTTP connect timeout for the Streamable HTTP transport.
+const HTTP_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// HTTP read timeout for the Streamable HTTP transport (also bounds how long we
+/// wait on an SSE stream for the matching response).
+const HTTP_READ_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// A tool advertised by an MCP server (its real name, as the server knows it).
 struct McpTool {
@@ -36,22 +49,23 @@ struct McpTool {
     schema: Value,
 }
 
-/// One connected MCP server: the child process, its stdin, and a channel fed by
-/// a reader thread parsing the server's stdout lines into JSON values.
-struct McpServer {
+/// The stdio transport: a child process, its stdin, and a channel fed by a
+/// reader thread parsing the server's stdout lines into JSON values.
+struct StdioTransport {
     child: Child,
     stdin: ChildStdin,
     rx: Receiver<Value>,
     next_id: u64,
-    tools: Vec<McpTool>,
 }
 
-impl McpServer {
-    /// Spawn the server process, run the initialize handshake, and load its tool
-    /// list. Returns an error string on any failure (bad command, protocol
-    /// error, timeout) so the caller can skip just this server.
+impl StdioTransport {
+    /// Spawn the server process and start its stdout reader thread.
     fn spawn(cfg: &McpServerConfig) -> Result<Self, String> {
-        let mut cmd = Command::new(&cfg.command);
+        let command = cfg
+            .command
+            .as_deref()
+            .ok_or("stdio server has no `command`")?;
+        let mut cmd = Command::new(command);
         cmd.args(&cfg.args)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -59,9 +73,7 @@ impl McpServer {
         for (k, v) in &cfg.env {
             cmd.env(k, v);
         }
-        let mut child = cmd
-            .spawn()
-            .map_err(|e| format!("spawn `{}`: {e}", cfg.command))?;
+        let mut child = cmd.spawn().map_err(|e| format!("spawn `{command}`: {e}"))?;
         let stdin = child.stdin.take().ok_or("no stdin")?;
         let stdout = child.stdout.take().ok_or("no stdout")?;
 
@@ -82,16 +94,12 @@ impl McpServer {
             }
         });
 
-        let mut server = McpServer {
+        Ok(StdioTransport {
             child,
             stdin,
             rx,
             next_id: 1,
-            tools: Vec::new(),
-        };
-        server.initialize()?;
-        server.load_tools()?;
-        Ok(server)
+        })
     }
 
     /// Write one JSON-RPC message followed by a newline.
@@ -121,14 +129,7 @@ impl McpServer {
                     if v.get("id").and_then(value_id) != Some(id) {
                         continue; // notification or a different id
                     }
-                    if let Some(err) = v.get("error") {
-                        let msg = err
-                            .get("message")
-                            .and_then(|m| m.as_str())
-                            .unwrap_or("unknown error");
-                        return Err(format!("{method}: {msg}"));
-                    }
-                    return Ok(v.get("result").cloned().unwrap_or(Value::Null));
+                    return result_from_response(method, &v);
                 }
                 Err(_) => return Err(format!("{method}: timed out")),
             }
@@ -138,6 +139,158 @@ impl McpServer {
     /// Send a notification (no id, no response expected).
     fn notify(&mut self, method: &str, params: Value) -> Result<(), String> {
         self.send(&json!({"jsonrpc": "2.0", "method": method, "params": params}))
+    }
+}
+
+impl Drop for StdioTransport {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
+/// The Streamable HTTP transport: JSON-RPC POSTed to a URL. Each request opens a
+/// fresh HTTP call whose body is one JSON-RPC object; the reply comes back as a
+/// single JSON object or as an SSE stream we scan for the matching id.
+struct HttpTransport {
+    agent: ureq::Agent,
+    url: String,
+    headers: BTreeMap<String, String>,
+    /// `Mcp-Session-Id` captured from the `initialize` response, echoed on later
+    /// requests once known.
+    session_id: Option<String>,
+    next_id: u64,
+}
+
+impl HttpTransport {
+    fn new(cfg: &McpServerConfig) -> Result<Self, String> {
+        let url = cfg.url.as_deref().ok_or("HTTP server has no `url`")?;
+        let agent = ureq::AgentBuilder::new()
+            .timeout_connect(HTTP_CONNECT_TIMEOUT)
+            .timeout_read(HTTP_READ_TIMEOUT)
+            .build();
+        Ok(HttpTransport {
+            agent,
+            url: url.to_string(),
+            headers: cfg.headers.clone(),
+            session_id: None,
+            next_id: 1,
+        })
+    }
+
+    /// Build a POST request with the standard MCP headers plus any configured
+    /// extras and the session id (when known).
+    fn post(&self) -> ureq::Request {
+        let mut req = self
+            .agent
+            .post(&self.url)
+            .set("Content-Type", "application/json")
+            .set("Accept", "application/json, text/event-stream");
+        for (k, v) in &self.headers {
+            req = req.set(k, v);
+        }
+        if let Some(sid) = &self.session_id {
+            req = req.set("Mcp-Session-Id", sid);
+        }
+        req
+    }
+
+    fn request(&mut self, method: &str, params: Value) -> Result<Value, String> {
+        let id = self.next_id;
+        self.next_id += 1;
+        let body = json!({"jsonrpc": "2.0", "id": id, "method": method, "params": params});
+        let resp = self
+            .post()
+            .send_json(body)
+            .map_err(|e| format!("{method}: {}", http_error(e)))?;
+
+        // The session id is established by the initialize response; remember it.
+        if self.session_id.is_none() {
+            if let Some(sid) = resp.header("Mcp-Session-Id") {
+                if !sid.is_empty() {
+                    self.session_id = Some(sid.to_string());
+                }
+            }
+        }
+
+        let content_type = resp.header("Content-Type").unwrap_or("").to_string();
+        let mut reader = BufReader::new(resp.into_reader());
+        let mut text = String::new();
+        reader
+            .read_to_string(&mut text)
+            .map_err(|e| format!("{method}: {e}"))?;
+        parse_response_body(method, id, &text, &content_type)
+    }
+
+    fn notify(&mut self, method: &str, params: Value) -> Result<(), String> {
+        let body = json!({"jsonrpc": "2.0", "method": method, "params": params});
+        // A notification has no id; any 2xx (typically 202 Accepted) is success,
+        // and ureq surfaces non-2xx as an error.
+        self.post()
+            .send_json(body)
+            .map(|_| ())
+            .map_err(|e| format!("{method}: {}", http_error(e)))
+    }
+}
+
+/// The per-server transport. Both variants present the same request/notify API to
+/// [`McpServer`], so the handshake and tool routing are transport-agnostic.
+enum Transport {
+    Stdio(StdioTransport),
+    Http(HttpTransport),
+}
+
+impl Transport {
+    fn request(&mut self, method: &str, params: Value) -> Result<Value, String> {
+        match self {
+            Transport::Stdio(t) => t.request(method, params),
+            Transport::Http(t) => t.request(method, params),
+        }
+    }
+
+    fn notify(&mut self, method: &str, params: Value) -> Result<(), String> {
+        match self {
+            Transport::Stdio(t) => t.notify(method, params),
+            Transport::Http(t) => t.notify(method, params),
+        }
+    }
+}
+
+/// One connected MCP server: its transport plus the loaded tool list. The
+/// handshake and routing are identical across transports.
+struct McpServer {
+    transport: Transport,
+    tools: Vec<McpTool>,
+}
+
+impl McpServer {
+    /// Connect to the server, run the initialize handshake, and load its tool
+    /// list. A server with a `url` uses the HTTP transport; otherwise it spawns a
+    /// stdio child. Returns an error string on any failure (bad command, network
+    /// error, protocol error, timeout) so the caller can skip just this server.
+    fn connect(cfg: &McpServerConfig) -> Result<Self, String> {
+        let transport = if cfg.url.is_some() {
+            Transport::Http(HttpTransport::new(cfg)?)
+        } else if cfg.command.is_some() {
+            Transport::Stdio(StdioTransport::spawn(cfg)?)
+        } else {
+            return Err("no `command` or `url` configured".to_string());
+        };
+        let mut server = McpServer {
+            transport,
+            tools: Vec::new(),
+        };
+        server.initialize()?;
+        server.load_tools()?;
+        Ok(server)
+    }
+
+    fn request(&mut self, method: &str, params: Value) -> Result<Value, String> {
+        self.transport.request(method, params)
+    }
+
+    fn notify(&mut self, method: &str, params: Value) -> Result<(), String> {
+        self.transport.notify(method, params)
     }
 
     /// The MCP handshake: `initialize`, then the `initialized` notification.
@@ -195,10 +348,99 @@ impl McpServer {
     }
 }
 
-impl Drop for McpServer {
-    fn drop(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
+/// Extract the `result` from a parsed JSON-RPC response object, or turn its
+/// `error` into an error string prefixed with the method name.
+fn result_from_response(method: &str, v: &Value) -> Result<Value, String> {
+    if let Some(err) = v.get("error") {
+        let msg = err
+            .get("message")
+            .and_then(|m| m.as_str())
+            .unwrap_or("unknown error");
+        return Err(format!("{method}: {msg}"));
+    }
+    Ok(v.get("result").cloned().unwrap_or(Value::Null))
+}
+
+/// Parse an HTTP transport response body into a JSON-RPC result. A
+/// `text/event-stream` content type is scanned for the SSE event whose JSON-RPC
+/// id matches `id`; any other (e.g. `application/json`) body is parsed as a
+/// single JSON-RPC response object.
+fn parse_response_body(
+    method: &str,
+    id: u64,
+    body: &str,
+    content_type: &str,
+) -> Result<Value, String> {
+    if content_type
+        .to_ascii_lowercase()
+        .contains("text/event-stream")
+    {
+        let msg = sse_message_for_id(body, id)
+            .ok_or_else(|| format!("{method}: no SSE response for id {id}"))?;
+        result_from_response(method, &msg)
+    } else {
+        let v: Value = serde_json::from_str(body.trim()).map_err(|e| format!("{method}: {e}"))?;
+        result_from_response(method, &v)
+    }
+}
+
+/// Scan an SSE body for the `data:` event carrying a JSON-RPC message whose id
+/// matches `id`, ignoring notifications and unrelated ids. SSE allows a single
+/// event to span multiple `data:` lines; we join them per event (separated by a
+/// blank line) before parsing.
+fn sse_message_for_id(body: &str, id: u64) -> Option<Value> {
+    let mut data = String::new();
+    let consider = |data: &str| -> Option<Value> {
+        let trimmed = data.trim();
+        if trimmed.is_empty() {
+            return None;
+        }
+        let v: Value = serde_json::from_str(trimmed).ok()?;
+        if v.get("id").and_then(value_id) == Some(id) {
+            Some(v)
+        } else {
+            None
+        }
+    };
+    for line in body.lines() {
+        if let Some(rest) = line.strip_prefix("data:") {
+            if !data.is_empty() {
+                data.push('\n');
+            }
+            data.push_str(rest.trim_start());
+        } else if line.trim().is_empty() {
+            // Event boundary: try the accumulated data, then reset.
+            if let Some(v) = consider(&data) {
+                return Some(v);
+            }
+            data.clear();
+        }
+    }
+    consider(&data)
+}
+
+/// Map a ureq error to a concise message, including the status and any JSON-RPC
+/// error message in the error body.
+fn http_error(e: ureq::Error) -> String {
+    match e {
+        ureq::Error::Status(status, resp) => {
+            let body = resp.into_string().unwrap_or_default();
+            let detail = serde_json::from_str::<Value>(body.trim())
+                .ok()
+                .and_then(|v| {
+                    v.get("error")
+                        .and_then(|er| er.get("message"))
+                        .and_then(|m| m.as_str())
+                        .map(|s| s.to_string())
+                })
+                .unwrap_or_else(|| body.trim().chars().take(200).collect());
+            if detail.is_empty() {
+                format!("HTTP {status}")
+            } else {
+                format!("HTTP {status}: {detail}")
+            }
+        }
+        other => other.to_string(),
     }
 }
 
@@ -289,7 +531,7 @@ impl McpRegistry {
             if !cfg.enabled {
                 continue;
             }
-            match McpServer::spawn(cfg) {
+            match McpServer::connect(cfg) {
                 Ok(server) => {
                     for tool in &server.tools {
                         let exposed = sanitize(&format!("mcp__{name}__{}", tool.name));
@@ -397,6 +639,68 @@ mod tests {
     fn is_mcp_tool_prefix() {
         assert!(is_mcp_tool("mcp__fs__read_file"));
         assert!(!is_mcp_tool("read_file"));
+    }
+
+    #[test]
+    fn parses_json_response_body() {
+        let body = r#"{"jsonrpc":"2.0","id":1,"result":{"tools":[]}}"#;
+        let r = parse_response_body("tools/list", 1, body, "application/json").unwrap();
+        assert_eq!(r, json!({"tools": []}));
+    }
+
+    #[test]
+    fn parses_json_response_with_charset() {
+        // A Content-Type carrying parameters is still treated as JSON.
+        let body = r#"{"jsonrpc":"2.0","id":7,"result":{"ok":true}}"#;
+        let r = parse_response_body("x", 7, body, "application/json; charset=utf-8").unwrap();
+        assert_eq!(r, json!({"ok": true}));
+    }
+
+    #[test]
+    fn json_error_response_is_an_err() {
+        let body = r#"{"jsonrpc":"2.0","id":1,"error":{"code":-32601,"message":"no method"}}"#;
+        let e = parse_response_body("tools/call", 1, body, "application/json").unwrap_err();
+        assert!(e.contains("no method"), "got: {e}");
+    }
+
+    #[test]
+    fn picks_sse_event_with_matching_id() {
+        // Multiple data events; only id 5 matches, and notifications/other ids are
+        // skipped.
+        let body = "event: message\n\
+                    data: {\"jsonrpc\":\"2.0\",\"method\":\"notifications/progress\"}\n\
+                    \n\
+                    data: {\"jsonrpc\":\"2.0\",\"id\":4,\"result\":{\"wrong\":true}}\n\
+                    \n\
+                    data: {\"jsonrpc\":\"2.0\",\"id\":5,\"result\":{\"right\":true}}\n\
+                    \n";
+        let r = parse_response_body("tools/call", 5, body, "text/event-stream").unwrap();
+        assert_eq!(r, json!({"right": true}));
+    }
+
+    #[test]
+    fn sse_extracts_by_id_directly() {
+        let body = "data: {\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"value\":42}}\n\n";
+        let v = sse_message_for_id(body, 2).unwrap();
+        assert_eq!(v.get("result").unwrap(), &json!({"value": 42}));
+        // No event matches a different id.
+        assert!(sse_message_for_id(body, 99).is_none());
+    }
+
+    #[test]
+    fn sse_missing_id_is_an_err() {
+        let body = "data: {\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{}}\n\n";
+        let e = parse_response_body("tools/list", 2, body, "text/event-stream").unwrap_err();
+        assert!(e.contains("no SSE response"), "got: {e}");
+    }
+
+    #[test]
+    fn sse_handles_multiline_data() {
+        // A single event split across two data: lines is joined before parsing.
+        let body = "data: {\"jsonrpc\":\"2.0\",\n\
+                    data: \"id\":3,\"result\":{\"ok\":1}}\n\n";
+        let v = sse_message_for_id(body, 3).unwrap();
+        assert_eq!(v.get("result").unwrap(), &json!({"ok": 1}));
     }
 
     #[test]

@@ -31,6 +31,25 @@ args = ["mcp-server-git", "--repository", "/home/me/projects/aishe"]
 Servers connect at startup. A server that fails to launch or handshake is
 reported and skipped; it never blocks the shell.
 
+### HTTP servers (Streamable HTTP)
+
+A server reached over HTTP uses `url` instead of `command`. Set `headers` for
+anything the endpoint needs (for example an `Authorization` bearer token):
+
+```toml
+[mcp_servers.remote]
+url = "https://mcp.example.com/mcp"
+headers = { Authorization = "Bearer ${TOKEN}" }   # extra request headers
+# enabled = false                                  # keep configured but disabled
+```
+
+- A server is treated as **HTTP** when `url` is set; otherwise it is a stdio
+  server launched from `command`. A server with neither `command` nor `url` is
+  invalid and is skipped with an error message.
+- `headers` are sent on every request to the endpoint. The value is used as-is,
+  so expand any environment variables yourself before writing the config.
+- `args` and `env` apply only to stdio servers.
+
 ## How tools are exposed
 
 For a server named `filesystem` advertising a `read_file` tool, the model sees a
@@ -55,13 +74,21 @@ MCP tools (yolo mode):
 
 ## Transport and limits
 
-- The transport is the MCP **stdio** transport: newline-delimited JSON-RPC 2.0
-  over the server's stdin/stdout. (HTTP/SSE transports are not supported yet.)
+- Two transports are supported:
+  - **stdio**: newline-delimited JSON-RPC 2.0 over the server's stdin/stdout.
+  - **Streamable HTTP**: JSON-RPC 2.0 POSTed to a `url`. Each request sends
+    `Accept: application/json, text/event-stream`; the server may answer with a
+    single JSON object or with a `text/event-stream` (SSE) stream, which aishe
+    reads until the event whose id matches the request arrives (unrelated
+    notifications and ids are ignored). The `Mcp-Session-Id` returned by the
+    `initialize` response is captured and echoed on every later request and
+    notification. Notifications expect any 2xx (typically `202 Accepted`).
 - aishe performs the `initialize` handshake, sends `notifications/initialized`,
   then `tools/list`. Only **tools** are consumed today (not prompts or
-  resources).
-- Each request waits up to 30 seconds for its response, so a wedged server can't
-  hang the shell. Servers are terminated when aishe exits.
+  resources), on either transport.
+- A stdio request waits up to 30 seconds for its response, so a wedged server
+  can't hang the shell; stdio servers are terminated when aishe exits. HTTP
+  calls use a 10s connect and 30s read timeout.
 - Server-initiated requests (for example sampling) are ignored.
 
 ## Security
