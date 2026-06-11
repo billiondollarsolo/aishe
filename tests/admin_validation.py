@@ -1,31 +1,33 @@
 #!/usr/bin/env python3
 """Repeatable admin / validation harness for aishe.
 
-The report it writes is verbose: every check shows its actual output (or the
-aishe-vs-raw-shell diff on a mismatch), with a per-suite timing table and an
-environment header.
+The report it writes is verbose and GitHub-friendly: a results-by-suite table,
+collapsible per-suite detail, and the actual model output for the NL checks.
+Suites are written in numeric order (1-7) even though the model suite (3) runs
+last so it can be skipped without an API key.
 
-Six suites:
+Seven suites:
   1. Shell pass-through: run ~300 common + edge-case Linux commands & shell
      constructs through `aishe -c` and compare to the raw shell (proves "Linux
      still works like Linux": aishe delegates faithfully). Run with NO api key,
      so anything misrouted to the LLM shows up as a mismatch.
   2. Admin file ops — create/edit/move/permission/archive/delete files via aishe
      and verify the resulting on-disk state.
-  4. Plugins, slash-commands & skills (deterministic) — meta slash-commands
-     (`/commands`, `/skills`, `/config`, `/help`), custom command discovery,
-     `shell:`/`$ARGUMENTS`/`$1`/`$2` templating, no-frontmatter discovery, and
-     project→user override precedence. No model needed.
-  5. Dispatch classification — assert each input routes to shell vs natural
-     language (independent of output determinism). No model needed.
-  6. Config & meta robustness — a config exercising every newer field round-trips
-     through `/config`, `aishe doctor` passes, the repo example config parses, and
-     the new meta commands (`/usage`, `/reset`, `/ghost`, `/help`) behave. No
-     model needed.
   3. Natural language (optional; needs an API key) — suggest / yolo / mode
      switching, custom NL commands, model-invoked skills (progressive
      disclosure), token-usage display, the budget cap, and audit logging against
-     the real model.
+     the real model. The model output is shown in the report.
+  4. Plugins, slash-commands & skills (deterministic) — meta slash-commands,
+     custom command discovery, `shell:`/`$ARGUMENTS`/`$1`/`$2` templating,
+     no-frontmatter discovery, and project→user override precedence.
+  5. Dispatch classification — assert each input routes to shell vs natural
+     language (independent of output determinism).
+  6. Config & meta robustness — a full config round-trips through `/config`,
+     `aishe doctor` passes, the example config parses, the meta commands behave,
+     the `history` builtin reads the log, and CLI/distribution bits
+     (`--version`, `completions`, exit codes, pipe mode).
+  7. MCP client — stdio + HTTP transports, resources/prompts, and real npx/uvx
+     MCP servers (best-effort).
 
 Writes a timestamped Markdown report to test-results/ and prints a summary.
 Designed to be extended: add rows to SHELL_CASES / FILE_OPS / NL_SUGGEST, or
@@ -46,10 +48,33 @@ import tempfile
 import time
 
 
+import re as _re_ansi
+
+_ANSI = _re_ansi.compile(r"\x1b\[[0-9;]*[A-Za-z]")
+
+
+def strip_ansi(s):
+    return _ANSI.sub("", str(s))
+
+
 def trunc(s, n=240):
     """Truncate a value's text for the report, noting how much was dropped."""
     s = str(s)
     return s if len(s) <= n else s[:n] + f"…(+{len(s) - n} chars)"
+
+
+def model_quote(text, limit=700):
+    """Render real model output as an indented Markdown blockquote nested under a
+    list item, so the report shows what the model actually said (ANSI stripped).
+    `None` if empty."""
+    t = strip_ansi(text or "").strip()
+    if not t:
+        return None
+    t = trunc(t, limit)
+    lines = [ln.rstrip() for ln in t.splitlines() if ln.strip()]
+    if not lines:
+        return None
+    return "\n".join("  > " + ln for ln in lines)
 
 BIN = os.path.abspath(sys.argv[1] if len(sys.argv) > 1 else "target/release/aishe")
 RAW_SHELL = shutil.which("zsh") or shutil.which("bash")
@@ -762,6 +787,18 @@ def run(argv, env, cwd=None, timeout=120):
     return p.returncode, p.stdout, p.stderr
 
 
+def run_nl(argv, env, cwd=None, timeout=60, tries=2):
+    """Like `run`, but retry a known Groq quirk where gpt-oss emits a tool call in
+    suggest mode despite `tool_choice=none` (a provider-side 400, not an aishe
+    bug), so the report isn't noisy."""
+    rc, out, err = run(argv, env, cwd=cwd, timeout=timeout)
+    for _ in range(tries - 1):
+        if "Tool choice is none" not in err:
+            break
+        rc, out, err = run(argv, env, cwd=cwd, timeout=timeout)
+    return rc, out, err
+
+
 def main():
     if not os.path.exists(BIN):
         sys.exit(f"binary not found: {BIN}")
@@ -782,35 +819,58 @@ def main():
     install_project_plugins(fixture)  # project-scoped .aishe/ under the cwd
 
     env_local = base_env(cfgroot, with_key=False)
-    report = []
     counts = {}
-    timings = []  # (suite-title, seconds, n-checks)
-    _suite = {"title": None, "t0": None, "n0": 0}
+    suites = []          # per-suite dicts, in execution order; sorted by num at write
+    cur = {"s": None}    # the suite currently being filled
+
+    def _ncount():
+        return sum(v[1] for v in counts.values())
+
+    import re as _re
+
+    def _suite_num(title):
+        m = _re.search(r"Suite\s+(\d+)", title)
+        return int(m.group(1)) if m else 999
 
     def section(title):
         # Close out the previous suite's timing before starting a new one.
-        if _suite["title"] is not None:
-            n = sum(v[1] for v in counts.values()) - _suite["n0"]
-            timings.append((_suite["title"], time.monotonic() - _suite["t0"], n))
-            report.append(f"\n_{n} checks in {time.monotonic() - _suite['t0']:.1f}s_")
-        _suite["title"] = title
-        _suite["t0"] = time.monotonic()
-        _suite["n0"] = sum(v[1] for v in counts.values())
-        report.append(f"\n## {title}\n")
+        if cur["s"] is not None:
+            cur["s"]["secs"] = time.monotonic() - cur["s"]["t0"]
+            cur["s"]["n"] = _ncount() - cur["s"]["n0"]
+        s = {
+            "num": _suite_num(title),
+            "title": title,
+            "lines": [],          # the per-check bullets and subsection headers
+            "t0": time.monotonic(),
+            "n0": _ncount(),
+            "secs": 0.0,
+            "n": 0,
+        }
+        suites.append(s)
+        cur["s"] = s
 
     def close_last_suite():
-        if _suite["title"] is not None:
-            n = sum(v[1] for v in counts.values()) - _suite["n0"]
-            timings.append((_suite["title"], time.monotonic() - _suite["t0"], n))
-            report.append(f"\n_{n} checks in {time.monotonic() - _suite['t0']:.1f}s_")
+        if cur["s"] is not None:
+            cur["s"]["secs"] = time.monotonic() - cur["s"]["t0"]
+            cur["s"]["n"] = _ncount() - cur["s"]["n0"]
+
+    def emit(line):
+        cur["s"]["lines"].append(line)
+
+    # `report` is kept as a name some call sites use; route it to the current suite.
+    class _Report:
+        def append(self, line):
+            emit(line)
+    report = _Report()
 
     def add(name, ok, detail=""):
-        counts[name.split(":")[0]] = counts.get(name.split(":")[0], [0, 0])
-        counts[name.split(":")[0]][1] += 1
+        key = name.split(":")[0]
+        counts.setdefault(key, [0, 0])
+        counts[key][1] += 1
         if ok:
-            counts[name.split(":")[0]][0] += 1
+            counts[key][0] += 1
         mark = "✅" if ok else "❌"
-        report.append(f"- {mark} `{name}` {detail}")
+        emit(f"- {mark} `{name}` {detail}")
         return ok
 
     # ---- Suite 1: shell pass-through (compare to raw shell) ----
@@ -826,10 +886,10 @@ def main():
         else:
             s1_fail += 1
             detail = (
-                f"**MISMATCH**\n"
-                f"    aishe(rc={rc_a}): {trunc(repr(out_a))}\n"
-                f"    raw  (rc={rc_r}): {trunc(repr(out_r))}\n"
-                f"    stderr: {trunc(repr(err_a.strip()))}"
+                f"**MISMATCH**<br>"
+                f"aishe(rc={rc_a}): `{trunc(repr(out_a))}`<br>"
+                f"raw(rc={rc_r}): `{trunc(repr(out_r))}`<br>"
+                f"stderr: `{trunc(repr(err_a.strip()))}`"
             )
         add(f"shell: {cmd}", match, detail)
     for cmd in SMOKE_CASES:
@@ -1005,6 +1065,32 @@ def main():
         "" if "2023-11-14" in out else f"(out={out.strip()[:120]!r})")
     shutil.rmtree(hist_root, ignore_errors=True)
 
+    # 6f. CLI / distribution: --version build metadata, completions, doctor lines,
+    # exit-code propagation, and pipe/script mode.
+    report.append("\n**CLI & distribution:**\n")
+    rc, out, err = run([BIN, "--version"], env_local)
+    add("cli: --version has build metadata", rc == 0 and "aishe 0.1.0" in out and "(" in out,
+        f"→ `{out.strip()}`")
+    rc, out, err = run([BIN, "completions", "zsh"], env_local)
+    add("cli: completions zsh emits a script", rc == 0 and "_aishe" in out)
+    rc, out, err = run([BIN, "completions", "bash"], env_local)
+    add("cli: completions bash emits a script", rc == 0 and "aishe" in out)
+    rc, out, err = run([BIN, "doctor"], env_local)
+    add("cli: doctor shows version/MCP/history",
+        "version: aishe" in out and "MCP servers" in out and "history:" in out)
+    # Exit-code propagation.
+    add("cli: -c '!false' exits 1", run([BIN, "-c", "!false"], env_local)[0] == 1)
+    add("cli: -c '!true' exits 0", run([BIN, "-c", "!true"], env_local)[0] == 0)
+    add("cli: -c 'exit 3' exits 3", run([BIN, "-c", "exit 3"], env_local)[0] == 3)
+    add("cli: -c '!true | false' exits 1", run([BIN, "-c", "!true | false"], env_local)[0] == 1)
+    # Pipe/script mode: each piped line runs like a one-shot command.
+    p = subprocess.run([BIN], env=env_local, cwd=fixture,
+                       input="!echo piped-aa\n!echo piped-bb\n",
+                       capture_output=True, text=True, timeout=30)
+    add("cli: pipe mode runs each line",
+        "piped-aa" in p.stdout and "piped-bb" in p.stdout,
+        f"→ {trunc(repr(p.stdout.strip()), 120)}")
+
     shutil.rmtree(full_root, ignore_errors=True)
 
     # ---- Suite 7: MCP client (deterministic, no model) ----
@@ -1070,6 +1156,49 @@ def main():
     shutil.rmtree(mcp_cfg, ignore_errors=True)
     shutil.rmtree(mcp_root, ignore_errors=True)
 
+    # Real-world MCP servers over npx/uvx (needs network + node/python; best-effort
+    # so the suite stays green offline). server-everything exercises tools,
+    # resources, AND prompts; mcp-server-fetch (uvx) is a second real server.
+    report.append("\n**Real MCP servers (npx/uvx, best-effort):**\n")
+    real_servers = []
+    if shutil.which("npx"):
+        real_servers.append((
+            "everything",
+            f'[mcp_servers.everything]\ncommand = "npx"\n'
+            f'args = ["-y", "@modelcontextprotocol/server-everything"]\n',
+            ["mcp__everything__"],   # exposes echo/add/... tools
+        ))
+    if shutil.which("uvx"):
+        real_servers.append((
+            "fetch",
+            f'[mcp_servers.fetch]\ncommand = "uvx"\nargs = ["mcp-server-fetch"]\n',
+            ["mcp__fetch__"],
+        ))
+    if not real_servers:
+        report.append("- ⏭️  skipped (no npx/uvx on PATH)")
+    for name, block, needles in real_servers:
+        real_cfg = write_config(
+            '[aishe]\nmode = "yolo"\nprovider = "openai"\nfront_end = "reedline"\n'
+            "\n[providers.openai]\n"
+            'base_url = "https://api.groq.com/openai"\napi_key_env = "GROQ_API_KEY"\n'
+            'model = "openai/gpt-oss-120b"\n\n' + block
+        )
+        try:
+            # First run may download the package; give it generous time.
+            rc, out, err = run([BIN, "-c", "/mcp"], base_env(real_cfg, with_key=False), timeout=180)
+            connected = f"MCP server '{name}' connected" in err
+            listed = any(nd in out for nd in needles)
+            if connected and listed:
+                add(f"mcp-real: {name} connects and lists tools", True,
+                    f"→ {trunc(repr([l for l in out.splitlines() if 'mcp__'+name in l][:3]))}")
+            else:
+                # Network/registry hiccup: report as skipped, not failed.
+                report.append(f"- ⏭️  `mcp-real: {name}` unavailable "
+                              f"(connected={connected}; err={trunc(repr(err.strip()), 160)})")
+        except subprocess.TimeoutExpired:
+            report.append(f"- ⏭️  `mcp-real: {name}` timed out (download/network)")
+        shutil.rmtree(real_cfg, ignore_errors=True)
+
     # ---- Suite 3: natural language (needs key) ----
     section("Suite 3 — Natural language (real model)")
     k = key()
@@ -1078,22 +1207,26 @@ def main():
     else:
         env_llm = base_env(cfgroot, with_key=True)
         report.append(f"\n_Model: openai/gpt-oss-120b via Groq_\n")
-        # suggest: expect a non-empty, non-error command line
-        report.append("\n**Suggest (`-c`, structured schema) — NL → command:**\n")
+        # suggest: expect a non-empty, non-error command line (the model output is
+        # the suggested command, shown inline).
+        report.append("\n**Suggest (`-c`, structured schema) - NL to command (model output shown):**\n")
         for nl in NL_SUGGEST:
-            rc, out, err = run([BIN, "-c", nl], env_llm, cwd=fixture, timeout=60)
-            cmd = out.strip().splitlines()[-1].strip() if out.strip() else ""
+            rc, out, err = run_nl([BIN, "-c", nl], env_llm, cwd=fixture, timeout=60)
+            cmd = strip_ansi(out.strip().splitlines()[-1].strip()) if out.strip() else ""
             ok = bool(cmd) and "LLM not configured" not in err
-            add(f"nl-suggest: {nl}", ok, f"→ `{cmd}`" if ok else f"(err={err.strip()!r})")
-        # questions
-        report.append("\n**Questions (`?`) — NL → answer:**\n")
+            add(f"nl-suggest: {nl}", ok, f"→ `{trunc(cmd, 200)}`" if ok else f"(err={trunc(repr(err.strip()))})")
+        # questions: show the model's full answer as a blockquote.
+        report.append("\n**Questions (`?`) - NL to answer (model output shown):**\n")
         for q in NL_QUESTIONS:
-            rc, out, err = run([BIN, "-c", q], env_llm, cwd=fixture, timeout=60)
-            ans = (out or err).strip().replace("\n", " ")
+            rc, out, err = run_nl([BIN, "-c", q], env_llm, cwd=fixture, timeout=60)
+            ans = (out or err).strip()
             ok = len(ans) > 0
-            add(f"nl-question: {q}", ok, f"→ {ans[:160]}")
-        # yolo: verifiable side effects
-        report.append("\n**Yolo (`--mode yolo`) — agentic, verified side effects:**\n")
+            add(f"nl-question: {q}", ok, "→ answered" if ok else "(empty response)")
+            mq = model_quote(ans)
+            if mq:
+                report.append(mq)
+        # yolo: verifiable side effects, plus the model's final summary.
+        report.append("\n**Yolo (`--mode yolo`) - agentic, verified side effects (model output shown):**\n")
         yolo_dir = tempfile.mkdtemp(prefix="aishe-yolo-")
         yolo_tasks = [
             (f"create a file at {yolo_dir}/hello.txt containing the text yolo-works then show it",
@@ -1107,7 +1240,11 @@ def main():
                 ok = check()
             except Exception:
                 ok = False
-            add(f"yolo: {task[:60]}…", ok, "" if ok else f"(rc={rc})")
+            add(f"yolo: {task[:60]}…", ok,
+                f"→ side effect {'verified' if ok else 'NOT found'} (rc={rc})")
+            mq = model_quote(out, 900)
+            if mq:
+                report.append(mq)
         shutil.rmtree(yolo_dir, ignore_errors=True)
         # mode switching is easy?
         report.append("\n**Mode switching (`--mode` flag):**\n")
@@ -1117,10 +1254,10 @@ def main():
 
         # NL custom command (prompt template) → command suggestion.
         report.append("\n**Custom NL command (`/bigfiles`, expands $ARGUMENTS):**\n")
-        rc, out, err = run([BIN, "-c", "/bigfiles src"], env_llm, cwd=fixture, timeout=60)
-        cmd = out.strip().splitlines()[-1].strip() if out.strip() else ""
+        rc, out, err = run_nl([BIN, "-c", "/bigfiles src"], env_llm, cwd=fixture, timeout=60)
+        cmd = strip_ansi(out.strip().splitlines()[-1].strip()) if out.strip() else ""
         add("plugin-nl: /bigfiles src", bool(cmd) and "LLM not configured" not in err,
-            f"→ `{cmd}`" if cmd else f"(err={err.strip()!r})")
+            f"→ `{trunc(cmd, 200)}`" if cmd else f"(err={trunc(repr(err.strip()))})")
 
         # Model-invoked skill (progressive disclosure): a request matching the
         # skill description should make the model load the skill and use its
@@ -1143,7 +1280,7 @@ def main():
 
         # Token/cost accounting: the per-session usage line prints after a call.
         report.append("\n**Token usage line (after a suggest call):**\n")
-        rc, out, err = run([BIN, "-c", "list files by size"], env_llm, cwd=fixture, timeout=60)
+        rc, out, err = run_nl([BIN, "-c", "list files by size"], env_llm, cwd=fixture, timeout=60)
         usage_ok = ("in ·" in err or " in " in err) and (
             "$" in err or "cost n/a" in err or "req" in err
         )
@@ -1196,9 +1333,10 @@ def main():
     total_ok = sum(v[0] for v in counts.values())
     total = sum(v[1] for v in counts.values())
     elapsed = time.monotonic() - run_t0
-    failures = [
-        line for line in report if line.startswith("- ❌")
-    ]
+
+    # Suites in numeric order (1-7), regardless of execution order.
+    ordered = sorted(suites, key=lambda s: s["num"])
+    failures = [ln for s in ordered for ln in s["lines"] if ln.startswith("- ❌")]
     raw_ver = (
         subprocess.run([RAW_SHELL, "--version"], capture_output=True, text=True)
         .stdout.strip()
@@ -1206,45 +1344,75 @@ def main():
         if RAW_SHELL
         else "?"
     )
-    header = [
-        f"# aishe validation report — {ts}",
-        "",
-        f"- Binary: `{BIN}`",
-        f"- aishe: `{subprocess.run([BIN,'--version'],capture_output=True,text=True).stdout.strip()}`",
-        f"- Raw shell: `{RAW_SHELL}`  ({raw_ver})",
-        f"- Host: {platform.platform()}  ·  python {platform.python_version()}",
-        f"- Model suite: {'enabled (Groq gpt-oss-120b)' if key() else 'skipped (no API key)'}",
-        f"- Date (UTC): {datetime.datetime.utcnow().isoformat()}Z  ·  wall time {elapsed:.1f}s",
-        "",
-        "## Summary",
-        "",
-        f"**{total_ok}/{total} checks passed**  ({len(failures)} failed)",
-        "",
-        "| Category | Pass / Total |",
-        "|----------|:-----------:|",
-    ]
+
+    md = []
+    md.append(f"# aishe validation report")
+    md.append("")
+    md.append(f"> **{total_ok}/{total} checks passed** ({len(failures)} failed) · "
+              f"{len(ordered)} suites · {elapsed:.1f}s")
+    md.append("")
+    md.append("| | |")
+    md.append("|---|---|")
+    aishe_ver = subprocess.run([BIN, '--version'], capture_output=True, text=True).stdout.strip()
+    md.append(f"| **aishe** | `{aishe_ver}` |")
+    md.append(f"| **Binary** | `{BIN}` |")
+    md.append(f"| **Raw shell** | `{RAW_SHELL}` ({raw_ver}) |")
+    md.append(f"| **Host** | {platform.platform()} · python {platform.python_version()} |")
+    md.append(f"| **Model suite** | {'enabled (Groq gpt-oss-120b)' if key() else 'skipped (no API key)'} |")
+    md.append(f"| **Date (UTC)** | {datetime.datetime.utcnow().isoformat(timespec='seconds')}Z |")
+    md.append("")
+
+    # Per-suite results table (sorted 1-7).
+    md.append("## Results by suite")
+    md.append("")
+    md.append("| Suite | Result | Checks | Time |")
+    md.append("|:------|:------:|:------:|-----:|")
+    for s in ordered:
+        ok = sum(1 for ln in s["lines"] if ln.startswith("- ✅"))
+        n = s["n"]
+        badge = "✅ pass" if ok == n and n > 0 else ("⏭️ skipped" if n == 0 else f"⚠️ {n - ok} failed")
+        short = s["title"].split(" — ")[0]
+        desc = s["title"].split(" — ", 1)[1] if " — " in s["title"] else ""
+        md.append(f"| **{short}** {desc} | {badge} | {ok}/{n} | {s['secs']:.1f}s |")
+    md.append("")
+
+    # By-category counts.
+    md.append("<details><summary><b>Pass / total by category</b></summary>")
+    md.append("")
+    md.append("| Category | Pass / Total |")
+    md.append("|:---------|:-----------:|")
     for name, (ok, n) in sorted(counts.items()):
-        flag = "" if ok == n else "  ⚠️"
-        header.append(f"| `{name}` | {ok}/{n}{flag} |")
-    header.append("")
-    header.append("### Per-suite timing")
-    header.append("")
-    header.append("| Suite | Checks | Seconds |")
-    header.append("|-------|:------:|:-------:|")
-    for title, secs, n in timings:
-        short = title.split(" — ")[0]
-        header.append(f"| {short} | {n} | {secs:.1f} |")
-    header.append("")
+        flag = "" if ok == n else " ⚠️"
+        md.append(f"| `{name}` | {ok}/{n}{flag} |")
+    md.append("")
+    md.append("</details>")
+    md.append("")
+
     if failures:
-        header.append("### Failures")
-        header.append("")
-        header.extend(failures)
-        header.append("")
+        md.append("## ❌ Failures")
+        md.append("")
+        md.extend(failures)
+        md.append("")
+
+    # Each suite's detailed checks, collapsible so the page stays scannable.
+    md.append("## Details")
+    md.append("")
+    for s in ordered:
+        ok = sum(1 for ln in s["lines"] if ln.startswith("- ✅"))
+        n = s["n"]
+        badge = f"{ok}/{n}" if n else "skipped"
+        md.append(f"<details><summary><b>{s['title']}</b> - {badge} · {s['secs']:.1f}s</summary>")
+        md.append("")
+        md.extend(s["lines"])
+        md.append("")
+        md.append("</details>")
+        md.append("")
+
     out_dir = os.path.join(REPO, "test-results")
     os.makedirs(out_dir, exist_ok=True)
     path = os.path.join(out_dir, f"validation-{ts}.md")
     with open(path, "w") as f:
-        f.write("\n".join(header) + "\n" + "\n".join(report) + "\n")
+        f.write("\n".join(md) + "\n")
 
     shutil.rmtree(fixture, ignore_errors=True)
     shutil.rmtree(cfgroot, ignore_errors=True)
@@ -1262,7 +1430,8 @@ def main():
     # NL word on the host); a real command misrouted to NL (route-shell) is a bug.
     critical = (full("shell") and full("fileop") and full("slash")
                 and full("plugin") and full("route-shell")
-                and full("config") and full("meta"))
+                and full("config") and full("meta")
+                and full("cli") and full("history") and full("mcp"))
     sys.exit(0 if critical else 1)
 
 
