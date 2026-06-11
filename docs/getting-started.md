@@ -1,0 +1,106 @@
+# Getting started
+
+This page walks through your first session with aishe.
+
+## 1. Set an API key
+
+aishe reads your API key only from an environment variable, never from the config
+file. Pick the provider you want and export its key:
+
+```sh
+export ANTHROPIC_API_KEY=sk-ant-...      # Anthropic
+# or
+export OPENAI_API_KEY=sk-...             # OpenAI (or any OpenAI-compatible key)
+```
+
+For Groq, Ollama, OpenRouter, and others, see [Providers](providers.md).
+
+## 2. First run and the wizard
+
+The first time you start aishe with no config present, an interactive wizard
+writes `~/.config/aishe/config.toml`:
+
+```sh
+aishe
+```
+
+It asks for:
+
+- the provider (anthropic or openai),
+- the environment variable that holds your API key,
+- the model,
+- the default mode.
+
+You can re-run any of these later with the meta commands, or edit the config file
+directly. A fully annotated example config is at
+[examples/config.toml](../examples/config.toml).
+
+## 3. Run real commands
+
+Anything aishe recognizes as a command runs exactly like it would in zsh:
+
+```
+~/projects/app ❯ git status
+~/projects/app ❯ ls -la | grep .rs
+~/projects/app ❯ for f in *.txt; do wc -l "$f"; done
+```
+
+Pipes, globs, redirection, subshells, control structures, and interactive
+programs like `vim`, `ssh`, and `top` all work, because aishe hands shell lines
+to your real shell.
+
+## 4. Ask in plain English
+
+Type a request that is not a command, and the LLM proposes one:
+
+```
+~/projects/app ❯ whats eating my disk
+  du -sh * | sort -rh | head
+  [Enter] run   [e] edit   [n] cancel
+```
+
+Press Enter to run it, `e` to edit it first, or `n` to cancel. This is suggest
+mode, the default.
+
+## 5. Try the other modes
+
+```sh
+aishe mode auto     # run safe commands immediately, confirm dangerous ones
+aishe mode yolo     # let the model run a multi-step task on its own
+```
+
+Or set the mode for a single session at launch:
+
+```sh
+aishe --mode yolo
+```
+
+See [Modes](modes.md) for the full behavior of each.
+
+## 6. Force a route when needed
+
+Sometimes a request happens to start with a real command name (for example
+"find all large files"), so it would run as a command. Use the prefixes:
+
+- `?<text>` forces natural-language: `?find all large files`
+- `!<cmd>` forces shell and skips the safety gate: `!rm -rf build`
+
+After a command fails, type `?` alone on the next line to ask the model to
+diagnose the error.
+
+## 7. Check your setup any time
+
+```sh
+aishe doctor
+```
+
+This reports your backing shell, config path, resolved front-end, provider, and
+whether the API key is set.
+
+## Where to go next
+
+- [Modes](modes.md) for streaming and structured output.
+- [Front-ends](front-ends.md) to understand zsh-PTY vs the built-in editor.
+- [Custom commands and skills](custom-commands-and-skills.md) to add your own
+  `/commands`.
+- [Configuration reference](configuration.md) for every setting.

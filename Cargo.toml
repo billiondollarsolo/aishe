@@ -1,0 +1,62 @@
+[package]
+name = "aishe"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.80"
+description = "A natural-language-aware shell that behaves like zsh for commands and delegates everything else to an LLM"
+license = "MIT"
+repository = "https://github.com/billiondollarsolo/aishe"
+readme = "README.md"
+keywords = ["shell", "llm", "ai", "repl", "cli"]
+categories = ["command-line-utilities"]
+
+# `cargo binstall aishe` fetches the prebuilt binary from the GitHub release
+# artifacts produced by .github/workflows/release.yml (named aishe-<target>.tar.gz
+# with the `aishe` binary at the archive root).
+[package.metadata.binstall]
+pkg-url = "{ repo }/releases/download/v{ version }/aishe-{ target }{ archive-suffix }"
+pkg-fmt = "tgz"
+bin-dir = "aishe{ binary-ext }"
+
+[[bin]]
+name = "aishe"
+path = "src/main.rs"
+
+[features]
+default = ["highlight"]
+# Syntax-highlight fenced code blocks in rendered model output (adds the syntect
+# dependency and the bundled syntaxes/themes). Disable for a smaller binary:
+#   cargo build --release --no-default-features
+highlight = ["dep:syntect"]
+
+[dependencies]
+reedline = "0.38"
+ureq = { version = "2", features = ["json", "tls", "native-certs"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+crossterm = "0.28"
+termimad = "0.31"
+clap = { version = "4", features = ["derive"] }
+clap_complete = "4"
+anyhow = "1"
+thiserror = "2"
+regex = "1"
+dirs = "5"
+libc = "0.2"
+nu-ansi-term = "0.50"
+portable-pty = "0.8"
+# Pure-Rust regex engine (fancy-regex) so no C oniguruma dependency is needed.
+syntect = { version = "5", default-features = false, features = [
+    "default-fancy",
+], optional = true }
+
+[dev-dependencies]
+assert_cmd = "2"
+mockito = "1"
+predicates = "3"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+strip = true

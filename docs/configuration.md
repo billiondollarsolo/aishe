@@ -1,0 +1,187 @@
+# Configuration reference
+
+aishe reads `~/.config/aishe/config.toml` (or `$XDG_CONFIG_HOME/aishe/config.toml`).
+A fully annotated copy you can paste in is at
+[examples/config.toml](../examples/config.toml). Every field has a default, so a
+minimal config is valid.
+
+You can change most settings at runtime with the [meta commands](commands.md),
+which persist your choice back to the file.
+
+## File locations
+
+- Config: `~/.config/aishe/config.toml`
+- History (reedline): `~/.local/share/aishe/history`
+- Custom commands: `~/.config/aishe/commands/` and `<project>/.aishe/commands/`
+- Skills: `~/.config/aishe/skills/` and `<project>/.aishe/skills/`
+- Startup file: `~/.aishrc` and `~/.config/aishe/aishrc`
+
+## `[aishe]` section
+
+| Field | Type | Default | Meaning |
+|-------|------|---------|---------|
+| `mode` | string | `suggest` | Interaction mode: `suggest`, `auto`, or `yolo`. |
+| `provider` | string | `anthropic` | Which provider block to use: `anthropic` or `openai`. |
+| `front_end` | string | `auto` | Input loop: `auto`, `reedline`, or `zsh-pty`. |
+| `edit_mode` | string | `emacs` | reedline keymap: `emacs` or `vi`. |
+| `yolo_confirm_dangerous` | bool | `true` | In yolo, confirm commands the safety gate flags. Honored only when `yolo_confirm` is unset. |
+| `yolo_confirm` | string | `dangerous` | When the yolo loop confirms a command: `never`, `dangerous`, `writes`, or `all`. See [Safety gate](safety.md). |
+| `yolo_sandbox` | bool | `false` | Policy sandbox: refuse yolo commands that reach the network or write outside the working tree. Toggle with `aishe sandbox`. |
+| `max_yolo_iterations` | integer | `10` | Maximum tool-use steps for one yolo request. |
+| `yolo_plan` | bool | `false` | Plan-first dry run: the model shows its intended steps and you approve before the loop runs (interactive only). Toggle with `aishe plan`. |
+| `project_context` | bool | `true` | Include a per-project `.aishe/context.md` (at or above the cwd) in the model context. See [Per-project context](project-context.md). |
+| `file_tools` | bool | `true` | Offer the built-in `read_file`/`write_file`/`edit_file`/`list_dir` tools to yolo. |
+| `web_tool` | bool | `true` | Offer the built-in `fetch_url` tool to yolo (read web pages/docs; HTML stripped to text, size-capped). |
+| `show_right_prompt` | bool | `true` | Show "model and mode" on the right (reedline). |
+| `git_prompt` | bool | `true` | Show a git branch segment in the right prompt (reedline). |
+| `git_status` | bool | `true` | Add dirty (`*`) and ahead/behind (`⇡`/`⇣`) markers to the git segment (one `git status` per prompt). |
+| `report_time` | integer | `3` | Show the last command's duration when it ran at least this many seconds. `0` disables. |
+| `auto_pushd` | bool | `false` | zsh `AUTO_PUSHD`: every `cd` pushes the previous dir (`cd -N`/`cd +N`, `dirs -v`). |
+| `hist_ignore_dups` | bool | `true` | Don't save a command equal to the previous one (`HIST_IGNORE_DUPS`). |
+| `hist_ignore_space` | bool | `false` | Don't save commands that start with a space (`HIST_IGNORE_SPACE`). |
+| `hist_ignore` | array | `[]` | Glob patterns of commands to keep out of history (`HISTIGNORE`), e.g. `["ls", "cd *"]`. |
+| `cdpath` | array | `[]` | Extra base dirs searched by `cd <name>` (`CDPATH`); falls back to `$CDPATH`. |
+| `correct` | bool | `false` | zsh `CORRECT`: offer to fix a near-miss command word instead of routing it to the LLM. |
+| `complete_flags` | bool | `true` | Tab-complete a command's flags from its `--help` (parsed, cached, time-limited) when the word starts with `-` (reedline). |
+| `share_history` | bool | `true` | Share one timestamped history across sessions (zsh `SHARE_HISTORY`); off makes history per-session. Backs the `history` builtin. |
+
+## `[named_dirs]` section (optional)
+
+Named directories for `~name` expansion in `cd` (zsh hashed dirs):
+
+```toml
+[named_dirs]
+proj = "/home/me/projects"
+dl = "/home/me/Downloads"
+```
+
+Then `cd ~proj` and `cd ~proj/app` work.
+| `prompt_format` | string | unset | Custom left prompt. Placeholders: `{cwd}`, `{mode}`, `{model}`, `{exit}`. |
+| `structured` | string | `schema` | Suggest output format: `schema`, `json`, or `prompt`. |
+| `stream` | bool | `false` | Stream answers token-by-token in the REPL (suggest and auto). |
+| `show_usage` | bool | `true` | Print a per-session token and cost line after each interaction. |
+| `budget_usd` | float | `0.0` | Stop calling the model past this session cost. `0` = unlimited. |
+| `memory` | bool | `true` | Remember recent natural-language turns in the REPL so follow-ups have context. Clear with `aishe reset`. |
+| `cache` | bool | `true` | Cache identical suggest-mode responses briefly so repeats are instant and free. Toggle with `aishe cache`. |
+| `cache_ttl_secs` | integer | `300` | How long a cached response stays valid, in seconds. |
+| `redact_secrets` | bool | `true` | Scrub likely secrets from the context block sent to the model. See [Logging and privacy](logging.md). |
+| `ghost_text` | bool | `false` | Inline AI ghost-text autosuggestion (reedline). Toggle with `aishe ghost`. See [Inline AI ghost text](ghost-text.md). |
+
+## `[logging]` section (optional)
+
+Audit logging of AI calls, responses, and AI-initiated actions. Off by default.
+
+| Field | Type | Default | Meaning |
+|-------|------|---------|---------|
+| `enabled` | bool | `false` | Write a JSONL audit log. Also enableable with `AISHE_LOG=1`. |
+| `file` | string | unset | Log path. Default `$XDG_DATA_HOME/aishe/audit.jsonl`. Override with `AISHE_LOG_FILE`. |
+| `redact` | bool | `true` | Scrub secrets from logged text. |
+
+See [Logging and privacy](logging.md) for the event shapes and examples.
+
+## `[providers.anthropic]` and `[providers.openai]`
+
+| Field | Type | Meaning |
+|-------|------|---------|
+| `base_url` | string | API root. For OpenAI-compatible services, point this at the service. |
+| `api_key_env` | string | Name of the environment variable that holds the API key. |
+| `model` | string | Model identifier sent with each request. |
+
+Defaults:
+
+```toml
+[providers.anthropic]
+base_url = "https://api.anthropic.com"
+api_key_env = "ANTHROPIC_API_KEY"
+model = "claude-sonnet-4-20250514"
+
+[providers.openai]
+base_url = "https://api.openai.com"
+api_key_env = "OPENAI_API_KEY"
+model = "gpt-4o"
+```
+
+See [Providers](providers.md) for Groq, Ollama, and others.
+
+## `[pricing."<model>"]` (optional)
+
+Per-model price overrides for cost estimates, in USD per 1M tokens. Keys are
+matched by exact model name first, then by substring, then fall back to a
+built-in table. Only needed when a model is missing from the table or priced
+differently for you.
+
+```toml
+[pricing."openai/gpt-oss-120b"]
+input = 0.15
+output = 0.60
+```
+
+See [Token usage and cost](usage-and-cost.md).
+
+## `[mcp_servers]` section (optional)
+
+Model Context Protocol servers whose tools are offered to the yolo loop, keyed by
+a short name used to namespace them (`mcp__<name>__<tool>`):
+
+```toml
+[mcp_servers.filesystem]            # stdio server
+command = "npx"
+args = ["-y", "@modelcontextprotocol/server-filesystem", "/home/me/projects"]
+# env = { KEY = "value" }   # extra environment for the server process
+# enabled = false           # keep configured but turned off (default true)
+
+[mcp_servers.remote]                # HTTP server (Streamable HTTP)
+url = "https://mcp.example.com/mcp"
+# headers = { Authorization = "Bearer ..." }
+```
+
+Per-server keys: `command`/`args`/`env` (stdio), `url`/`headers` (HTTP), and
+`enabled`. A server with a `url` connects over HTTP; otherwise it is a stdio
+server launched from `command`. List connected tools with `aishe mcp`. See
+[MCP servers](mcp.md).
+
+## `[theme]` (optional)
+
+Colors for the reedline prompt and syntax highlighter. Pick a preset and override
+any role. Colors may be names (`red`, `bright-green`), a palette index (`0`-`255`),
+or hex (`#ff8800`).
+
+```toml
+[theme]
+preset = "nord"     # default | vivid | mono | nord | gruvbox
+cwd = "bright-cyan"
+known_cmd = "#98c379"
+```
+
+Roles: `cwd`, `glyph_ok`, `glyph_err`, `right_prompt`, `known_cmd`,
+`unknown_cmd`, `flag`, `string`, `operator`, `path`, `assignment`, `sigil_nl`,
+`sigil_shell`. See [Prompt and theming](prompt-and-theming.md).
+
+## Environment variables
+
+- `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, or whatever `api_key_env` names: your
+  API key.
+- `AISHE_MODE`: mode used by the native shell hook (`suggest`, `auto`, `yolo`).
+- `AISHE_NL_KEY`: override the force-NL keybinding for the zsh hook (a `bindkey`
+  sequence, for example `^o`).
+- `XDG_CONFIG_HOME`, `XDG_DATA_HOME`: respected for config and history locations.
+
+## Command-line flags
+
+```
+aishe [--mode suggest|auto|yolo] [--model NAME] [--provider anthropic|openai]
+      [--pty | --no-pty] [-c "INPUT"]
+
+aishe init <zsh|bash>     print a shell integration snippet
+aishe zsh                 launch your real zsh under aishe (zsh-PTY)
+aishe doctor              environment check
+```
+
+Flags override config for that session only. `-c "INPUT"` runs a single input
+non-interactively and exits.
+
+## Recovery
+
+If the config file is malformed, aishe reports the problem and falls back to
+defaults rather than refusing to start. A pre-rename `~/.config/llmsh/config.toml`
+is migrated automatically on first run.

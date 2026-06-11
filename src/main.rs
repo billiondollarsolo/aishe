@@ -1,0 +1,1620 @@
+//! aishe — a natural-language-aware shell.
+//!
+//! Behaves like zsh for recognizable commands; anything else is treated as a
+//! natural-language request handled by an LLM (suggest or yolo mode).
+
+use std::io::IsTerminal;
+use std::process::ExitCode;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
+
+use anyhow::Result;
+use clap::{Parser, Subcommand};
+use crossterm::style::Stylize;
+use reedline::{
+    default_emacs_keybindings, default_vi_insert_keybindings, default_vi_normal_keybindings,
+    ColumnarMenu, EditMode, Emacs, FileBackedHistory, KeyCode, KeyModifiers, Keybindings, ListMenu,
+    MenuBuilder, Reedline, ReedlineEvent, ReedlineMenu, Signal, Vi,
+};
+
+use aishe::commands::CommandRegistry;
+use aishe::completer::AisheCompleter;
+use aishe::config::Config;
+use aishe::dispatcher::{self, CommandCache, Dispatch};
+use aishe::executor::Executor;
+use aishe::highlight::CmdHighlighter;
+use aishe::prompt::AishePrompt;
+use aishe::providers::{self, Provider};
+use aishe::safety::{self, Risk};
+use aishe::session::Session;
+use aishe::skills::SkillRegistry;
+use aishe::theme::Theme;
+use aishe::validator::AisheValidator;
+use aishe::{context, history_expand, integration, modes};
+
+/// Exit code from `--auto-line` when the suggested command is dangerous: the
+/// shell hook treats any non-zero code as "pre-fill for review" instead of
+/// running. (See `integration::ZSH_HOOK`.)
+const EXIT_AUTO_DANGEROUS: u8 = 20;
+
+/// Version string shown by `aishe --version`: crate version plus the build's git
+/// SHA and date (captured by `build.rs`).
+const VERSION: &str = concat!(
+    env!("CARGO_PKG_VERSION"),
+    " (",
+    env!("AISHE_GIT_SHA"),
+    ", ",
+    env!("AISHE_BUILD_DATE"),
+    ")"
+);
+
+/// Set by the SIGINT handler; checked by the yolo loop and reset around runs.
+static INTERRUPTED: AtomicBool = AtomicBool::new(false);
+
+extern "C" fn handle_sigint(_sig: libc::c_int) {
+    INTERRUPTED.store(true, Ordering::SeqCst);
+}
+
+#[derive(Parser, Debug)]
+#[command(name = "aishe", version = VERSION, about = "A natural-language-aware shell")]
+struct Args {
+    /// Override the interaction mode for this session.
+    #[arg(long, value_parser = ["suggest", "auto", "yolo"])]
+    mode: Option<String>,
+    /// Override the model for this session.
+    #[arg(long)]
+    model: Option<String>,
+    /// Override the provider for this session.
+    #[arg(long, value_parser = ["anthropic", "openai"])]
+    provider: Option<String>,
+    /// Run a single input non-interactively and exit.
+    #[arg(short = 'c')]
+    command: Option<String>,
+    /// Use the zsh-PTY front-end: drive your real interactive zsh (with all
+    /// native plugins) instead of the built-in reedline editor.
+    #[arg(long)]
+    pty: bool,
+    /// Force the built-in reedline editor for this session, overriding the
+    /// "auto" front-end (which otherwise prefers zsh-pty when zsh is present).
+    #[arg(long = "no-pty")]
+    no_pty: bool,
+    /// (shell hook) Suggest a command for a natural-language line: prints the
+    /// command to stdout and the explanation/answer to stderr.
+    #[arg(long, hide = true)]
+    suggest_line: Option<String>,
+    /// (shell hook) Run the yolo loop for a natural-language line.
+    #[arg(long, hide = true)]
+    yolo_line: Option<String>,
+    /// (shell hook) Auto mode: print a suggested command and exit 0 if the
+    /// safety gate deems it safe (caller runs it), or a non-zero code if
+    /// dangerous (caller pre-fills it for review).
+    #[arg(long, hide = true)]
+    auto_line: Option<String>,
+    #[command(subcommand)]
+    cmd: Option<Cmd>,
+}
+
+#[derive(Subcommand, Debug)]
+enum Cmd {
+    /// Print a shell integration snippet: `eval "$(aishe init zsh)"`.
+    Init {
+        /// Shell to emit integration for (zsh or bash).
+        shell: String,
+    },
+    /// Launch your real interactive zsh (with all native plugins) under aishe.
+    Zsh,
+    /// Check your environment: shell, config, front-end, provider, API key.
+    Doctor,
+    /// Print a shell completion script for `aishe` itself (bash/zsh/fish/...).
+    Completions {
+        /// Shell to generate completions for.
+        shell: clap_complete::Shell,
+    },
+}
+
+fn main() -> ExitCode {
+    match run() {
+        Ok(code) => ExitCode::from(code),
+        Err(e) => {
+            eprintln!("{}", format!("aishe: {e}").red());
+            ExitCode::from(1)
+        }
+    }
+}
+
+fn run() -> Result<u8> {
+    let args = Args::parse();
+
+    // `doctor` inspects the environment without loading/initializing config.
+    if matches!(args.cmd, Some(Cmd::Doctor)) {
+        return Ok(doctor());
+    }
+
+    // `completions <shell>` prints a completion script and exits.
+    if let Some(Cmd::Completions { shell }) = args.cmd {
+        use clap::CommandFactory;
+        clap_complete::generate(shell, &mut Args::command(), "aishe", &mut std::io::stdout());
+        return Ok(0);
+    }
+
+    // `init <shell>` needs no config or provider.
+    if let Some(Cmd::Init { shell }) = &args.cmd {
+        return match integration::script(shell) {
+            Some(s) => {
+                print!("{s}");
+                Ok(0)
+            }
+            None => {
+                eprintln!(
+                    "aishe: no integration for '{shell}' (supported: {})",
+                    integration::SUPPORTED.join(", ")
+                );
+                Ok(1)
+            }
+        };
+    }
+
+    let mut config = Config::load_or_init()?;
+    if let Some(m) = &args.mode {
+        config.aishe.mode = m.clone();
+    }
+    if let Some(p) = &args.provider {
+        config.aishe.provider = p.clone();
+    }
+    if let Some(m) = &args.model {
+        config.set_active_model(m.clone());
+    }
+
+    // Initialize the audit log (off unless enabled in config or via $AISHE_LOG).
+    init_audit(&config);
+
+    // Non-interactive invocations (`-c` and the shell-hook helpers) never use
+    // the PTY front-end — they need the in-process executor/provider, not a
+    // wrapped interactive zsh.
+    let non_interactive = args.command.is_some()
+        || args.suggest_line.is_some()
+        || args.yolo_line.is_some()
+        || args.auto_line.is_some();
+
+    // zsh-PTY front-end: drive the user's real zsh. Smarts live in the injected
+    // command_not_found hook, so we don't need an in-process executor/provider.
+    // Resolution: an explicit `--pty`/`zsh`/`zsh-pty` wins; `--no-pty`/`reedline`
+    // forces the built-in editor; the default "auto" picks zsh-pty whenever zsh
+    // is on $PATH and falls back to reedline otherwise.
+    // Piped (non-tty) stdin with no `-c`: read commands from stdin instead of
+    // launching an interactive editor (which needs a terminal). An explicit
+    // `--pty`/`zsh` still wins.
+    let piped_stdin = !non_interactive
+        && !args.pty
+        && !matches!(args.cmd, Some(Cmd::Zsh))
+        && !std::io::stdin().is_terminal();
+
+    let want_pty = !non_interactive
+        && !piped_stdin
+        && if args.pty || matches!(args.cmd, Some(Cmd::Zsh)) {
+            true
+        } else if args.no_pty {
+            false
+        } else {
+            match config.aishe.front_end.as_str() {
+                "zsh-pty" => true,
+                "reedline" => false,
+                _ => aishe::executor::which("zsh").is_some(),
+            }
+        };
+    if want_pty {
+        return aishe::pty::run_zsh(&config);
+    }
+
+    let mut executor = Executor::new()?;
+    context::init(executor.shell());
+    // The `history` builtin reads the timestamped log (also available in `-c`).
+    executor.set_history_log(history_paths(&config).1);
+
+    let cache = CommandCache::new();
+    cache.build(executor.shell());
+
+    // Build the provider, but keep the shell fully usable without it. We do NOT
+    // warn here: local commands shouldn't print LLM noise, and the NL paths
+    // (REPL, -c, hooks) each report a missing provider at the point of use.
+    let mut provider: Option<Arc<dyn Provider>> = providers::make(&config).ok();
+
+    // Install a non-fatal SIGINT handler (see INTERRUPTED docs).
+    unsafe {
+        libc::signal(
+            libc::SIGINT,
+            handle_sigint as *const () as libc::sighandler_t,
+        );
+    }
+
+    // User-defined slash-commands and model-invoked skills (plugins).
+    let commands = CommandRegistry::load();
+    let skills = aishe::skills::SkillRegistry::load();
+    // MCP servers (extra yolo tools). Empty/instant unless `[mcp_servers]` is set.
+    let mcp = aishe::mcp::McpRegistry::connect(&config.mcp_servers);
+
+    // Shell-hook helpers (called by `aishe init` integration).
+    if let Some(line) = args.suggest_line {
+        return suggest_line(&line, &mut executor, provider.as_deref(), &config);
+    }
+    if let Some(line) = args.yolo_line {
+        return yolo_line(
+            &line,
+            &mut executor,
+            provider.as_deref(),
+            &config,
+            &skills,
+            &mcp,
+        );
+    }
+    if let Some(line) = args.auto_line {
+        return auto_line(&line, &mut executor, provider.as_deref(), &config);
+    }
+
+    // Non-interactive single-shot mode (-c).
+    if let Some(input) = args.command {
+        return one_shot(
+            &input,
+            &mut executor,
+            &mut provider,
+            &config,
+            &cache,
+            &commands,
+            &skills,
+            &mcp,
+        );
+    }
+
+    // Pipe/script mode: run each line of piped stdin like a `-c` invocation.
+    if piped_stdin {
+        let mut last = 0u8;
+        let stdin = std::io::stdin();
+        let mut line = String::new();
+        loop {
+            line.clear();
+            match stdin.read_line(&mut line) {
+                Ok(0) => break, // EOF
+                Ok(_) => {
+                    let trimmed = line.trim();
+                    if trimmed.is_empty() {
+                        continue;
+                    }
+                    last = one_shot(
+                        trimmed,
+                        &mut executor,
+                        &mut provider,
+                        &config,
+                        &cache,
+                        &commands,
+                        &skills,
+                        &mcp,
+                    )?;
+                }
+                Err(_) => break,
+            }
+        }
+        return Ok(last);
+    }
+
+    repl(
+        &mut executor,
+        &mut provider,
+        &mut config,
+        &cache,
+        &commands,
+        &skills,
+        &mcp,
+    )
+}
+
+/// Environment check (`aishe doctor`): report shell, config, front-end,
+/// provider, and API-key status. Returns 1 if a *critical* check fails (no
+/// backing shell, or a malformed config); a missing API key is a warning only.
+fn doctor() -> u8 {
+    let ok = "✓".green();
+    let bad = "✗".red();
+    let warn = "!".yellow();
+    let mut critical_ok = true;
+
+    println!("{}", "aishe doctor".bold());
+    println!("────────────");
+    println!("{ok} version: aishe {VERSION}");
+
+    // Backing shell.
+    let zsh = aishe::executor::which("zsh");
+    let bash = aishe::executor::which("bash");
+    match (&zsh, &bash) {
+        (Some(z), _) => println!("{ok} backing shell: zsh ({})", z.display()),
+        (None, Some(b)) => println!("{ok} backing shell: bash ({}) — zsh not found", b.display()),
+        (None, None) => {
+            println!("{bad} backing shell: none found (install zsh or bash)");
+            critical_ok = false;
+        }
+    }
+
+    // Config.
+    let cfg = match Config::load_quiet() {
+        Ok(Some(c)) => {
+            println!("{ok} config: {}", Config::path().display());
+            c
+        }
+        Ok(None) => {
+            println!("{warn} config: not created yet (run `aishe` once to set up)");
+            Config::default()
+        }
+        Err(e) => {
+            println!(
+                "{bad} config: malformed at {} ({e})",
+                Config::path().display()
+            );
+            critical_ok = false;
+            Config::default()
+        }
+    };
+
+    // Front-end resolution.
+    let resolved = match cfg.aishe.front_end.as_str() {
+        "zsh-pty" => "zsh-pty",
+        "reedline" => "reedline",
+        _ if zsh.is_some() => "zsh-pty (auto)",
+        _ => "reedline (auto — zsh not found)",
+    };
+    println!(
+        "{ok} front-end: {resolved}  [config: {}]",
+        cfg.aishe.front_end
+    );
+
+    // Provider, model, and API key.
+    let (provider, model, key_env) = match cfg.aishe.provider.as_str() {
+        "openai" => (
+            "openai",
+            &cfg.providers.openai.model,
+            &cfg.providers.openai.api_key_env,
+        ),
+        _ => (
+            "anthropic",
+            &cfg.providers.anthropic.model,
+            &cfg.providers.anthropic.api_key_env,
+        ),
+    };
+    println!("{ok} provider: {provider} · model {model}");
+    let key_set = std::env::var(key_env)
+        .map(|v| !v.trim().is_empty())
+        .unwrap_or(false);
+    if key_set {
+        println!("{ok} API key: ${key_env} is set");
+    } else {
+        println!("{warn} API key: ${key_env} not set — LLM features disabled (export it)");
+    }
+
+    // Privacy: secret redaction and audit logging.
+    println!(
+        "{ok} secret redaction: {}",
+        if cfg.aishe.redact_secrets {
+            "on"
+        } else {
+            "off"
+        }
+    );
+    let env_log = matches!(
+        std::env::var("AISHE_LOG").ok().as_deref(),
+        Some("1") | Some("true") | Some("yes")
+    );
+    if cfg.logging.enabled || env_log {
+        let path = std::env::var("AISHE_LOG_FILE").ok().unwrap_or_else(|| {
+            cfg.logging
+                .file
+                .clone()
+                .unwrap_or_else(|| aishe::audit::default_path().display().to_string())
+        });
+        println!(
+            "{ok} audit log: on ({path}; redact {})",
+            if cfg.logging.redact { "on" } else { "off" }
+        );
+    } else {
+        println!("{warn} audit log: off (enable with [logging] enabled=true or AISHE_LOG=1)");
+    }
+
+    // MCP servers and history.
+    let enabled_mcp = cfg.mcp_servers.values().filter(|s| s.enabled).count();
+    if cfg.mcp_servers.is_empty() {
+        println!("{ok} MCP servers: none configured");
+    } else {
+        println!(
+            "{ok} MCP servers: {} configured ({enabled_mcp} enabled) — `aishe mcp` to list",
+            cfg.mcp_servers.len()
+        );
+    }
+    let (_, hist_log) = history_paths(&cfg);
+    println!(
+        "{ok} history: {} ({})",
+        hist_log.display(),
+        if cfg.aishe.share_history {
+            "shared"
+        } else {
+            "per-session"
+        }
+    );
+
+    println!();
+    if critical_ok {
+        println!("{}", "all critical checks passed".green());
+        0
+    } else {
+        println!("{}", "some checks failed".red());
+        1
+    }
+}
+
+/// Shell-hook helper: print a suggested command to stdout (for `print -z` /
+/// readline pre-fill) and any explanation/answer to stderr.
+fn suggest_line(
+    line: &str,
+    executor: &mut Executor,
+    provider: Option<&dyn Provider>,
+    config: &Config,
+) -> Result<u8> {
+    let Some(p) = provider else {
+        eprintln!("aishe: LLM not configured");
+        return Ok(1);
+    };
+    // Shell-hook calls are one per process, so there is no in-session memory.
+    match modes::suggest::request(line, p, executor, config, Vec::new())? {
+        modes::suggest::Suggestion::Command {
+            command,
+            explanation,
+        } => {
+            if !explanation.is_empty() {
+                eprintln!("{}", explanation.as_str().dim());
+            }
+            println!("{command}");
+            Ok(0)
+        }
+        modes::suggest::Suggestion::Answer { explanation } => {
+            // No command to run; render the answer to stderr so the shell hook's
+            // stdout capture stays empty.
+            if !explanation.is_empty() {
+                eprintln!("{explanation}");
+            }
+            Ok(0)
+        }
+    }
+}
+
+/// Shell-hook helper: run the yolo loop directly for a natural-language line.
+fn yolo_line(
+    line: &str,
+    executor: &mut Executor,
+    provider: Option<&dyn Provider>,
+    config: &Config,
+    skills: &SkillRegistry,
+    mcp: &aishe::mcp::McpRegistry,
+) -> Result<u8> {
+    let Some(p) = provider else {
+        eprintln!("aishe: LLM not configured");
+        return Ok(1);
+    };
+    let mut session = Session::new(false);
+    modes::yolo::run(
+        line,
+        p,
+        executor,
+        config,
+        &INTERRUPTED,
+        skills,
+        mcp,
+        &mut session,
+    )?;
+    Ok(0)
+}
+
+/// Shell-hook helper for `auto` mode: get a suggestion, print the command to
+/// stdout, and signal safety via the exit code so the hook can decide whether to
+/// run it directly (`eval`) or pre-fill it for review.
+///
+/// - Answer (no command): nothing on stdout, exit 0.
+/// - Safe command: command on stdout, exit 0 (hook runs it).
+/// - Dangerous command: command on stdout + reason on stderr, exit
+///   `EXIT_AUTO_DANGEROUS` (hook pre-fills it instead).
+fn auto_line(
+    line: &str,
+    executor: &mut Executor,
+    provider: Option<&dyn Provider>,
+    config: &Config,
+) -> Result<u8> {
+    let Some(p) = provider else {
+        eprintln!("aishe: LLM not configured");
+        return Ok(1);
+    };
+    match modes::suggest::request(line, p, executor, config, Vec::new())? {
+        modes::suggest::Suggestion::Command {
+            command,
+            explanation,
+        } => {
+            if !explanation.is_empty() {
+                eprintln!("{}", explanation.as_str().dim());
+            }
+            println!("{command}");
+            match safety::assess(&command) {
+                Risk::Safe => Ok(0),
+                Risk::Dangerous(reason) => {
+                    eprintln!("{}", format!("⚠ {reason} — pre-filled for review").yellow());
+                    Ok(EXIT_AUTO_DANGEROUS)
+                }
+            }
+        }
+        modes::suggest::Suggestion::Answer { explanation } => {
+            if !explanation.is_empty() {
+                eprintln!("{explanation}");
+            }
+            Ok(0)
+        }
+    }
+}
+
+/// Run one dispatch cycle non-interactively for the `-c` flag.
+#[allow(clippy::too_many_arguments)]
+fn one_shot(
+    input: &str,
+    executor: &mut Executor,
+    provider: &mut Option<Arc<dyn Provider>>,
+    config: &Config,
+    cache: &CommandCache,
+    commands: &CommandRegistry,
+    skills: &SkillRegistry,
+    mcp: &aishe::mcp::McpRegistry,
+) -> Result<u8> {
+    let trimmed = input.trim();
+    if trimmed.is_empty() {
+        return Ok(0);
+    }
+    // One-shot runs are a single process: no cross-line memory.
+    let mut session = Session::new(false);
+    // User-defined /slash-commands work in -c too.
+    if try_custom_command(
+        trimmed,
+        commands,
+        executor,
+        provider.as_deref(),
+        config,
+        skills,
+        mcp,
+        &mut session,
+    )? {
+        return Ok(executor.last_exit as u8);
+    }
+    match dispatcher::dispatch(trimmed, cache) {
+        Dispatch::Shell(line) => Ok(executor.run(&line) as u8),
+        Dispatch::Builtin(tokens) => {
+            if matches!(tokens[0].as_str(), "exit" | "quit") {
+                // `exit N` propagates N; bare `exit` uses the last command's code.
+                let code = tokens
+                    .get(1)
+                    .and_then(|s| s.parse::<u8>().ok())
+                    .unwrap_or(executor.last_exit as u8);
+                return Ok(code);
+            }
+            if tokens[0] == "aishe" {
+                // Read-only listings are useful in -c; state-changing meta
+                // commands need the interactive session (persistence/restart).
+                match tokens.get(1).map(|s| s.as_str()) {
+                    Some("commands") => {
+                        if commands.is_empty() {
+                            println!(
+                                "no custom commands (add *.md files to ~/.config/aishe/commands/)"
+                            );
+                        } else {
+                            println!("custom slash-commands:");
+                            for (name, desc) in commands.list() {
+                                println!("\x20 /{name}  —  {desc}");
+                            }
+                        }
+                    }
+                    Some("skills") => {
+                        if skills.is_empty() {
+                            println!(
+                                "no skills (add <name>/SKILL.md files to ~/.config/aishe/skills/)"
+                            );
+                        } else {
+                            println!("model-invoked skills (yolo mode):");
+                            for (name, desc) in skills.list() {
+                                println!("\x20 {name}  —  {desc}");
+                            }
+                        }
+                    }
+                    Some("mcp") => print_mcp_listing(mcp),
+                    Some("config") => {
+                        println!("config file: {}", Config::path().display());
+                        match toml::to_string_pretty(config) {
+                            Ok(t) => println!("\n{t}"),
+                            Err(e) => eprintln!("aishe: {e}"),
+                        }
+                    }
+                    Some("usage") => print_usage_summary(provider.as_deref(), config),
+                    _ => println!("aishe meta commands are interactive-only"),
+                }
+                return Ok(0);
+            }
+            Ok(executor.run_builtin(&tokens) as u8)
+        }
+        Dispatch::NaturalLanguage(nl) => match provider {
+            Some(p) => {
+                if config.aishe.mode == "yolo" {
+                    modes::yolo::run(
+                        &nl,
+                        p.as_ref(),
+                        executor,
+                        config,
+                        &INTERRUPTED,
+                        skills,
+                        mcp,
+                        &mut session,
+                    )?;
+                } else {
+                    // -c + NL in suggest/auto mode: print suggested command, don't run.
+                    modes::suggest::run(
+                        &nl,
+                        p.as_ref(),
+                        executor,
+                        config,
+                        true,
+                        false,
+                        &mut session,
+                    )?;
+                }
+                Ok(0)
+            }
+            None => {
+                eprintln!("aishe: LLM not configured");
+                Ok(1)
+            }
+        },
+    }
+}
+
+/// Add aishe's menu keybindings — Tab/Shift-Tab completion menu and Ctrl-R
+/// history menu — to a keymap. Shared by the emacs and vi keymaps.
+fn add_aishe_bindings(kb: &mut Keybindings) {
+    kb.add_binding(
+        KeyModifiers::NONE,
+        KeyCode::Tab,
+        ReedlineEvent::UntilFound(vec![
+            ReedlineEvent::Menu("completion_menu".to_string()),
+            ReedlineEvent::MenuNext,
+        ]),
+    );
+    kb.add_binding(
+        KeyModifiers::SHIFT,
+        KeyCode::BackTab,
+        ReedlineEvent::MenuPrevious,
+    );
+    // Ctrl-R → browsable, filterable history menu (upgrade over the default
+    // single-line incremental search): type to filter, arrows to pick.
+    kb.add_binding(
+        KeyModifiers::CONTROL,
+        KeyCode::Char('r'),
+        ReedlineEvent::UntilFound(vec![
+            ReedlineEvent::Menu("history_menu".to_string()),
+            ReedlineEvent::MenuNext,
+        ]),
+    );
+}
+
+/// Build the reedline edit mode for the configured keymap. "vi" gives modal
+/// editing (Esc for normal mode); anything else is emacs. aishe's menu bindings
+/// are added to both vi sub-keymaps so completion/history work in either mode.
+fn build_edit_mode(edit_mode: &str) -> Box<dyn EditMode> {
+    if edit_mode == "vi" {
+        let mut insert = default_vi_insert_keybindings();
+        let mut normal = default_vi_normal_keybindings();
+        add_aishe_bindings(&mut insert);
+        add_aishe_bindings(&mut normal);
+        Box::new(Vi::new(insert, normal))
+    } else {
+        let mut kb = default_emacs_keybindings();
+        add_aishe_bindings(&mut kb);
+        Box::new(Emacs::new(kb))
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn repl(
+    executor: &mut Executor,
+    provider: &mut Option<Arc<dyn Provider>>,
+    config: &mut Config,
+    cache: &CommandCache,
+    commands: &CommandRegistry,
+    skills: &SkillRegistry,
+    mcp: &aishe::mcp::McpRegistry,
+) -> Result<u8> {
+    // One-time hint in the interactive shell if LLM features are unavailable.
+    if provider.is_none() {
+        let key_env = match config.aishe.provider.as_str() {
+            "openai" => &config.providers.openai.api_key_env,
+            _ => &config.providers.anthropic.api_key_env,
+        };
+        eprintln!(
+            "{}",
+            format!("aishe: LLM features disabled — set ${key_env} to enable").dim()
+        );
+    }
+
+    // History file + timestamped sidecar log (shared or per-session per config).
+    let (history_path, hist_log_path) = history_paths(config);
+    if let Some(parent) = history_path.parent() {
+        std::fs::create_dir_all(parent).ok();
+    }
+    let file_history: Box<dyn reedline::History> = Box::new(
+        FileBackedHistory::with_file(10_000, history_path)
+            .unwrap_or_else(|_| FileBackedHistory::new(10_000).expect("in-memory history")),
+    );
+    // Wrap with zsh-style filtering: drop consecutive duplicates and HISTIGNORE
+    // matches before they are persisted, and mirror persisted commands into the
+    // timestamped sidecar log that backs the `history` builtin.
+    let history = Box::new(
+        aishe::histfilter::FilteredHistory::new(
+            file_history,
+            config.aishe.hist_ignore_dups,
+            &config.aishe.hist_ignore,
+        )
+        .with_sidecar(hist_log_path),
+    );
+
+    // Tab → completion menu (command names / file paths), Shift-Tab → previous,
+    // Ctrl-R → browsable history menu. Applied to whichever keymap is active.
+    let edit_mode = build_edit_mode(&config.aishe.edit_mode);
+    let theme = Theme::from_config(&config.theme);
+
+    let completion_menu = Box::new(ColumnarMenu::default().with_name("completion_menu"));
+    let history_menu = Box::new(ListMenu::default().with_name("history_menu"));
+
+    // Inline AI ghost-text autosuggestion (shares the provider, so its tokens
+    // count in the session usage and budget). The worker only runs when a
+    // provider exists; the hinter falls back to history hints otherwise.
+    let ghost = aishe::ghost::Ghost::new(config.aishe.ghost_text, provider.clone(), config.clone());
+
+    let mut line_editor = Reedline::create()
+        .with_history(history)
+        .with_completer(Box::new(
+            AisheCompleter::new(cache.clone())
+                .with_slash_commands(commands.list())
+                .with_help_completion(config.aishe.complete_flags),
+        ))
+        .with_menu(ReedlineMenu::EngineCompleter(completion_menu))
+        .with_menu(ReedlineMenu::HistoryMenu(history_menu))
+        .with_validator(Box::new(AisheValidator::new(cache.clone())))
+        .with_hinter(ghost.hinter(aishe::ghost::default_style()))
+        .with_highlighter(Box::new(CmdHighlighter::new(cache.clone(), theme)))
+        .with_edit_mode(edit_mode);
+    // HIST_IGNORE_SPACE: lines starting with a space aren't saved to history.
+    if config.aishe.hist_ignore_space {
+        line_editor = line_editor.with_history_exclusion_prefix(Some(" ".to_string()));
+    }
+
+    // Conversation memory for natural-language turns this session.
+    let mut session = Session::new(config.aishe.memory);
+
+    // zsh AUTO_PUSHD for the directory stack.
+    executor.set_auto_pushd(config.aishe.auto_pushd);
+    // cdpath: config entries, falling back to $CDPATH when none are configured.
+    executor.set_cdpath(resolve_cdpath(config));
+    // Named directories for `~name` expansion.
+    executor.set_named_dirs(
+        config
+            .named_dirs
+            .iter()
+            .map(|(k, v)| (k.clone(), std::path::PathBuf::from(v)))
+            .collect(),
+    );
+
+    // Background-refreshed VCS info: the branch is read cheaply each prompt, while
+    // the dirty/ahead-behind/stash markers are computed off-thread and cached, so
+    // a slow or huge repo never blocks the prompt (markers lag by one prompt).
+    let vcs = aishe::prompt::VcsCache::new();
+
+    loop {
+        // Report any background jobs that finished since the last prompt.
+        executor.reap_jobs();
+        // Computed once per prompt (not per keystroke). The branch comes from
+        // .git/HEAD (cheap); the dirty/ahead-behind/stash markers come from the
+        // async VCS cache when `git_status` is on.
+        let git = if config.aishe.git_prompt {
+            vcs.segment(executor.cwd(), config.aishe.git_status)
+        } else {
+            None
+        };
+        // Last command's duration, shown when it ran at least `report_time` secs.
+        let duration = executor
+            .last_duration()
+            .filter(|d| {
+                config.aishe.report_time > 0
+                    && *d >= std::time::Duration::from_secs(config.aishe.report_time)
+            })
+            .map(aishe::prompt::format_duration);
+        let prompt = AishePrompt::new(
+            executor.cwd().clone(),
+            &config.aishe.mode,
+            executor.last_exit,
+            config.active_model().to_string(),
+            config.aishe.show_right_prompt,
+            theme,
+            config.aishe.prompt_format.as_deref(),
+            git,
+            duration,
+        );
+
+        INTERRUPTED.store(false, Ordering::SeqCst);
+        let sig = line_editor.read_line(&prompt);
+        match sig {
+            Ok(Signal::Success(buffer)) => {
+                // The line is submitted; don't let the ghost worker predict for it.
+                ghost.reset();
+                let line = buffer.trim();
+                if line.is_empty() {
+                    continue;
+                }
+                // zsh-style history expansion (!!, !$, ^a^b, …) before dispatch.
+                let hist: Vec<String> = executor.history.iter().map(|(c, _)| c.clone()).collect();
+                let line: String = match history_expand::expand(line, &hist) {
+                    Ok(Some(expanded)) => {
+                        // Echo the expanded line, as zsh does.
+                        println!("{}", expanded.as_str().dim());
+                        expanded
+                    }
+                    Ok(None) => line.to_string(),
+                    Err(e) => {
+                        eprintln!("{}", format!("aishe: {e}").red());
+                        continue;
+                    }
+                };
+                if handle_line(
+                    &line,
+                    executor,
+                    provider,
+                    config,
+                    cache,
+                    commands,
+                    skills,
+                    mcp,
+                    &mut session,
+                    &ghost,
+                )? {
+                    return Ok(executor.last_exit as u8);
+                }
+            }
+            Ok(Signal::CtrlC) => {
+                // Clear the line and re-prompt.
+                continue;
+            }
+            Ok(Signal::CtrlD) => {
+                println!("exit");
+                return Ok(executor.last_exit as u8);
+            }
+            Err(e) => {
+                eprintln!("aishe: input error: {e}");
+                return Ok(1);
+            }
+        }
+    }
+}
+
+/// Handle one input line. Returns Ok(true) if the shell should exit.
+#[allow(clippy::too_many_arguments)]
+fn handle_line(
+    line: &str,
+    executor: &mut Executor,
+    provider: &mut Option<Arc<dyn Provider>>,
+    config: &mut Config,
+    cache: &CommandCache,
+    commands: &CommandRegistry,
+    skills: &SkillRegistry,
+    mcp: &aishe::mcp::McpRegistry,
+    session: &mut Session,
+    ghost: &aishe::ghost::Ghost,
+) -> Result<bool> {
+    // User-defined /slash-commands (plugins/skills) run before everything else.
+    if try_custom_command(
+        line,
+        commands,
+        executor,
+        provider.as_deref(),
+        config,
+        skills,
+        mcp,
+        session,
+    )? {
+        return Ok(false);
+    }
+
+    // autocd: a bare directory name (that isn't a known command) means `cd`
+    // there, like zsh's AUTO_CD.
+    if let Some(dir) = autocd_target(line, executor.cwd(), cache) {
+        executor.run_builtin(&["cd".to_string(), dir]);
+        return Ok(false);
+    }
+
+    match dispatcher::dispatch(line, cache) {
+        Dispatch::Shell(cmd) => {
+            // A trailing `&` backgrounds the command (reedline job control).
+            if let Some(bg) = aishe::executor::background_command(&cmd) {
+                executor.run_background(bg);
+                return Ok(false);
+            }
+            executor.run(&cmd);
+            // A newly-defined alias/function must be recognized as a command on
+            // later lines (the executor persists the definition via the rc).
+            if let Some(name) = alias_name(&cmd) {
+                cache.insert_all(&[name]);
+            }
+            if let Some(name) = dispatcher::function_def_name(&cmd) {
+                cache.insert_all(&[&name]);
+            }
+        }
+        Dispatch::Builtin(tokens) => match tokens[0].as_str() {
+            "exit" | "quit" => {
+                // `exit N` sets the shell's final exit code.
+                if let Some(code) = tokens.get(1).and_then(|s| s.parse::<i32>().ok()) {
+                    executor.last_exit = code;
+                }
+                return Ok(true);
+            }
+            "aishe" => handle_meta(
+                &tokens, config, provider, executor, cache, commands, skills, mcp, session, ghost,
+            ),
+            _ => {
+                executor.run_builtin(&tokens);
+            }
+        },
+        Dispatch::NaturalLanguage(nl) => {
+            // zsh CORRECT: if the first word is a near-miss of a known command,
+            // offer to run the corrected command instead of treating it as NL.
+            if config.aishe.correct {
+                if let Some(c) = spell_correction(&nl, cache) {
+                    if confirm_correction(&c) {
+                        executor.run(&c.full);
+                        return Ok(false);
+                    }
+                }
+            }
+            run_nl(
+                &nl,
+                &config.aishe.mode,
+                provider.as_deref(),
+                executor,
+                config,
+                skills,
+                mcp,
+                session,
+            )?;
+        }
+    }
+    Ok(false)
+}
+
+/// A proposed spelling correction of the first word of an input line.
+struct Correction {
+    /// The user's (mistyped) first word.
+    original: String,
+    /// The corrected command word.
+    corrected: String,
+    /// The full corrected line (corrected word + the remaining arguments).
+    full: String,
+}
+
+/// Propose a correction for `nl` when its first word is a close typo of a known
+/// command. Only triggers for command-shaped input (a single bare first token),
+/// never for sentences whose first word happens to be near a command.
+fn spell_correction(nl: &str, cache: &CommandCache) -> Option<Correction> {
+    let mut parts = nl.splitn(2, char::is_whitespace);
+    let first = parts.next()?.trim();
+    let rest = parts.next().unwrap_or("");
+    // Only plausible command words: short-ish, no path/sigil characters.
+    if first.len() < 2
+        || first.len() > 32
+        || !first
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.')
+        || cache.contains(first)
+    {
+        return None;
+    }
+    let max_dist = if first.len() <= 4 { 1 } else { 2 };
+    let corrected = cache.correction(first, max_dist)?;
+    let full = if rest.is_empty() {
+        corrected.clone()
+    } else {
+        format!("{corrected} {rest}")
+    };
+    Some(Correction {
+        original: first.to_string(),
+        corrected,
+        full,
+    })
+}
+
+/// Prompt `correct 'X' to 'Y'? [Y/n]`. Defaults to yes on Enter.
+fn confirm_correction(c: &Correction) -> bool {
+    use std::io::Write;
+    print!(
+        "  {} {} {} {}? [Y/n] ",
+        "correct".yellow(),
+        format!("'{}'", c.original).red(),
+        "to".dim(),
+        format!("'{}'", c.corrected).green(),
+    );
+    let _ = std::io::stdout().flush();
+    let mut line = String::new();
+    if std::io::stdin().read_line(&mut line).is_err() {
+        return false;
+    }
+    let a = line.trim();
+    a.is_empty() || a.eq_ignore_ascii_case("y") || a.eq_ignore_ascii_case("yes")
+}
+
+/// Parse a `/name arg…` slash-command line into (name, args).
+fn parse_slash(line: &str) -> Option<(&str, Vec<&str>)> {
+    let rest = line.trim().strip_prefix('/')?;
+    let mut parts = rest.split_whitespace();
+    let name = parts.next()?;
+    Some((name, parts.collect()))
+}
+
+/// Run a user-defined `/slash-command` if `line` names one. Returns whether it
+/// was handled. Built-in meta subcommands are left for normal dispatch.
+#[allow(clippy::too_many_arguments)]
+fn try_custom_command(
+    line: &str,
+    commands: &CommandRegistry,
+    executor: &mut Executor,
+    provider: Option<&dyn Provider>,
+    config: &Config,
+    skills: &SkillRegistry,
+    mcp: &aishe::mcp::McpRegistry,
+    session: &mut Session,
+) -> Result<bool> {
+    let Some((name, args)) = parse_slash(line) else {
+        return Ok(false);
+    };
+    if dispatcher::is_meta_subcommand(name) {
+        return Ok(false);
+    }
+    // MCP prompts (`/<server>:<prompt> args`): fetch the prompt and run it.
+    if mcp.is_prompt(name) {
+        match mcp.prompt_text(name, &args) {
+            Some(Ok(text)) if !text.trim().is_empty() => {
+                let mode = config.aishe.mode.as_str();
+                run_nl(
+                    &text, mode, provider, executor, config, skills, mcp, session,
+                )?;
+            }
+            Some(Ok(_)) => println!("  {}", "(empty prompt)".dim()),
+            Some(Err(e)) => eprintln!("{}", format!("aishe: mcp prompt: {e}").red()),
+            None => {}
+        }
+        return Ok(true);
+    }
+    let Some(cmd) = commands.get(name) else {
+        return Ok(false);
+    };
+    let ex = cmd.expand(&args);
+    if ex.text.is_empty() {
+        return Ok(true);
+    }
+    if ex.shell {
+        executor.run(&ex.text);
+    } else {
+        let mode = ex.mode.as_deref().unwrap_or(config.aishe.mode.as_str());
+        run_nl(
+            &ex.text, mode, provider, executor, config, skills, mcp, session,
+        )?;
+    }
+    Ok(true)
+}
+
+/// Print the `aishe mcp` listing: connected tools (yolo), plus any prompts
+/// (invocable as `/<server>:<prompt>`).
+fn print_mcp_listing(mcp: &aishe::mcp::McpRegistry) {
+    if mcp.is_fully_empty() {
+        println!("no MCP servers (configure them under [mcp_servers] in config)");
+        return;
+    }
+    if !mcp.is_empty() {
+        println!("MCP tools (yolo mode):");
+        for (name, desc) in mcp.list() {
+            let desc = desc.lines().next().unwrap_or("");
+            println!("\x20 {name}  -  {desc}");
+        }
+    }
+    let prompts = mcp.list_prompts();
+    if !prompts.is_empty() {
+        println!("MCP prompts (run as /<server>:<prompt>):");
+        for (name, desc) in prompts {
+            let desc = desc.lines().next().unwrap_or("");
+            println!("\x20 /{name}  -  {desc}");
+        }
+    }
+}
+
+/// Run a natural-language request in the given mode.
+#[allow(clippy::too_many_arguments)]
+fn run_nl(
+    nl: &str,
+    mode: &str,
+    provider: Option<&dyn Provider>,
+    executor: &mut Executor,
+    config: &Config,
+    skills: &SkillRegistry,
+    mcp: &aishe::mcp::McpRegistry,
+    session: &mut Session,
+) -> Result<()> {
+    let Some(p) = provider else {
+        eprintln!(
+            "{}",
+            "aishe: LLM not configured — set your API key env var".dim()
+        );
+        return Ok(());
+    };
+    match mode {
+        "yolo" => modes::yolo::run(nl, p, executor, config, &INTERRUPTED, skills, mcp, session)?,
+        "auto" => modes::suggest::run(nl, p, executor, config, false, true, session)?,
+        _ => modes::suggest::run(nl, p, executor, config, false, false, session)?,
+    }
+    Ok(())
+}
+
+/// zsh `AUTO_CD`: if `line` is a bare token (no whitespace/sigil) that names an
+/// existing directory and is *not* a known command, return it as a `cd` target.
+fn autocd_target(line: &str, cwd: &std::path::Path, cache: &CommandCache) -> Option<String> {
+    let t = line.trim();
+    if t.is_empty() || t.contains(char::is_whitespace) {
+        return None;
+    }
+    if t.starts_with('?') || t.starts_with('!') || t.contains('=') {
+        return None;
+    }
+    if cache.contains(t) {
+        return None; // it's a command, not a directory to enter
+    }
+    let resolved: std::path::PathBuf = if t == "~" {
+        dirs::home_dir()?
+    } else if let Some(rest) = t.strip_prefix("~/") {
+        dirs::home_dir()?.join(rest)
+    } else if t.starts_with('/') {
+        std::path::PathBuf::from(t)
+    } else {
+        cwd.join(t)
+    };
+    resolved.is_dir().then(|| t.to_string())
+}
+
+/// Extract the alias name from an `alias NAME=...` line (single definition only).
+fn alias_name(cmd: &str) -> Option<&str> {
+    let t = cmd.trim();
+    if t.contains(';') || t.contains('|') || t.contains('&') {
+        return None;
+    }
+    let rest = t.strip_prefix("alias ")?.trim_start();
+    let (name, _) = rest.split_once('=')?;
+    let name = name.trim();
+    (!name.is_empty() && !name.starts_with('-') && !name.contains(char::is_whitespace))
+        .then_some(name)
+}
+
+/// Handle `aishe ...` meta commands.
+#[allow(clippy::too_many_arguments)]
+fn handle_meta(
+    tokens: &[String],
+    config: &mut Config,
+    provider: &mut Option<Arc<dyn Provider>>,
+    executor: &Executor,
+    cache: &CommandCache,
+    commands: &CommandRegistry,
+    skills: &SkillRegistry,
+    mcp: &aishe::mcp::McpRegistry,
+    session: &mut Session,
+    ghost: &aishe::ghost::Ghost,
+) {
+    let sub = tokens.get(1).map(|s| s.as_str()).unwrap_or("help");
+    match sub {
+        "ghost" => match tokens.get(2).map(|s| s.as_str()) {
+            Some("on") | Some("true") => {
+                config.aishe.ghost_text = true;
+                persist(config);
+                ghost.set_enabled(true);
+                if provider.is_none() {
+                    println!("ghost-text → on (no provider configured; set your API key)");
+                } else {
+                    println!("ghost-text → on");
+                }
+            }
+            Some("off") | Some("false") => {
+                config.aishe.ghost_text = false;
+                persist(config);
+                ghost.set_enabled(false);
+                println!("ghost-text → off");
+            }
+            Some(_) => eprintln!("aishe: ghost must be 'on' or 'off'"),
+            None => println!(
+                "ghost-text: {}",
+                if ghost.is_enabled() { "on" } else { "off" }
+            ),
+        },
+        "plan" => match tokens.get(2).map(|s| s.as_str()) {
+            Some("on") | Some("true") => {
+                config.aishe.yolo_plan = true;
+                persist(config);
+                println!("yolo plan-first → on");
+            }
+            Some("off") | Some("false") => {
+                config.aishe.yolo_plan = false;
+                persist(config);
+                println!("yolo plan-first → off");
+            }
+            Some(_) => eprintln!("aishe: plan must be 'on' or 'off'"),
+            None => println!(
+                "yolo plan-first: {}",
+                if config.aishe.yolo_plan { "on" } else { "off" }
+            ),
+        },
+        "sandbox" => match tokens.get(2).map(|s| s.as_str()) {
+            Some("on") | Some("true") => {
+                config.aishe.yolo_sandbox = true;
+                persist(config);
+                println!("yolo sandbox → on");
+            }
+            Some("off") | Some("false") => {
+                config.aishe.yolo_sandbox = false;
+                persist(config);
+                println!("yolo sandbox → off");
+            }
+            Some(_) => eprintln!("aishe: sandbox must be 'on' or 'off'"),
+            None => println!(
+                "yolo sandbox: {}",
+                if config.aishe.yolo_sandbox {
+                    "on"
+                } else {
+                    "off"
+                }
+            ),
+        },
+        "cache" => match tokens.get(2).map(|s| s.as_str()) {
+            Some("on") | Some("true") => {
+                config.aishe.cache = true;
+                persist(config);
+                rebuild_provider(config, provider);
+                println!("response cache → on ({}s ttl)", config.aishe.cache_ttl_secs);
+            }
+            Some("off") | Some("false") => {
+                config.aishe.cache = false;
+                persist(config);
+                rebuild_provider(config, provider);
+                println!("response cache → off");
+            }
+            Some(_) => eprintln!("aishe: cache must be 'on' or 'off'"),
+            None => println!(
+                "response cache: {}",
+                if config.aishe.cache {
+                    format!("on ({}s ttl)", config.aishe.cache_ttl_secs)
+                } else {
+                    "off".to_string()
+                }
+            ),
+        },
+        "reset" => {
+            let n = session.turns();
+            session.clear();
+            if session.enabled() {
+                println!(
+                    "conversation memory cleared ({n} turn{} forgotten)",
+                    if n == 1 { "" } else { "s" }
+                );
+            } else {
+                println!("conversation memory is off (set memory = true to enable)");
+            }
+        }
+        "commands" => {
+            if commands.is_empty() {
+                println!("no custom commands (add *.md files to ~/.config/aishe/commands/)");
+            } else {
+                println!("custom slash-commands:");
+                for (name, desc) in commands.list() {
+                    println!("\x20 /{name}  —  {desc}");
+                }
+            }
+        }
+        "skills" => {
+            if skills.is_empty() {
+                println!("no skills (add <name>/SKILL.md files to ~/.config/aishe/skills/)");
+            } else {
+                println!("model-invoked skills (yolo mode):");
+                for (name, desc) in skills.list() {
+                    println!("\x20 {name}  —  {desc}");
+                }
+            }
+        }
+        "mcp" => print_mcp_listing(mcp),
+        "mode" => {
+            if let Some(m) = tokens.get(2) {
+                if matches!(m.as_str(), "suggest" | "auto" | "yolo") {
+                    config.aishe.mode = m.clone();
+                    persist(config);
+                    println!("mode → {m}");
+                } else {
+                    eprintln!("aishe: mode must be 'suggest', 'auto', or 'yolo'");
+                }
+            } else {
+                println!("mode: {}", config.aishe.mode);
+            }
+        }
+        "model" => {
+            if let Some(m) = tokens.get(2) {
+                config.set_active_model(m.clone());
+                persist(config);
+                rebuild_provider(config, provider);
+                println!("model → {m}");
+            } else {
+                println!("model: {}", config.active_model());
+            }
+        }
+        "provider" => {
+            if let Some(p) = tokens.get(2) {
+                if p == "anthropic" || p == "openai" {
+                    config.aishe.provider = p.clone();
+                    persist(config);
+                    rebuild_provider(config, provider);
+                    println!("provider → {p}");
+                } else {
+                    eprintln!("aishe: provider must be 'anthropic' or 'openai'");
+                }
+            } else {
+                println!("provider: {}", config.aishe.provider);
+            }
+        }
+        "config" => {
+            println!("config file: {}", Config::path().display());
+            match toml::to_string_pretty(config) {
+                Ok(t) => println!("\n{t}"),
+                Err(e) => eprintln!("aishe: {e}"),
+            }
+        }
+        "editor" => {
+            if let Some(m) = tokens.get(2) {
+                if matches!(m.as_str(), "emacs" | "vi") {
+                    config.aishe.edit_mode = m.clone();
+                    persist(config);
+                    println!("editor → {m} (restart aishe to apply)");
+                } else {
+                    eprintln!("aishe: editor must be 'emacs' or 'vi'");
+                }
+            } else {
+                println!("editor: {}", config.aishe.edit_mode);
+            }
+        }
+        "stream" => match tokens.get(2).map(|s| s.as_str()) {
+            Some("on") | Some("true") => {
+                config.aishe.stream = true;
+                persist(config);
+                println!("stream → on");
+            }
+            Some("off") | Some("false") => {
+                config.aishe.stream = false;
+                persist(config);
+                println!("stream → off");
+            }
+            Some(_) => eprintln!("aishe: stream must be 'on' or 'off'"),
+            None => println!("stream: {}", if config.aishe.stream { "on" } else { "off" }),
+        },
+        "structured" => match tokens.get(2).map(|s| s.as_str()) {
+            Some(v @ ("schema" | "json" | "prompt")) => {
+                config.aishe.structured = v.to_string();
+                persist(config);
+                println!("structured → {v}");
+            }
+            Some(_) => eprintln!("aishe: structured must be 'schema', 'json', or 'prompt'"),
+            None => println!("structured: {}", config.aishe.structured),
+        },
+        "frontend" => {
+            if let Some(f) = tokens.get(2) {
+                if matches!(f.as_str(), "auto" | "reedline" | "zsh-pty") {
+                    config.aishe.front_end = f.clone();
+                    persist(config);
+                    println!("front-end → {f} (restart aishe to apply)");
+                } else {
+                    eprintln!("aishe: front-end must be 'auto', 'reedline', or 'zsh-pty'");
+                }
+            } else {
+                println!("front-end: {}", config.aishe.front_end);
+            }
+        }
+        "theme" => {
+            if let Some(t) = tokens.get(2) {
+                if aishe::theme::PRESETS.contains(&t.as_str()) {
+                    config.theme.preset = Some(t.clone());
+                    persist(config);
+                    println!("theme → {t} (restart aishe to apply)");
+                } else {
+                    eprintln!(
+                        "aishe: unknown theme '{t}' (presets: {})",
+                        aishe::theme::PRESETS.join(", ")
+                    );
+                }
+            } else {
+                let cur = config.theme.preset.as_deref().unwrap_or("default");
+                println!(
+                    "theme: {cur}  (presets: {})",
+                    aishe::theme::PRESETS.join(", ")
+                );
+            }
+        }
+        "rehash" => {
+            cache.rehash(executor.shell());
+            println!("rehashed ({} commands cached)", cache.len());
+        }
+        "usage" => print_usage_summary(provider.as_deref(), config),
+        _ => print_meta_help(),
+    }
+}
+
+/// Print the session token/cost summary (`aishe usage` / `/usage`).
+fn print_usage_summary(provider: Option<&dyn Provider>, config: &Config) {
+    match provider {
+        Some(p) => {
+            let snap = p.meter().snapshot();
+            if snap.is_empty() {
+                println!("usage: no model calls yet this session");
+            } else {
+                println!(
+                    "usage: {}",
+                    aishe::usage::summary(snap, config.active_model(), &config.pricing)
+                );
+            }
+            if config.aishe.budget_usd > 0.0 {
+                println!(
+                    "budget: ${:.2} (set budget_usd=0 for unlimited)",
+                    config.aishe.budget_usd
+                );
+            }
+        }
+        None => println!("usage: provider not configured"),
+    }
+}
+
+fn print_meta_help() {
+    println!(
+        "aishe meta commands:\n\
+\x20 aishe mode [suggest|auto|yolo]  show or set interaction mode\n\
+\x20 aishe model [NAME]          show or set the model\n\
+\x20 aishe provider [a|o]        show or set the provider\n\
+\x20 aishe editor [emacs|vi]     show or set the line-editor keymap\n\
+\x20 aishe frontend [auto|reedline|zsh-pty]  show or set the front-end\n\
+\x20 aishe stream [on|off]       show or toggle token streaming\n\
+\x20 aishe structured [schema|json|prompt]  output-format strategy\n\
+\x20 aishe theme [PRESET]        show or set the color preset\n\
+\x20 aishe commands              list custom /slash-commands\n\
+\x20 aishe skills                list model-invoked skills (yolo)\n\
+\x20 aishe mcp                   list MCP tools (yolo)\n\
+\x20 aishe usage                 session token & cost usage\n\
+\x20 aishe reset                 clear conversation memory\n\
+\x20 aishe ghost [on|off]        inline AI ghost-text autosuggestion\n\
+\x20 aishe plan [on|off]         yolo plan-first dry run\n\
+\x20 aishe sandbox [on|off]      yolo policy sandbox (no net / out-of-tree writes)\n\
+\x20 aishe cache [on|off]        cache identical responses\n\
+\x20 aishe config                print active config\n\
+\x20 aishe rehash                rebuild the command cache\n\
+\x20 aishe help                  show this help\n\
+\n\
+(each also works as a slash-command, e.g. /mode auto, /config, /help)\n\
+\n\
+input prefixes:\n\
+\x20 ?<text>   force natural-language\n\
+\x20 !<cmd>    force shell (safety-exempt)\n\
+\n\
+exit with `exit`, `quit`, or Ctrl-D."
+    );
+}
+
+fn rebuild_provider(config: &Config, provider: &mut Option<Arc<dyn Provider>>) {
+    match providers::make(config) {
+        Ok(p) => *provider = Some(p),
+        Err(e) => {
+            eprintln!("{}", format!("aishe: {e}").dim());
+            *provider = None;
+        }
+    }
+}
+
+fn persist(config: &Config) {
+    if let Err(e) = config.save() {
+        eprintln!("{}", format!("aishe: could not save config: {e}").dim());
+    }
+}
+
+fn data_dir() -> std::path::PathBuf {
+    dirs::data_dir()
+        .unwrap_or_else(|| std::path::PathBuf::from("."))
+        .join("aishe")
+}
+
+/// The reedline history file and the timestamped sidecar log paths. Shared across
+/// sessions by default (zsh `SHARE_HISTORY`), or pid-suffixed per-session when
+/// `share_history` is off.
+fn history_paths(config: &Config) -> (std::path::PathBuf, std::path::PathBuf) {
+    if config.aishe.share_history {
+        (data_dir().join("history"), data_dir().join("history.ext"))
+    } else {
+        let pid = std::process::id();
+        (
+            data_dir().join(format!("history.{pid}")),
+            data_dir().join(format!("history.{pid}.ext")),
+        )
+    }
+}
+
+/// The `cdpath` base directories: the configured `cdpath`, or `$CDPATH` (colon-
+/// separated) when none are configured.
+fn resolve_cdpath(config: &Config) -> Vec<std::path::PathBuf> {
+    if !config.aishe.cdpath.is_empty() {
+        return config
+            .aishe
+            .cdpath
+            .iter()
+            .map(std::path::PathBuf::from)
+            .collect();
+    }
+    std::env::var("CDPATH")
+        .ok()
+        .map(|v| std::env::split_paths(&v).collect())
+        .unwrap_or_default()
+}
+
+/// Initialize the audit logger from config, with environment overrides:
+/// `AISHE_LOG=1` forces it on, `AISHE_LOG_FILE` overrides the path.
+fn init_audit(config: &Config) {
+    let env_on = matches!(
+        std::env::var("AISHE_LOG").ok().as_deref(),
+        Some("1") | Some("true") | Some("yes")
+    );
+    let enabled = config.logging.enabled || env_on;
+    let path = std::env::var("AISHE_LOG_FILE")
+        .ok()
+        .map(std::path::PathBuf::from)
+        .or_else(|| config.logging.file.clone().map(std::path::PathBuf::from));
+    aishe::audit::init(enabled, path, config.logging.redact);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn alias_name_extracts_single_definition() {
+        assert_eq!(alias_name("alias g=git"), Some("g"));
+        assert_eq!(alias_name("alias ll='ls -la'"), Some("ll"));
+        assert_eq!(alias_name("alias"), None); // listing
+        assert_eq!(alias_name("alias g=git; rm x"), None); // operators
+        assert_eq!(alias_name("git status"), None);
+    }
+
+    #[test]
+    fn autocd_only_for_bare_existing_dirs() {
+        let base = std::env::temp_dir().join(format!("aishe-autocd-{}", std::process::id()));
+        std::fs::create_dir_all(base.join("sub")).unwrap();
+        std::fs::write(base.join("file.txt"), b"x").unwrap();
+        let cache = CommandCache::new();
+        cache.insert_all(&["ls", "sub_cmd"]);
+
+        // a bare existing directory → cd target
+        assert_eq!(autocd_target("sub", &base, &cache).as_deref(), Some("sub"));
+        // a file is not a directory
+        assert_eq!(autocd_target("file.txt", &base, &cache), None);
+        // a known command is never treated as autocd, even if a dir exists
+        std::fs::create_dir_all(base.join("ls")).unwrap();
+        assert_eq!(autocd_target("ls", &base, &cache), None);
+        // multi-token, sigils, and assignments are excluded
+        assert_eq!(autocd_target("sub other", &base, &cache), None);
+        assert_eq!(autocd_target("?sub", &base, &cache), None);
+        assert_eq!(autocd_target("FOO=sub", &base, &cache), None);
+
+        std::fs::remove_dir_all(&base).ok();
+    }
+}

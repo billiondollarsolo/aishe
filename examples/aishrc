@@ -1,0 +1,37 @@
+# Example aishe startup file.
+#
+# Copy this to ~/.aishrc (or ~/.config/aishe/aishrc). aishe sources it into every
+# delegated command, so aliases, functions, and exports defined here are available
+# to all commands and recognized at the prompt. This file is shell-agnostic setup
+# that applies in both the reedline and zsh-PTY front-ends (the zsh-PTY front-end
+# also runs your real ~/.zshrc).
+
+# --- environment ---
+export EDITOR=nvim
+export PAGER=less
+export LESS=-R
+
+# --- aliases ---
+alias ll='ls -lah'
+alias gs='git status'
+alias gd='git diff'
+alias gl='git log --oneline -20'
+alias ..='cd ..'
+alias ...='cd ../..'
+
+# --- functions ---
+gco() { git checkout "$@"; }
+
+mkcd() { mkdir -p "$1" && cd "$1"; }
+
+# Extract most archive types with one command.
+extract() {
+  case "$1" in
+    *.tar.gz|*.tgz) tar -xzf "$1" ;;
+    *.tar.bz2)      tar -xjf "$1" ;;
+    *.tar)          tar -xf "$1"  ;;
+    *.zip)          unzip "$1"    ;;
+    *.gz)           gunzip "$1"   ;;
+    *)              echo "extract: unknown archive type: $1" ;;
+  esac
+}

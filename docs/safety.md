@@ -1,0 +1,103 @@
+# Safety gate
+
+aishe runs a deterministic safety gate before executing any command the model
+proposed. The model's output is never trusted to be safe; a separate, rule-based
+check in aishe decides what actually runs.
+
+## When the gate applies
+
+- **suggest**: a dangerous proposed command is flagged before you confirm.
+- **auto**: safe commands run immediately; dangerous ones stop and require you to
+  type the full word `yes`.
+- **yolo**: the loop pauses for tool calls according to the `yolo_confirm` tier
+  (`"never"` / `"dangerous"` / `"writes"` / `"all"`; default `"dangerous"`). The
+  legacy `yolo_confirm_dangerous` boolean is still honored when `yolo_confirm` is
+  left at its default. See [Modes: yolo](modes.md#yolo).
+
+The gate does not apply to commands you type yourself, nor to `!`-forced lines.
+It is a shell, not a nanny: if you type a destructive command directly, it runs.
+
+## What is flagged
+
+The gate screens for irreversible or high-impact operations, including:
+
+- recursive force deletes (`rm -rf`) of risky targets (see below),
+- raw device writes and disk tools (`dd of=/dev/...`, `> /dev/sd...`, `mkfs`,
+  `fdisk`, `parted`, `wipefs`, `shred /dev/...`, `diskutil erase`),
+- recursive permission or ownership changes on root (`chmod -R ... /`),
+- fork bombs,
+- piping a download straight into a shell (`curl ... | sh`, `wget ... | bash`),
+- git history or working-tree loss (`git push --force` to main/master,
+  `git reset --hard`, `git clean -f`),
+- system power changes (`shutdown`, `reboot`, `halt`, `kill -9 1`),
+- mass delete (`find / ... -delete`) and mass truncation with globs,
+- and more.
+
+The gate is robust against common ways of hiding a dangerous command. It strips
+leading wrappers and environment assignments before judging the real command, so
+`sudo -i rm -rf /`, `FOO=bar rm -rf /`, `env rm -rf /`, `time rm -rf /`,
+`nice rm -rf /`, and `timeout 5 rm -rf /` are all caught. It also unquotes `rm`
+targets, so `rm -rf "$HOME"` and `rm -rf '/'` do not slip through. A large
+adversarial test corpus (`tests/safety_corpus.rs`) guards these.
+
+## Path-aware rm -rf
+
+Recursive force deletes are judged by their targets, lexically, without touching
+the filesystem:
+
+- An in-tree relative path such as `rm -rf node_modules`, `rm -rf build dist`, or
+  `rm -rf ./target` is treated as your own project files and runs without fuss.
+- Anything catastrophic or out-of-tree is flagged: an absolute path (`/var`), a
+  home path (`~`, `$HOME`), a variable, a bare glob (`*`), or an escaping `..`
+  path.
+
+This keeps everyday cleanup smooth while still catching the dangerous cases.
+
+## How a flagged command looks
+
+A dangerous command prints a red panel describing why it was flagged and requires
+you to type `yes` to proceed. Anything else cancels it.
+
+## Forcing past the gate
+
+If you are certain, prefix the line with `!` to run it as shell and skip the gate:
+
+```
+!rm -rf /tmp/scratch
+```
+
+Use this deliberately. The gate exists to catch mistakes, especially commands a
+model proposed.
+
+## Sandbox (policy-based, best-effort)
+
+yolo mode has an optional sandbox (`yolo_sandbox = true`, off by default; toggle
+with `aishe sandbox on`). When on, before a `run_command` runs, aishe classifies
+the command and refuses it - feeding the reason back to the model as the tool
+result instead of executing - if it:
+
+- **accesses the network**: `curl`, `wget`, `ssh`, `scp`, `sftp`, `nc`/`ncat`,
+  `telnet`, `ftp`, `rsync`, and the network subcommands of package managers and
+  git (`git clone`/`fetch`/`pull`/`push`, `npm install`, `pip install`,
+  `cargo install`, `apt-get install`, and similar), or
+- **writes outside the working tree**: redirection (`> /etc/x`, `>> ~/y`) or an
+  obvious out-of-tree write command (`cp`/`mv`/`tee`/`touch`/`dd of=`/...) whose
+  target is an absolute path, a `~` home path, or a `..`-escaping path.
+
+A refusal looks like `Refused by sandbox: <reason>. Sandbox mode is on
+(yolo_sandbox).`, so the model can adapt (for example by staying in-tree or by
+asking you to run the network step yourself).
+
+This is a **policy-based, best-effort** check on the command text the model
+proposed. It is **not a kernel sandbox**: it cannot stop a determined escape via
+a wrapper script, an alias, a path hidden in a shell variable, or anything that
+does not look like the patterns above. It also does **not** affect the zsh-PTY /
+real-shell front-end paths (those run your own typed commands, not model tool
+calls). It is one more guardrail for an autonomous loop, not a security boundary.
+
+## Secrets in the model context
+
+aishe sends an environment context block (including your recent commands) with
+each request. To avoid leaking credentials that appear in those commands, it
+redacts likely secrets before sending. This is on by default. See
+[Logging and privacy](logging.md).
