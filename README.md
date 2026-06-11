@@ -367,6 +367,7 @@ The [docs/](docs/) directory has the full user guide:
 - [Prompt and theming](docs/prompt-and-theming.md)
 - [Shell integration and .aishrc](docs/shell-integration.md)
 - [Troubleshooting](docs/troubleshooting.md)
+- [Architecture (for contributors)](docs/architecture.md)
 - [Roadmap](docs/ROADMAP.md)
 
 ## Development
@@ -382,7 +383,8 @@ cargo build --release && python3 tests/admin_validation.py
 ```
 
 See [docs/development.md](docs/development.md) for the test layout and how the
-validation harness works.
+validation harness works, and [docs/architecture.md](docs/architecture.md) for a
+contributor's map of the codebase (routing, front-ends, provider/tool/MCP layers).
 
 ## License
 

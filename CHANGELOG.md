@@ -43,6 +43,11 @@ breaking changes can land in any release.
   advisories + a contact email), supported versions, the security model
   (deterministic safety gate, confirmation tiers, best-effort sandbox,
   prompt-injection threats), data-handling/privacy notes, and hardening tips.
+- **`docs/architecture.md`.** A contributor's map of the codebase: design
+  principles, the module layout, the routing decision order and command cache,
+  both front-ends (the zsh-PTY hook handoff and reedline), the
+  provider/`ResponseFormat`/step-down layer, modes/safety/sandbox, tools/MCP/skills,
+  config precedence, and the test layout. Linked from the README and development.md.
 
 ## [0.1.5] - 2026-06-11
 

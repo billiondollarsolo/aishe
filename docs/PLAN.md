@@ -385,7 +385,11 @@ per-project profiles.
 
 **I3. Architecture doc** for contributors: dispatcher decision order, the two
 front-ends, the provider/tool/MCP layering, the harness.
-- Effort: M. Priority: P1. Status: open.
+- Effort: M. Priority: P1. Status: DONE. [docs/architecture.md](architecture.md)
+  covers the design principles, crate/module map, the routing decision order +
+  command cache, both front-ends (zsh-PTY hook handoff and reedline), the
+  provider/`ResponseFormat`/step-down layer, modes/safety/sandbox, tools/MCP/skills,
+  config precedence, and the test layout. Linked from the README and development.md.
 
 **I4. Security/privacy statement** consolidated: what is sent, when, redaction
 guarantees and limits, audit log contents, telemetry stance.
@@ -520,11 +524,11 @@ Done (struck through) are kept for the record; the live order continues below.
 4. ~~G4 harness in CI~~ + ~~G3 config precedence tests~~. DONE (apply_overrides /
    resolve_audit / legacy-migration tests).
 5. ~~E1 schema step-down test.~~ DONE (full chain + give-up, in `tests/providers.rs`).
-6. **I3 architecture doc** + ~~M2 SECURITY.md~~ (DONE). I3 still open.
+6. ~~I3 architecture doc~~ + ~~M2 SECURITY.md~~. DONE.
 7. **A2 per-project profiles** (P1, high user value).
 8. **G1 interactive PTY tests** (P1, Ctrl-C/Ctrl-Z/resize, the biggest untested
    surface; the fuzz + zsh-feature suites cover non-signal behavior).
 9. **B1 real sandbox behind a flag** (P2, the headline safety upgrade).
 10. **C2 completion depth round 2** (P2, daily-use polish).
 
-Live shortlist, in order: I3, A2, G1.
+Live shortlist, in order: A2, G1.

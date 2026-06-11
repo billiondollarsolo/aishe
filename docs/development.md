@@ -14,9 +14,16 @@ cargo fmt --check
 - Rust unit tests live inline in each module under `src/`.
 - Integration tests are in `tests/`:
   - `tests/cli.rs`, `tests/dispatcher.rs`, `tests/executor.rs`, `tests/modes.rs`,
-    `tests/providers.rs`, `tests/safety.rs`: Rust integration tests.
-  - `tests/pty_smoke.py`, `tests/reedline_smoke.py`: pseudo-terminal smoke tests
-    for the two front-ends (need `python3`, no API key).
+    `tests/providers.rs`, `tests/safety.rs`, `tests/safety_corpus.rs`,
+    `tests/mcp.rs`, `tests/mcp_http.rs`: Rust integration tests.
+  - `tests/pty_scenarios.py`, `tests/pty_fuzz.py`, `tests/zsh_features.py`:
+    deterministic pseudo-terminal suites for the zsh-PTY front-end, driven by a
+    fake provider (no key); the fuzz and feature suites write Markdown reports
+    under `test-results/`.
+  - `tests/pty_smoke.py`, `tests/reedline_smoke.py`: PTY smoke tests for the two
+    front-ends.
+  - `tests/real_model.py`: opt-in classification corpus against a live endpoint
+    (`AISHE_REALTEST_KEY`).
   - `tests/admin_validation.py`: the end-to-end validation harness.
 
 ## Validation harness
@@ -62,8 +69,13 @@ informational because model output varies.
 
 ## CI
 
-GitHub Actions runs the cross-platform Rust tests plus the pseudo-terminal smoke
-tests on every push. Tagged releases build binaries.
+GitHub Actions runs the cross-platform Rust tests plus the deterministic
+pseudo-terminal suites (`pty_scenarios.py`, `pty_fuzz.py`, `zsh_features.py`)
+with the fake provider on every push and PR; `real_model.py` runs only when the
+`AISHE_REALTEST_KEY` secret is present. Tagged releases build the binaries,
+`.deb`/`.rpm` packages, and the man page (see `.github/workflows/release.yml`).
+
+For a contributor's map of the codebase, see [architecture.md](architecture.md).
 
 ## Adding to the harness
 
