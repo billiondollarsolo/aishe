@@ -31,6 +31,11 @@ breaking changes can land in any release.
   `tests/pty_fuzz.py` generatively runs hundreds of cases (real commands with
   pipes/redirs/globs/quoting, sigil NL stuffed with shell metacharacters, and
   adversarial model responses), asserting no parse/glob/eval error ever leaks.
+- **Interactive signal/terminal tests for the zsh-PTY front-end.**
+  `tests/pty_signals.py` (in CI) drives the real wrapped zsh through Ctrl-C
+  mid-command (the shell survives and prompts again), Ctrl-C on an empty line,
+  Ctrl-Z job suspension, window resize (SIGWINCH propagation updates `$COLUMNS`),
+  and multi-line for-loop continuation.
 - **Shift-Tab cycles the interaction mode** (`suggest -> auto -> yolo`), like
   Claude Code. In the zsh-PTY / `init zsh` front-end a ZLE widget rotates
   `AISHE_MODE` and repaints the prompt glyph (Shift-Tab still navigates an open

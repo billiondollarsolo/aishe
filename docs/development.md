@@ -16,10 +16,11 @@ cargo fmt --check
   - `tests/cli.rs`, `tests/dispatcher.rs`, `tests/executor.rs`, `tests/modes.rs`,
     `tests/providers.rs`, `tests/safety.rs`, `tests/safety_corpus.rs`,
     `tests/mcp.rs`, `tests/mcp_http.rs`: Rust integration tests.
-  - `tests/pty_scenarios.py`, `tests/pty_fuzz.py`, `tests/zsh_features.py`:
-    deterministic pseudo-terminal suites for the zsh-PTY front-end, driven by a
-    fake provider (no key); the fuzz and feature suites write Markdown reports
-    under `test-results/`.
+  - `tests/pty_scenarios.py`, `tests/pty_fuzz.py`, `tests/zsh_features.py`,
+    `tests/pty_signals.py`: deterministic pseudo-terminal suites for the zsh-PTY
+    front-end, driven by a fake provider (no key). `pty_signals.py` covers
+    Ctrl-C / Ctrl-Z / window resize / multi-line continuation; the fuzz and
+    feature suites write Markdown reports under `test-results/`.
   - `tests/pty_smoke.py`, `tests/reedline_smoke.py`: PTY smoke tests for the two
     front-ends.
   - `tests/real_model.py`: opt-in classification corpus against a live endpoint

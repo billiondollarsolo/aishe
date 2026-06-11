@@ -105,13 +105,15 @@ is tagged `(reedline)` so we can re-scope quickly.
   parsing, usage parsing, and the schema-to-json-to-text step-down (full chain
   plus terminal give-up) are all covered (`tests/providers.rs`, provider unit
   tests).
-- [~] Interactive PTY behaviors: a deterministic PTY suite now runs in CI -
+- [x] Interactive PTY behaviors: a deterministic PTY suite now runs in CI -
   `tests/pty_scenarios.py` (targeted flows), `tests/pty_fuzz.py` (thousands of
-  generative cases, logged to `test-results/fuzz-*.md`), and `tests/zsh_features.py`
+  generative cases, logged to `test-results/fuzz-*.md`), `tests/zsh_features.py`
   (44 zsh features: pipes, here-docs, process subst, arrays, control structures,
   functions/aliases, dir stack, job control, history expansion, quoting,
-  arithmetic). Still open: signal/terminal edges - `Ctrl-C` mid-command, `Ctrl-Z`,
-  window resize, completion-menu navigation, multi-line editing.
+  arithmetic), and `tests/pty_signals.py` (Ctrl-C mid-command, Ctrl-Z job
+  suspension, window resize / SIGWINCH propagation, multi-line continuation).
+  Completion-menu navigation depends on the user's zsh setup and is left to the
+  native ZLE.
 - [~] I/O edges: stdin piping / non-tty runs each line as a command (pipe/script
   mode, `tests/cli.rs`); large captured-output truncation is covered
   (`tests/executor.rs::captured_output_truncates`). Binary captured output and

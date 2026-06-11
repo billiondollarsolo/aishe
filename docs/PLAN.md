@@ -316,7 +316,11 @@ expose roots, answer `sampling/createMessage` (server asks our model), handle
 **G1. Interactive PTY behavior tests.** `Ctrl-C` mid-command, `Ctrl-Z`, window
 resize, completion-menu navigation, multi-line editing. Extend the smoke harness
 into a small expect-style suite.
-- Effort: M. Priority: P1. Status: open.
+- Effort: M. Priority: P1. Status: DONE. `tests/pty_signals.py` (in CI) drives the
+  real wrapped zsh through Ctrl-C mid-command (shell survives), Ctrl-C on an empty
+  line, Ctrl-Z job suspension, window resize (SIGWINCH propagation updates
+  `$COLUMNS`), and multi-line for-loop continuation. Completion-menu navigation is
+  native zsh ZLE (depends on the user's setup) and is left untouched.
 
 **G2. I/O edge tests.** Large captured output truncation, binary output handling,
 Unicode/emoji line editing, very long lines.
@@ -533,9 +537,10 @@ Done (struck through) are kept for the record; the live order continues below.
 5. ~~E1 schema step-down test.~~ DONE (full chain + give-up, in `tests/providers.rs`).
 6. ~~I3 architecture doc~~ + ~~M2 SECURITY.md~~. DONE.
 7. ~~A2 per-project profiles.~~ DONE (`.aishe/config.toml` overlay + `aishe trust`).
-8. **G1 interactive PTY tests** (P1, Ctrl-C/Ctrl-Z/resize, the biggest untested
-   surface; the fuzz + zsh-feature suites cover non-signal behavior).
+8. ~~G1 interactive PTY tests.~~ DONE (`tests/pty_signals.py`: Ctrl-C/Ctrl-Z/
+   resize/multi-line, in CI).
 9. **B1 real sandbox behind a flag** (P2, the headline safety upgrade).
 10. **C2 completion depth round 2** (P2, daily-use polish).
 
-Live shortlist, in order: G1, then B1 / C2.
+The P1 next-10 is cleared. Live shortlist (P2): B1 real sandbox, C2 completion
+depth round 2.

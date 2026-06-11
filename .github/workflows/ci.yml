@@ -81,6 +81,9 @@ jobs:
       - name: zsh feature matrix (pipes, here-docs, loops, jobs, history, ...)
         run: python3 tests/zsh_features.py target/release/aishe
 
+      - name: zsh-PTY signals (Ctrl-C, Ctrl-Z, resize, multi-line)
+        run: python3 tests/pty_signals.py target/release/aishe
+
       - name: Real-model classification (opt-in; skips without the secret)
         env:
           AISHE_REALTEST_KEY: ${{ secrets.AISHE_REALTEST_KEY }}
