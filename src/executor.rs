@@ -1111,12 +1111,13 @@ mod tests {
 
     #[test]
     fn named_dir_expansion() {
-        let base = std::env::temp_dir()
-            .join(format!("aishe-named-{}", std::process::id()))
-            .canonicalize()
-            .unwrap_or_else(|_| std::env::temp_dir());
+        // Create the dir first, THEN canonicalize it. Canonicalizing a path that
+        // does not exist yet returns Err, and the old fallback to `temp_dir()`
+        // made `base` the whole temp root - so the cleanup below wiped `/tmp`.
+        let base = std::env::temp_dir().join(format!("aishe-named-{}", std::process::id()));
         let sub = base.join("sub");
         std::fs::create_dir_all(&sub).unwrap();
+        let base = base.canonicalize().unwrap();
 
         let mut ex = Executor::new().unwrap();
         ex.set_named_dirs(HashMap::from([("proj".to_string(), base.clone())]));

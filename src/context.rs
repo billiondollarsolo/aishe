@@ -221,11 +221,21 @@ mod tests {
 
     #[test]
     fn build_includes_and_omits_project_context_per_flag() {
-        let dir = std::env::temp_dir().join(format!("aishe_pctx_build_{}", std::process::id()));
+        use std::time::{SystemTime, UNIX_EPOCH};
+        // Unique per run so parallel tests never collide on the cwd we cd into.
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!("aishe_pctx_build_{nanos}"));
         std::fs::create_dir_all(dir.join(".aishe")).unwrap();
         std::fs::write(dir.join(".aishe").join("context.md"), "REPO_MARKER_TOKEN").unwrap();
         let mut exec = Executor::new().unwrap();
-        exec.run_builtin(&["cd".to_string(), dir.to_string_lossy().to_string()]);
+        assert_eq!(
+            exec.run_builtin(&["cd".to_string(), dir.to_string_lossy().to_string()]),
+            0,
+            "cd into the temp dir failed"
+        );
         // On: the marker appears under the project-context heading.
         let on = build(&exec, true, true);
         assert!(on.contains("Project context"), "{on}");
