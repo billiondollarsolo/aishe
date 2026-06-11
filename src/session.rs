@@ -8,11 +8,24 @@
 //!
 //! It is intentionally lightweight: it stores the user's request text and the
 //! assistant's reply (a suggested command/answer, or a yolo run's final summary),
-//! not the full tool-by-tool transcript of a yolo run, so it stays small. It is
-//! capped by an approximate character budget and lives only for the interactive
-//! process (never written to disk).
+//! not the full tool-by-tool transcript of a yolo run, so it stays small, capped
+//! by an approximate character budget. The reedline REPL keeps it in memory; the
+//! shell-hook front-ends (zsh-PTY / `init zsh`), whose NL calls are separate
+//! processes, persist it to a per-session file (`load_persisted`/`save_persisted`)
+//! so follow-ups still share context.
+
+use std::path::Path;
+
+use serde::{Deserialize, Serialize};
 
 use crate::providers::{AssistantMsg, Msg};
+
+/// One persisted conversation turn (role + text) for shell-hook session memory.
+#[derive(Serialize, Deserialize)]
+struct PersistedTurn {
+    role: String,
+    content: String,
+}
 
 /// Approximate upper bound on transcript size, in characters. Roughly four
 /// characters per token, so about 3k tokens of history.
@@ -78,6 +91,57 @@ impl Session {
         self.history.clear();
     }
 
+    /// Load a persisted transcript (JSONL of `{"role","content"}` turns) so that
+    /// stateless per-call shell-hook invocations (`--suggest-line`/`--auto-line`)
+    /// still share conversation memory. Returns an enabled session primed with
+    /// the turns; a missing or unreadable file yields an empty (enabled) session.
+    pub fn load_persisted(path: &Path) -> Self {
+        let mut s = Self::new(true);
+        if let Ok(text) = std::fs::read_to_string(path) {
+            for line in text.lines() {
+                let line = line.trim();
+                if line.is_empty() {
+                    continue;
+                }
+                if let Ok(turn) = serde_json::from_str::<PersistedTurn>(line) {
+                    match turn.role.as_str() {
+                        "user" => s.record_user(&turn.content),
+                        "assistant" => s.record_assistant(&turn.content),
+                        _ => {}
+                    }
+                }
+            }
+        }
+        s
+    }
+
+    /// Write the (char-budget-trimmed) transcript back as JSONL. Best-effort.
+    pub fn save_persisted(&self, path: &Path) {
+        use std::fmt::Write as _;
+        let mut out = String::new();
+        for m in &self.history {
+            let (role, content) = match m {
+                Msg::User(t) => ("user", t.as_str()),
+                Msg::Assistant(a) => ("assistant", a.text.as_deref().unwrap_or("")),
+                _ => continue,
+            };
+            if content.trim().is_empty() {
+                continue;
+            }
+            let turn = PersistedTurn {
+                role: role.to_string(),
+                content: content.to_string(),
+            };
+            if let Ok(j) = serde_json::to_string(&turn) {
+                let _ = writeln!(out, "{j}");
+            }
+        }
+        if let Some(parent) = path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        let _ = std::fs::write(path, out);
+    }
+
     pub fn enabled(&self) -> bool {
         self.enabled
     }
@@ -112,6 +176,35 @@ fn msg_len(m: &Msg) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn persisted_session_round_trips() {
+        let dir = std::env::temp_dir().join(format!("aishe-sess-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("mem.jsonl");
+
+        let mut s = Session::new(true);
+        s.record_user("install spaceship");
+        s.record_assistant("cloned spaceship-prompt; set ZSH_THEME=spaceship");
+        s.save_persisted(&path);
+
+        // A fresh process (new Session) sees the prior turns.
+        let loaded = Session::load_persisted(&path);
+        let h = loaded.history();
+        assert_eq!(h.len(), 2);
+        assert!(matches!(&h[0], Msg::User(t) if t == "install spaceship"));
+        assert!(
+            matches!(&h[1], Msg::Assistant(a) if a.text.as_deref() == Some("cloned spaceship-prompt; set ZSH_THEME=spaceship"))
+        );
+        assert_eq!(loaded.turns(), 1);
+
+        // A missing file is an empty (but enabled) session, not an error.
+        let empty = Session::load_persisted(&dir.join("nope.jsonl"));
+        assert!(empty.history().is_empty());
+        assert!(empty.enabled());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn disabled_session_is_noop() {

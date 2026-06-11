@@ -453,6 +453,20 @@ fn doctor() -> u8 {
 
 /// Shell-hook helper: print a suggested command to stdout (for `print -z` /
 /// readline pre-fill) and any explanation/answer to stderr.
+/// Persistent conversation-memory file for the shell-hook front-ends. Each NL
+/// call is a separate process, so memory is shared via this file (set and
+/// exported by the injected hook as `AISHE_SESSION_FILE`, keyed by the shell's
+/// PID). `None` when memory is off or the hook did not set it.
+fn hook_session_path(config: &Config) -> Option<std::path::PathBuf> {
+    if !config.aishe.memory {
+        return None;
+    }
+    std::env::var("AISHE_SESSION_FILE")
+        .ok()
+        .filter(|s| !s.trim().is_empty())
+        .map(std::path::PathBuf::from)
+}
+
 fn suggest_line(
     line: &str,
     executor: &mut Executor,
@@ -463,8 +477,15 @@ fn suggest_line(
         eprintln!("aishe: LLM not configured");
         return Ok(1);
     };
-    // Shell-hook calls are one per process, so there is no in-session memory.
-    match modes::suggest::request(line, p, executor, config, Vec::new())? {
+    // Hook calls are one per process; share memory across them via a file so
+    // follow-ups ("is it enabled?") keep the prior turns' context.
+    let mem = hook_session_path(config);
+    let mut session = match &mem {
+        Some(path) => Session::load_persisted(path),
+        None => Session::new(false),
+    };
+    let suggestion = modes::suggest::request(line, p, executor, config, session.history())?;
+    let reply = match &suggestion {
         modes::suggest::Suggestion::Command {
             command,
             explanation,
@@ -473,7 +494,11 @@ fn suggest_line(
                 eprintln!("{}", explanation.as_str().dim());
             }
             println!("{command}");
-            Ok(0)
+            if explanation.is_empty() {
+                command.clone()
+            } else {
+                format!("{command}\n{explanation}")
+            }
         }
         modes::suggest::Suggestion::Answer { explanation } => {
             // No command to run; render the answer to stderr so the shell hook's
@@ -481,9 +506,15 @@ fn suggest_line(
             if !explanation.is_empty() {
                 eprintln!("{explanation}");
             }
-            Ok(0)
+            explanation.clone()
         }
+    };
+    if let Some(path) = &mem {
+        session.record_user(line);
+        session.record_assistant(&reply);
+        session.save_persisted(path);
     }
+    Ok(0)
 }
 
 /// Shell-hook helper: run the yolo loop directly for a natural-language line.
@@ -499,7 +530,11 @@ fn yolo_line(
         eprintln!("aishe: LLM not configured");
         return Ok(1);
     };
-    let mut session = Session::new(false);
+    let mem = hook_session_path(config);
+    let mut session = match &mem {
+        Some(path) => Session::load_persisted(path),
+        None => Session::new(false),
+    };
     modes::yolo::run(
         line,
         p,
@@ -510,6 +545,9 @@ fn yolo_line(
         mcp,
         &mut session,
     )?;
+    if let Some(path) = &mem {
+        session.save_persisted(path);
+    }
     Ok(0)
 }
 
@@ -531,7 +569,13 @@ fn auto_line(
         eprintln!("aishe: LLM not configured");
         return Ok(1);
     };
-    match modes::suggest::request(line, p, executor, config, Vec::new())? {
+    let mem = hook_session_path(config);
+    let mut session = match &mem {
+        Some(path) => Session::load_persisted(path),
+        None => Session::new(false),
+    };
+    let suggestion = modes::suggest::request(line, p, executor, config, session.history())?;
+    let (reply, code) = match &suggestion {
         modes::suggest::Suggestion::Command {
             command,
             explanation,
@@ -540,21 +584,33 @@ fn auto_line(
                 eprintln!("{}", explanation.as_str().dim());
             }
             println!("{command}");
-            match safety::assess(&command) {
-                Risk::Safe => Ok(0),
+            let code = match safety::assess(command) {
+                Risk::Safe => 0,
                 Risk::Dangerous(reason) => {
                     eprintln!("{}", format!("⚠ {reason} — pre-filled for review").yellow());
-                    Ok(EXIT_AUTO_DANGEROUS)
+                    EXIT_AUTO_DANGEROUS
                 }
-            }
+            };
+            let reply = if explanation.is_empty() {
+                command.clone()
+            } else {
+                format!("{command}\n{explanation}")
+            };
+            (reply, code)
         }
         modes::suggest::Suggestion::Answer { explanation } => {
             if !explanation.is_empty() {
                 eprintln!("{explanation}");
             }
-            Ok(0)
+            (explanation.clone(), 0)
         }
+    };
+    if let Some(path) = &mem {
+        session.record_user(line);
+        session.record_assistant(&reply);
+        session.save_persisted(path);
     }
+    Ok(code)
 }
 
 /// Run one dispatch cycle non-interactively for the `-c` flag.

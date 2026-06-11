@@ -46,6 +46,10 @@ pub const SUPPORTED: &[&str] = &["zsh", "bash"];
 /// drift apart.
 pub const ZSH_HOOK: &str = r#": ${AISHE_PENDING_FILE:=${TMPDIR:-/tmp}/aishe-pending-$$}
 : ${AISHE_FORCE_FILE:=${TMPDIR:-/tmp}/aishe-force-$$}
+# Conversation memory shared across the per-call NL invocations in this shell, so
+# follow-ups keep context. Exported so `command aishe` inherits it.
+: ${AISHE_SESSION_FILE:=${TMPDIR:-/tmp}/aishe-session-mem-$$}
+export AISHE_SESSION_FILE
 
 # Route one natural-language line according to AISHE_MODE. suggest/auto stage a
 # command in AISHE_PENDING_FILE (acted on by aishe_precmd in the MAIN shell,
@@ -214,6 +218,9 @@ const BASH_SCRIPT: &str = r#"# aishe bash integration — add to ~/.bashrc:  eva
 # shell state directly — it writes a temp file that a PROMPT_COMMAND hook acts
 # on in the main shell.
 : ${AISHE_PENDING_FILE:=${TMPDIR:-/tmp}/aishe-pending-$$}
+# Conversation memory shared across the per-call NL invocations in this shell.
+: ${AISHE_SESSION_FILE:=${TMPDIR:-/tmp}/aishe-session-mem-$$}
+export AISHE_SESSION_FILE
 command_not_found_handle() {
   local line="$*"
   case "${AISHE_MODE:-suggest}" in

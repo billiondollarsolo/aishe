@@ -6,6 +6,15 @@ breaking changes can land in any release.
 
 ## [Unreleased]
 
+### Added
+- **Conversation memory in the zsh-PTY / `init zsh` front-ends.** Each
+  natural-language line in the hook front-ends ran as a separate process with no
+  shared state, so a follow-up like "is it enabled?" had no idea what "it" was.
+  NL turns are now persisted to a per-shell session file (keyed by the shell PID,
+  exported as `AISHE_SESSION_FILE`) and replayed into each request, so follow-ups
+  keep context. Bounded by the existing transcript budget; honors the `memory`
+  config option.
+
 ### Changed
 - **zsh-PTY is the interactive front-end; zsh is required for it.** The built-in
   reedline editor reimplemented a shell and was the source of most terminal
