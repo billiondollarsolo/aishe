@@ -9,6 +9,8 @@ use crate::executor::Executor;
 
 const MAX_DIR_ENTRIES: usize = 50;
 const MAX_HISTORY: usize = 10;
+/// Cap on the per-project context file included in the block (chars).
+const MAX_PROJECT_CONTEXT: usize = 4_000;
 
 /// OS description, computed once (e.g. "macOS 14.5 (arm64)" / "Linux 6.x (x86_64)").
 static OS_INFO: OnceLock<String> = OnceLock::new();
@@ -24,8 +26,10 @@ pub fn init(shell: &std::path::Path) {
 /// Build the context block string for the current executor state. When
 /// `redact_secrets` is set, recent commands are scrubbed of likely credentials
 /// before being included (they can contain `export TOKEN=...`, `mysql -p...`, or
-/// URLs with passwords).
-pub fn build(executor: &Executor, redact_secrets: bool) -> String {
+/// URLs with passwords). When `project_context` is set, a per-project
+/// `.aishe/context.md` found at or above the cwd is appended so repo-specific
+/// conventions reach the model.
+pub fn build(executor: &Executor, redact_secrets: bool, project_context: bool) -> String {
     let os = OS_INFO.get().cloned().unwrap_or_else(detect_os);
     let shell = SHELL_INFO
         .get()
@@ -58,7 +62,37 @@ pub fn build(executor: &Executor, redact_secrets: bool) -> String {
         out.push_str(&format!("  [{code}] {cmd}\n"));
     }
 
+    if project_context {
+        if let Some(block) = project_context_block(executor.cwd(), MAX_PROJECT_CONTEXT) {
+            out.push_str("Project context (.aishe/context.md):\n");
+            out.push_str(&block);
+            out.push('\n');
+        }
+    }
+
     out
+}
+
+/// Find a `.aishe/context.md` at `start` or any ancestor directory and return its
+/// contents, truncated (char-safe) to `max` chars. The nearest file wins.
+fn project_context_block(start: &std::path::Path, max: usize) -> Option<String> {
+    let mut dir = Some(start);
+    while let Some(d) = dir {
+        let candidate = d.join(".aishe").join("context.md");
+        if let Ok(text) = std::fs::read_to_string(&candidate) {
+            let trimmed = text.trim();
+            if trimmed.is_empty() {
+                return None;
+            }
+            if trimmed.chars().count() > max {
+                let kept: String = trimmed.chars().take(max).collect();
+                return Some(format!("{kept}\n[truncated to {max} chars]"));
+            }
+            return Some(trimmed.to_string());
+        }
+        dir = d.parent();
+    }
+    None
 }
 
 fn directory_listing(dir: &std::path::Path) -> String {
@@ -132,7 +166,7 @@ mod tests {
     #[test]
     fn build_contains_required_fields() {
         let exec = Executor::new().unwrap();
-        let block = build(&exec, true);
+        let block = build(&exec, true, false);
         assert!(block.contains("OS: "));
         assert!(block.contains("Shell backend: "));
         assert!(block.contains("CWD: "));
@@ -145,12 +179,61 @@ mod tests {
         let mut exec = Executor::new().unwrap();
         exec.history
             .push_front(("export API_TOKEN=supersecretvalue123".to_string(), 0));
-        let redacted = build(&exec, true);
+        let redacted = build(&exec, true, false);
         assert!(redacted.contains("API_TOKEN=<redacted>"), "{redacted}");
         assert!(!redacted.contains("supersecretvalue123"));
         // With redaction off, the raw command is included verbatim.
-        let raw = build(&exec, false);
+        let raw = build(&exec, false, false);
         assert!(raw.contains("supersecretvalue123"));
+    }
+
+    #[test]
+    fn project_context_found_capped_and_absent() {
+        let base = std::env::temp_dir().join(format!("aishe_pctx_{}", std::process::id()));
+        let nested = base.join("sub").join("deep");
+        std::fs::create_dir_all(&nested).unwrap();
+        let aishe = base.join(".aishe");
+        std::fs::create_dir_all(&aishe).unwrap();
+        std::fs::write(aishe.join("context.md"), "Use tabs, not spaces.").unwrap();
+
+        // Found from a nested cwd by walking up to the ancestor that has it.
+        let block = project_context_block(&nested, MAX_PROJECT_CONTEXT).unwrap();
+        assert!(block.contains("Use tabs, not spaces."));
+
+        // Large content is truncated.
+        std::fs::write(
+            aishe.join("context.md"),
+            "x".repeat(MAX_PROJECT_CONTEXT + 500),
+        )
+        .unwrap();
+        let capped = project_context_block(&nested, MAX_PROJECT_CONTEXT).unwrap();
+        assert!(capped.contains("[truncated to"));
+        assert!(capped.chars().count() < MAX_PROJECT_CONTEXT + 100);
+
+        // Absent file -> None.
+        let other = std::env::temp_dir().join(format!("aishe_pctx_none_{}", std::process::id()));
+        std::fs::create_dir_all(&other).unwrap();
+        assert!(project_context_block(&other, MAX_PROJECT_CONTEXT).is_none());
+
+        std::fs::remove_dir_all(&base).ok();
+        std::fs::remove_dir_all(&other).ok();
+    }
+
+    #[test]
+    fn build_includes_and_omits_project_context_per_flag() {
+        let dir = std::env::temp_dir().join(format!("aishe_pctx_build_{}", std::process::id()));
+        std::fs::create_dir_all(dir.join(".aishe")).unwrap();
+        std::fs::write(dir.join(".aishe").join("context.md"), "REPO_MARKER_TOKEN").unwrap();
+        let mut exec = Executor::new().unwrap();
+        exec.run_builtin(&["cd".to_string(), dir.to_string_lossy().to_string()]);
+        // On: the marker appears under the project-context heading.
+        let on = build(&exec, true, true);
+        assert!(on.contains("Project context"), "{on}");
+        assert!(on.contains("REPO_MARKER_TOKEN"), "{on}");
+        // Off: nothing from the file.
+        let off = build(&exec, true, false);
+        assert!(!off.contains("REPO_MARKER_TOKEN"));
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]

@@ -93,6 +93,11 @@ pub struct AisheConfig {
     /// Off by default.
     #[serde(default)]
     pub yolo_plan: bool,
+    /// Include a per-project `.aishe/context.md` (found at or above the cwd) in
+    /// the model context, so repo-specific conventions are available. On by
+    /// default.
+    #[serde(default = "default_true")]
+    pub project_context: bool,
     /// Cache identical suggest-mode model responses for a short while to make
     /// repeats instant and free. On by default.
     #[serde(default = "default_true")]
@@ -263,6 +268,7 @@ impl Default for AisheConfig {
             yolo_confirm_dangerous: true,
             max_yolo_iterations: default_max_iters(),
             yolo_plan: false,
+            project_context: true,
             cache: true,
             cache_ttl_secs: default_cache_ttl(),
             file_tools: true,

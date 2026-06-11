@@ -60,7 +60,11 @@ fn run_loop(
     mcp: &McpRegistry,
     history: Vec<Msg>,
 ) -> Result<Option<String>> {
-    let ctx = context::build(executor, config.aishe.redact_secrets);
+    let ctx = context::build(
+        executor,
+        config.aishe.redact_secrets,
+        config.aishe.project_context,
+    );
     // Tools: always run_command; the built-in file tools when enabled; use_skill
     // when skills exist.
     let mut tools = vec![run_command_tool()];
