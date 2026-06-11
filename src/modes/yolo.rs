@@ -320,7 +320,13 @@ fn run_loop(
                 }
             }
 
-            let (code, output) = executor.run_captured(&command, DEFAULT_CAPTURE_TIMEOUT);
+            let verbose = config.aishe.yolo_verbose;
+            let (code, output) = executor.run_captured(&command, DEFAULT_CAPTURE_TIMEOUT, verbose);
+            // Quiet by default: the model still gets the full output, but the
+            // terminal shows only a compact result instead of dumping everything.
+            if !verbose {
+                print_run_result(code, &output);
+            }
             crate::audit::action("yolo", &command, Some(code));
             messages.push(Msg::ToolResult {
                 call_id: call.id.clone(),
@@ -341,6 +347,34 @@ fn run_loop(
     }
 
     Ok(None)
+}
+
+/// Compact per-step result shown in non-verbose yolo: the exit code and a line
+/// count, plus a short tail of the output when the command failed (so the user
+/// sees what went wrong without the full dump). The model still receives the
+/// complete output.
+fn print_run_result(code: i32, output: &str) {
+    let lines: Vec<&str> = output.lines().filter(|l| !l.trim().is_empty()).collect();
+    let n = lines.len();
+    let plural = if n == 1 { "" } else { "s" };
+    if code == 0 {
+        println!(
+            "  {} {}",
+            "✓".green(),
+            format!("exit 0 · {n} line{plural}").dim()
+        );
+    } else {
+        println!(
+            "  {} {}",
+            "✗".red(),
+            format!("exit {code} · {n} line{plural}").dim()
+        );
+        // A short tail for context (the model gets all of it).
+        let tail = lines.len().saturating_sub(4);
+        for l in &lines[tail..] {
+            println!("    {}", l.dim());
+        }
+    }
 }
 
 /// Result of the plan-first pre-pass.

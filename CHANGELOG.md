@@ -6,6 +6,13 @@ breaking changes can land in any release.
 
 ## [Unreleased]
 
+### Changed
+- **Yolo mode is much quieter by default.** It no longer dumps every command's
+  full output to the terminal; instead it shows a compact per-step result (the
+  command, then its exit code and line count, plus a short tail on failure). The
+  model still receives the complete output. Set `yolo_verbose = true` to stream
+  everything live as before.
+
 ### Fixed
 - **Auto/suggest mode silently tells a command from an answer.** When the model
   answers a question with prose (or returns a malformed command), aishe now

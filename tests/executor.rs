@@ -12,7 +12,7 @@ fn cd_persists_across_commands() {
     assert_eq!(code, 0);
     assert_eq!(exec.cwd(), &tmp);
 
-    let (code, out) = exec.run_captured("pwd", Duration::from_secs(10));
+    let (code, out) = exec.run_captured("pwd", Duration::from_secs(10), false);
     assert_eq!(code, 0);
     assert!(out.contains(&tmp.display().to_string()), "pwd was: {out}");
 }
@@ -23,7 +23,7 @@ fn exported_var_visible_in_child() {
     let code = exec.run_builtin(&["export".into(), "AISHE_TEST=hello123".into()]);
     assert_eq!(code, 0);
 
-    let (code, out) = exec.run_captured("echo $AISHE_TEST", Duration::from_secs(10));
+    let (code, out) = exec.run_captured("echo $AISHE_TEST", Duration::from_secs(10), false);
     assert_eq!(code, 0);
     assert!(out.contains("hello123"), "output was: {out}");
 }
@@ -33,7 +33,7 @@ fn unset_removes_var() {
     let mut exec = Executor::new().unwrap();
     exec.run_builtin(&["export".into(), "AISHE_GONE=x".into()]);
     exec.run_builtin(&["unset".into(), "AISHE_GONE".into()]);
-    let (_, out) = exec.run_captured("echo [$AISHE_GONE]", Duration::from_secs(10));
+    let (_, out) = exec.run_captured("echo [$AISHE_GONE]", Duration::from_secs(10), false);
     assert!(out.contains("[]"), "output was: {out}");
 }
 
@@ -57,6 +57,7 @@ fn captured_output_truncates() {
     let (code, out) = exec.run_captured(
         "for i in $(seq 1 5000); do echo this-is-a-line-$i; done",
         Duration::from_secs(30),
+        false,
     );
     assert_eq!(code, 0);
     assert!(out.contains("truncated"), "expected truncation marker");
@@ -67,7 +68,7 @@ fn captured_output_truncates() {
 #[test]
 fn timeout_kills_child() {
     let mut exec = Executor::new().unwrap();
-    let (code, out) = exec.run_captured("sleep 10", Duration::from_millis(300));
+    let (code, out) = exec.run_captured("sleep 10", Duration::from_millis(300), false);
     assert_eq!(code, 137);
     assert!(out.contains("timed out"), "output was: {out}");
 }
@@ -75,7 +76,7 @@ fn timeout_kills_child() {
 #[test]
 fn exit_code_recorded_in_history() {
     let mut exec = Executor::new().unwrap();
-    exec.run_captured("false", Duration::from_secs(5));
+    exec.run_captured("false", Duration::from_secs(5), false);
     assert_eq!(exec.last_exit, 1);
     let (cmd, code) = exec.history.back().unwrap();
     assert_eq!(cmd, "false");

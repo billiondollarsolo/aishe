@@ -117,6 +117,12 @@ pub struct AisheConfig {
     /// Off by default.
     #[serde(default)]
     pub yolo_plan: bool,
+    /// Stream every yolo command's full output to the terminal. Off by default:
+    /// yolo shows a compact per-step result (the command, then its exit code and
+    /// line count, plus a short tail on failure) while the full output still goes
+    /// to the model. Turn on to watch everything live.
+    #[serde(default)]
+    pub yolo_verbose: bool,
     /// Include a per-project `.aishe/context.md` (found at or above the cwd) in
     /// the model context, so repo-specific conventions are available. On by
     /// default.
@@ -313,6 +319,7 @@ impl Default for AisheConfig {
             yolo_sandbox: false,
             max_yolo_iterations: default_max_iters(),
             yolo_plan: false,
+            yolo_verbose: false,
             project_context: true,
             cache: true,
             cache_ttl_secs: default_cache_ttl(),

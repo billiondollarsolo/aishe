@@ -57,6 +57,12 @@ max_yolo_iterations = 10
 # `aishe plan on`.
 yolo_plan = false
 
+# Verbose yolo: stream every command's full output to the terminal. Off by
+# default, so yolo shows a compact per-step result (the command, then exit code +
+# line count, plus a short tail on failure) instead of dumping everything. The
+# model always receives the full output regardless.
+yolo_verbose = false
+
 # Offer the built-in file tools (read_file / write_file / edit_file / list_dir)
 # to yolo, so it edits files precisely instead of via cat/sed/heredocs.
 file_tools = true

@@ -206,9 +206,11 @@ impl Executor {
         code
     }
 
-    /// Run a command capturing merged stdout+stderr (tee'd to the terminal),
-    /// with a timeout and stdin closed. Returns (exit_code, truncated_output).
-    pub fn run_captured(&mut self, line: &str, timeout: Duration) -> (i32, String) {
+    /// Run a command capturing merged stdout+stderr, with a timeout and stdin
+    /// closed. Returns (exit_code, truncated_output). When `tee` is true the
+    /// output is also streamed to the terminal as it arrives; when false it is
+    /// captured silently (the caller decides what to show).
+    pub fn run_captured(&mut self, line: &str, timeout: Duration, tee: bool) -> (i32, String) {
         let mut cmd = Command::new(&self.shell);
         self.apply_rc(&mut cmd, line);
         let child = cmd
@@ -233,10 +235,10 @@ impl Executor {
         let mut drainers = Vec::new();
 
         if let Some(out) = child.stdout.take() {
-            drainers.push(spawn_drainer(out, Arc::clone(&collected), false));
+            drainers.push(spawn_drainer(out, Arc::clone(&collected), false, tee));
         }
         if let Some(err) = child.stderr.take() {
-            drainers.push(spawn_drainer(err, Arc::clone(&collected), true));
+            drainers.push(spawn_drainer(err, Arc::clone(&collected), true, tee));
         }
 
         // Poll for completion, enforcing the timeout.
@@ -800,16 +802,19 @@ fn spawn_drainer<R: std::io::Read + Send + 'static>(
     reader: R,
     collected: Arc<Mutex<Vec<String>>>,
     is_stderr: bool,
+    tee: bool,
 ) -> std::thread::JoinHandle<()> {
     std::thread::spawn(move || {
         let buf = BufReader::new(reader);
         for line in buf.lines().map_while(Result::ok) {
-            if is_stderr {
-                let mut e = std::io::stderr();
-                let _ = writeln!(e, "{line}");
-            } else {
-                let mut o = std::io::stdout();
-                let _ = writeln!(o, "{line}");
+            if tee {
+                if is_stderr {
+                    let mut e = std::io::stderr();
+                    let _ = writeln!(e, "{line}");
+                } else {
+                    let mut o = std::io::stdout();
+                    let _ = writeln!(o, "{line}");
+                }
             }
             collected.lock().unwrap().push(line);
         }
