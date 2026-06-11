@@ -104,10 +104,16 @@ is tagged `(reedline)` so we can re-scope quickly.
   `Retry-After`, truncated-SSE tolerance, defensive non-JSON/malformed-data
   parsing, and usage parsing are covered (`tests/providers.rs`, provider unit
   tests). The schema-to-json-to-prompt step-down path is still untested.
-- [ ] Interactive PTY behaviors: `Ctrl-C` mid-command, `Ctrl-Z`, window resize,
-  completion-menu navigation, multi-line editing (only smoke-tested today).
-- [~] I/O edges: stdin piping / non-tty now runs each line as a command
-  (pipe/script mode, `tests/cli.rs`). Large and binary captured-output limits and
+- [~] Interactive PTY behaviors: a deterministic PTY suite now runs in CI -
+  `tests/pty_scenarios.py` (targeted flows), `tests/pty_fuzz.py` (thousands of
+  generative cases, logged to `test-results/fuzz-*.md`), and `tests/zsh_features.py`
+  (44 zsh features: pipes, here-docs, process subst, arrays, control structures,
+  functions/aliases, dir stack, job control, history expansion, quoting,
+  arithmetic). Still open: signal/terminal edges - `Ctrl-C` mid-command, `Ctrl-Z`,
+  window resize, completion-menu navigation, multi-line editing.
+- [~] I/O edges: stdin piping / non-tty runs each line as a command (pipe/script
+  mode, `tests/cli.rs`); large captured-output truncation is covered
+  (`tests/executor.rs::captured_output_truncates`). Binary captured output and
   Unicode/emoji line editing still open.
 - [x] Exit-code propagation: `aishe -c 'false'` returns 1, pipelines, `$?` chains,
   and `exit N` are covered (`tests/cli.rs`). Done.
@@ -118,8 +124,8 @@ is tagged `(reedline)` so we can re-scope quickly.
 - [~] Distribution and polish: release tarballs + `.sha256` checksums,
   `cargo binstall` metadata, a Homebrew formula template (`packaging/aishe.rb`),
   `aishe completions <shell>`, build metadata (git SHA + date) in
-  `aishe --version`, and a richer `aishe doctor` all ship. A man page is still
-  open.
+  `aishe --version`, a richer `aishe doctor`, and a generated `aishe(1)` man page
+  (shipped from the release/package jobs) all ship.
 - [x] Linux distribution: the release workflow now also builds static musl and
   aarch64 Linux tarballs, `.deb`/`.rpm` packages (via nfpm, with completions and
   a generated `aishe(1)` man page), and a `curl | sh` `install.sh`. Repo identity

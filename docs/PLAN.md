@@ -19,10 +19,13 @@ aishe is a natural-language-aware shell. It behaves like zsh for real commands
 and routes anything else to an LLM in one of three modes (suggest / auto / yolo).
 Already shipped and validated:
 
-- **Two front-ends.** A built-in reedline editor (each line run as a fresh
-  `zsh -c`, with state replayed from a generated rc) and a zsh-PTY wrapper that
-  drives the user's real interactive zsh with all native plugins. `front_end =
-  auto` picks zsh-pty when zsh is present.
+- **Two front-ends.** The flagship is a zsh-PTY wrapper that drives the user's
+  real interactive zsh with all native plugins (a `command_not_found` hook plus
+  `precmd`/accept-line wrappers route natural language to the model). The opt-in
+  reedline editor (each line run as a fresh `zsh -c`, with state replayed from a
+  generated rc) is a lightweight AI command runner for hosts without zsh.
+  `front_end = auto` picks zsh-pty when zsh is present (the architectural
+  decision, section 2, resolved as Option B).
 - **Providers.** Anthropic Messages API and any OpenAI-compatible Chat
   Completions API, with SSE streaming, tool use, token/cost metering, a budget
   cap, and (new) retry with exponential backoff + jitter + `Retry-After`.
@@ -93,12 +96,15 @@ We have three coherent end states:
   hardest engineering (synchronizing prompts, capturing output boundaries,
   signal handling); essentially building a terminal multiplexer. Cost: XL.
 
-**Recommendation:** decide between B and C before sinking more into reedline-only
-parity (section 3 items tagged `(reedline)`). A reasonable default is **B for
-positioning + a scoped slice of C** (a persistent shell only for state, not full
-job control) if we want to keep reedline first-class. **Status: OPEN, P0 for
-direction.** Everything below is written to be valid under either choice; items
-that evaporate under Option B are marked.
+**Decision: Option B.** The zsh-PTY front-end is the flagship ("your real shell,
+now with AI"); reedline is the opt-in lightweight AI command runner (`aishe
+--no-pty` or `front_end = reedline`), kept for environments where zsh cannot be
+installed. `front_end = auto` selects zsh-pty whenever zsh is present, and the
+binary prints an install hint (with the reedline opt-out) when it is not. This
+gives us real shell semantics for free and stops the reedline parity treadmill:
+the `(reedline)` items below are now P3 "only if cheap", not roadmap blockers.
+**Status: RESOLVED.** A scoped slice of C (a persistent backing shell for
+reedline) remains a stretch/moonshot, not planned work.
 
 ---
 
@@ -312,7 +318,11 @@ overlay; the legacy `llmsh` migration path.
 
 **G4. Harness as CI gate.** Run the deterministic suites (no key) in CI on every
 PR; nightly run with a key (and real MCP) in a protected workflow.
-- Effort: S. Priority: P1. Status: open (harness exists, not in CI yet).
+- Effort: S. Priority: P1. Status: DONE for the per-PR gate. `ci.yml` runs the
+  deterministic PTY suites (`pty_scenarios.py`, `pty_fuzz.py`, `zsh_features.py`)
+  with the fake provider on every push/PR; `real_model.py` runs only when the
+  `AISHE_REALTEST_KEY` secret is present. A scheduled nightly with real MCP is
+  still open.
 
 **G5. Coverage + a fuzz target** for the dispatcher and safety tokenizer.
 - Effort: M. Priority: P2. Status: open.
@@ -475,8 +485,9 @@ A feature is "done" only when all of:
 
 ## 8. Open decisions (need a human)
 
-1. **Architectural direction** (section 2): Option A, B, or C. Blocks the scope
-   of all `(reedline)` parity work. **P0.**
+1. ~~**Architectural direction** (section 2): Option A, B, or C.~~ **Resolved:
+   Option B** (zsh-PTY flagship, reedline opt-in). `(reedline)` parity work is now
+   P3.
 2. ~~**Canonical repository identity** (H2): which GitHub owner is canonical, so
    binstall/Homebrew/release URLs resolve.~~ **Resolved: `billiondollarsolo/aishe`.**
 3. **Telemetry stance** (K2/I4): none, or opt-in anonymized counts.
@@ -487,13 +498,20 @@ A feature is "done" only when all of:
 
 ## 9. Suggested next 10 (a concrete starting order)
 
-1. H2 repo identity + H1 real release dry-run (P0, unblocks distribution).
-2. Section 2 architectural decision (P0, unblocks parity scope).
-3. H3 man page (P1, finishes the distribution item).
-4. G4 harness in CI + G3 config precedence tests (P1, locks in quality).
-5. E1 schema step-down test (P1, closes a provider gap).
-6. I3 architecture doc + M2 SECURITY.md (P1, contributor/trust readiness).
-7. A2 per-project profiles (P1, high user value).
-8. G1 interactive PTY tests (P1, the biggest untested surface).
-9. B1 real sandbox behind a flag (P2, the headline safety upgrade).
-10. C2 completion depth round 2 (P2, daily-use polish).
+Done (struck through) are kept for the record; the live order continues below.
+
+1. ~~H2 repo identity + H1 real release dry-run.~~ DONE (repo identity reconciled;
+   release workflow ships gnu/musl/aarch64 tarballs + checksums, `.deb`/`.rpm`,
+   and `install.sh`).
+2. ~~Section 2 architectural decision.~~ DONE (Option B).
+3. ~~H3 man page.~~ DONE (help2man `aishe.1` ships from the release/package jobs).
+4. ~~G4 harness in CI~~ (DONE) + **G3 config precedence tests** (still open).
+5. **E1 schema step-down test** (P1, closes a provider gap).
+6. **I3 architecture doc** + **M2 SECURITY.md** (P1, contributor/trust readiness).
+7. **A2 per-project profiles** (P1, high user value).
+8. **G1 interactive PTY tests** (P1, Ctrl-C/Ctrl-Z/resize — biggest untested
+   surface; the fuzz + zsh-feature suites cover non-signal behavior).
+9. **B1 real sandbox behind a flag** (P2, the headline safety upgrade).
+10. **C2 completion depth round 2** (P2, daily-use polish).
+
+Live shortlist, in order: G3, E1, I3, M2, A2, G1.

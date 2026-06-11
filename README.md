@@ -18,10 +18,12 @@ autonomously** in a tool-use loop.
 ~/projects/app ❯ whats eating my disk  # LLM suggests: du -sh * | sort -rh | head
 ```
 
-aishe does not reimplement a shell grammar. It owns the prompt and input loop and
-delegates execution of shell lines to `zsh -c` (falling back to `bash -c`), so
-pipes, globs, redirection, subshells, and interactive programs (vim, ssh, top)
-all work unmodified.
+aishe does not reimplement a shell grammar. By default it wraps your real
+interactive zsh over a PTY and injects a `command_not_found` hook, so natural
+language is routed to the model while pipes, globs, redirection, subshells, job
+control, your plugins/theme, and interactive programs (vim, ssh, top) all work
+unmodified. (A built-in reedline editor that runs each line via `zsh -c`, falling
+back to `bash -c`, is available with `--no-pty` for hosts without zsh.)
 
 ## Contents
 
