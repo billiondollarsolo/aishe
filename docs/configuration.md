@@ -57,6 +57,8 @@ Then `cd ~proj` and `cd ~proj/app` work.
 | `show_usage` | bool | `true` | Print a per-session token and cost line after each interaction. |
 | `budget_usd` | float | `0.0` | Stop calling the model past this session cost. `0` = unlimited. |
 | `memory` | bool | `true` | Remember recent natural-language turns in the REPL so follow-ups have context. Clear with `aishe reset`. |
+| `cache` | bool | `true` | Cache identical suggest-mode responses briefly so repeats are instant and free. Toggle with `aishe cache`. |
+| `cache_ttl_secs` | integer | `300` | How long a cached response stays valid, in seconds. |
 | `redact_secrets` | bool | `true` | Scrub likely secrets from the context block sent to the model. See [Logging and privacy](logging.md). |
 | `ghost_text` | bool | `false` | Inline AI ghost-text autosuggestion (reedline). Toggle with `aishe ghost`. See [Inline AI ghost text](ghost-text.md). |
 

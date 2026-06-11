@@ -82,6 +82,19 @@ Example of a budget stopping a yolo run:
   369 in · 109 out · 1 req · ~$0.0001
 ```
 
+## Response caching
+
+To cut latency and cost on repeats, suggest-mode responses are cached in memory
+for a short window (`cache`, on by default; `cache_ttl_secs`, default 300). Ask
+the same thing twice in a row and the second answer is instant and adds no tokens
+(a cache hit never calls the model, so the usage line and budget are unchanged).
+
+The cache key includes the freshly-built environment context (cwd, recent
+commands, git state), so running anything between two otherwise-identical
+requests changes the key and misses the cache — you never get a stale suggestion
+after the situation has moved on. Streaming answers and the yolo tool loop are
+never cached. Toggle with `aishe cache on` / `aishe cache off`.
+
 ## Notes on accuracy
 
 - Token counts come straight from the provider's reported usage, including the

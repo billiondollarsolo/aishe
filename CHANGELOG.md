@@ -36,6 +36,14 @@ breaking changes can land in any release.
   the provider).
 
 ### Added
+- **Response caching.** Identical suggest-mode requests are served from a small
+  in-memory, TTL'd cache (`cache`, on by default; `cache_ttl_secs`, default 300),
+  so a repeat is instant and costs no tokens (a cache hit never calls the model,
+  leaving the usage line and budget untouched). The key includes the environment
+  context (cwd, recent commands, git state), so running anything between two
+  requests misses the cache and avoids stale suggestions. Streaming and the yolo
+  tool loop are never cached. Toggle with `aishe cache on`/`off`. See
+  `src/cache.rs`.
 - **Plan-first (dry run) for yolo.** With `yolo_plan = true` (or `aishe plan on`),
   before the agentic loop runs anything the model lays out its intended steps and
   you approve them (`Proceed with this plan? [Y/n]`). It costs one extra planning

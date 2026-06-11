@@ -3,6 +3,7 @@
 //! `tests/` exercise the internals directly.
 
 pub mod audit;
+pub mod cache;
 pub mod commands;
 pub mod completer;
 pub mod config;

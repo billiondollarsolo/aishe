@@ -93,6 +93,13 @@ pub struct AisheConfig {
     /// Off by default.
     #[serde(default)]
     pub yolo_plan: bool,
+    /// Cache identical suggest-mode model responses for a short while to make
+    /// repeats instant and free. On by default.
+    #[serde(default = "default_true")]
+    pub cache: bool,
+    /// How long a cached response stays valid, in seconds.
+    #[serde(default = "default_cache_ttl")]
+    pub cache_ttl_secs: u64,
     /// Offer the built-in file tools (`read_file`/`write_file`/`edit_file`/
     /// `list_dir`) to yolo, so it can work with files directly instead of via the
     /// shell. On by default.
@@ -216,6 +223,9 @@ fn default_true() -> bool {
 fn default_max_iters() -> u32 {
     10
 }
+fn default_cache_ttl() -> u64 {
+    300
+}
 fn default_report_time() -> u64 {
     3
 }
@@ -253,6 +263,8 @@ impl Default for AisheConfig {
             yolo_confirm_dangerous: true,
             max_yolo_iterations: default_max_iters(),
             yolo_plan: false,
+            cache: true,
+            cache_ttl_secs: default_cache_ttl(),
             file_tools: true,
             web_tool: true,
             show_right_prompt: true,

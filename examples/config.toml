@@ -99,6 +99,13 @@ budget_usd = 0.0
 # ("now do the same for the other file") have context. Clear with `aishe reset`.
 memory = true
 
+# Cache identical suggest-mode model responses for a short while so repeats are
+# instant and cost no tokens. The cache key includes the environment context
+# (cwd, recent commands), so running something between two requests misses it.
+# Toggle live with `aishe cache on`/`off`.
+cache = true
+cache_ttl_secs = 300
+
 # Scrub likely secrets (tokens, passwords, URL credentials) from the environment
 # context block sent to the model. Recommended on.
 redact_secrets = true

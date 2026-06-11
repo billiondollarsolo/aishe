@@ -1111,6 +1111,29 @@ fn handle_meta(
                 if config.aishe.yolo_plan { "on" } else { "off" }
             ),
         },
+        "cache" => match tokens.get(2).map(|s| s.as_str()) {
+            Some("on") | Some("true") => {
+                config.aishe.cache = true;
+                persist(config);
+                rebuild_provider(config, provider);
+                println!("response cache → on ({}s ttl)", config.aishe.cache_ttl_secs);
+            }
+            Some("off") | Some("false") => {
+                config.aishe.cache = false;
+                persist(config);
+                rebuild_provider(config, provider);
+                println!("response cache → off");
+            }
+            Some(_) => eprintln!("aishe: cache must be 'on' or 'off'"),
+            None => println!(
+                "response cache: {}",
+                if config.aishe.cache {
+                    format!("on ({}s ttl)", config.aishe.cache_ttl_secs)
+                } else {
+                    "off".to_string()
+                }
+            ),
+        },
         "reset" => {
             let n = session.turns();
             session.clear();
@@ -1318,6 +1341,7 @@ fn print_meta_help() {
 \x20 aishe reset                 clear conversation memory\n\
 \x20 aishe ghost [on|off]        inline AI ghost-text autosuggestion\n\
 \x20 aishe plan [on|off]         yolo plan-first dry run\n\
+\x20 aishe cache [on|off]        cache identical responses\n\
 \x20 aishe config                print active config\n\
 \x20 aishe rehash                rebuild the command cache\n\
 \x20 aishe help                  show this help\n\

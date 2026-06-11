@@ -47,8 +47,9 @@ is tagged `(reedline)` so we can re-scope quickly.
 - [x] **Dry-run or plan preview for yolo.** With `yolo_plan` (`aishe plan on`),
   the model lays out its intended steps and the user approves before the loop
   runs; the approved plan is threaded into the run. Interactive only. Done.
-- [ ] **Response caching.** Cache identical (prompt, context) suggestions briefly
-  to cut latency and cost on repeats. Later.
+- [x] **Response caching.** Identical suggest-mode (prompt, context) responses are
+  served from a short-lived in-memory cache (`cache`/`cache_ttl_secs`, on by
+  default), so repeats are instant and free. See `src/cache.rs`. Done.
 - [ ] **Per-project context.** Optional `.aishe/context.md` fed to the model for
   repo-specific conventions. Later.
 

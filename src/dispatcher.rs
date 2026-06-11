@@ -538,6 +538,7 @@ pub fn is_meta_subcommand(w: &str) -> bool {
             | "reset"
             | "ghost"
             | "plan"
+            | "cache"
             | "help"
     )
 }

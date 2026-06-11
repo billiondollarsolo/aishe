@@ -631,6 +631,8 @@ stream = true
 show_usage = false
 budget_usd = 1.5
 memory = false
+cache = false
+cache_ttl_secs = 120
 ghost_text = true
 redact_secrets = false
 report_time = 7
@@ -904,6 +906,8 @@ def main():
         "file_tools = false",
         "web_tool = false",
         "yolo_plan = true",
+        "cache = false",
+        "cache_ttl_secs = 120",
         "budget_usd = 1.5",
         "hist_ignore_space = true",
         "ghost_text = true",
@@ -935,7 +939,7 @@ def main():
 
     # 6d. New read-only / toggle meta commands behave in `-c` (no crash, not NL).
     report.append("\n**New meta commands (`-c`):**\n")
-    for meta in ["/usage", "/reset", "/ghost", "/plan", "/help"]:
+    for meta in ["/usage", "/reset", "/ghost", "/plan", "/cache", "/help"]:
         rc, out, err = run([BIN, "-c", meta], env_local, cwd=fixture)
         ok = rc == 0 and "LLM not configured" not in err
         add(f"meta: {meta}", ok, "" if ok else f"(rc={rc} err={err.strip()[:60]!r})")

@@ -251,26 +251,38 @@ pub(crate) fn error_message(resp: ureq::Response) -> String {
 /// Build the configured provider, reading the API key from the configured env var.
 /// Returned behind an `Arc` so it can be shared with the ghost-text worker.
 pub fn make(config: &Config) -> Result<std::sync::Arc<dyn Provider>> {
-    match config.aishe.provider.as_str() {
+    use std::sync::Arc;
+    let inner: Arc<dyn Provider> = match config.aishe.provider.as_str() {
         "anthropic" => {
             let p = &config.providers.anthropic;
             let key = read_key(&p.api_key_env)?;
-            Ok(std::sync::Arc::new(anthropic::AnthropicProvider::new(
+            Arc::new(anthropic::AnthropicProvider::new(
                 p.base_url.clone(),
                 key,
                 p.model.clone(),
-            )))
+            ))
         }
         "openai" => {
             let p = &config.providers.openai;
             let key = read_key(&p.api_key_env)?;
-            Ok(std::sync::Arc::new(openai_compat::OpenAiProvider::new(
+            Arc::new(openai_compat::OpenAiProvider::new(
                 p.base_url.clone(),
                 key,
                 p.model.clone(),
-            )))
+            ))
         }
         other => anyhow::bail!("unknown provider '{other}' (expected 'anthropic' or 'openai')"),
+    };
+    // Optionally wrap in a response cache so identical suggest-mode repeats are
+    // instant and free. Streaming and the tool loop pass straight through.
+    if config.aishe.cache && config.aishe.cache_ttl_secs > 0 {
+        Ok(Arc::new(crate::cache::CachingProvider::new(
+            inner,
+            config.aishe.cache_ttl_secs,
+            config.active_model().to_string(),
+        )))
+    } else {
+        Ok(inner)
     }
 }
 
