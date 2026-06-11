@@ -41,6 +41,7 @@ const META_SUBCOMMANDS: &[(&str, &str)] = &[
     ("reset", "clear conversation memory"),
     ("ghost", "inline AI ghost text: on|off"),
     ("plan", "yolo plan-first dry run: on|off"),
+    ("sandbox", "yolo policy sandbox: on|off"),
     ("cache", "response caching: on|off"),
     ("help", "show help"),
 ];
@@ -356,6 +357,7 @@ fn complete_aishe_meta(seg_tokens: &[&str], word: &str, span: Span) -> Vec<Sugge
                 "editor" => &["emacs", "vi"],
                 "frontend" => &["auto", "reedline", "zsh-pty"],
                 "stream" => &["on", "off"],
+                "ghost" | "plan" | "sandbox" | "cache" => &["on", "off"],
                 "structured" => &["schema", "json", "prompt"],
                 "theme" => crate::theme::PRESETS,
                 _ => return Vec::new(), // model/config/etc.: free-form

@@ -23,6 +23,7 @@ pub mod providers;
 pub mod pty;
 pub mod redact;
 pub mod safety;
+pub mod sandbox;
 pub mod session;
 pub mod skills;
 pub mod theme;

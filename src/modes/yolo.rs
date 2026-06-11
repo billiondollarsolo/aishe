@@ -13,7 +13,7 @@ use crate::context;
 use crate::executor::{Executor, DEFAULT_CAPTURE_TIMEOUT};
 use crate::mcp::McpRegistry;
 use crate::providers::{AssistantMsg, Completion, Msg, Provider, ResponseFormat};
-use crate::safety::{self, Risk};
+use crate::sandbox::{self, Tier};
 use crate::session::Session;
 use crate::skills::SkillRegistry;
 
@@ -65,6 +65,11 @@ fn run_loop(
         config.aishe.redact_secrets,
         config.aishe.project_context,
     );
+    // Effective confirmation tier (resolves `yolo_confirm` and the legacy
+    // `yolo_confirm_dangerous` boolean). Writes outside the tree by the file
+    // tools are confirmed whenever the tier is not "never".
+    let tier = sandbox::confirm_tier(config);
+    let confirm_writes = tier != Tier::Never;
     // Tools: always run_command; the built-in file tools when enabled; use_skill
     // when skills exist.
     let mut tools = vec![run_command_tool()];
@@ -231,7 +236,7 @@ fn run_loop(
                     &call.name,
                     &call.arguments,
                     executor.cwd(),
-                    config.aishe.yolo_confirm_dangerous,
+                    confirm_writes,
                 );
                 crate::audit::action(&format!("yolo:{}", call.name), &label, None);
                 messages.push(Msg::ToolResult {
@@ -281,16 +286,37 @@ fn run_loop(
                 continue;
             }
 
-            // Safety gate: confirm dangerous commands when configured.
-            if config.aishe.yolo_confirm_dangerous {
-                if let Risk::Dangerous(_) = safety::assess(&command) {
-                    if let GateOutcome::Declined = safety_gate(&command) {
-                        messages.push(Msg::ToolResult {
-                            call_id: call.id.clone(),
-                            content: "User declined to run this command.".to_string(),
-                        });
-                        continue;
-                    }
+            // Sandbox: refuse network access / out-of-tree writes before running,
+            // feeding the reason back to the model so it can adapt.
+            if config.aishe.yolo_sandbox {
+                if let Some(reason) = sandbox::sandbox_refusal(&command) {
+                    println!("  {} {}", "⛔".red(), reason.as_str().yellow());
+                    crate::audit::action("yolo:sandbox-refused", &command, None);
+                    messages.push(Msg::ToolResult {
+                        call_id: call.id.clone(),
+                        content: sandbox::refusal_message(&reason),
+                    });
+                    continue;
+                }
+            }
+
+            // Confirmation tier: pause for dangerous and/or state-modifying
+            // commands depending on `yolo_confirm`. Dangerous commands show the
+            // red panel; tier-only confirms use a plain yes/no prompt. Both
+            // proceed automatically when stdin is not a terminal.
+            let (need_confirm, dangerous) = sandbox::needs_confirm(tier, &command);
+            if need_confirm {
+                let declined = if dangerous {
+                    matches!(safety_gate(&command), GateOutcome::Declined)
+                } else {
+                    !confirm_run(&command)
+                };
+                if declined {
+                    messages.push(Msg::ToolResult {
+                        call_id: call.id.clone(),
+                        content: "User declined to run this command.".to_string(),
+                    });
+                    continue;
                 }
             }
 
@@ -366,6 +392,24 @@ fn plan_first(input: &str, ctx: &str, provider: &dyn Provider, config: &Config) 
     } else {
         PlanOutcome::Declined
     }
+}
+
+/// Confirm running a (non-dangerous) command under a "writes"/"all" tier. With an
+/// interactive terminal it asks (`[Y/n]`, default yes on Enter); without one
+/// (`-c`/piped, no human to answer) it proceeds, consistent with the file-tool
+/// `confirm()` and the rest of the codebase's non-tty behavior.
+fn confirm_run(command: &str) -> bool {
+    if !std::io::stdin().is_terminal() {
+        return true;
+    }
+    print!("  {} {} [Y/n]: ", "run".yellow().bold(), command.white());
+    let _ = std::io::stdout().flush();
+    let mut line = String::new();
+    if std::io::stdin().read_line(&mut line).is_err() {
+        return false;
+    }
+    let a = line.trim();
+    a.is_empty() || a.eq_ignore_ascii_case("y") || a.eq_ignore_ascii_case("yes")
 }
 
 /// Prompt `Proceed with this plan? [Y/n]`. Defaults to yes on Enter.

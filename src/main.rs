@@ -1118,6 +1118,27 @@ fn handle_meta(
                 if config.aishe.yolo_plan { "on" } else { "off" }
             ),
         },
+        "sandbox" => match tokens.get(2).map(|s| s.as_str()) {
+            Some("on") | Some("true") => {
+                config.aishe.yolo_sandbox = true;
+                persist(config);
+                println!("yolo sandbox → on");
+            }
+            Some("off") | Some("false") => {
+                config.aishe.yolo_sandbox = false;
+                persist(config);
+                println!("yolo sandbox → off");
+            }
+            Some(_) => eprintln!("aishe: sandbox must be 'on' or 'off'"),
+            None => println!(
+                "yolo sandbox: {}",
+                if config.aishe.yolo_sandbox {
+                    "on"
+                } else {
+                    "off"
+                }
+            ),
+        },
         "cache" => match tokens.get(2).map(|s| s.as_str()) {
             Some("on") | Some("true") => {
                 config.aishe.cache = true;
@@ -1348,6 +1369,7 @@ fn print_meta_help() {
 \x20 aishe reset                 clear conversation memory\n\
 \x20 aishe ghost [on|off]        inline AI ghost-text autosuggestion\n\
 \x20 aishe plan [on|off]         yolo plan-first dry run\n\
+\x20 aishe sandbox [on|off]      yolo policy sandbox (no net / out-of-tree writes)\n\
 \x20 aishe cache [on|off]        cache identical responses\n\
 \x20 aishe config                print active config\n\
 \x20 aishe rehash                rebuild the command cache\n\

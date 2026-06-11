@@ -97,6 +97,19 @@ pub struct AisheConfig {
     pub provider: String,
     #[serde(default = "default_true")]
     pub yolo_confirm_dangerous: bool,
+    /// When the yolo loop pauses to confirm a `run_command` call: "never",
+    /// "dangerous" (only safety-flagged commands, the default), "writes"
+    /// (dangerous plus any state-modifying command), or "all". The older
+    /// `yolo_confirm_dangerous` boolean is honored for backward compatibility;
+    /// see `sandbox::confirm_tier` for the precedence.
+    #[serde(default = "default_yolo_confirm")]
+    pub yolo_confirm: String,
+    /// Policy-based sandbox for the yolo loop: when on, a `run_command` that
+    /// reaches the network or writes outside the working tree is refused (fed
+    /// back to the model as an error) instead of running. Best-effort, not a
+    /// kernel sandbox. Off by default. Toggle with `aishe sandbox on`.
+    #[serde(default)]
+    pub yolo_sandbox: bool,
     #[serde(default = "default_max_iters")]
     pub max_yolo_iterations: u32,
     /// Plan-first (dry run): before the yolo loop runs anything, ask the model
@@ -239,6 +252,9 @@ fn default_true() -> bool {
 fn default_max_iters() -> u32 {
     10
 }
+fn default_yolo_confirm() -> String {
+    crate::sandbox::DEFAULT_CONFIRM.to_string()
+}
 fn default_cache_ttl() -> u64 {
     300
 }
@@ -277,6 +293,8 @@ impl Default for AisheConfig {
             mode: default_mode(),
             provider: default_provider(),
             yolo_confirm_dangerous: true,
+            yolo_confirm: default_yolo_confirm(),
+            yolo_sandbox: false,
             max_yolo_iterations: default_max_iters(),
             yolo_plan: false,
             project_context: true,

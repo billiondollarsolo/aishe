@@ -9,8 +9,10 @@ check in aishe decides what actually runs.
 - **suggest**: a dangerous proposed command is flagged before you confirm.
 - **auto**: safe commands run immediately; dangerous ones stop and require you to
   type the full word `yes`.
-- **yolo**: when `yolo_confirm_dangerous = true`, the loop pauses for dangerous
-  tool calls.
+- **yolo**: the loop pauses for tool calls according to the `yolo_confirm` tier
+  (`"never"` / `"dangerous"` / `"writes"` / `"all"`; default `"dangerous"`). The
+  legacy `yolo_confirm_dangerous` boolean is still honored when `yolo_confirm` is
+  left at its default. See [Modes: yolo](modes.md#yolo).
 
 The gate does not apply to commands you type yourself, nor to `!`-forced lines.
 It is a shell, not a nanny: if you type a destructive command directly, it runs.
@@ -66,6 +68,32 @@ If you are certain, prefix the line with `!` to run it as shell and skip the gat
 
 Use this deliberately. The gate exists to catch mistakes, especially commands a
 model proposed.
+
+## Sandbox (policy-based, best-effort)
+
+yolo mode has an optional sandbox (`yolo_sandbox = true`, off by default; toggle
+with `aishe sandbox on`). When on, before a `run_command` runs, aishe classifies
+the command and refuses it - feeding the reason back to the model as the tool
+result instead of executing - if it:
+
+- **accesses the network**: `curl`, `wget`, `ssh`, `scp`, `sftp`, `nc`/`ncat`,
+  `telnet`, `ftp`, `rsync`, and the network subcommands of package managers and
+  git (`git clone`/`fetch`/`pull`/`push`, `npm install`, `pip install`,
+  `cargo install`, `apt-get install`, and similar), or
+- **writes outside the working tree**: redirection (`> /etc/x`, `>> ~/y`) or an
+  obvious out-of-tree write command (`cp`/`mv`/`tee`/`touch`/`dd of=`/...) whose
+  target is an absolute path, a `~` home path, or a `..`-escaping path.
+
+A refusal looks like `Refused by sandbox: <reason>. Sandbox mode is on
+(yolo_sandbox).`, so the model can adapt (for example by staying in-tree or by
+asking you to run the network step yourself).
+
+This is a **policy-based, best-effort** check on the command text the model
+proposed. It is **not a kernel sandbox**: it cannot stop a determined escape via
+a wrapper script, an alias, a path hidden in a shell variable, or anything that
+does not look like the patterns above. It also does **not** affect the zsh-PTY /
+real-shell front-end paths (those run your own typed commands, not model tool
+calls). It is one more guardrail for an autonomous loop, not a security boundary.
 
 ## Secrets in the model context
 

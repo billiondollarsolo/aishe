@@ -55,8 +55,8 @@ and decides what to do next, repeating until the task is done or it hits
   `read_file`, `write_file`, `edit_file`, and `list_dir` to work with files
   precisely, instead of round-tripping through `cat`/`sed`/heredocs (which it
   gets wrong more often). A write or edit to a path outside the working tree
-  (absolute, `~`, or `..`-escaping) is confirmed when `yolo_confirm_dangerous` is
-  on.
+  (absolute, `~`, or `..`-escaping) is confirmed whenever the confirmation tier
+  is not `"never"` (see `yolo_confirm` below).
 - **Web tool** (`web_tool = true`, on by default): the model can call `fetch_url`
   to read a page or docs (HTTP GET over http/https only; HTML is stripped to
   readable text, the body is byte-capped while reading and char-capped before it
@@ -68,8 +68,26 @@ and decides what to do next, repeating until the task is done or it hits
   (`Proceed with this plan? [Y/n]`). Costs one extra planning call and applies
   only interactively (a piped/`-c` run has no one to approve, so it proceeds).
   Toggle live with `aishe plan on`.
-- With `yolo_confirm_dangerous = true`, the safety gate still pauses for
-  dangerous commands.
+- **Confirmation tiers** (`yolo_confirm`): control when the loop pauses to
+  confirm a `run_command` call:
+  - `"never"` runs everything without asking.
+  - `"dangerous"` (the default) confirms only commands the
+    [safety gate](safety.md) flags.
+  - `"writes"` confirms dangerous commands and any command that modifies state
+    (anything not recognized as a read-only command such as `ls`/`cat`/`grep`/
+    `git status`).
+  - `"all"` confirms every command.
+  The older `yolo_confirm_dangerous` boolean still works: it only takes effect
+  when `yolo_confirm` is left at its default, where `yolo_confirm_dangerous =
+  false` means the same as `"never"`. Otherwise `yolo_confirm` wins. As with the
+  rest of aishe, a piped/`-c` run has no one to answer, so a confirm proceeds
+  automatically there.
+- **Sandbox** (`yolo_sandbox = true`, off by default): a policy-based restricted
+  exec. When on, a `run_command` that reaches the network or writes outside the
+  working tree is refused before it runs (the reason is fed back to the model so
+  it can adapt), rather than executed. It is best-effort, not a kernel sandbox;
+  see [Safety](safety.md#sandbox-policy-based-best-effort). Toggle live with
+  `aishe sandbox on`.
 - If skills are present, the model can pull a skill's instructions into context
   on demand. See [Custom commands and skills](custom-commands-and-skills.md).
 - Every tool call is recorded in the [audit log](logging.md) (`run_command` as an
