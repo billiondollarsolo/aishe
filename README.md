@@ -2,7 +2,9 @@
   <img src="assets/aishe-logo.png" alt="aishe" width="420">
 </p>
 
-# aishe
+# DO NOT USE - This is current being coded using only Claude Code on my phone. It's not ready to do anything real yet, but it's a fun experiment both to build this interesting tool as well as only try to do it from my phone. Let's see where this goes.
+
+# aishe - AI Shell
 
 A natural-language-aware shell. `aishe` behaves like zsh for real commands, and
 treats anything that is not a command as a natural-language request handled by an
