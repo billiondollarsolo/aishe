@@ -6,6 +6,8 @@ breaking changes can land in any release.
 
 ## [Unreleased]
 
+## [0.1.4] - 2026-06-11
+
 ### Added
 - **Force a line to the AI with a `?` or `#` prefix.** Routing is by command
   name, so a question whose first word is a real command (`who`, `which`, `find`,
