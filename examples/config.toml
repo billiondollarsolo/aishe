@@ -152,6 +152,12 @@ redact_secrets = true
 # context, so repo-specific conventions reach the model. Capped at 4000 chars.
 project_context = true
 
+# A repo can also ship a project-local config overlay at .aishe/config.toml
+# (discovered like .aishe/context.md) that is merged over this file. Safe keys
+# (model, mode, budget, cosmetics) apply automatically; sensitive keys (provider/
+# endpoint, [mcp_servers], logging, safety toggles, mode = "yolo") apply only
+# after you run `aishe trust` in that repo. See docs/project-config.md.
+
 # Inline AI ghost-text autosuggestion in the reedline front-end (predicts the
 # rest of your command as you type; accept with the Right arrow). Off by default
 # because it spends tokens as you type. Toggle live with `aishe ghost on`.

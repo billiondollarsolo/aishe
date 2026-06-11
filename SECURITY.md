@@ -74,6 +74,12 @@ aishe is built so that the language model is never trusted to decide what runs:
 - **Third parties receive your data.** Whatever provider (Anthropic, OpenAI, Groq,
   a local endpoint, ...) and whatever MCP servers you configure receive the
   context aishe sends them, subject to their own policies. You choose them.
+- **Project config from untrusted repos.** A cloned repository can contain a
+  `.aishe/config.toml`. aishe applies only safe, cosmetic keys from it
+  automatically; sensitive keys (provider/endpoint, `[mcp_servers]`, audit
+  logging, the safety toggles, and `mode = "yolo"`) are ignored until you run
+  `aishe trust` in that repo. Only trust repositories you vouch for. See
+  [docs/project-config.md](docs/project-config.md).
 
 ## Data handling and privacy
 

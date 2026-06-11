@@ -110,6 +110,20 @@ enum Cmd {
         /// Shell to generate completions for.
         shell: clap_complete::Shell,
     },
+    /// Trust the current project's `.aishe/config.toml` so its sensitive keys
+    /// (provider/endpoint, MCP servers, audit logging, safety toggles, `yolo`)
+    /// apply. Safe cosmetic keys apply without trust.
+    Trust {
+        /// List all trusted project configs instead of trusting this one.
+        #[arg(long)]
+        list: bool,
+    },
+    /// Drop trust for the current project's `.aishe/config.toml`.
+    Untrust {
+        /// Drop trust for every project config, not just this one.
+        #[arg(long)]
+        all: bool,
+    },
 }
 
 fn main() -> ExitCode {
@@ -137,6 +151,14 @@ fn run() -> Result<u8> {
         return Ok(0);
     }
 
+    // `trust` / `untrust` manage the project-config trust store; no config load.
+    if let Some(Cmd::Trust { list }) = &args.cmd {
+        return Ok(trust_command(*list));
+    }
+    if let Some(Cmd::Untrust { all }) = &args.cmd {
+        return Ok(untrust_command(*all));
+    }
+
     // `init <shell>` needs no config or provider.
     if let Some(Cmd::Init { shell }) = &args.cmd {
         return match integration::script(shell) {
@@ -155,12 +177,27 @@ fn run() -> Result<u8> {
     }
 
     let mut config = Config::load_or_init()?;
+    // A project-local `.aishe/config.toml` overrides the user config (safe keys
+    // always; sensitive keys only when the file is trusted). Applied before flags
+    // so precedence is: CLI flags > project overlay > user config > defaults.
+    let project_overlay = std::env::current_dir()
+        .ok()
+        .and_then(|cwd| config.apply_project_overlay(&cwd));
     // CLI flags win over the config file (which wins over compiled defaults).
     config.apply_overrides(
         args.mode.as_deref(),
         args.provider.as_deref(),
         args.model.as_deref(),
     );
+    // Tell an interactive user what a project config did (and how to trust it).
+    let interactive_entry = args.command.is_none()
+        && args.suggest_line.is_none()
+        && args.yolo_line.is_none()
+        && args.auto_line.is_none()
+        && std::io::stdin().is_terminal();
+    if interactive_entry {
+        notify_project_overlay(&project_overlay);
+    }
 
     // Initialize the audit log (off unless enabled in config or via $AISHE_LOG).
     init_audit(&config);
@@ -333,7 +370,7 @@ fn doctor() -> u8 {
     }
 
     // Config.
-    let cfg = match Config::load_quiet() {
+    let mut cfg = match Config::load_quiet() {
         Ok(Some(c)) => {
             println!("{ok} config: {}", Config::path().display());
             c
@@ -351,6 +388,37 @@ fn doctor() -> u8 {
             Config::default()
         }
     };
+
+    // Project-local config overlay (`.aishe/config.toml`), if any. Apply it to
+    // `cfg` so the provider/model/front-end lines below reflect what will
+    // actually be used in this directory.
+    if let Ok(cwd) = std::env::current_dir() {
+        match cfg.apply_project_overlay(&cwd) {
+            Some(o) if o.error.is_some() => {
+                println!(
+                    "{warn} project config: malformed at {} ({})",
+                    o.path.display(),
+                    o.error.as_deref().unwrap_or("")
+                );
+            }
+            Some(o) => {
+                let trust = if o.trusted { "trusted" } else { "untrusted" };
+                println!(
+                    "{ok} project config: {} ({trust}; {} applied, {} deferred)",
+                    o.path.display(),
+                    o.applied.len(),
+                    o.deferred.len()
+                );
+                if !o.deferred.is_empty() {
+                    println!(
+                        "{warn} deferred until trusted (`aishe trust`): {}",
+                        o.deferred.join(", ")
+                    );
+                }
+            }
+            None => println!("{ok} project config: none"),
+        }
+    }
 
     // Front-end resolution. The interactive shell is zsh-PTY (requires zsh);
     // reedline is opt-in via `--no-pty` / `front_end = "reedline"`.
@@ -1577,6 +1645,12 @@ fn handle_meta(
             println!("rehashed ({} commands cached)", cache.len());
         }
         "usage" => print_usage_summary(provider.as_deref(), config),
+        "trust" => {
+            let _ = trust_command(tokens.get(2).map(|s| s == "--list").unwrap_or(false));
+        }
+        "untrust" => {
+            let _ = untrust_command(tokens.get(2).map(|s| s == "--all").unwrap_or(false));
+        }
         _ => print_meta_help(),
     }
 }
@@ -1625,6 +1699,8 @@ fn print_meta_help() {
 \x20 aishe plan [on|off]         yolo plan-first dry run\n\
 \x20 aishe sandbox [on|off]      yolo policy sandbox (no net / out-of-tree writes)\n\
 \x20 aishe cache [on|off]        cache identical responses\n\
+\x20 aishe trust [--list]        trust this project's .aishe/config.toml\n\
+\x20 aishe untrust [--all]       drop trust for this project's config\n\
 \x20 aishe config                print active config\n\
 \x20 aishe rehash                rebuild the command cache\n\
 \x20 aishe help                  show this help\n\
@@ -1713,6 +1789,142 @@ fn resolve_audit(
     (enabled, path)
 }
 
+/// Print a dim/yellow note about what a project `.aishe/config.toml` did, and
+/// how to unlock its deferred sensitive keys.
+fn notify_project_overlay(outcome: &Option<aishe::config::OverlayOutcome>) {
+    let Some(o) = outcome else { return };
+    if let Some(err) = &o.error {
+        eprintln!(
+            "{}",
+            format!(
+                "aishe: ignoring malformed project config {}: {err}",
+                o.path.display()
+            )
+            .yellow()
+        );
+        return;
+    }
+    if !o.applied.is_empty() {
+        let how = if o.trusted { ", trusted" } else { "" };
+        eprintln!(
+            "{}",
+            format!(
+                "aishe: applied project config {} ({} key(s){how})",
+                o.path.display(),
+                o.applied.len()
+            )
+            .dim()
+        );
+    }
+    if !o.deferred.is_empty() {
+        eprintln!(
+            "{}",
+            format!(
+                "aishe: {} sensitive key(s) in {} need trust to apply ({}). Run `aishe trust`.",
+                o.deferred.len(),
+                o.path.display(),
+                o.deferred.join(", ")
+            )
+            .yellow()
+        );
+    }
+}
+
+/// Resolve the nearest project config from cwd, or print why there is none.
+fn current_project_config() -> Option<std::path::PathBuf> {
+    let cwd = std::env::current_dir().ok()?;
+    match Config::find_project_config(&cwd) {
+        Some(p) => Some(p),
+        None => {
+            eprintln!(
+                "aishe: no .aishe/config.toml found at or above {}",
+                cwd.display()
+            );
+            None
+        }
+    }
+}
+
+/// `aishe trust [--list]`: trust the current project's config, or list trusted.
+fn trust_command(list: bool) -> u8 {
+    if list {
+        let items = aishe::trust::list();
+        if items.is_empty() {
+            println!("No trusted project configs.");
+        } else {
+            println!("Trusted project configs:");
+            for (path, _) in items {
+                println!("  {path}");
+            }
+        }
+        return 0;
+    }
+    let Some(path) = current_project_config() else {
+        return 1;
+    };
+    let text = match std::fs::read_to_string(&path) {
+        Ok(t) => t,
+        Err(e) => {
+            eprintln!("aishe: {e}");
+            return 1;
+        }
+    };
+    // Report which sensitive keys trusting will unlock.
+    let deferred = match toml::from_str::<toml::Table>(&text) {
+        Ok(table) => Config::default().merge_project_table(&table, false).1,
+        Err(e) => {
+            eprintln!("aishe: malformed project config {}: {e}", path.display());
+            return 1;
+        }
+    };
+    match aishe::trust::trust(&path, &text) {
+        Ok(_) => {
+            println!("Trusted {}", path.display());
+            if !deferred.is_empty() {
+                println!("  now applies: {}", deferred.join(", "));
+            }
+            0
+        }
+        Err(e) => {
+            eprintln!("aishe: {e}");
+            1
+        }
+    }
+}
+
+/// `aishe untrust [--all]`: drop trust for the current project, or all of them.
+fn untrust_command(all: bool) -> u8 {
+    if all {
+        return match aishe::trust::untrust_all() {
+            Ok(n) => {
+                println!("Dropped trust for {n} project config(s).");
+                0
+            }
+            Err(e) => {
+                eprintln!("aishe: {e}");
+                1
+            }
+        };
+    }
+    let Some(path) = current_project_config() else {
+        return 1;
+    };
+    match aishe::trust::untrust(&path) {
+        Ok(true) => {
+            println!("Dropped trust for {}", path.display());
+            0
+        }
+        Ok(false) => {
+            println!("{} was not trusted", path.display());
+            0
+        }
+        Err(e) => {
+            eprintln!("aishe: {e}");
+            1
+        }
+    }
+}
+
 fn init_audit(config: &Config) {
     let env_log = std::env::var("AISHE_LOG").ok();
     let env_file = std::env::var("AISHE_LOG_FILE").ok();
@@ -1762,7 +1974,10 @@ mod tests {
         assert_eq!(path.unwrap(), std::path::PathBuf::from("/from/env.jsonl"));
         // Without the env var, the configured path wins.
         let (_, path) = resolve_audit(&cfg, None, None);
-        assert_eq!(path.unwrap(), std::path::PathBuf::from("/from/config.jsonl"));
+        assert_eq!(
+            path.unwrap(),
+            std::path::PathBuf::from("/from/config.jsonl")
+        );
     }
 
     #[test]

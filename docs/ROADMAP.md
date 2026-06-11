@@ -120,8 +120,8 @@ is tagged `(reedline)` so we can re-scope quickly.
   and `exit N` are covered (`tests/cli.rs`). Done.
 - [x] Config precedence: `--flags > file > defaults` (`Config::apply_overrides`),
   audit env-vs-file (`AISHE_LOG`/`AISHE_LOG_FILE` via `resolve_audit`), and the
-  legacy `llmsh` -> `aishe` migration are covered by unit and CLI E2E tests. A
-  per-project config overlay is not built yet (tracked as A2).
+  legacy `llmsh` -> `aishe` migration are covered by unit and CLI E2E tests, as is
+  the per-project `.aishe/config.toml` overlay (A2) and its trust tiering.
 
 ## 5. Distribution and polish
 

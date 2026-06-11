@@ -155,7 +155,14 @@ fn cli_flags_are_accepted_over_config() {
         .unwrap()
         .env("XDG_CONFIG_HOME", &home)
         .env("XDG_DATA_HOME", home.join("data"))
-        .args(["--provider", "openai", "--model", "some-model", "--mode", "yolo"])
+        .args([
+            "--provider",
+            "openai",
+            "--model",
+            "some-model",
+            "--mode",
+            "yolo",
+        ])
         .arg("-c")
         .arg("!echo flags-ok")
         .assert()
@@ -200,6 +207,86 @@ model = "llama3"
     assert!(ported.contains("[aishe]"), "ported config: {ported}");
     assert!(!ported.contains("[llmsh]"), "ported config: {ported}");
     assert!(ported.contains("llama3"), "ported config: {ported}");
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn project_config_overlay_and_trust_flow() {
+    // Isolated config + data homes so the trust store doesn't leak between runs.
+    let dir = std::env::temp_dir().join(format!("aishe-trust-{}", std::process::id()));
+    let cfg_dir = dir.join("aishe");
+    std::fs::create_dir_all(&cfg_dir).unwrap();
+    std::fs::write(
+        cfg_dir.join("config.toml"),
+        r#"[aishe]
+provider = "anthropic"
+
+[providers.anthropic]
+base_url = "https://api.anthropic.com"
+api_key_env = "ANTHROPIC_API_KEY"
+model = "user-model"
+
+[providers.openai]
+base_url = "https://api.openai.com"
+api_key_env = "OPENAI_API_KEY"
+model = "user-openai"
+"#,
+    )
+    .unwrap();
+
+    // A project with a safe key (stream) and a sensitive one (provider switch).
+    let proj = dir.join("repo");
+    std::fs::create_dir_all(proj.join(".aishe")).unwrap();
+    std::fs::write(
+        proj.join(".aishe").join("config.toml"),
+        "[aishe]\nstream = true\nprovider = \"openai\"\n",
+    )
+    .unwrap();
+
+    let data = dir.join("data");
+    let run = |args: &[&str]| {
+        let mut c = Command::cargo_bin("aishe").unwrap();
+        c.env("XDG_CONFIG_HOME", &dir)
+            .env("XDG_DATA_HOME", &data)
+            .current_dir(&proj)
+            .args(args);
+        c
+    };
+
+    // Untrusted: doctor reports the overlay, the sensitive provider switch is
+    // deferred, and the effective provider stays anthropic.
+    run(&["doctor"])
+        .assert()
+        .success()
+        .stdout(contains("project config:"))
+        .stdout(contains("untrusted"))
+        .stdout(contains("deferred"))
+        .stdout(contains("provider: anthropic"));
+
+    // Trust it; the provider switch is reported as newly applying.
+    run(&["trust"])
+        .assert()
+        .success()
+        .stdout(contains("Trusted"))
+        .stdout(contains("provider"));
+
+    // Now trusted: the provider switch takes effect.
+    run(&["doctor"])
+        .assert()
+        .success()
+        .stdout(contains("trusted"))
+        .stdout(contains("provider: openai"));
+
+    // It shows up in the trust list, and untrust removes it.
+    run(&["trust", "--list"])
+        .assert()
+        .success()
+        .stdout(contains("config.toml"));
+    run(&["untrust"])
+        .assert()
+        .success()
+        .stdout(contains("Dropped trust"));
 
     std::fs::remove_dir_all(&dir).ok();
 }

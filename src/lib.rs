@@ -29,5 +29,6 @@ pub mod session;
 pub mod skills;
 pub mod theme;
 pub mod tools;
+pub mod trust;
 pub mod usage;
 pub mod validator;

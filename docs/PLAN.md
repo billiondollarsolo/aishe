@@ -154,7 +154,14 @@ Get to a confidently installable, documented 0.2 / 0.3.
   from cwd; document precedence; `aishe doctor` shows the active layers.
 - Acceptance: a project `.aishe/config.toml` overrides specific keys only;
   round-trips and precedence are tested.
-- Effort: M. Priority: P1. Status: open.
+- Effort: M. Priority: P1. Status: DONE. `Config::apply_project_overlay` discovers
+  `.aishe/config.toml` walking up from cwd and deep-merges it between the user
+  config and CLI flags. Tiered trust (`src/trust.rs`): safe keys (cosmetics, mode
+  for suggest/auto, per-provider `model`) apply automatically; sensitive keys
+  (provider/endpoint, `[mcp_servers]`, logging, safety toggles, `mode = "yolo"`)
+  apply only after `aishe trust`. `aishe doctor` shows the active layer + trust
+  state. Unit + E2E tested; documented in
+  [docs/project-config.md](project-config.md).
 
 **A3. Response + embedding cache on disk.**
 - Goal: persist the suggest-mode cache (currently in-memory only) across
@@ -321,9 +328,9 @@ overlay; the legacy `llmsh` migration path.
   `--flags > file > defaults` is covered by `Config::apply_overrides` unit tests
   plus an E2E (`tests/cli.rs::cli_flags_are_accepted_over_config`); the audit
   env-vs-file precedence by `resolve_audit` unit tests; and the legacy `llmsh`
-  migration by `tests/cli.rs::legacy_llmsh_config_is_migrated_on_run`. A
-  per-project config overlay does not exist yet (tracked under A2), so there is
-  nothing to test there until it ships.
+  migration by `tests/cli.rs::legacy_llmsh_config_is_migrated_on_run`. The
+  per-project `.aishe/config.toml` overlay (A2) adds the layer between user config
+  and flags, with its own precedence/tiering tests.
 
 **G4. Harness as CI gate.** Run the deterministic suites (no key) in CI on every
 PR; nightly run with a key (and real MCP) in a protected workflow.
@@ -525,10 +532,10 @@ Done (struck through) are kept for the record; the live order continues below.
    resolve_audit / legacy-migration tests).
 5. ~~E1 schema step-down test.~~ DONE (full chain + give-up, in `tests/providers.rs`).
 6. ~~I3 architecture doc~~ + ~~M2 SECURITY.md~~. DONE.
-7. **A2 per-project profiles** (P1, high user value).
+7. ~~A2 per-project profiles.~~ DONE (`.aishe/config.toml` overlay + `aishe trust`).
 8. **G1 interactive PTY tests** (P1, Ctrl-C/Ctrl-Z/resize, the biggest untested
    surface; the fuzz + zsh-feature suites cover non-signal behavior).
 9. **B1 real sandbox behind a flag** (P2, the headline safety upgrade).
 10. **C2 completion depth round 2** (P2, daily-use polish).
 
-Live shortlist, in order: A2, G1.
+Live shortlist, in order: G1, then B1 / C2.

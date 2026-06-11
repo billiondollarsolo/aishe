@@ -547,6 +547,8 @@ pub fn is_meta_subcommand(w: &str) -> bool {
             | "plan"
             | "sandbox"
             | "cache"
+            | "trust"
+            | "untrust"
             | "help"
     )
 }

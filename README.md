@@ -366,6 +366,7 @@ The [docs/](docs/) directory has the full user guide:
 - [Logging and privacy](docs/logging.md)
 - [Prompt and theming](docs/prompt-and-theming.md)
 - [Shell integration and .aishrc](docs/shell-integration.md)
+- [Per-project config and trust](docs/project-config.md)
 - [Troubleshooting](docs/troubleshooting.md)
 - [Architecture (for contributors)](docs/architecture.md)
 - [Roadmap](docs/ROADMAP.md)

@@ -41,7 +41,8 @@ tests in `tests/` can exercise internals directly.
 | `safety` / `sandbox` | Destructive-command gate; best-effort policy sandbox (network / out-of-tree writes) for yolo. |
 | `context` | The environment context block (cwd, dir listing, recent history, project context) prepended to LLM requests. |
 | `session` | In-session conversation memory; in-RAM for reedline, persisted to a per-session file for the hook front-ends. |
-| `config` | Config schema, load/migrate/save, the first-run wizard, CLI-override precedence. |
+| `config` | Config schema, load/migrate/save, the first-run wizard, CLI-override and project-overlay precedence. |
+| `trust` | Trust store for project `.aishe/config.toml` overlays (`aishe trust`). |
 | `cache` | Short-TTL response cache wrapping a `Provider` for identical suggest repeats. |
 | `redact` | Best-effort secret scrubbing of the context block. |
 | `audit` | Optional JSONL audit log of prompts, responses, and AI-initiated actions. |
@@ -204,11 +205,18 @@ skills in the Claude-Code-compatible format.
 
 ## Cross-cutting concerns
 
-- **Config (`config.rs`).** Precedence is `CLI flags > config file > compiled
-  defaults`, made explicit by `Config::apply_overrides`. Audit logging resolves
-  `AISHE_LOG`/`AISHE_LOG_FILE` over the file via `resolve_audit` (in `main.rs`). A
-  missing config triggers the first-run wizard (only on a TTY); a pre-rename
-  `llmsh` config is migrated on first run. All precedence is unit/E2E tested.
+- **Config (`config.rs`).** Precedence is `CLI flags > project overlay > user
+  config > compiled defaults`. `Config::apply_overrides` applies the flag layer;
+  `Config::apply_project_overlay` merges a repo's `.aishe/config.toml` under the
+  tiered trust rules (safe keys always, sensitive keys only when `trust::is_trusted`),
+  walking up from cwd. Audit logging resolves `AISHE_LOG`/`AISHE_LOG_FILE` over the
+  file via `resolve_audit` (in `main.rs`). A missing config triggers the first-run
+  wizard (only on a TTY); a pre-rename `llmsh` config is migrated on first run. All
+  precedence is unit/E2E tested.
+- **Project trust (`trust.rs`).** A small JSON store under the data dir mapping a
+  project config's absolute path to a content hash, so editing a trusted file
+  drops trust. Managed with `aishe trust` / `aishe untrust`. See
+  [project-config.md](project-config.md).
 - **Usage and budget (`usage.rs`).** A shared `UsageMeter` per provider records
   tokens; cost is estimated from a pricing table (overridable in config) and
   enforced against `budget_usd`.

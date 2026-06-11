@@ -43,6 +43,16 @@ breaking changes can land in any release.
   advisories + a contact email), supported versions, the security model
   (deterministic safety gate, confirmation tiers, best-effort sandbox,
   prompt-injection threats), data-handling/privacy notes, and hardening tips.
+- **Per-project config (`.aishe/config.toml`) with a trust gate.** A repo can
+  ship a config overlay, discovered like `.aishe/context.md` (walking up from the
+  cwd) and merged between your user config and CLI flags. Safe, cosmetic keys (and
+  a per-provider `model`) apply automatically; sensitive keys that could exfiltrate
+  prompts, run code, or weaken safety (`provider`, endpoint/key, `[mcp_servers]`,
+  `[logging]`, the safety toggles, and `mode = "yolo"`) apply only after you run
+  `aishe trust` in that repo. `aishe trust [--list]` / `aishe untrust [--all]`
+  (also `/trust`) manage it; trust is keyed by path + content hash so an edited
+  file must be re-trusted. `aishe doctor` shows the active overlay and trust state.
+  See [docs/project-config.md](docs/project-config.md).
 - **`docs/architecture.md`.** A contributor's map of the codebase: design
   principles, the module layout, the routing decision order and command cache,
   both front-ends (the zsh-PTY hook handoff and reedline), the

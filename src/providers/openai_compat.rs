@@ -542,8 +542,8 @@ mod tests {
         assert!(is_format_error("This model does not support json_schema."));
         assert!(is_format_error("Unrecognized request argument: schema"));
         assert!(is_format_error("RESPONSE_FORMAT rejected")); // case-insensitive
-        // Unrelated 400s must NOT be mistaken for a format error (we would hide
-        // a real client bug behind endless step-downs otherwise).
+                                                              // Unrelated 400s must NOT be mistaken for a format error (we would hide
+                                                              // a real client bug behind endless step-downs otherwise).
         assert!(!is_format_error("context length exceeded"));
         assert!(!is_format_error("invalid api key"));
     }
