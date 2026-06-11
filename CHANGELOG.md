@@ -6,6 +6,13 @@ breaking changes can land in any release.
 
 ## [Unreleased]
 
+## [0.1.5] - 2026-06-11
+
+### Fixed
+- **Sigil / force-NL lines are kept in zsh history.** The accept-line wrapper and
+  force-NL key cleared the buffer to route a line to the AI, so the typed NL line
+  never entered history. It is now recorded (`print -s`), so up-arrow recalls it.
+
 ### Added
 - **Conversation memory in the zsh-PTY / `init zsh` front-ends.** Each
   natural-language line in the hook front-ends ran as a separate process with no
