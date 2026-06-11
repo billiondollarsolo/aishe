@@ -296,8 +296,11 @@ pub(crate) fn error_message(resp: ureq::Response) -> String {
 pub fn make(config: &Config) -> Result<std::sync::Arc<dyn Provider>> {
     use std::sync::Arc;
     // Test hook: a deterministic fake provider (no network, no API key) when
-    // AISHE_FAKE_LLM is set. Inert otherwise.
-    if let Ok(resp) = std::env::var(fake::ENV) {
+    // AISHE_FAKE_LLM[_FILE] is set. Inert otherwise.
+    let fake_resp = std::env::var(fake::ENV)
+        .ok()
+        .or_else(|| std::env::var(fake::ENV_FILE).ok().map(|_| String::new()));
+    if let Some(resp) = fake_resp {
         return Ok(Arc::new(fake::FakeProvider::new(resp)));
     }
     let inner: Arc<dyn Provider> = match config.aishe.provider.as_str() {

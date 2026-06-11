@@ -15,9 +15,14 @@ use crate::usage::UsageMeter;
 /// Environment variable that, when set, swaps in the fake provider returning its
 /// value as the model response.
 pub const ENV: &str = "AISHE_FAKE_LLM";
+/// Alternative: a file whose contents are the response, re-read on every call.
+/// Lets a test vary the response with arbitrary bytes (quotes, backticks) without
+/// shell-quoting issues. Takes precedence over [`ENV`] when both are set.
+pub const ENV_FILE: &str = "AISHE_FAKE_LLM_FILE";
 
 pub struct FakeProvider {
     response: String,
+    file: Option<String>,
     meter: Arc<UsageMeter>,
 }
 
@@ -25,8 +30,18 @@ impl FakeProvider {
     pub fn new(response: String) -> Self {
         Self {
             response,
+            file: std::env::var(ENV_FILE).ok().filter(|s| !s.is_empty()),
             meter: Arc::new(UsageMeter::default()),
         }
+    }
+
+    fn body(&self) -> String {
+        if let Some(path) = &self.file {
+            if let Ok(text) = std::fs::read_to_string(path) {
+                return text;
+            }
+        }
+        self.response.clone()
     }
 }
 
@@ -37,7 +52,7 @@ impl Provider for FakeProvider {
         _messages: &[Msg],
         _format: &ResponseFormat,
     ) -> Result<String, ProviderError> {
-        Ok(self.response.clone())
+        Ok(self.body())
     }
 
     fn complete_with_tools(
@@ -48,7 +63,7 @@ impl Provider for FakeProvider {
     ) -> Result<Completion, ProviderError> {
         // No tool calls: the yolo loop just surfaces the text and finishes.
         Ok(Completion {
-            text: Some(self.response.clone()),
+            text: Some(self.body()),
             tool_calls: Vec::new(),
         })
     }

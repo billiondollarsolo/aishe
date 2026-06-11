@@ -16,11 +16,14 @@ breaking changes can land in any release.
   `zsh -nc` / `bash -nc` guard as a backstop.)
 
 ### Added
-- **Deterministic scenario tests for the zsh-PTY front-end.** A fake provider
-  (`AISHE_FAKE_LLM`, inert unless set) lets `tests/pty_scenarios.py` drive the
-  real `aishe zsh` wrapper through NL routing, the `?`/`#` sigil (incl. a trailing
-  `?`), command-name collisions, auto-mode never eval'ing a non-command, and
-  up-arrow history, asserting no parse/glob/eval errors leak. Wired into CI.
+- **Deterministic scenario + fuzz tests for the zsh-PTY front-end.** A fake
+  provider (`AISHE_FAKE_LLM` / `AISHE_FAKE_LLM_FILE`, inert unless set) drives the
+  real `aishe zsh` wrapper with no network or key. `tests/pty_scenarios.py` covers
+  NL routing, the `?`/`#` sigil (incl. a trailing `?`), command-name collisions,
+  auto-mode never eval'ing a non-command, and up-arrow history (wired into CI).
+  `tests/pty_fuzz.py` generatively runs hundreds of cases (real commands with
+  pipes/redirs/globs/quoting, sigil NL stuffed with shell metacharacters, and
+  adversarial model responses), asserting no parse/glob/eval error ever leaks.
 
 ## [0.1.5] - 2026-06-11
 
