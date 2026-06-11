@@ -7,6 +7,13 @@ breaking changes can land in any release.
 ## [Unreleased]
 
 ### Added
+- **`history` builtin + timestamped, cross-session history.** Every persisted
+  command is also written to a sidecar log in zsh `EXTENDED_HISTORY` format
+  (`: <epoch>:0;<command>`, which zsh can read). A new `history` builtin lists it
+  (`history [N]`, `history -E` adds UTC timestamps). With `share_history` on (the
+  default, zsh `SHARE_HISTORY`) the log and history file are shared across
+  sessions, so commands from other sessions are visible; off makes history
+  per-session. See `src/histlog.rs`.
 - **Flag completion from `--help` (reedline).** Tab-completing a word that starts
   with `-` now offers the command's flags, parsed from its `--help` output (or
   `<tool> <sub> --help` for git/cargo/docker/...), with the descriptions shown in

@@ -79,9 +79,11 @@ is tagged `(reedline)` so we can re-scope quickly.
   `&` backgrounds a command, with `jobs`/`fg`/`bg`/`wait`/`disown` and a
   `[n]+ Done` notice before the prompt. `Ctrl-Z`/`SIGTSTP` foreground suspension
   and process groups remain the zsh-PTY front-end's native domain. (reedline)
-- [~] **Richer history**: dedup (`HIST_IGNORE_DUPS`), ignore-space, and
-  `HISTIGNORE` glob patterns shipped (`hist_ignore_dups`/`hist_ignore_space`/
-  `hist_ignore`). Timestamps and cross-session sharing still open. (reedline)
+- [x] **Richer history**: dedup (`HIST_IGNORE_DUPS`), ignore-space, and
+  `HISTIGNORE` glob patterns, plus a timestamped `EXTENDED_HISTORY`-format log
+  (zsh-readable), a `history` builtin (`history [-E] [N]`), and cross-session
+  sharing (`share_history`, zsh `SHARE_HISTORY`). See `src/histlog.rs`. Done.
+  (reedline)
 - [x] **Prompt depth**: command duration (`report_time`) and git
   staged/unstaged/ahead-behind/stash (`git_status`) shipped; an exit-status glyph
   colors the prompt; and the git status is now computed **async** (off-thread,

@@ -651,6 +651,7 @@ hist_ignore = ["ls", "cd *"]
 cdpath = ["/tmp", "/srv"]
 correct = true
 complete_flags = false
+share_history = false
 file_tools = false
 web_tool = false
 yolo_plan = true
@@ -938,6 +939,7 @@ def main():
         "auto_pushd = true",
         "correct = true",
         "complete_flags = false",
+        "share_history = false",
         "file_tools = false",
         "web_tool = false",
         "yolo_plan = true",
@@ -986,6 +988,22 @@ def main():
     # `/usage` with no calls reports an empty session rather than erroring.
     rc, out, err = run([BIN, "-c", "/usage"], env_local, cwd=fixture)
     add("meta: /usage reports empty session", "no model calls" in out.lower() or "usage" in out.lower())
+
+    # 6e. The `history` builtin lists a seeded EXTENDED_HISTORY log (with -E times).
+    report.append("\n**`history` builtin reads the timestamped log:**\n")
+    hist_root = tempfile.mkdtemp(prefix="aishe-hist-")
+    hist_env = base_env(hist_root, with_key=False)
+    histdir = os.path.join(hist_env["XDG_DATA_HOME"], "aishe")
+    os.makedirs(histdir, exist_ok=True)
+    with open(os.path.join(histdir, "history.ext"), "w") as f:
+        f.write(": 1700000000:0;echo seeded-one\n: 1700000100:0;git status\n")
+    rc, out, err = run([BIN, "-c", "history"], hist_env, cwd=fixture)
+    add("history: lists seeded commands", "echo seeded-one" in out and "git status" in out,
+        "" if "echo seeded-one" in out else f"(out={out.strip()[:120]!r})")
+    rc, out, err = run([BIN, "-c", "history -E 1"], hist_env, cwd=fixture)
+    add("history: -E shows a timestamp", "2023-11-14" in out and "git status" in out,
+        "" if "2023-11-14" in out else f"(out={out.strip()[:120]!r})")
+    shutil.rmtree(hist_root, ignore_errors=True)
 
     shutil.rmtree(full_root, ignore_errors=True)
 

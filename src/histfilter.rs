@@ -19,6 +19,9 @@ pub struct FilteredHistory {
     patterns: Vec<Regex>,
     /// The most recently persisted command line (for dup detection).
     last: Option<String>,
+    /// Optional timestamped sidecar log appended on each persisted save (zsh
+    /// `EXTENDED_HISTORY`), backing the `history` builtin.
+    sidecar: Option<std::path::PathBuf>,
 }
 
 impl FilteredHistory {
@@ -35,7 +38,14 @@ impl FilteredHistory {
             ignore_dups,
             patterns,
             last: None,
+            sidecar: None,
         }
+    }
+
+    /// Also append every persisted command to a timestamped sidecar log at `path`.
+    pub fn with_sidecar(mut self, path: std::path::PathBuf) -> Self {
+        self.sidecar = Some(path);
+        self
     }
 
     fn should_ignore(&self, command: &str) -> bool {
@@ -72,6 +82,9 @@ impl History for FilteredHistory {
             return Ok(h);
         }
         let saved = self.inner.save(h)?;
+        if let Some(path) = &self.sidecar {
+            crate::histlog::append(path, &saved.command_line);
+        }
         self.last = Some(saved.command_line.clone());
         Ok(saved)
     }

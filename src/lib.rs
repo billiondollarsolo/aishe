@@ -14,6 +14,7 @@ pub mod fuzzy;
 pub mod ghost;
 pub mod highlight;
 pub mod histfilter;
+pub mod histlog;
 pub mod history_expand;
 pub mod integration;
 pub mod mcp;

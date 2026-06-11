@@ -59,6 +59,8 @@ pub struct Executor {
     dir_stack: Vec<PathBuf>,
     /// Background jobs started with a trailing `&` (reedline front-end).
     jobs: Vec<Job>,
+    /// Path to the timestamped history log read by the `history` builtin.
+    history_log: Option<PathBuf>,
 }
 
 impl Executor {
@@ -84,7 +86,13 @@ impl Executor {
             session_rc: init_session_rc().ok(),
             dir_stack: Vec::new(),
             jobs: Vec::new(),
+            history_log: None,
         })
+    }
+
+    /// Point the `history` builtin at the timestamped history log.
+    pub fn set_history_log(&mut self, path: PathBuf) {
+        self.history_log = Some(path);
     }
 
     pub fn shell(&self) -> &PathBuf {
@@ -279,6 +287,7 @@ impl Executor {
             "pushd" => self.builtin_pushd(tokens.get(1).map(|s| s.as_str())),
             "popd" => self.builtin_popd(),
             "dirs" => self.builtin_dirs(&tokens[1..]),
+            "history" => self.builtin_history(&tokens[1..]),
             "jobs" => self.builtin_jobs(),
             "fg" => self.builtin_fg(tokens.get(1).map(|s| s.as_str())),
             "bg" => self.builtin_bg(tokens.get(1).map(|s| s.as_str())),
@@ -291,6 +300,32 @@ impl Executor {
         };
         self.record(&tokens.join(" "), code);
         code
+    }
+
+    /// `history [-E] [N]`: list recent history from the timestamped log. `-E`
+    /// (also `-i`/`-d`) adds timestamps; `N` limits to the last N (default 16,
+    /// `0` = all).
+    fn builtin_history(&self, args: &[String]) -> i32 {
+        let Some(path) = &self.history_log else {
+            eprintln!("history: history log not available");
+            return 1;
+        };
+        let mut with_ts = false;
+        let mut count: Option<usize> = Some(16);
+        for a in args {
+            match a.as_str() {
+                "-E" | "-i" | "-d" | "-f" => with_ts = true,
+                s => {
+                    if let Ok(n) = s.trim_start_matches('-').parse::<usize>() {
+                        count = if n == 0 { None } else { Some(n) };
+                    }
+                }
+            }
+        }
+        let entries = crate::histlog::read(path);
+        print!("{}", crate::histlog::format(&entries, count, with_ts));
+        let _ = std::io::stdout().flush();
+        0
     }
 
     // ----- Background jobs (reedline front-end) -------------------------------

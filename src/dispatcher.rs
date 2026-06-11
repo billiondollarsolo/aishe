@@ -23,7 +23,8 @@ pub enum Dispatch {
 const INTERCEPTED: &[&str] = &[
     "cd", "export", "unset", "source", ".", "exit", "quit", "aishe", "pushd", "popd", "dirs",
     // Background-job builtins (reedline front-end manages the job table).
-    "jobs", "fg", "bg", "wait", "disown",
+    "jobs", "fg", "bg", "wait", "disown", // History listing from the timestamped log.
+    "history",
 ];
 
 /// Hardcoded fallback list of zsh builtins, used if querying zsh fails.

@@ -43,6 +43,7 @@ which persist your choice back to the file.
 | `cdpath` | array | `[]` | Extra base dirs searched by `cd <name>` (`CDPATH`); falls back to `$CDPATH`. |
 | `correct` | bool | `false` | zsh `CORRECT`: offer to fix a near-miss command word instead of routing it to the LLM. |
 | `complete_flags` | bool | `true` | Tab-complete a command's flags from its `--help` (parsed, cached, time-limited) when the word starts with `-` (reedline). |
+| `share_history` | bool | `true` | Share one timestamped history across sessions (zsh `SHARE_HISTORY`); off makes history per-session. Backs the `history` builtin. |
 
 ## `[named_dirs]` section (optional)
 

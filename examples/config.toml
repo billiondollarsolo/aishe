@@ -93,6 +93,12 @@ correct = false
 # `grep --<Tab>` offers `--ignore-case`, `--color`, ... with descriptions.
 complete_flags = true
 
+# Share one timestamped history across sessions (zsh SHARE_HISTORY), so commands
+# from other running/past sessions are visible to the `history` builtin. Off makes
+# history per-session (pid-suffixed files). History is stored in zsh
+# EXTENDED_HISTORY format (`: <epoch>:0;<command>`), which zsh can also read.
+share_history = true
+
 # Custom reedline left prompt. Placeholders: {cwd} {mode} {model} {exit}.
 # Leave commented out for the default (just the cwd).
 # prompt_format = "[{mode}] {cwd}"

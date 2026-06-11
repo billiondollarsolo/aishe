@@ -175,6 +175,8 @@ fn run() -> Result<u8> {
 
     let mut executor = Executor::new()?;
     context::init(executor.shell());
+    // The `history` builtin reads the timestamped log (also available in `-c`).
+    executor.set_history_log(history_paths(&config).1);
 
     let cache = CommandCache::new();
     cache.build(executor.shell());
@@ -646,7 +648,8 @@ fn repl(
         );
     }
 
-    let history_path = data_dir().join("history");
+    // History file + timestamped sidecar log (shared or per-session per config).
+    let (history_path, hist_log_path) = history_paths(config);
     if let Some(parent) = history_path.parent() {
         std::fs::create_dir_all(parent).ok();
     }
@@ -655,12 +658,16 @@ fn repl(
             .unwrap_or_else(|_| FileBackedHistory::new(10_000).expect("in-memory history")),
     );
     // Wrap with zsh-style filtering: drop consecutive duplicates and HISTIGNORE
-    // matches before they are persisted.
-    let history = Box::new(aishe::histfilter::FilteredHistory::new(
-        file_history,
-        config.aishe.hist_ignore_dups,
-        &config.aishe.hist_ignore,
-    ));
+    // matches before they are persisted, and mirror persisted commands into the
+    // timestamped sidecar log that backs the `history` builtin.
+    let history = Box::new(
+        aishe::histfilter::FilteredHistory::new(
+            file_history,
+            config.aishe.hist_ignore_dups,
+            &config.aishe.hist_ignore,
+        )
+        .with_sidecar(hist_log_path),
+    );
 
     // Tab → completion menu (command names / file paths), Shift-Tab → previous,
     // Ctrl-R → browsable history menu. Applied to whichever keymap is active.
@@ -1429,6 +1436,21 @@ fn data_dir() -> std::path::PathBuf {
     dirs::data_dir()
         .unwrap_or_else(|| std::path::PathBuf::from("."))
         .join("aishe")
+}
+
+/// The reedline history file and the timestamped sidecar log paths. Shared across
+/// sessions by default (zsh `SHARE_HISTORY`), or pid-suffixed per-session when
+/// `share_history` is off.
+fn history_paths(config: &Config) -> (std::path::PathBuf, std::path::PathBuf) {
+    if config.aishe.share_history {
+        (data_dir().join("history"), data_dir().join("history.ext"))
+    } else {
+        let pid = std::process::id();
+        (
+            data_dir().join(format!("history.{pid}")),
+            data_dir().join(format!("history.{pid}.ext")),
+        )
+    }
 }
 
 /// The `cdpath` base directories: the configured `cdpath`, or `$CDPATH` (colon-

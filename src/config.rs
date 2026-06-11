@@ -191,6 +191,12 @@ pub struct AisheConfig {
     /// word starting with `-` (parsed, cached, time-limited). On by default.
     #[serde(default = "default_true")]
     pub complete_flags: bool,
+    /// Share one timestamped history across sessions (zsh `SHARE_HISTORY`): the
+    /// `history` builtin and the reedline history file are shared, so commands
+    /// from other sessions are visible. When off, history is per-session
+    /// (pid-suffixed files). On by default.
+    #[serde(default = "default_true")]
+    pub share_history: bool,
     /// Structured-output strategy for suggest mode: "schema" (strict JSON schema,
     /// default), "json" (any JSON object), or "prompt" (unconstrained).
     #[serde(default = "default_structured")]
@@ -320,6 +326,7 @@ impl Default for AisheConfig {
             cdpath: Vec::new(),
             correct: false,
             complete_flags: true,
+            share_history: true,
             structured: default_structured(),
             stream: false,
             show_usage: true,
