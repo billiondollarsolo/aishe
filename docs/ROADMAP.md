@@ -100,15 +100,17 @@ is tagged `(reedline)` so we can re-scope quickly.
 ## 4. Test surface not yet exercised
 
 - [ ] Adversarial safety corpus (see section 2).
-- [ ] Provider failure modes: 429 rate-limit, timeouts, truncated or malformed
-  SSE, non-JSON bodies, the schema to json to prompt step-down path, usage
-  parsing.
+- [~] Provider failure modes: 429/5xx/connection retries with backoff + jitter +
+  `Retry-After`, truncated-SSE tolerance, defensive non-JSON/malformed-data
+  parsing, and usage parsing are covered (`tests/providers.rs`, provider unit
+  tests). The schema-to-json-to-prompt step-down path is still untested.
 - [ ] Interactive PTY behaviors: `Ctrl-C` mid-command, `Ctrl-Z`, window resize,
   completion-menu navigation, multi-line editing (only smoke-tested today).
-- [ ] I/O edges: stdin piping and non-tty (`echo "prompt" | aishe`), large and
-  binary captured output limits, Unicode and emoji line editing.
-- [ ] Exit-code propagation: `aishe -c 'false'` returns 1, pipelines, `$?`
-  chains.
+- [~] I/O edges: stdin piping / non-tty now runs each line as a command
+  (pipe/script mode, `tests/cli.rs`). Large and binary captured-output limits and
+  Unicode/emoji line editing still open.
+- [x] Exit-code propagation: `aishe -c 'false'` returns 1, pipelines, `$?` chains,
+  and `exit N` are covered (`tests/cli.rs`). Done.
 - [ ] Config precedence: env vs flags vs file, legacy migration.
 
 ## 5. Distribution and polish

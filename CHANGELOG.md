@@ -7,6 +7,10 @@ breaking changes can land in any release.
 ## [Unreleased]
 
 ### Added
+- **Pipe / script mode.** Piping into aishe with no `-c`
+  (`printf 'cmd1\ncmd2\n' | aishe`) now runs each line like a one-shot command and
+  returns the last exit code, instead of launching the interactive editor (which
+  needs a terminal). An explicit `--pty`/`zsh` still wins.
 - **`history` builtin + timestamped, cross-session history.** Every persisted
   command is also written to a sidecar log in zsh `EXTENDED_HISTORY` format
   (`: <epoch>:0;<command>`, which zsh can read). A new `history` builtin lists it
@@ -40,6 +44,17 @@ breaking changes can land in any release.
   includes a `.aishe/context.md` found at or above the cwd (nearest wins, capped
   at 4000 chars), so repo-specific conventions reach the model without repeating
   them. On by default (`project_context`). See docs/project-context.md.
+
+### Changed
+- **More robust provider retries.** Transient HTTP failures (429, 408, any 5xx,
+  and connection errors) are now retried up to 3 times with exponential backoff
+  plus jitter, honoring a `Retry-After` header on 429 (was a single fixed 2s
+  retry). Shared across the blocking and streaming paths for both providers.
+- **Streaming tolerates a truncated SSE response.** A read error mid-stream ends
+  the stream gracefully (any text already delivered stands) instead of failing
+  the whole turn.
+- **`exit N` propagates its code** from `aishe -c 'exit N'` and sets the final
+  exit status interactively.
 
 ### Fixed
 - **A test could wipe `/tmp`.** `named_dir_expansion` canonicalized its temp dir

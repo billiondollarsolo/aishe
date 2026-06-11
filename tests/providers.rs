@@ -105,12 +105,12 @@ fn anthropic_401_message() {
 #[test]
 fn anthropic_retries_on_429() {
     let mut server = mockito::Server::new();
-    // Expect two calls: original + one retry.
+    // A persistent 429 is retried: original call + MAX_RETRIES (3) retries = 4.
     let m = server
         .mock("POST", "/v1/messages")
         .with_status(429)
         .with_body(r#"{"error":{"message":"rate limited"}}"#)
-        .expect(2)
+        .expect(4)
         .create();
 
     let p = AnthropicProvider::new(server.url(), "k".into(), "m".into());

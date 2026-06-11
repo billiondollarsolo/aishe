@@ -93,3 +93,42 @@ fn init_unsupported_shell_fails() {
         .assert()
         .failure();
 }
+
+#[test]
+fn dash_c_propagates_exit_codes() {
+    let home = temp_config_home();
+    let run = |arg: &str| {
+        Command::cargo_bin("aishe")
+            .unwrap()
+            .env("XDG_CONFIG_HOME", &home)
+            .env("XDG_DATA_HOME", home.join("data"))
+            .arg("-c")
+            .arg(arg)
+            .assert()
+    };
+    // A failing command propagates its non-zero status.
+    run("!false").code(1);
+    // A succeeding command is 0.
+    run("!true").code(0);
+    // `exit N` propagates N.
+    run("exit 3").code(3);
+    // A pipeline's status is the last command's.
+    run("!true | false").code(1);
+    // `$?` reflects the previous command within one -c line.
+    run("!false; echo done").code(0).stdout(contains("done"));
+}
+
+#[test]
+fn piped_stdin_runs_each_line() {
+    // Non-tty stdin with no `-c`: each line runs like a one-shot command.
+    let home = temp_config_home();
+    Command::cargo_bin("aishe")
+        .unwrap()
+        .env("XDG_CONFIG_HOME", &home)
+        .env("XDG_DATA_HOME", home.join("data"))
+        .write_stdin("!echo piped-a\n!echo piped-b\n")
+        .assert()
+        .success()
+        .stdout(contains("piped-a"))
+        .stdout(contains("piped-b"));
+}

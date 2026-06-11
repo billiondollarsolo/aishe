@@ -3,6 +3,7 @@
 //! Behaves like zsh for recognizable commands; anything else is treated as a
 //! natural-language request handled by an LLM (suggest or yolo mode).
 
+use std::io::IsTerminal;
 use std::process::ExitCode;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -157,7 +158,16 @@ fn run() -> Result<u8> {
     // Resolution: an explicit `--pty`/`zsh`/`zsh-pty` wins; `--no-pty`/`reedline`
     // forces the built-in editor; the default "auto" picks zsh-pty whenever zsh
     // is on $PATH and falls back to reedline otherwise.
+    // Piped (non-tty) stdin with no `-c`: read commands from stdin instead of
+    // launching an interactive editor (which needs a terminal). An explicit
+    // `--pty`/`zsh` still wins.
+    let piped_stdin = !non_interactive
+        && !args.pty
+        && !matches!(args.cmd, Some(Cmd::Zsh))
+        && !std::io::stdin().is_terminal();
+
     let want_pty = !non_interactive
+        && !piped_stdin
         && if args.pty || matches!(args.cmd, Some(Cmd::Zsh)) {
             true
         } else if args.no_pty {
@@ -230,6 +240,37 @@ fn run() -> Result<u8> {
             &skills,
             &mcp,
         );
+    }
+
+    // Pipe/script mode: run each line of piped stdin like a `-c` invocation.
+    if piped_stdin {
+        let mut last = 0u8;
+        let stdin = std::io::stdin();
+        let mut line = String::new();
+        loop {
+            line.clear();
+            match stdin.read_line(&mut line) {
+                Ok(0) => break, // EOF
+                Ok(_) => {
+                    let trimmed = line.trim();
+                    if trimmed.is_empty() {
+                        continue;
+                    }
+                    last = one_shot(
+                        trimmed,
+                        &mut executor,
+                        &mut provider,
+                        &config,
+                        &cache,
+                        &commands,
+                        &skills,
+                        &mcp,
+                    )?;
+                }
+                Err(_) => break,
+            }
+        }
+        return Ok(last);
     }
 
     repl(
@@ -501,7 +542,12 @@ fn one_shot(
         Dispatch::Shell(line) => Ok(executor.run(&line) as u8),
         Dispatch::Builtin(tokens) => {
             if matches!(tokens[0].as_str(), "exit" | "quit") {
-                return Ok(executor.last_exit as u8);
+                // `exit N` propagates N; bare `exit` uses the last command's code.
+                let code = tokens
+                    .get(1)
+                    .and_then(|s| s.parse::<u8>().ok())
+                    .unwrap_or(executor.last_exit as u8);
+                return Ok(code);
             }
             if tokens[0] == "aishe" {
                 // Read-only listings are useful in -c; state-changing meta
@@ -860,7 +906,13 @@ fn handle_line(
             }
         }
         Dispatch::Builtin(tokens) => match tokens[0].as_str() {
-            "exit" | "quit" => return Ok(true),
+            "exit" | "quit" => {
+                // `exit N` sets the shell's final exit code.
+                if let Some(code) = tokens.get(1).and_then(|s| s.parse::<i32>().ok()) {
+                    executor.last_exit = code;
+                }
+                return Ok(true);
+            }
             "aishe" => handle_meta(
                 &tokens, config, provider, executor, cache, commands, skills, mcp, session, ghost,
             ),

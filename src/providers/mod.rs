@@ -167,8 +167,9 @@ pub(crate) fn usage_from_value(v: &Value) -> (u64, u64) {
     )
 }
 
-/// POST a request for a Server-Sent Events stream, retrying once on 429/5xx or a
-/// connection error. Returns the streaming response for [`read_sse`] to consume.
+/// POST a request for a Server-Sent Events stream, retrying transient failures
+/// (429/5xx/connection errors) with backoff. Returns the streaming response for
+/// [`read_sse`] to consume.
 pub(crate) fn stream_post(
     url: &str,
     headers: &[(&str, &str)],
@@ -188,24 +189,27 @@ pub(crate) fn stream_post(
         match req.send_json(body.clone()) {
             Ok(resp) => return Ok(resp),
             Err(ureq::Error::Status(status, resp)) => {
-                let message = error_message(resp);
                 if status == 401 {
                     return Err(ProviderError::Api {
                         status,
-                        message: format!("API key invalid ({message})"),
+                        message: format!("API key invalid ({})", error_message(resp)),
                     });
                 }
-                if (status == 429 || status >= 500) && attempt == 0 {
+                if is_retryable_status(status) && attempt < MAX_RETRIES {
+                    let wait = backoff(attempt + 1, retry_after_secs(&resp));
                     attempt += 1;
-                    std::thread::sleep(Duration::from_secs(2));
+                    std::thread::sleep(wait);
                     continue;
                 }
-                return Err(ProviderError::Api { status, message });
+                return Err(ProviderError::Api {
+                    status,
+                    message: error_message(resp),
+                });
             }
             Err(e) => {
-                if attempt == 0 {
+                if attempt < MAX_RETRIES {
                     attempt += 1;
-                    std::thread::sleep(Duration::from_secs(2));
+                    std::thread::sleep(backoff(attempt, None));
                     continue;
                 }
                 return Err(ProviderError::Http(e.to_string()));
@@ -223,7 +227,10 @@ pub(crate) fn read_sse(
     use std::io::BufRead;
     let reader = std::io::BufReader::new(resp.into_reader());
     for line in reader.lines() {
-        let line = line.map_err(|e| ProviderError::Http(e.to_string()))?;
+        // A read error mid-stream (truncation/connection reset) ends the stream
+        // gracefully: any text delivered so far stands, rather than failing the
+        // whole turn. SSE has no guaranteed terminator, so EOF is normal.
+        let Ok(line) = line else { break };
         if let Some(data) = line.strip_prefix("data:") {
             let data = data.trim();
             if data.is_empty() || data == "[DONE]" {
@@ -233,6 +240,41 @@ pub(crate) fn read_sse(
         }
     }
     Ok(())
+}
+
+/// Retry attempts (beyond the first try) for transient HTTP failures.
+pub(crate) const MAX_RETRIES: u32 = 3;
+
+/// Whether an HTTP status is transient and worth retrying (rate limit, request
+/// timeout, or any 5xx).
+pub(crate) fn is_retryable_status(status: u16) -> bool {
+    status == 429 || status == 408 || status >= 500
+}
+
+/// The `Retry-After` hint in whole seconds, if the response carries one as an
+/// integer (the HTTP-date form is ignored).
+pub(crate) fn retry_after_secs(resp: &ureq::Response) -> Option<u64> {
+    resp.header("retry-after")?.trim().parse::<u64>().ok()
+}
+
+/// Backoff before retry `attempt` (1-based): honor a `Retry-After` hint (capped),
+/// else exponential 0.5s/1s/2s/4s (capped at 4s) plus a little jitter so
+/// concurrent callers don't retry in lockstep.
+pub(crate) fn backoff(attempt: u32, retry_after: Option<u64>) -> Duration {
+    if let Some(secs) = retry_after {
+        return Duration::from_secs(secs.min(15));
+    }
+    let base_ms = 500u64.saturating_mul(1u64 << (attempt.saturating_sub(1)).min(3));
+    Duration::from_millis(base_ms.min(4000) + jitter_ms())
+}
+
+/// A small pseudo-random jitter (0-249 ms) derived from the clock, avoiding a
+/// `rand` dependency.
+fn jitter_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| (d.subsec_nanos() as u64) % 250)
+        .unwrap_or(0)
 }
 
 /// Pull a human-readable message out of an error response body.
@@ -300,3 +342,52 @@ fn read_key(env_var: &str) -> Result<String> {
 pub(crate) const HTTP_TIMEOUT_SECS: u64 = 60;
 /// Max tokens requested from the model.
 pub(crate) const MAX_TOKENS: u32 = 4096;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn retryable_statuses() {
+        assert!(is_retryable_status(429));
+        assert!(is_retryable_status(408));
+        assert!(is_retryable_status(500));
+        assert!(is_retryable_status(503));
+        assert!(!is_retryable_status(400));
+        assert!(!is_retryable_status(401));
+        assert!(!is_retryable_status(404));
+    }
+
+    #[test]
+    fn backoff_grows_and_honors_retry_after() {
+        // Retry-After wins (capped at 15s).
+        assert_eq!(backoff(1, Some(3)), Duration::from_secs(3));
+        assert_eq!(backoff(1, Some(999)), Duration::from_secs(15));
+        // Exponential base (0.5s, 1s, 2s, 4s) plus <250ms jitter, capped at 4s+.
+        let bare = |a| backoff(a, None).as_millis();
+        assert!((500..750).contains(&bare(1)), "{}", bare(1));
+        assert!((1000..1250).contains(&bare(2)), "{}", bare(2));
+        assert!((2000..2250).contains(&bare(3)), "{}", bare(3));
+        assert!((4000..4250).contains(&bare(4)), "{}", bare(4));
+        // Capped: never exceeds 4s + jitter.
+        assert!(bare(9) < 4250, "{}", bare(9));
+    }
+
+    #[test]
+    fn usage_parsing_both_shapes() {
+        assert_eq!(
+            usage_from_value(
+                &serde_json::json!({"usage": {"input_tokens": 5, "output_tokens": 7}})
+            ),
+            (5, 7)
+        );
+        assert_eq!(
+            usage_from_value(
+                &serde_json::json!({"usage": {"prompt_tokens": 11, "completion_tokens": 13}})
+            ),
+            (11, 13)
+        );
+        // Missing usage -> zeros.
+        assert_eq!(usage_from_value(&serde_json::json!({})), (0, 0));
+    }
+}

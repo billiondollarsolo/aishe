@@ -405,6 +405,7 @@ impl OpenAiProvider {
 }
 
 fn post_with_retry(url: &str, api_key: &str, body: &Value) -> Result<Value, ProviderError> {
+    use super::{backoff, is_retryable_status, retry_after_secs, MAX_RETRIES};
     let mut attempt = 0;
     loop {
         let agent = ureq::AgentBuilder::new()
@@ -423,26 +424,30 @@ fn post_with_retry(url: &str, api_key: &str, body: &Value) -> Result<Value, Prov
                     .map_err(|e| ProviderError::Parse(e.to_string()));
             }
             Err(ureq::Error::Status(status, resp)) => {
-                let message = extract_error_message(resp);
                 if status == 401 {
                     return Err(ProviderError::Api {
                         status,
                         message: format!(
-                            "API key invalid — is your OPENAI_API_KEY set? ({message})"
+                            "API key invalid — is your OPENAI_API_KEY set? ({})",
+                            extract_error_message(resp)
                         ),
                     });
                 }
-                if (status == 429 || status >= 500) && attempt == 0 {
+                if is_retryable_status(status) && attempt < MAX_RETRIES {
+                    let wait = backoff(attempt + 1, retry_after_secs(&resp));
                     attempt += 1;
-                    std::thread::sleep(std::time::Duration::from_secs(2));
+                    std::thread::sleep(wait);
                     continue;
                 }
-                return Err(ProviderError::Api { status, message });
+                return Err(ProviderError::Api {
+                    status,
+                    message: extract_error_message(resp),
+                });
             }
             Err(e) => {
-                if attempt == 0 {
+                if attempt < MAX_RETRIES {
                     attempt += 1;
-                    std::thread::sleep(std::time::Duration::from_secs(2));
+                    std::thread::sleep(backoff(attempt, None));
                     continue;
                 }
                 return Err(ProviderError::Http(e.to_string()));
