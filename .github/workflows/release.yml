@@ -164,9 +164,13 @@ jobs:
           gzip -9 -n -f dist/man/aishe.1
 
       - name: Install nfpm
-        uses: taiki-e/install-action@v2
-        with:
-          tool: nfpm
+        run: |
+          # Official nfpm apt repo (nfpm is a Go tool, not a cargo crate, so the
+          # generic install actions do not carry it).
+          echo 'deb [trusted=yes] https://repo.goreleaser.com/apt/ /' \
+            | sudo tee /etc/apt/sources.list.d/goreleaser.list
+          sudo apt-get update
+          sudo apt-get install -y nfpm
 
       - name: Build .deb and .rpm packages
         run: |
