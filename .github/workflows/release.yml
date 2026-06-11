@@ -3,6 +3,14 @@ name: Release
 on:
   push:
     tags: ["v*"]
+  # Allow cutting a release without pushing a tag (the release step creates the
+  # tag from this input). Useful where tag pushes are restricted.
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to release, without the leading v (e.g. 0.1.0)"
+        required: true
+        default: "0.1.0"
 
 permissions:
   contents: write
@@ -41,6 +49,18 @@ jobs:
             builder: native
     steps:
       - uses: actions/checkout@v4
+
+      - name: Determine version and tag
+        id: ver
+        shell: bash
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            v="${{ inputs.version }}"
+          else
+            v="${GITHUB_REF_NAME#v}"
+          fi
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+          echo "tag=v$v" >> "$GITHUB_OUTPUT"
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -89,6 +109,7 @@ jobs:
       - name: Attach tarball to GitHub Release
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ steps.ver.outputs.tag }}
           files: |
             aishe-${{ matrix.target }}.tar.gz
             aishe-${{ matrix.target }}.tar.gz.sha256
@@ -100,6 +121,18 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
+      - name: Determine version and tag
+        id: ver
+        shell: bash
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            v="${{ inputs.version }}"
+          else
+            v="${GITHUB_REF_NAME#v}"
+          fi
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+          echo "tag=v$v" >> "$GITHUB_OUTPUT"
 
       - name: Download x86_64 binary
         uses: actions/download-artifact@v4
@@ -123,7 +156,7 @@ jobs:
           dist/amd64/aishe completions zsh  > dist/completions/_aishe
           dist/amd64/aishe completions fish > dist/completions/aishe.fish
           sudo apt-get update && sudo apt-get install -y help2man
-          version="${GITHUB_REF_NAME#v}"
+          version="${{ steps.ver.outputs.version }}"
           help2man --no-info --no-discard-stderr \
             --name "natural-language-aware shell" \
             --version-string "aishe $version" \
@@ -137,7 +170,7 @@ jobs:
 
       - name: Build .deb and .rpm packages
         run: |
-          version="${GITHUB_REF_NAME#v}"
+          version="${{ steps.ver.outputs.version }}"
           for arch in amd64 arm64; do
             for pkger in deb rpm; do
               VERSION="$version" ARCH="$arch" BINARY="dist/$arch/aishe" \
@@ -150,6 +183,7 @@ jobs:
       - name: Attach packages to GitHub Release
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ steps.ver.outputs.tag }}
           files: |
             dist/*.deb
             dist/*.rpm
