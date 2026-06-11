@@ -811,6 +811,10 @@ fn repl(
     // the dirty/ahead-behind/stash markers are computed off-thread and cached, so
     // a slow or huge repo never blocks the prompt (markers lag by one prompt).
     let vcs = aishe::prompt::VcsCache::new();
+    // Consecutive terminal read errors. A transient one (commonly reedline's
+    // cursor-position DSR query timing out over SSH, tmux, or screen) must not
+    // end the session; we re-prompt and only give up if it keeps happening.
+    let mut read_errs = 0u32;
 
     loop {
         // Report any background jobs that finished since the last prompt.
@@ -847,6 +851,7 @@ fn repl(
         let sig = line_editor.read_line(&prompt);
         match sig {
             Ok(Signal::Success(buffer)) => {
+                read_errs = 0;
                 // The line is submitted; don't let the ghost worker predict for it.
                 ghost.reset();
                 let line = buffer.trim();
@@ -884,6 +889,7 @@ fn repl(
             }
             Ok(Signal::CtrlC) => {
                 // Clear the line and re-prompt.
+                read_errs = 0;
                 continue;
             }
             Ok(Signal::CtrlD) => {
@@ -891,8 +897,20 @@ fn repl(
                 return Ok(executor.last_exit as u8);
             }
             Err(e) => {
-                eprintln!("aishe: input error: {e}");
-                return Ok(1);
+                // A transient terminal read failure (typically the cursor-position
+                // DSR query timing out over SSH/tmux/screen) must not kill the
+                // shell. Warn and re-prompt; give up only after several in a row,
+                // so a genuinely dead terminal still exits instead of hot-looping.
+                read_errs += 1;
+                if read_errs >= 5 {
+                    eprintln!("aishe: too many input errors ({e}); exiting");
+                    return Ok(1);
+                }
+                eprintln!(
+                    "{}",
+                    format!("aishe: input glitch ({e}); re-prompting").dim()
+                );
+                continue;
             }
         }
     }

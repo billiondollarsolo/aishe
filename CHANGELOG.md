@@ -6,6 +6,14 @@ breaking changes can land in any release.
 
 ## [Unreleased]
 
+### Fixed
+- **Reedline front-end no longer exits after one command on some terminals.** A
+  transient terminal read error — most often reedline's cursor-position (DSR)
+  query timing out over SSH, tmux, or screen — was treated as fatal, so aishe
+  would drop back to the parent shell after running a single command. Such an
+  error is now non-fatal: aishe warns and re-prompts, giving up only after
+  several consecutive failures (a genuinely dead terminal). See `src/main.rs`.
+
 ## [0.1.1] - 2026-06-11
 
 ### Added
