@@ -4,7 +4,7 @@
 # Driven by the release workflow (.github/workflows/release.yml), which sets the
 # templated environment variables and runs, per arch and packager:
 #
-#   VERSION=0.2.0 ARCH=amd64 BINARY=dist/amd64/aishe \
+#   VERSION=0.1.0 ARCH=amd64 BINARY=dist/amd64/aishe \
 #     nfpm package --config nfpm.yaml --packager deb --target dist/
 #
 # It expects the shell completions and man page to have been generated into
