@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/aishe-logo.png" alt="aishe" width="420">
+</p>
+
 # aishe
 
 A natural-language-aware shell. `aishe` behaves like zsh for real commands, and
