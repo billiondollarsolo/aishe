@@ -6,6 +6,8 @@ breaking changes can land in any release.
 
 ## [Unreleased]
 
+## [0.1.6] - 2026-06-11
+
 ### Changed
 - **Yolo mode is much quieter by default.** It no longer dumps every command's
   full output to the terminal; instead it shows a compact per-step result (the
