@@ -7,6 +7,11 @@ breaking changes can land in any release.
 ## [Unreleased]
 
 ### Added
+- **`install.sh` ensures zsh.** Because aishe is most robust driving your real
+  zsh in a PTY, the install script now installs zsh via the system package
+  manager (apt/dnf/yum/zypper/pacman/apk/brew) when it is missing. Best effort
+  and never fatal (aishe falls back to the reedline front-end); opt out with
+  `AISHE_SKIP_ZSH=1`.
 - **Branded prompt in the zsh-PTY front-end.** When driving your real zsh in a
   PTY, aishe now shows its own prompt (`<cwd> <glyph>`, with the glyph reflecting
   the mode (❯ suggest, » auto, ⚡ yolo), colored green/red by the last exit code,
