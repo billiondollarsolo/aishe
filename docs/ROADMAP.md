@@ -90,9 +90,10 @@ is tagged `(reedline)` so we can re-scope quickly.
 - [~] **Spelling correction** (`CORRECT`, `correct`) and **named dirs**
   (`~proj`, `[named_dirs]`) shipped, along with `AUTO_PUSHD` and `cdpath`. Global
   and suffix aliases still open. (reedline)
-- [ ] **Completion depth**: closer to zsh compsys, with descriptions for
-  arbitrary commands, file completion with glob qualifiers, and completion from
-  man pages or `--help`. (reedline)
+- [~] **Completion depth**: flag/option completion from a command's `--help`
+  (parsed, cached, time-limited, with descriptions in the menu) shipped
+  (`complete_flags`). Glob qualifiers and richer subcommand discovery still open.
+  (reedline)
 
 ## 4. Test surface not yet exercised
 

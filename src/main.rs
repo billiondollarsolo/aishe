@@ -678,7 +678,9 @@ fn repl(
     let mut line_editor = Reedline::create()
         .with_history(history)
         .with_completer(Box::new(
-            AisheCompleter::new(cache.clone()).with_slash_commands(commands.list()),
+            AisheCompleter::new(cache.clone())
+                .with_slash_commands(commands.list())
+                .with_help_completion(config.aishe.complete_flags),
         ))
         .with_menu(ReedlineMenu::EngineCompleter(completion_menu))
         .with_menu(ReedlineMenu::HistoryMenu(history_menu))

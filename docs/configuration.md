@@ -42,6 +42,7 @@ which persist your choice back to the file.
 | `hist_ignore` | array | `[]` | Glob patterns of commands to keep out of history (`HISTIGNORE`), e.g. `["ls", "cd *"]`. |
 | `cdpath` | array | `[]` | Extra base dirs searched by `cd <name>` (`CDPATH`); falls back to `$CDPATH`. |
 | `correct` | bool | `false` | zsh `CORRECT`: offer to fix a near-miss command word instead of routing it to the LLM. |
+| `complete_flags` | bool | `true` | Tab-complete a command's flags from its `--help` (parsed, cached, time-limited) when the word starts with `-` (reedline). |
 
 ## `[named_dirs]` section (optional)
 

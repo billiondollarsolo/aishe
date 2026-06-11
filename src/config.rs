@@ -187,6 +187,10 @@ pub struct AisheConfig {
     /// language. Off by default.
     #[serde(default)]
     pub correct: bool,
+    /// Complete a command's flags from its `--help` output when you tab-complete a
+    /// word starting with `-` (parsed, cached, time-limited). On by default.
+    #[serde(default = "default_true")]
+    pub complete_flags: bool,
     /// Structured-output strategy for suggest mode: "schema" (strict JSON schema,
     /// default), "json" (any JSON object), or "prompt" (unconstrained).
     #[serde(default = "default_structured")]
@@ -315,6 +319,7 @@ impl Default for AisheConfig {
             hist_ignore: Vec::new(),
             cdpath: Vec::new(),
             correct: false,
+            complete_flags: true,
             structured: default_structured(),
             stream: false,
             show_usage: true,

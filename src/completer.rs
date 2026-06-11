@@ -13,11 +13,41 @@
 //! aishe's parsing. It's an editor convenience: the command still runs via the
 //! shell.
 
+use std::collections::HashMap;
 use std::path::PathBuf;
+use std::time::Duration;
 
 use reedline::{Completer, Span, Suggestion};
 
 use crate::dispatcher::CommandCache;
+
+/// Commands we never run `--help` on for flag completion: wrappers that would
+/// either prompt (sudo) or run the wrapped command, plus shells.
+const HELP_WRAPPERS: &[&str] = &[
+    "sudo", "doas", "env", "nohup", "nice", "time", "timeout", "watch", "xargs", "command", "sh",
+    "bash", "zsh",
+];
+
+/// Tools whose first non-flag argument is a subcommand, so flag help comes from
+/// `<tool> <sub> --help` rather than `<tool> --help`.
+const HELP_MULTI: &[&str] = &[
+    "git",
+    "cargo",
+    "docker",
+    "npm",
+    "pnpm",
+    "yarn",
+    "kubectl",
+    "go",
+    "rustup",
+    "apt",
+    "apt-get",
+    "systemctl",
+    "brew",
+    "gh",
+    "pip",
+    "pip3",
+];
 
 /// Upper bound on suggestions returned for a single Tab.
 const MAX_SUGGESTIONS: usize = 500;
@@ -103,6 +133,11 @@ pub struct AisheCompleter {
     cache: CommandCache,
     /// User-defined slash-commands (name, description) for `/` completion.
     slash_commands: Vec<(String, String)>,
+    /// Complete flags from a command's `--help` output.
+    complete_flags: bool,
+    /// Per-command-key cache of parsed `(flag, description)` pairs, so `--help`
+    /// runs at most once per command during a session.
+    help: HashMap<String, Vec<(String, String)>>,
 }
 
 impl AisheCompleter {
@@ -110,6 +145,8 @@ impl AisheCompleter {
         Self {
             cache,
             slash_commands: Vec::new(),
+            complete_flags: true,
+            help: HashMap::new(),
         }
     }
 
@@ -118,6 +155,151 @@ impl AisheCompleter {
         self.slash_commands = cmds;
         self
     }
+
+    /// Enable or disable `--help`-derived flag completion.
+    pub fn with_help_completion(mut self, on: bool) -> Self {
+        self.complete_flags = on;
+        self
+    }
+
+    /// Flags for a command key, cached. Runs `<key> --help` on the first miss.
+    fn flags_for(&mut self, key: &[&str]) -> Vec<(String, String)> {
+        let k = key.join(" ");
+        if let Some(v) = self.help.get(&k) {
+            return v.clone();
+        }
+        let flags = run_help(key);
+        self.help.insert(k, flags.clone());
+        flags
+    }
+
+    /// Complete a `-`/`--` flag from the command's `--help`. `None` when disabled,
+    /// the command is a wrapper, or no flags were parsed.
+    fn help_flag_suggestions(
+        &mut self,
+        seg: &[&str],
+        word: &str,
+        span: Span,
+    ) -> Option<Vec<Suggestion>> {
+        if !self.complete_flags {
+            return None;
+        }
+        let key = help_key(seg)?;
+        let flags = self.flags_for(&key);
+        let matches: Vec<Suggestion> = flags
+            .into_iter()
+            .filter(|(f, _)| f.starts_with(word))
+            .map(|(f, d)| Suggestion {
+                value: f,
+                description: if d.is_empty() {
+                    None
+                } else {
+                    Some(truncate(&d, 60))
+                },
+                span,
+                append_whitespace: true,
+                ..Default::default()
+            })
+            .collect();
+        if matches.is_empty() {
+            None
+        } else {
+            Some(matches)
+        }
+    }
+}
+
+/// The command key to fetch `--help` for: the base command, or `<tool> <sub>` for
+/// a known multi-command tool. `None` for a wrapper that shouldn't be run.
+fn help_key<'a>(seg: &[&'a str]) -> Option<Vec<&'a str>> {
+    let base = *seg.first()?;
+    if HELP_WRAPPERS.contains(&base) {
+        return None;
+    }
+    if HELP_MULTI.contains(&base) {
+        if let Some(sub) = seg.get(1) {
+            if !sub.starts_with('-') {
+                return Some(vec![base, sub]);
+            }
+        }
+    }
+    Some(vec![base])
+}
+
+/// Run `<key> --help` (pagers suppressed, stdin closed, time-limited) and parse
+/// its flags. Best-effort: returns empty on error/timeout, so a slow or
+/// pager-spawning command never freezes Tab.
+fn run_help(key: &[&str]) -> Vec<(String, String)> {
+    if key.is_empty() {
+        return Vec::new();
+    }
+    let parts: Vec<String> = key.iter().map(|s| s.to_string()).collect();
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let out = std::process::Command::new(&parts[0])
+            .args(&parts[1..])
+            .arg("--help")
+            .env("PAGER", "cat")
+            .env("GIT_PAGER", "cat")
+            .env("MANPAGER", "cat")
+            .env("NO_COLOR", "1")
+            .stdin(std::process::Stdio::null())
+            .output();
+        let _ = tx.send(out);
+    });
+    let out = match rx.recv_timeout(Duration::from_millis(600)) {
+        Ok(Ok(o)) => o,
+        _ => return Vec::new(),
+    };
+    let mut text = String::from_utf8_lossy(&out.stdout).into_owned();
+    text.push('\n');
+    text.push_str(&String::from_utf8_lossy(&out.stderr));
+    parse_flags(&text)
+}
+
+/// Parse `(flag, description)` pairs from `--help` / man output. Heuristic: for
+/// each line that (after indentation) starts with `-`, take the option spec up to
+/// the first run of 2+ spaces, pull the `-x`/`--long` tokens from it, and use the
+/// remaining text as the description.
+fn parse_flags(text: &str) -> Vec<(String, String)> {
+    let mut out: Vec<(String, String)> = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    for line in text.lines() {
+        let trimmed = line.trim_start();
+        if !trimmed.starts_with('-') {
+            continue;
+        }
+        let (spec, desc) = match trimmed.find("  ") {
+            Some(i) => (&trimmed[..i], trimmed[i..].trim()),
+            None => (trimmed, ""),
+        };
+        for tok in spec.split([',', ' ', '/', '|', '\t']) {
+            let flag = clean_flag(tok.trim());
+            if !is_flag(&flag) || !seen.insert(flag.clone()) {
+                continue;
+            }
+            out.push((flag, desc.to_string()));
+        }
+    }
+    out
+}
+
+/// Strip an option token down to just the flag, dropping any attached argument
+/// (`=VAL`, `[=VAL]`, `<VAL>`, `(...)`) and trailing punctuation.
+fn clean_flag(tok: &str) -> String {
+    let end = tok.find(['=', '[', '<', '(']).unwrap_or(tok.len());
+    tok[..end]
+        .trim_end_matches([':', '.', ',', ';'])
+        .to_string()
+}
+
+/// A real flag: `-x` or `--long-name` (alphanumerics and dashes only).
+fn is_flag(s: &str) -> bool {
+    if s.len() < 2 || !s.starts_with('-') || s == "--" {
+        return false;
+    }
+    let body = s.trim_start_matches('-');
+    !body.is_empty() && body.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
 }
 
 impl Completer for AisheCompleter {
@@ -151,8 +333,16 @@ impl Completer for AisheCompleter {
         match seg_tokens[0] {
             "aishe" => complete_aishe_meta(&seg_tokens, word, span),
             "cd" | "pushd" | "rmdir" => complete_paths(word, span, true),
-            _ => command_arg_suggestions(&seg_tokens, word, span)
-                .unwrap_or_else(|| complete_paths(word, span, false)),
+            _ => {
+                // A `-`/`--` word: complete the command's flags from its `--help`.
+                if word.starts_with('-') {
+                    if let Some(s) = self.help_flag_suggestions(&seg_tokens, word, span) {
+                        return s;
+                    }
+                }
+                command_arg_suggestions(&seg_tokens, word, span)
+                    .unwrap_or_else(|| complete_paths(word, span, false))
+            }
         }
     }
 }
@@ -490,6 +680,86 @@ mod tests {
         assert_eq!(word_start("git ", 4), 4);
         assert_eq!(word_start("git", 3), 0);
         assert_eq!(word_start("", 0), 0);
+    }
+
+    #[test]
+    fn parses_help_flags() {
+        let help = "\
+Usage: tool [OPTIONS]
+
+Options:
+  -v, --verbose         Use verbose output
+      --version         Print version info
+  -o, --output <FILE>   Write to FILE
+  -n=NUM                Limit to NUM items
+  -h, --help            Print help
+not a flag line
+  --                    end of options
+";
+        let flags = parse_flags(help);
+        let names: Vec<&str> = flags.iter().map(|(f, _)| f.as_str()).collect();
+        assert!(names.contains(&"--verbose"));
+        assert!(names.contains(&"-v"));
+        assert!(names.contains(&"--version"));
+        assert!(names.contains(&"--output"));
+        assert!(names.contains(&"-o"));
+        assert!(names.contains(&"-n"));
+        assert!(names.contains(&"--help"));
+        // The bare `--` and the prose line are not flags.
+        assert!(!names.contains(&"--"));
+        // Descriptions are captured (after the 2+ space gap).
+        let verbose = flags.iter().find(|(f, _)| f == "--verbose").unwrap();
+        assert_eq!(verbose.1, "Use verbose output");
+        // Each flag appears once.
+        assert_eq!(names.iter().filter(|n| **n == "-v").count(), 1);
+    }
+
+    #[test]
+    fn flag_recognition_and_cleanup() {
+        assert!(is_flag("-v"));
+        assert!(is_flag("--long-name"));
+        assert!(!is_flag("-"));
+        assert!(!is_flag("--"));
+        assert!(!is_flag("notaflag"));
+        assert!(!is_flag("-->"));
+        assert_eq!(clean_flag("--output=FILE"), "--output");
+        assert_eq!(clean_flag("--dir<PATH>"), "--dir");
+        assert_eq!(clean_flag("--verbose."), "--verbose");
+    }
+
+    #[test]
+    fn completes_flags_from_real_help() {
+        // Gated on `grep` being available (it is on Linux/macOS CI).
+        if std::process::Command::new("grep")
+            .arg("--help")
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false)
+        {
+            let mut c = AisheCompleter::new(CommandCache::new());
+            let line = "grep --ignore";
+            let sugg = c.complete(line, line.len());
+            let vals = values(&sugg);
+            assert!(
+                vals.iter().any(|v| v == "--ignore-case"),
+                "expected --ignore-case in {vals:?}"
+            );
+            // The cache is populated so a second call does not re-run --help.
+            assert!(c.help.contains_key("grep"));
+        }
+    }
+
+    #[test]
+    fn help_key_handles_wrappers_and_subcommands() {
+        assert_eq!(help_key(&["ls"]), Some(vec!["ls"]));
+        assert_eq!(help_key(&["git", "commit"]), Some(vec!["git", "commit"]));
+        // A flag after a multi-tool: key is just the base.
+        assert_eq!(help_key(&["git", "--version"]), Some(vec!["git"]));
+        // Wrappers are never run.
+        assert_eq!(help_key(&["sudo", "rm"]), None);
+        assert_eq!(help_key(&[] as &[&str]), None);
     }
 
     #[test]

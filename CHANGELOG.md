@@ -7,6 +7,12 @@ breaking changes can land in any release.
 ## [Unreleased]
 
 ### Added
+- **Flag completion from `--help` (reedline).** Tab-completing a word that starts
+  with `-` now offers the command's flags, parsed from its `--help` output (or
+  `<tool> <sub> --help` for git/cargo/docker/...), with the descriptions shown in
+  the menu. Results are cached per command and the `--help` call is time-limited
+  and pager-suppressed, so a slow or pager-spawning command never freezes Tab;
+  wrappers like `sudo` are never run. On by default (`complete_flags`).
 - **Background-job control in the reedline front-end.** A trailing `&` now
   backgrounds a command, tracked in a job table so `jobs`, `fg`, `bg`, `wait`, and
   `disown` work; finished jobs are reported before the next prompt as `[n]+ Done`

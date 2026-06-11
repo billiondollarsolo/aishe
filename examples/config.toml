@@ -88,6 +88,11 @@ hist_ignore_space = false   # don't save commands that start with a space
 # as a natural-language request.
 correct = false
 
+# Tab-complete a command's flags from its `--help` output (parsed, cached, and
+# time-limited) when the word you are completing starts with `-`. For example
+# `grep --<Tab>` offers `--ignore-case`, `--color`, ... with descriptions.
+complete_flags = true
+
 # Custom reedline left prompt. Placeholders: {cwd} {mode} {model} {exit}.
 # Leave commented out for the default (just the cwd).
 # prompt_format = "[{mode}] {cwd}"
