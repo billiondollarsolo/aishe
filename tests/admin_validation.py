@@ -439,6 +439,11 @@ DISPATCH_SHELL = [
     "/ghost",
     "/skills",
     "/help",
+    "jobs",                                    # job-control builtins (reedline)
+    "fg",
+    "bg",
+    "wait",
+    "disown",
     "tar --version",
     "awk 'BEGIN{print 1}'",
     "sed -n '1p' a.txt",
@@ -648,6 +653,9 @@ correct = true
 file_tools = false
 web_tool = false
 yolo_plan = true
+project_context = false
+yolo_confirm = "writes"
+yolo_sandbox = true
 max_yolo_iterations = 5
 yolo_confirm_dangerous = false
 
@@ -655,6 +663,9 @@ yolo_confirm_dangerous = false
 base_url = "https://api.groq.com/openai"
 api_key_env = "GROQ_API_KEY"
 model = "openai/gpt-oss-120b"
+
+[mcp_servers.remote]
+url = "https://mcp.example.com/mcp"
 
 [logging]
 enabled = false
@@ -906,6 +917,9 @@ def main():
         "file_tools = false",
         "web_tool = false",
         "yolo_plan = true",
+        "project_context = false",
+        'yolo_confirm = "writes"',
+        "yolo_sandbox = true",
         "cache = false",
         "cache_ttl_secs = 120",
         "budget_usd = 1.5",
@@ -916,6 +930,8 @@ def main():
         "[pricing.",
         "[named_dirs]",
         'proj = "/home/me/projects"',
+        "[mcp_servers.remote]",
+        'url = "https://mcp.example.com/mcp"',
     ]
     for token in expected:
         add(f"config: {token}", token in out, "" if token in out else f"(missing from /config)")
@@ -939,7 +955,7 @@ def main():
 
     # 6d. New read-only / toggle meta commands behave in `-c` (no crash, not NL).
     report.append("\n**New meta commands (`-c`):**\n")
-    for meta in ["/usage", "/reset", "/ghost", "/plan", "/cache", "/help"]:
+    for meta in ["/usage", "/reset", "/ghost", "/plan", "/cache", "/sandbox", "/help"]:
         rc, out, err = run([BIN, "-c", meta], env_local, cwd=fixture)
         ok = rc == 0 and "LLM not configured" not in err
         add(f"meta: {meta}", ok, "" if ok else f"(rc={rc} err={err.strip()[:60]!r})")

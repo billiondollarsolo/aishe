@@ -6,7 +6,33 @@ breaking changes can land in any release.
 
 ## [Unreleased]
 
+### Added
+- **Background-job control in the reedline front-end.** A trailing `&` now
+  backgrounds a command, tracked in a job table so `jobs`, `fg`, `bg`, `wait`, and
+  `disown` work; finished jobs are reported before the next prompt as `[n]+ Done`
+  / `Exit N`. Full TTY job control (Ctrl-Z suspend, process groups) remains the
+  zsh-PTY front-end's native domain.
+- **Yolo confirmation tiers and a policy sandbox.** `yolo_confirm` chooses when
+  the loop pauses to confirm a command: `never`, `dangerous` (only safety-flagged,
+  the default), `writes` (also any state-modifying command), or `all` (the legacy
+  `yolo_confirm_dangerous` boolean still works when `yolo_confirm` is unset).
+  `yolo_sandbox` (off by default, `aishe sandbox on`) refuses a command that
+  reaches the network or writes outside the working tree, feeding the reason back
+  to the model. Best-effort policy, not a kernel sandbox. See `src/sandbox.rs`.
+- **MCP Streamable HTTP transport.** MCP servers can now be reached over HTTP in
+  addition to stdio: an `[mcp_servers.<name>]` entry with a `url` (and optional
+  `headers`) connects over HTTP, parsing a JSON or SSE response and carrying the
+  `Mcp-Session-Id` across calls. stdio servers are unchanged. See docs/mcp.md.
+- **Per-project `.aishe/context.md`.** When building the model context, aishe
+  includes a `.aishe/context.md` found at or above the cwd (nearest wins, capped
+  at 4000 chars), so repo-specific conventions reach the model without repeating
+  them. On by default (`project_context`). See docs/project-context.md.
+
 ### Fixed
+- **A test could wipe `/tmp`.** `named_dir_expansion` canonicalized its temp dir
+  before creating it; the failed canonicalize fell back to the temp root, so the
+  test's cleanup ran `remove_dir_all` on the whole temp directory. It now creates
+  the dir first.
 - **More dispatcher edge cases no longer misroute to the LLM** (found by the
   expanded validation harness): scalar assignments with quoted or
   command-substituted values that contain spaces (`v='a b'`, `x=$(cmd args)`),

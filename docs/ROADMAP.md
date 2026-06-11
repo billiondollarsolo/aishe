@@ -41,17 +41,18 @@ is tagged `(reedline)` so we can re-scope quickly.
   (`fetch_url`, `web_tool`) ship on by default (`src/tools.rs`). The **MCP
   client** (`src/mcp.rs`, `[mcp_servers]`, docs/mcp.md) connects stdio MCP servers
   over JSON-RPC, lists their tools, and proxies `tools/call`, namespaced
-  `mcp__<server>__<tool>` so the MCP ecosystem plugs into the yolo loop. Done.
-  (Streamable-HTTP transport and consuming MCP prompts/resources are possible
-  follow-ups.)
+  `mcp__<server>__<tool>` so the MCP ecosystem plugs into the yolo loop. Both
+  **stdio** and **Streamable HTTP** (`url`/`headers`) transports ship. Done.
+  (Consuming MCP prompts/resources is a possible follow-up.)
 - [x] **Dry-run or plan preview for yolo.** With `yolo_plan` (`aishe plan on`),
   the model lays out its intended steps and the user approves before the loop
   runs; the approved plan is threaded into the run. Interactive only. Done.
 - [x] **Response caching.** Identical suggest-mode (prompt, context) responses are
   served from a short-lived in-memory cache (`cache`/`cache_ttl_secs`, on by
   default), so repeats are instant and free. See `src/cache.rs`. Done.
-- [ ] **Per-project context.** Optional `.aishe/context.md` fed to the model for
-  repo-specific conventions. Later.
+- [x] **Per-project context.** A `.aishe/context.md` found at or above the cwd is
+  fed to the model for repo-specific conventions (`project_context`, on by
+  default, capped at 4000 chars). See docs/project-context.md. Done.
 
 ## 2. Trust and safety, quick wins first
 
@@ -67,14 +68,17 @@ is tagged `(reedline)` so we can re-scope quickly.
   benign look-alikes. The gate was hardened to strip leading
   wrappers/assignments and unquote `rm` targets, plus new `wipefs`/`shred`/
   `git clean -f` rules. Done.
-- [ ] **Sandbox or confirm tiers.** Optional restricted exec for yolo (no
-  network, scratch dir) with graduated confirmation. Later.
+- [~] **Sandbox or confirm tiers.** Graduated confirmation (`yolo_confirm`:
+  never/dangerous/writes/all) and a policy sandbox (`yolo_sandbox`: refuse network
+  access and out-of-tree writes) ship (`src/sandbox.rs`, docs/safety.md). A true
+  kernel/scratch-dir sandbox is still open.
 
 ## 3. zsh parity (mostly reedline)
 
-- [ ] **Job control**: `cmd &`, `jobs`, `fg`, `bg`, `Ctrl-Z`/`SIGTSTP`,
-  `disown`, `wait`. (reedline) The single biggest parity gap. Later (re-scope
-  first).
+- [~] **Job control**: background jobs ship in the reedline front-end - a trailing
+  `&` backgrounds a command, with `jobs`/`fg`/`bg`/`wait`/`disown` and a
+  `[n]+ Done` notice before the prompt. `Ctrl-Z`/`SIGTSTP` foreground suspension
+  and process groups remain the zsh-PTY front-end's native domain. (reedline)
 - [~] **Richer history**: dedup (`HIST_IGNORE_DUPS`), ignore-space, and
   `HISTIGNORE` glob patterns shipped (`hist_ignore_dups`/`hist_ignore_space`/
   `hist_ignore`). Timestamps and cross-session sharing still open. (reedline)

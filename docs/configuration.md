@@ -24,9 +24,12 @@ which persist your choice back to the file.
 | `provider` | string | `anthropic` | Which provider block to use: `anthropic` or `openai`. |
 | `front_end` | string | `auto` | Input loop: `auto`, `reedline`, or `zsh-pty`. |
 | `edit_mode` | string | `emacs` | reedline keymap: `emacs` or `vi`. |
-| `yolo_confirm_dangerous` | bool | `true` | In yolo, confirm commands the safety gate flags. |
+| `yolo_confirm_dangerous` | bool | `true` | In yolo, confirm commands the safety gate flags. Honored only when `yolo_confirm` is unset. |
+| `yolo_confirm` | string | `dangerous` | When the yolo loop confirms a command: `never`, `dangerous`, `writes`, or `all`. See [Safety gate](safety.md). |
+| `yolo_sandbox` | bool | `false` | Policy sandbox: refuse yolo commands that reach the network or write outside the working tree. Toggle with `aishe sandbox`. |
 | `max_yolo_iterations` | integer | `10` | Maximum tool-use steps for one yolo request. |
 | `yolo_plan` | bool | `false` | Plan-first dry run: the model shows its intended steps and you approve before the loop runs (interactive only). Toggle with `aishe plan`. |
+| `project_context` | bool | `true` | Include a per-project `.aishe/context.md` (at or above the cwd) in the model context. See [Per-project context](project-context.md). |
 | `file_tools` | bool | `true` | Offer the built-in `read_file`/`write_file`/`edit_file`/`list_dir` tools to yolo. |
 | `web_tool` | bool | `true` | Offer the built-in `fetch_url` tool to yolo (read web pages/docs; HTML stripped to text, size-capped). |
 | `show_right_prompt` | bool | `true` | Show "model and mode" on the right (reedline). |
@@ -119,15 +122,21 @@ Model Context Protocol servers whose tools are offered to the yolo loop, keyed b
 a short name used to namespace them (`mcp__<name>__<tool>`):
 
 ```toml
-[mcp_servers.filesystem]
+[mcp_servers.filesystem]            # stdio server
 command = "npx"
 args = ["-y", "@modelcontextprotocol/server-filesystem", "/home/me/projects"]
 # env = { KEY = "value" }   # extra environment for the server process
 # enabled = false           # keep configured but turned off (default true)
+
+[mcp_servers.remote]                # HTTP server (Streamable HTTP)
+url = "https://mcp.example.com/mcp"
+# headers = { Authorization = "Bearer ..." }
 ```
 
-Per-server keys: `command` (required), `args`, `env`, `enabled`. List connected
-tools with `aishe mcp`. See [MCP servers](mcp.md).
+Per-server keys: `command`/`args`/`env` (stdio), `url`/`headers` (HTTP), and
+`enabled`. A server with a `url` connects over HTTP; otherwise it is a stdio
+server launched from `command`. List connected tools with `aishe mcp`. See
+[MCP servers](mcp.md).
 
 ## `[theme]` (optional)
 

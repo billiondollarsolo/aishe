@@ -25,7 +25,20 @@ front_end = "auto"
 edit_mode = "emacs"
 
 # In yolo mode, confirm commands the safety gate flags as dangerous.
+# (Honored only when `yolo_confirm` below is left at its default.)
 yolo_confirm_dangerous = true
+
+# When the yolo loop pauses to confirm a command:
+#   never     = run everything
+#   dangerous = only safety-gate-flagged commands  (default)
+#   writes    = also any state-modifying command
+#   all       = every command
+yolo_confirm = "dangerous"
+
+# Policy sandbox for yolo: refuse commands that reach the network or write outside
+# the working tree (the reason is fed back to the model). Best-effort, not a
+# kernel sandbox. Toggle live with `aishe sandbox on`.
+yolo_sandbox = false
 
 # Maximum tool-use iterations for a single yolo request.
 max_yolo_iterations = 10
@@ -110,6 +123,10 @@ cache_ttl_secs = 300
 # context block sent to the model. Recommended on.
 redact_secrets = true
 
+# Include a per-project .aishe/context.md (found at or above the cwd) in the model
+# context, so repo-specific conventions reach the model. Capped at 4000 chars.
+project_context = true
+
 # Inline AI ghost-text autosuggestion in the reedline front-end (predicts the
 # rest of your command as you type; accept with the Right arrow). Off by default
 # because it spends tokens as you type. Toggle live with `aishe ghost on`.
@@ -161,6 +178,11 @@ model = "gpt-4o"
 # args = ["mcp-server-git", "--repository", "/home/me/projects/aishe"]
 # env = { GIT_PAGER = "cat" }
 # enabled = true
+
+# An HTTP (Streamable HTTP) MCP server uses `url` instead of `command`:
+# [mcp_servers.remote]
+# url = "https://mcp.example.com/mcp"
+# headers = { Authorization = "Bearer ..." }
 
 # ---------------------------------------------------------------------------
 # Optional: per-model price overrides for cost estimates (USD per 1M tokens).
