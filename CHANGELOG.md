@@ -6,6 +6,17 @@ breaking changes can land in any release.
 
 ## [Unreleased]
 
+### Added
+- **Force a line to the AI with a `?` or `#` prefix.** Routing is by command
+  name, so a question whose first word is a real command (`who`, `which`, `find`,
+  `time`, `test`, `make`) would otherwise run that command. Starting a line with
+  `?` or `#` now forces it to the AI in both front-ends. In the zsh-PTY front-end
+  this is an `accept-line` wrapper that strips the sigil before zsh parses it (so
+  the shell's comment/glob rules never apply) and routes it in the main shell;
+  the existing force-NL key (Alt-Enter / `AISHE_NL_KEY`) uses the same path. The
+  zsh hook's natural-language routing was refactored to share one code path
+  between the handler, the key, and the sigil.
+
 ## [0.1.3] - 2026-06-11
 
 ### Added

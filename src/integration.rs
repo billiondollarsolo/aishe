@@ -45,16 +45,17 @@ pub const SUPPORTED: &[&str] = &["zsh", "bash"];
 /// for zsh behavior so the standalone `init` snippet and the PTY front-end never
 /// drift apart.
 pub const ZSH_HOOK: &str = r#": ${AISHE_PENDING_FILE:=${TMPDIR:-/tmp}/aishe-pending-$$}
+: ${AISHE_FORCE_FILE:=${TMPDIR:-/tmp}/aishe-force-$$}
 
-# Runs in a SUBSHELL (zsh forks for command-not-found), so it cannot use
-# `print -z`/`cd`/`export` directly — it writes the action+command to a temp
-# file that survives the subshell; aishe_precmd (main shell) acts on it.
-command_not_found_handler() {
-  local line="${(j: :)@}"
+# Route one natural-language line according to AISHE_MODE. suggest/auto stage a
+# command in AISHE_PENDING_FILE (acted on by aishe_precmd in the MAIN shell,
+# where print -z / cd / export work); yolo runs its loop inline.
+_aishe_handle_nl() {
+  local line="$1"
+  [[ -z "$line" ]] && return
   case "${AISHE_MODE:-suggest}" in
     yolo)
       command aishe --yolo-line "$line" < /dev/tty > /dev/tty 2>&1
-      return 0
       ;;
     auto)
       local cmd rc
@@ -68,19 +69,33 @@ command_not_found_handler() {
           printf 'fill\n%s\n' "$cmd" > "$AISHE_PENDING_FILE"
         fi
       fi
-      return 0
       ;;
     *)
       local cmd
       cmd="$(command aishe --suggest-line "$line" 2> /dev/tty)"
       [[ -n "$cmd" ]] && printf 'fill\n%s\n' "$cmd" > "$AISHE_PENDING_FILE"
-      return 0
       ;;
   esac
 }
 
-# Runs in the MAIN shell before each prompt: act on a pending command.
+# Unknown command: zsh forks a SUBSHELL for this, so it stages via the temp file.
+command_not_found_handler() {
+  _aishe_handle_nl "${(j: :)@}"
+  return 0
+}
+
+# Stage a line for the AI; the next aishe_precmd (MAIN shell) routes it.
+_aishe_force_nl() { printf '%s' "$1" > "$AISHE_FORCE_FILE"; }
+
+# Runs in the MAIN shell before each prompt: route a forced-NL line (from the
+# sigil or key), then act on a staged command.
 aishe_precmd() {
+  if [[ -f "$AISHE_FORCE_FILE" ]]; then
+    local fline
+    fline="$(cat "$AISHE_FORCE_FILE")"
+    command rm -f "$AISHE_FORCE_FILE"
+    _aishe_handle_nl "$fline"
+  fi
   [[ -f "$AISHE_PENDING_FILE" ]] || return
   local action cmd
   action="$(head -n 1 "$AISHE_PENDING_FILE")"
@@ -93,24 +108,46 @@ aishe_precmd() {
   esac
 }
 
-# Force-NL: treat the current line as natural language even if it's a valid
+# Force-NL key: send the current line to the AI even if it starts with a real
 # command. Default key Alt-Enter; override with AISHE_NL_KEY (a zsh bindkey seq).
 aishe-nl-widget() {
   emulate -L zsh
-  local line="$BUFFER"
-  [[ -z "$line" ]] && return
-  local cmd
-  cmd="$(command aishe --suggest-line "$line" 2> /dev/tty)"
-  if [[ -n "$cmd" ]]; then
-    BUFFER="$cmd"
-    CURSOR=${#BUFFER}
+  [[ -z "$BUFFER" ]] && return
+  _aishe_force_nl "$BUFFER"
+  BUFFER=""
+  zle .accept-line
+}
+
+# accept-line wrapper: a line starting with `?` or `#` is natural language. Strip
+# the sigil here (before zsh parses it, so the shell's comment/glob rules never
+# apply) and force it to the AI; otherwise behave as before, chaining whatever
+# accept-line widget was already installed so plugins keep working.
+aishe-accept-line() {
+  emulate -L zsh
+  if [[ "$BUFFER" == [#?]* ]]; then
+    local body="${BUFFER#[#?]}"
+    body="${body# }"
+    if [[ -n "$body" ]]; then
+      _aishe_force_nl "$body"
+      BUFFER=""
+    fi
   fi
+  zle "${_aishe_orig_accept_line:-.accept-line}"
 }
 if [[ -o interactive ]]; then
   autoload -Uz add-zsh-hook
   add-zsh-hook precmd aishe_precmd
   zle -N aishe-nl-widget
   bindkey "${AISHE_NL_KEY:-^[^M}" aishe-nl-widget
+  # Wrap accept-line once, chaining any existing widget (plugin-friendly).
+  if [[ "${widgets[accept-line]}" != "user:aishe-accept-line" ]]; then
+    case "${widgets[accept-line]}" in
+      user:*) zle -A accept-line aishe-orig-accept-line
+              _aishe_orig_accept_line="aishe-orig-accept-line" ;;
+      *)      _aishe_orig_accept_line=".accept-line" ;;
+    esac
+    zle -N accept-line aishe-accept-line
+  fi
 fi
 "#;
 
@@ -272,6 +309,20 @@ mod tests {
         assert!(s.contains("AISHE_PENDING_FILE"));
         assert!(s.contains("aishe_precmd"));
         assert!(s.contains("add-zsh-hook precmd aishe_precmd"));
+    }
+
+    #[test]
+    fn zsh_script_has_nl_sigil() {
+        // A leading `?` or `#` forces a line to the AI via an accept-line wrapper
+        // that strips the sigil before zsh parses it, staged through the force
+        // file and routed in the main shell.
+        let s = script("zsh").unwrap();
+        assert!(s.contains("aishe-accept-line"));
+        assert!(s.contains("[#?]*")); // sigil match on the buffer
+        assert!(s.contains("AISHE_FORCE_FILE"));
+        assert!(s.contains("_aishe_handle_nl"));
+        // accept-line is wrapped plugin-friendly (chains the prior widget).
+        assert!(s.contains("zle -N accept-line aishe-accept-line"));
     }
 
     #[test]

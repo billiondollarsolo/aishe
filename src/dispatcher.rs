@@ -196,8 +196,12 @@ impl CommandCache {
 pub fn dispatch(line: &str, cache: &CommandCache) -> Dispatch {
     let trimmed = line.trim();
 
-    // 1. Forced LLM.
-    if let Some(rest) = trimmed.strip_prefix('?') {
+    // 1. Forced LLM: a leading `?` or `#` sends the line to the AI even if it
+    //    starts with a real command (e.g. `? who was the first man on the moon`).
+    if let Some(rest) = trimmed
+        .strip_prefix('?')
+        .or_else(|| trimmed.strip_prefix('#'))
+    {
         return Dispatch::NaturalLanguage(rest.trim().to_string());
     }
     // 2. Forced shell (safety-exempt).

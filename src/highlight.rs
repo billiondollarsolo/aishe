@@ -32,8 +32,9 @@ impl Highlighter for CmdHighlighter {
 
         // Leading forced-mode sigil.
         match chars[0] {
-            '?' => {
-                push(&mut out, self.theme.sigil_nl.to_nu_style(), "?");
+            '?' | '#' => {
+                let sigil = chars[0].to_string();
+                push(&mut out, self.theme.sigil_nl.to_nu_style(), &sigil);
                 // The rest is natural language: render plainly.
                 push(
                     &mut out,

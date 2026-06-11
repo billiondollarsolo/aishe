@@ -33,6 +33,14 @@ to `suggest`, `auto`, or `yolo` to control behavior. The hook ergonomics
 described in [Shell integration](shell-integration.md) apply here too, since the
 PTY wrapper injects the same hook.
 
+Because that routing is by command name, a question whose first word is a real
+command (`who`, `which`, `find`, `time`, `test`, `make`) would otherwise run that
+command. To force a line to the AI, **start it with `?` or `#`** (e.g.
+`? who was the first man on the moon`); the sigil is stripped by the line editor
+before zsh sees it, so the shell's comment and glob rules never apply. The
+force-NL key (Alt-Enter, or `AISHE_NL_KEY`) does the same for the line you are
+editing.
+
 Use this front-end when you want your real shell experience with aishe layered on
 top. It also gives you real job control, because it is genuinely your zsh.
 
