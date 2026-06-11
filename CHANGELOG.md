@@ -7,11 +7,20 @@ breaking changes can land in any release.
 ## [Unreleased]
 
 ### Fixed
-- **Auto mode no longer evals a non-command.** When the model answered a question
-  with prose (or returned a malformed command) in `auto` mode, the hook ran it
-  through `eval`, producing an ugly `parse error` and pushing the junk into shell
-  history. The hook now syntax-checks the command first (`zsh -nc` / `bash -nc`)
-  and pre-fills it for review instead of eval'ing it when it is not valid shell.
+- **Auto/suggest mode silently tells a command from an answer.** When the model
+  answers a question with prose (or returns a malformed command), aishe now
+  syntax-checks the suggested command and, if it is not valid shell, surfaces it
+  as an answer instead of printing a command for the shell to run. So a question
+  no longer produces an ugly `(eval): parse error` or junk pre-fill, and the
+  bogus "command" no longer lands in history. (The shell hook keeps a matching
+  `zsh -nc` / `bash -nc` guard as a backstop.)
+
+### Added
+- **Deterministic scenario tests for the zsh-PTY front-end.** A fake provider
+  (`AISHE_FAKE_LLM`, inert unless set) lets `tests/pty_scenarios.py` drive the
+  real `aishe zsh` wrapper through NL routing, the `?`/`#` sigil (incl. a trailing
+  `?`), command-name collisions, auto-mode never eval'ing a non-command, and
+  up-arrow history, asserting no parse/glob/eval errors leak. Wired into CI.
 
 ## [0.1.5] - 2026-06-11
 

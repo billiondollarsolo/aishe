@@ -12,6 +12,7 @@ use serde_json::Value;
 use crate::config::Config;
 
 pub mod anthropic;
+pub mod fake;
 pub mod openai_compat;
 
 /// A single message in a conversation, in our canonical (provider-neutral) form.
@@ -294,6 +295,11 @@ pub(crate) fn error_message(resp: ureq::Response) -> String {
 /// Returned behind an `Arc` so it can be shared with the ghost-text worker.
 pub fn make(config: &Config) -> Result<std::sync::Arc<dyn Provider>> {
     use std::sync::Arc;
+    // Test hook: a deterministic fake provider (no network, no API key) when
+    // AISHE_FAKE_LLM is set. Inert otherwise.
+    if let Ok(resp) = std::env::var(fake::ENV) {
+        return Ok(Arc::new(fake::FakeProvider::new(resp)));
+    }
     let inner: Arc<dyn Provider> = match config.aishe.provider.as_str() {
         "anthropic" => {
             let p = &config.providers.anthropic;

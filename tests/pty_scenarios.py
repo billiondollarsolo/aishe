@@ -1,0 +1,244 @@
+#!/usr/bin/env python3
+"""End-to-end scenario tests for the zsh-PTY front-end.
+
+Drives the real `aishe zsh` wrapper through a pseudo-terminal and exercises the
+classes of edge cases that have bitten interactive use: NL routing, the `?`/`#`
+force-NL sigil (including a trailing `?` that zsh would otherwise glob), questions
+whose first word is a real command, auto-mode never eval'ing a non-command, and
+up-arrow history. The model is replaced by a deterministic fake (AISHE_FAKE_LLM),
+so every scenario is reproducible with no network and no API key.
+
+A scenario fails if its expected marker does not appear, or if any "forbidden"
+string (a parse error, a glob error, an eval error) shows up anywhere.
+
+Usage: pty_scenarios.py [path-to-aishe]   (defaults to target/release/aishe)
+Exit 0 on success, non-zero on the first failure. Skips if zsh is absent.
+"""
+
+import os
+import sys
+import pty
+import time
+import select
+import signal
+import shutil
+import tempfile
+import subprocess
+
+BINARY = sys.argv[1] if len(sys.argv) > 1 else "target/release/aishe"
+TIMEOUT = 30.0
+
+# Strings that must never appear in the transcript: they mean a non-command was
+# sent to the shell, or the sigil/routing leaked into zsh's parser/globber.
+FORBIDDEN = [
+    "parse error",
+    "(eval):",
+    "no matches found",
+    "command not found: #",
+    "command not found: ?",
+]
+
+
+class Pty:
+    def __init__(self, argv, env):
+        self.master, slave = pty.openpty()
+        self.proc = subprocess.Popen(
+            argv, stdin=slave, stdout=slave, stderr=slave,
+            env=env, preexec_fn=os.setsid, close_fds=True,
+        )
+        os.close(slave)
+        self.buf = ""          # unconsumed output (for expect)
+        self.transcript = ""   # everything ever seen (for forbidden-string checks)
+
+    def _drain(self, deadline):
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return False
+        r, _, _ = select.select([self.master], [], [], min(remaining, 0.2))
+        if not r:
+            return True
+        try:
+            chunk = os.read(self.master, 4096)
+        except OSError:
+            return False
+        if not chunk:
+            return False
+        text = chunk.decode("utf-8", "replace")
+        self.buf += text
+        self.transcript += text
+        return True
+
+    def expect(self, needle, timeout=TIMEOUT):
+        deadline = time.monotonic() + timeout
+        while True:
+            idx = self.buf.find(needle)
+            if idx != -1:
+                self.buf = self.buf[idx + len(needle):]
+                return True
+            if not self._drain(deadline):
+                return False
+
+    def send(self, line):
+        os.write(self.master, (line + "\r").encode("utf-8"))
+
+    def raw(self, data):
+        os.write(self.master, data)
+
+    def settle(self, seconds=1.0):
+        deadline = time.monotonic() + seconds
+        while self._drain(deadline) and time.monotonic() < deadline:
+            pass
+
+    def close(self):
+        try:
+            os.close(self.master)
+        except OSError:
+            pass
+        if self.proc.poll() is None:
+            try:
+                os.killpg(os.getpgid(self.proc.pid), signal.SIGKILL)
+            except (ProcessLookupError, PermissionError):
+                pass
+        try:
+            self.proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            pass
+
+
+def make_env(binary):
+    home = tempfile.mkdtemp(prefix="aishe-scen-")
+    cfgdir = os.path.join(home, ".config", "aishe")
+    os.makedirs(cfgdir, exist_ok=True)
+    with open(os.path.join(cfgdir, "config.toml"), "w") as f:
+        f.write(
+            "[aishe]\n"
+            'mode = "auto"\n'              # auto: exercises the eval path
+            'provider = "anthropic"\n'
+            'front_end = "zsh-pty"\n'
+            "pty_prompt = false\n"         # use the plain zsh prompt for stable matching
+        )
+    # A minimal, deterministic zsh config with working history.
+    with open(os.path.join(home, ".zshrc"), "w") as f:
+        f.write(
+            "HISTFILE=~/.zsh_history\nHISTSIZE=1000\nSAVEHIST=1000\n"
+            "setopt INC_APPEND_HISTORY\nPROMPT='ZP> '\n"
+        )
+    # aishe must be callable as `aishe` inside the wrapped zsh.
+    bindir = os.path.join(home, "bin")
+    os.makedirs(bindir, exist_ok=True)
+    os.symlink(os.path.abspath(binary), os.path.join(bindir, "aishe"))
+    env = dict(os.environ)
+    env.update({
+        "HOME": home,
+        "XDG_CONFIG_HOME": os.path.join(home, ".config"),
+        "XDG_DATA_HOME": os.path.join(home, ".local", "share"),
+        "ZDOTDIR": home,
+        "TERM": "xterm-256color",
+        "PATH": bindir + ":" + os.environ.get("PATH", ""),
+        "ANTHROPIC_API_KEY": "",
+        "OPENAI_API_KEY": "",
+    })
+    return home, env
+
+
+PASSED = []
+
+
+def check(sh, name, ok):
+    if ok:
+        PASSED.append(name)
+        sys.stdout.write("  ok   %s\n" % name)
+    else:
+        sys.stderr.write("\nFAIL: %s\n---- recent output ----\n%s\n-----------------------\n"
+                         % (name, sh.transcript[-2500:]))
+        sh.close()
+        sys.exit(1)
+
+
+def set_fake(sh, payload):
+    # Export the canned model response into the wrapped zsh; the per-call
+    # `aishe --auto-line` inherits it. Single-quote-safe payloads only.
+    sh.send("export AISHE_FAKE_LLM='%s'" % payload)
+    sh.settle(0.4)
+    sh.buf = ""  # drop the command echo so the next expect() is clean
+
+
+def answer(text):
+    return '{"type":"answer","explanation":"%s"}' % text
+
+
+def command(cmd, expl="does a thing"):
+    return '{"type":"command","command":"%s","explanation":"%s"}' % (cmd, expl)
+
+
+def main():
+    if shutil.which("zsh") is None:
+        sys.stderr.write("SKIP: zsh not on PATH\n")
+        sys.exit(0)
+    if not os.path.exists(BINARY):
+        sys.stderr.write("FAIL: binary not found: %s\n" % BINARY)
+        sys.exit(1)
+
+    home, env = make_env(BINARY)
+    sh = Pty([os.path.abspath(BINARY), "zsh"], env)
+    try:
+        sh.expect("ZP> ")  # first prompt
+
+        # 1. A plain shell command runs normally.
+        sh.send("echo SCEN1_$((20 + 22))")
+        check(sh, "plain command runs", sh.expect("SCEN1_42"))
+
+        # 2. `?` sigil routes a question to the AI (and the trailing text with a
+        #    glob char does not reach zsh's globber).
+        set_fake(sh, answer("ANSWER_MOON_42"))
+        sh.send("? what is the moon?")
+        check(sh, "? sigil routes question (trailing ?)", sh.expect("ANSWER_MOON_42"))
+
+        # 3. `#` sigil, also with a trailing `?`.
+        set_fake(sh, answer("ANSWER_HASH_42"))
+        sh.send("# is the theme enabled?")
+        check(sh, "# sigil routes question (trailing ?)", sh.expect("ANSWER_HASH_42"))
+
+        # 4. A question whose first word is a real command (`who`) still reaches
+        #    the AI when forced with the sigil.
+        set_fake(sh, answer("ANSWER_PRES_42"))
+        sh.send("? who is the president")
+        check(sh, "sigil beats command-name collision", sh.expect("ANSWER_PRES_42"))
+
+        # 5. THE reported bug: in auto mode the model answers a question with a
+        #    malformed "command". It must be surfaced as an answer, never eval'd.
+        set_fake(sh, command("the sun is a star > ", "PROSE_SUN_42"))
+        sh.send("? tell me about the sun")
+        check(sh, "auto mode shows prose, not a parse error", sh.expect("PROSE_SUN_42"))
+
+        # 6. Auto mode runs a *valid* safe command the model returns.
+        set_fake(sh, command("echo RANCMD_42", "prints a marker"))
+        sh.send("? print the marker")
+        check(sh, "auto mode runs a valid command", sh.expect("RANCMD_42"))
+
+        # 7. Up-arrow recalls the previous real command.
+        sh.send("export AISHE_FAKE_LLM=")  # stop faking; back to plain shell
+        sh.settle(0.3)
+        sh.send("echo HISTMARK_42")
+        sh.expect("HISTMARK_42")
+        sh.buf = ""
+        sh.raw(b"\x1b[A")  # up arrow
+        check(sh, "up-arrow recalls previous command", sh.expect("echo HISTMARK_42"))
+        sh.raw(b"\x03")    # Ctrl-C to clear the recalled line
+
+        # Global invariant: no parse/glob/eval errors anywhere in the session.
+        leaked = [s for s in FORBIDDEN if s in sh.transcript]
+        check(sh, "no parse/glob/eval errors leaked", not leaked)
+        if leaked:
+            sys.stderr.write("leaked: %r\n" % leaked)
+
+        sh.send("exit")
+        sh.settle(0.5)
+        sys.stdout.write("\nAll %d scenarios passed.\n" % len(PASSED))
+    finally:
+        sh.close()
+        shutil.rmtree(home, ignore_errors=True)
+
+
+if __name__ == "__main__":
+    main()

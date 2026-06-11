@@ -72,6 +72,9 @@ jobs:
       - name: Drive real zsh through the PTY front-end
         run: python3 tests/pty_smoke.py target/release/aishe
 
+      - name: zsh-PTY scenario tests (NL routing, sigils, auto-mode, history)
+        run: python3 tests/pty_scenarios.py target/release/aishe
+
       - name: Drive the reedline front-end through a PTY
         run: python3 tests/reedline_smoke.py target/release/aishe
 

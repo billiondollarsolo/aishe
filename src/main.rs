@@ -467,6 +467,23 @@ fn hook_session_path(config: &Config) -> Option<std::path::PathBuf> {
         .map(std::path::PathBuf::from)
 }
 
+/// Whether `cmd` parses as valid shell syntax. Used so the hook front-ends can
+/// silently tell a runnable command from a question answered as prose: a model
+/// "command" that does not parse (e.g. a sentence, or a malformed redirect) is
+/// treated as an answer instead of being printed for the shell to eval/pre-fill.
+/// Permissive on spawn failure (returns true) so a missing shell never blocks.
+fn shell_syntax_ok(executor: &Executor, cmd: &str) -> bool {
+    std::process::Command::new(executor.shell())
+        .arg("-nc")
+        .arg(cmd)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(true)
+}
+
 fn suggest_line(
     line: &str,
     executor: &mut Executor,
@@ -489,7 +506,7 @@ fn suggest_line(
         modes::suggest::Suggestion::Command {
             command,
             explanation,
-        } => {
+        } if shell_syntax_ok(executor, command) => {
             if !explanation.is_empty() {
                 eprintln!("{}", explanation.as_str().dim());
             }
@@ -499,6 +516,23 @@ fn suggest_line(
             } else {
                 format!("{command}\n{explanation}")
             }
+        }
+        // A "command" that is not valid shell is really an answer (prose). Show it
+        // on stderr; print nothing to stdout so the hook neither evals nor
+        // pre-fills it.
+        modes::suggest::Suggestion::Command {
+            command,
+            explanation,
+        } => {
+            let answer = if explanation.is_empty() {
+                command.clone()
+            } else {
+                explanation.clone()
+            };
+            if !answer.is_empty() {
+                eprintln!("{answer}");
+            }
+            answer
         }
         modes::suggest::Suggestion::Answer { explanation } => {
             // No command to run; render the answer to stderr so the shell hook's
@@ -579,7 +613,7 @@ fn auto_line(
         modes::suggest::Suggestion::Command {
             command,
             explanation,
-        } => {
+        } if shell_syntax_ok(executor, command) => {
             if !explanation.is_empty() {
                 eprintln!("{}", explanation.as_str().dim());
             }
@@ -597,6 +631,22 @@ fn auto_line(
                 format!("{command}\n{explanation}")
             };
             (reply, code)
+        }
+        // A "command" that is not valid shell is really an answer: surface it and
+        // emit no command, so the hook never evals a non-command.
+        modes::suggest::Suggestion::Command {
+            command,
+            explanation,
+        } => {
+            let answer = if explanation.is_empty() {
+                command.clone()
+            } else {
+                explanation.clone()
+            };
+            if !answer.is_empty() {
+                eprintln!("{answer}");
+            }
+            (answer, 0)
         }
         modes::suggest::Suggestion::Answer { explanation } => {
             if !explanation.is_empty() {
