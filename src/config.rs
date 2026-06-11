@@ -145,6 +145,11 @@ pub struct AisheConfig {
     /// real interactive zsh in a PTY, so all native zsh plugins work).
     #[serde(default = "default_front_end")]
     pub front_end: String,
+    /// In the zsh-PTY front-end, override the prompt with aishe's branded prompt
+    /// (`<cwd> <glyph>`, glyph per mode) so it's obvious you're in aishe. On by
+    /// default; set false to keep your real zsh prompt untouched.
+    #[serde(default = "default_true")]
+    pub pty_prompt: bool,
     /// reedline line-editor keymap: "emacs" (default) or "vi".
     #[serde(default = "default_edit_mode")]
     pub edit_mode: String,
@@ -314,6 +319,7 @@ impl Default for AisheConfig {
             web_tool: true,
             show_right_prompt: true,
             front_end: default_front_end(),
+            pty_prompt: true,
             edit_mode: default_edit_mode(),
             prompt_format: None,
             git_prompt: true,

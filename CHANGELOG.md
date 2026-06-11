@@ -6,6 +6,15 @@ breaking changes can land in any release.
 
 ## [Unreleased]
 
+### Added
+- **Branded prompt in the zsh-PTY front-end.** When driving your real zsh in a
+  PTY, aishe now shows its own prompt (`<cwd> <glyph>`, with the glyph reflecting
+  the mode (❯ suggest, » auto, ⚡ yolo), colored green/red by the last exit code,
+  plus a dim `model · mode` right prompt), matching the reedline front-end, so
+  it's obvious you're in aishe. On by default; disable with `pty_prompt = false`
+  to keep your normal zsh prompt. Only the PTY front-end is affected; the
+  `aishe init zsh` hook still leaves your prompt untouched.
+
 ## [0.1.2] - 2026-06-11
 
 ### Fixed

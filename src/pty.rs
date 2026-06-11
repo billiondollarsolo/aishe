@@ -52,6 +52,11 @@ pub fn run_zsh(config: &Config) -> Result<u8> {
     cmd.env("AISHE_OUR_ZDOTDIR", &zdotdir);
     cmd.env("AISHE_REAL_ZDOTDIR", &real_zdotdir);
     cmd.env("AISHE_MODE", &config.aishe.mode);
+    cmd.env("AISHE_MODEL", config.active_model());
+    cmd.env(
+        "AISHE_PTY_PROMPT",
+        if config.aishe.pty_prompt { "1" } else { "0" },
+    );
     if let Ok(cwd) = std::env::current_dir() {
         cmd.cwd(cwd);
     }

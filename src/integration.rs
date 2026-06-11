@@ -143,9 +143,33 @@ pub fn wrapper_zshrc() -> String {
 [ -f "${{AISHE_REAL_ZDOTDIR}}/.zshrc" ] && source "${{AISHE_REAL_ZDOTDIR}}/.zshrc"
 export ZDOTDIR="${{AISHE_REAL_ZDOTDIR}}"
 # --- aishe AI hook (added last) ---
-{ZSH_HOOK}"#
+{ZSH_HOOK}
+{PTY_PROMPT}"#
     )
 }
+
+/// Branded prompt for the PTY front-end only (never `init zsh`, which must leave
+/// the user's prompt alone). Mirrors the reedline prompt: `<cwd> <glyph>`, where
+/// the glyph reflects the mode and is green/red by the last exit code, with a
+/// dim `model · mode` right prompt. Applied via a precmd hook added last so it
+/// wins over a prompt that the user's config rebuilds each prompt. Honors
+/// `AISHE_PTY_PROMPT` (set from the `pty_prompt` config option).
+const PTY_PROMPT: &str = r#"# --- aishe branded prompt (PTY front-end; pty_prompt config) ---
+if [[ -o interactive && "${AISHE_PTY_PROMPT:-1}" == 1 ]]; then
+  autoload -Uz add-zsh-hook
+  aishe_set_prompt() {
+    local glyph
+    case "${AISHE_MODE:-suggest}" in
+      yolo) glyph='⚡' ;;
+      auto) glyph='»' ;;
+      *)    glyph='❯' ;;
+    esac
+    PROMPT="%B%F{cyan}%~%f%b %(?.%F{green}.%F{red})${glyph}%f "
+    RPROMPT="%F{244}${AISHE_MODEL:-} · ${AISHE_MODE:-suggest}%f"
+  }
+  add-zsh-hook precmd aishe_set_prompt
+fi
+"#;
 
 const BASH_SCRIPT: &str = r#"# aishe bash integration — add to ~/.bashrc:  eval "$(aishe init bash)"
 # Routes unknown input to aishe. Set AISHE_MODE=suggest|auto|yolo (default

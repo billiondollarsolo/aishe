@@ -21,6 +21,11 @@ provider = "anthropic"
 #   zsh-pty  = always drive your real interactive zsh in a pseudo-terminal
 front_end = "auto"
 
+# In the zsh-PTY front-end, show aishe's branded prompt (`<cwd> <glyph>`, with the
+# glyph reflecting the mode: ❯ suggest, » auto, ⚡ yolo) instead of your normal zsh
+# prompt, so it's obvious you're in aishe. Set false to keep your real prompt.
+pty_prompt = true
+
 # reedline line-editor keymap: "emacs" or "vi".
 edit_mode = "emacs"
 
