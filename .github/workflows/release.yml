@@ -174,11 +174,15 @@ jobs:
 
       - name: Build .deb and .rpm packages
         run: |
+          sudo apt-get install -y gettext-base   # provides envsubst
           version="${{ steps.ver.outputs.version }}"
           for arch in amd64 arm64; do
+            # Render a concrete config per arch (nfpm does not reliably expand
+            # ${...} env vars in the contents.src field).
+            VERSION="$version" ARCH="$arch" BINARY="dist/$arch/aishe" \
+              envsubst '${VERSION} ${ARCH} ${BINARY}' < nfpm.yaml > "nfpm.$arch.yaml"
             for pkger in deb rpm; do
-              VERSION="$version" ARCH="$arch" BINARY="dist/$arch/aishe" \
-                nfpm package --config nfpm.yaml --packager "$pkger" --target dist/
+              nfpm package --config "nfpm.$arch.yaml" --packager "$pkger" --target dist/
             done
           done
           ( cd dist && for f in *.deb *.rpm; do sha256sum "$f" > "$f.sha256"; done )
