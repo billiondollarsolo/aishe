@@ -34,7 +34,7 @@ It installs to `/usr/local/bin` when writable, otherwise `~/.local/bin`. Overrid
 with environment variables:
 
 ```sh
-AISHE_VERSION=v0.1.2 AISHE_BIN_DIR="$HOME/.local/bin" \
+AISHE_VERSION=v0.1.3 AISHE_BIN_DIR="$HOME/.local/bin" \
   sh -c "$(curl -fsSL https://raw.githubusercontent.com/billiondollarsolo/aishe/main/install.sh)"
 ```
 
@@ -48,19 +48,19 @@ Debian / Ubuntu:
 
 ```sh
 arch=amd64   # or arm64
-curl -fsSL -O "https://github.com/billiondollarsolo/aishe/releases/latest/download/aishe_0.1.2_${arch}.deb"
-sudo apt install "./aishe_0.1.2_${arch}.deb"
+curl -fsSL -O "https://github.com/billiondollarsolo/aishe/releases/latest/download/aishe_0.1.3_${arch}.deb"
+sudo apt install "./aishe_0.1.3_${arch}.deb"
 ```
 
 Fedora / RHEL / openSUSE:
 
 ```sh
 arch=x86_64  # or aarch64
-curl -fsSL -O "https://github.com/billiondollarsolo/aishe/releases/latest/download/aishe-0.1.2.${arch}.rpm"
-sudo dnf install "./aishe-0.1.2.${arch}.rpm"
+curl -fsSL -O "https://github.com/billiondollarsolo/aishe/releases/latest/download/aishe-0.1.3.${arch}.rpm"
+sudo dnf install "./aishe-0.1.3.${arch}.rpm"
 ```
 
-(Substitute the release version for `0.1.2`.)
+(Substitute the release version for `0.1.3`.)
 
 ## Prebuilt binary (tarball)
 

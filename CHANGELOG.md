@@ -6,6 +6,8 @@ breaking changes can land in any release.
 
 ## [Unreleased]
 
+## [0.1.3] - 2026-06-11
+
 ### Added
 - **`install.sh` ensures zsh.** Because aishe is most robust driving your real
   zsh in a PTY, the install script now installs zsh via the system package
