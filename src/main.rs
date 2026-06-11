@@ -529,19 +529,7 @@ fn one_shot(
                             }
                         }
                     }
-                    Some("mcp") => {
-                        if mcp.is_empty() {
-                            println!(
-                                "no MCP tools (configure servers under [mcp_servers] in config)"
-                            );
-                        } else {
-                            println!("MCP tools (yolo mode):");
-                            for (name, desc) in mcp.list() {
-                                let desc = desc.lines().next().unwrap_or("");
-                                println!("\x20 {name}  —  {desc}");
-                            }
-                        }
-                    }
+                    Some("mcp") => print_mcp_listing(mcp),
                     Some("config") => {
                         println!("config file: {}", Config::path().display());
                         match toml::to_string_pretty(config) {
@@ -979,6 +967,21 @@ fn try_custom_command(
     if dispatcher::is_meta_subcommand(name) {
         return Ok(false);
     }
+    // MCP prompts (`/<server>:<prompt> args`): fetch the prompt and run it.
+    if mcp.is_prompt(name) {
+        match mcp.prompt_text(name, &args) {
+            Some(Ok(text)) if !text.trim().is_empty() => {
+                let mode = config.aishe.mode.as_str();
+                run_nl(
+                    &text, mode, provider, executor, config, skills, mcp, session,
+                )?;
+            }
+            Some(Ok(_)) => println!("  {}", "(empty prompt)".dim()),
+            Some(Err(e)) => eprintln!("{}", format!("aishe: mcp prompt: {e}").red()),
+            None => {}
+        }
+        return Ok(true);
+    }
     let Some(cmd) = commands.get(name) else {
         return Ok(false);
     };
@@ -995,6 +998,30 @@ fn try_custom_command(
         )?;
     }
     Ok(true)
+}
+
+/// Print the `aishe mcp` listing: connected tools (yolo), plus any prompts
+/// (invocable as `/<server>:<prompt>`).
+fn print_mcp_listing(mcp: &aishe::mcp::McpRegistry) {
+    if mcp.is_fully_empty() {
+        println!("no MCP servers (configure them under [mcp_servers] in config)");
+        return;
+    }
+    if !mcp.is_empty() {
+        println!("MCP tools (yolo mode):");
+        for (name, desc) in mcp.list() {
+            let desc = desc.lines().next().unwrap_or("");
+            println!("\x20 {name}  -  {desc}");
+        }
+    }
+    let prompts = mcp.list_prompts();
+    if !prompts.is_empty() {
+        println!("MCP prompts (run as /<server>:<prompt>):");
+        for (name, desc) in prompts {
+            let desc = desc.lines().next().unwrap_or("");
+            println!("\x20 /{name}  -  {desc}");
+        }
+    }
 }
 
 /// Run a natural-language request in the given mode.
@@ -1194,17 +1221,7 @@ fn handle_meta(
                 }
             }
         }
-        "mcp" => {
-            if mcp.is_empty() {
-                println!("no MCP tools (configure servers under [mcp_servers] in config)");
-            } else {
-                println!("MCP tools (yolo mode):");
-                for (name, desc) in mcp.list() {
-                    let desc = desc.lines().next().unwrap_or("");
-                    println!("\x20 {name}  —  {desc}");
-                }
-            }
-        }
+        "mcp" => print_mcp_listing(mcp),
         "mode" => {
             if let Some(m) = tokens.get(2) {
                 if matches!(m.as_str(), "suggest" | "auto" | "yolo") {

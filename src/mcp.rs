@@ -49,6 +49,14 @@ struct McpTool {
     schema: Value,
 }
 
+/// A prompt advertised by an MCP server (`prompts/list`).
+struct McpPrompt {
+    name: String,
+    description: String,
+    /// Declared argument names, in order, for mapping positional slash args.
+    arg_names: Vec<String>,
+}
+
 /// The stdio transport: a child process, its stdin, and a channel fed by a
 /// reader thread parsing the server's stdout lines into JSON values.
 struct StdioTransport {
@@ -256,17 +264,22 @@ impl Transport {
     }
 }
 
-/// One connected MCP server: its transport plus the loaded tool list. The
-/// handshake and routing are identical across transports.
+/// One connected MCP server: its transport plus the loaded tool/prompt lists and
+/// declared capabilities. The handshake and routing are identical across
+/// transports.
 struct McpServer {
     transport: Transport,
     tools: Vec<McpTool>,
+    prompts: Vec<McpPrompt>,
+    /// The server declared a `resources` capability (so `resources/list` /
+    /// `resources/read` are available).
+    has_resources: bool,
 }
 
 impl McpServer {
-    /// Connect to the server, run the initialize handshake, and load its tool
-    /// list. A server with a `url` uses the HTTP transport; otherwise it spawns a
-    /// stdio child. Returns an error string on any failure (bad command, network
+    /// Connect to the server, run the initialize handshake, and load its tools and
+    /// prompts. A server with a `url` uses the HTTP transport; otherwise it spawns
+    /// a stdio child. Returns an error string on any failure (bad command, network
     /// error, protocol error, timeout) so the caller can skip just this server.
     fn connect(cfg: &McpServerConfig) -> Result<Self, String> {
         let transport = if cfg.url.is_some() {
@@ -279,9 +292,17 @@ impl McpServer {
         let mut server = McpServer {
             transport,
             tools: Vec::new(),
+            prompts: Vec::new(),
+            has_resources: false,
         };
-        server.initialize()?;
+        let caps = server.initialize()?;
+        server.has_resources = caps.get("resources").is_some();
         server.load_tools()?;
+        // Prompts are optional; a server that advertises the capability but errors
+        // on `prompts/list` is tolerated (no prompts).
+        if caps.get("prompts").is_some() {
+            server.load_prompts();
+        }
         Ok(server)
     }
 
@@ -293,9 +314,10 @@ impl McpServer {
         self.transport.notify(method, params)
     }
 
-    /// The MCP handshake: `initialize`, then the `initialized` notification.
-    fn initialize(&mut self) -> Result<(), String> {
-        self.request(
+    /// The MCP handshake: `initialize` (returning the server's declared
+    /// capabilities), then the `initialized` notification.
+    fn initialize(&mut self) -> Result<Value, String> {
+        let result = self.request(
             "initialize",
             json!({
                 "protocolVersion": PROTOCOL_VERSION,
@@ -303,7 +325,8 @@ impl McpServer {
                 "clientInfo": {"name": "aishe", "version": env!("CARGO_PKG_VERSION")}
             }),
         )?;
-        self.notify("notifications/initialized", json!({}))
+        self.notify("notifications/initialized", json!({}))?;
+        Ok(result.get("capabilities").cloned().unwrap_or(Value::Null))
     }
 
     /// Fetch the server's tool list into `self.tools`.
@@ -345,6 +368,88 @@ impl McpServer {
     fn call(&mut self, tool: &str, args: Value) -> Result<String, String> {
         let result = self.request("tools/call", json!({"name": tool, "arguments": args}))?;
         Ok(render_tool_result(&result))
+    }
+
+    /// Fetch the server's prompt list into `self.prompts` (best-effort).
+    fn load_prompts(&mut self) {
+        let Ok(result) = self.request("prompts/list", json!({})) else {
+            return;
+        };
+        let prompts = result
+            .get("prompts")
+            .and_then(|p| p.as_array())
+            .cloned()
+            .unwrap_or_default();
+        for p in prompts {
+            let name = p
+                .get("name")
+                .and_then(|n| n.as_str())
+                .unwrap_or("")
+                .to_string();
+            if name.is_empty() {
+                continue;
+            }
+            let description = p
+                .get("description")
+                .and_then(|d| d.as_str())
+                .unwrap_or("")
+                .to_string();
+            let arg_names = p
+                .get("arguments")
+                .and_then(|a| a.as_array())
+                .map(|args| {
+                    args.iter()
+                        .filter_map(|a| a.get("name").and_then(|n| n.as_str()))
+                        .map(|s| s.to_string())
+                        .collect()
+                })
+                .unwrap_or_default();
+            self.prompts.push(McpPrompt {
+                name,
+                description,
+                arg_names,
+            });
+        }
+    }
+
+    /// `resources/list`, rendered as a `uri  name - description` listing.
+    fn list_resources(&mut self) -> Result<String, String> {
+        let result = self.request("resources/list", json!({}))?;
+        let resources = result
+            .get("resources")
+            .and_then(|r| r.as_array())
+            .cloned()
+            .unwrap_or_default();
+        if resources.is_empty() {
+            return Ok("(no resources)".to_string());
+        }
+        let mut out = String::new();
+        for r in resources {
+            let uri = r.get("uri").and_then(|u| u.as_str()).unwrap_or("");
+            let name = r.get("name").and_then(|n| n.as_str()).unwrap_or("");
+            let desc = r.get("description").and_then(|d| d.as_str()).unwrap_or("");
+            out.push_str(uri);
+            if !name.is_empty() {
+                out.push_str(&format!("  {name}"));
+            }
+            if !desc.is_empty() {
+                out.push_str(&format!(" - {desc}"));
+            }
+            out.push('\n');
+        }
+        Ok(out.trim_end().to_string())
+    }
+
+    /// `resources/read`, rendered as the concatenated text of its contents.
+    fn read_resource(&mut self, uri: &str) -> Result<String, String> {
+        let result = self.request("resources/read", json!({"uri": uri}))?;
+        Ok(render_resource_contents(&result))
+    }
+
+    /// `prompts/get`, rendered as the flattened text of the returned messages.
+    fn get_prompt(&mut self, name: &str, args: Value) -> Result<String, String> {
+        let result = self.request("prompts/get", json!({"name": name, "arguments": args}))?;
+        Ok(render_prompt_messages(&result))
     }
 }
 
@@ -491,6 +596,69 @@ fn render_tool_result(result: &Value) -> String {
     }
 }
 
+/// Reduce a `resources/read` result to text: concatenate the `text` of each
+/// content entry, noting binary (`blob`) entries. Falls back to compact JSON.
+fn render_resource_contents(result: &Value) -> String {
+    let mut out = String::new();
+    if let Some(contents) = result.get("contents").and_then(|c| c.as_array()) {
+        for item in contents {
+            if let Some(t) = item.get("text").and_then(|t| t.as_str()) {
+                if !out.is_empty() {
+                    out.push('\n');
+                }
+                out.push_str(t);
+            } else if item.get("blob").is_some() {
+                if !out.is_empty() {
+                    out.push('\n');
+                }
+                let uri = item.get("uri").and_then(|u| u.as_str()).unwrap_or("");
+                out.push_str(&format!("[binary resource {uri} omitted]"));
+            }
+        }
+    }
+    if out.is_empty() {
+        out = serde_json::to_string(result).unwrap_or_default();
+    }
+    out
+}
+
+/// Reduce a `prompts/get` result to a single text prompt: flatten each message's
+/// text content, prefixed by role when not `user`.
+fn render_prompt_messages(result: &Value) -> String {
+    let mut out = String::new();
+    if let Some(messages) = result.get("messages").and_then(|m| m.as_array()) {
+        for msg in messages {
+            let role = msg.get("role").and_then(|r| r.as_str()).unwrap_or("user");
+            let text = match msg.get("content") {
+                // Content may be a single object or an array of content blocks.
+                Some(Value::Object(_)) => msg
+                    .get("content")
+                    .and_then(|c| c.get("text"))
+                    .and_then(|t| t.as_str())
+                    .unwrap_or("")
+                    .to_string(),
+                Some(Value::Array(blocks)) => blocks
+                    .iter()
+                    .filter_map(|b| b.get("text").and_then(|t| t.as_str()))
+                    .collect::<Vec<_>>()
+                    .join("\n"),
+                _ => String::new(),
+            };
+            if text.is_empty() {
+                continue;
+            }
+            if !out.is_empty() {
+                out.push_str("\n\n");
+            }
+            if role != "user" {
+                out.push_str(&format!("[{role}]\n"));
+            }
+            out.push_str(&text);
+        }
+    }
+    out
+}
+
 /// Sanitize a namespaced tool name to the character set the model APIs accept
 /// (`[A-Za-z0-9_-]`, capped length), so an unusual server/tool name can't produce
 /// an invalid tool definition.
@@ -509,16 +677,41 @@ fn sanitize(name: &str) -> String {
     s
 }
 
-/// All connected MCP servers and the routing table from each exposed tool name to
-/// `(server, real tool)`. Cloneable tool defs are precomputed at connect time;
+/// What an exposed yolo tool name maps to on a server.
+enum RouteKind {
+    /// A real server tool, called via `tools/call` with this name.
+    Tool(String),
+    /// The synthetic `list_resources` tool (`resources/list`).
+    ListResources,
+    /// The synthetic `read_resource` tool (`resources/read`, arg `uri`).
+    ReadResource,
+}
+
+/// An exposed yolo tool's routing target.
+struct Route {
+    server: String,
+    kind: RouteKind,
+}
+
+/// An MCP prompt exposed as a `/<server>:<prompt>` slash-command.
+struct PromptRoute {
+    server: String,
+    prompt: String,
+    description: String,
+    arg_names: Vec<String>,
+}
+
+/// All connected MCP servers and the routing tables: from each exposed yolo tool
+/// name to a [`Route`], and from each `server:prompt` slash name to a
+/// [`PromptRoute`]. Cloneable tool defs are precomputed at connect time;
 /// per-server call state lives behind a `Mutex`, so the registry is shared as
 /// `&McpRegistry` (mirroring `SkillRegistry`) and calls don't need `&mut`.
 #[derive(Default)]
 pub struct McpRegistry {
     servers: BTreeMap<String, Mutex<McpServer>>,
     defs: Vec<ToolDef>,
-    /// exposed tool name -> (server name, real tool name)
-    routes: BTreeMap<String, (String, String)>,
+    routes: BTreeMap<String, Route>,
+    prompts: BTreeMap<String, PromptRoute>,
 }
 
 impl McpRegistry {
@@ -540,12 +733,44 @@ impl McpRegistry {
                             description: tool.description.clone(),
                             schema: tool.schema.clone(),
                         });
-                        reg.routes
-                            .insert(exposed, (name.clone(), tool.name.clone()));
+                        reg.routes.insert(
+                            exposed,
+                            Route {
+                                server: name.clone(),
+                                kind: RouteKind::Tool(tool.name.clone()),
+                            },
+                        );
+                    }
+                    // Synthetic resource tools when the server supports resources.
+                    if server.has_resources {
+                        reg.add_resource_tools(name);
+                    }
+                    // Prompts become `/<server>:<prompt>` slash-commands.
+                    for p in &server.prompts {
+                        let exposed = format!("{name}:{}", p.name);
+                        reg.prompts.insert(
+                            exposed,
+                            PromptRoute {
+                                server: name.clone(),
+                                prompt: p.name.clone(),
+                                description: p.description.clone(),
+                                arg_names: p.arg_names.clone(),
+                            },
+                        );
                     }
                     eprintln!(
-                        "aishe: MCP server '{name}' connected ({} tools)",
-                        server.tools.len()
+                        "aishe: MCP server '{name}' connected ({} tools{}{})",
+                        server.tools.len(),
+                        if server.has_resources {
+                            ", resources"
+                        } else {
+                            ""
+                        },
+                        if server.prompts.is_empty() {
+                            String::new()
+                        } else {
+                            format!(", {} prompts", server.prompts.len())
+                        },
                     );
                     reg.servers.insert(name.clone(), Mutex::new(server));
                 }
@@ -555,9 +780,50 @@ impl McpRegistry {
         reg
     }
 
+    /// Register the two synthetic resource tools for `server`.
+    fn add_resource_tools(&mut self, server: &str) {
+        let list_name = sanitize(&format!("mcp__{server}__list_resources"));
+        self.defs.push(ToolDef {
+            name: list_name.clone(),
+            description: format!("List the resources offered by the '{server}' MCP server."),
+            schema: json!({"type": "object", "properties": {}}),
+        });
+        self.routes.insert(
+            list_name,
+            Route {
+                server: server.to_string(),
+                kind: RouteKind::ListResources,
+            },
+        );
+        let read_name = sanitize(&format!("mcp__{server}__read_resource"));
+        self.defs.push(ToolDef {
+            name: read_name.clone(),
+            description: format!(
+                "Read a resource from the '{server}' MCP server by its uri (see list_resources)."
+            ),
+            schema: json!({
+                "type": "object",
+                "properties": {"uri": {"type": "string", "description": "the resource uri"}},
+                "required": ["uri"]
+            }),
+        });
+        self.routes.insert(
+            read_name,
+            Route {
+                server: server.to_string(),
+                kind: RouteKind::ReadResource,
+            },
+        );
+    }
+
     /// True if no MCP tools are available.
     pub fn is_empty(&self) -> bool {
         self.defs.is_empty()
+    }
+
+    /// True if nothing at all is available (no tools and no prompts).
+    pub fn is_fully_empty(&self) -> bool {
+        self.defs.is_empty() && self.prompts.is_empty()
     }
 
     /// Tool definitions to offer the model (already namespaced and sanitized).
@@ -565,7 +831,7 @@ impl McpRegistry {
         self.defs.clone()
     }
 
-    /// A short `server · tool` listing for `aishe mcp` / docs.
+    /// A short `tool · description` listing for `aishe mcp` / docs.
     pub fn list(&self) -> Vec<(String, String)> {
         self.defs
             .iter()
@@ -573,27 +839,73 @@ impl McpRegistry {
             .collect()
     }
 
+    /// The exposed prompt commands (`server:prompt`) and their descriptions.
+    pub fn list_prompts(&self) -> Vec<(String, String)> {
+        self.prompts
+            .iter()
+            .map(|(name, r)| (name.clone(), r.description.clone()))
+            .collect()
+    }
+
+    /// True if `name` is an exposed MCP prompt command (`server:prompt`).
+    pub fn is_prompt(&self, name: &str) -> bool {
+        self.prompts.contains_key(name)
+    }
+
+    /// Fetch an MCP prompt by its `server:prompt` name, mapping the positional
+    /// `args` to the prompt's declared argument names. Returns the rendered prompt
+    /// text to run as a request, or an error string. `None` if unknown.
+    pub fn prompt_text(&self, name: &str, args: &[&str]) -> Option<Result<String, String>> {
+        let route = self.prompts.get(name)?;
+        let mut named = serde_json::Map::new();
+        for (i, key) in route.arg_names.iter().enumerate() {
+            if let Some(v) = args.get(i) {
+                named.insert(key.clone(), Value::String((*v).to_string()));
+            }
+        }
+        let server = self.servers.get(&route.server)?;
+        let mut guard = match server.lock() {
+            Ok(g) => g,
+            Err(_) => return Some(Err("MCP server lock poisoned.".into())),
+        };
+        Some(guard.get_prompt(&route.prompt, Value::Object(named)))
+    }
+
     /// Call a namespaced MCP tool. Returns `(audit label, content for the model)`.
     pub fn call(&self, exposed: &str, args: &Value) -> (String, String) {
-        let Some((server_name, tool)) = self.routes.get(exposed) else {
+        let Some(route) = self.routes.get(exposed) else {
             return (
                 exposed.to_string(),
                 format!("Error: unknown MCP tool '{exposed}'."),
             );
         };
-        let label = format!("{server_name}:{tool}");
-        match self.servers.get(server_name) {
-            Some(m) => {
-                let mut server = match m.lock() {
-                    Ok(g) => g,
-                    Err(_) => return (label, "Error: MCP server lock poisoned.".into()),
-                };
-                match server.call(tool, args.clone()) {
-                    Ok(content) => (label, content),
-                    Err(e) => (label, format!("Error: {e}")),
+        let label = match &route.kind {
+            RouteKind::Tool(t) => format!("{}:{t}", route.server),
+            RouteKind::ListResources => format!("{}:list_resources", route.server),
+            RouteKind::ReadResource => format!("{}:read_resource", route.server),
+        };
+        let Some(m) = self.servers.get(&route.server) else {
+            return (label, format!("Error: no MCP server '{}'.", route.server));
+        };
+        let mut server = match m.lock() {
+            Ok(g) => g,
+            Err(_) => return (label, "Error: MCP server lock poisoned.".into()),
+        };
+        let result = match &route.kind {
+            RouteKind::Tool(t) => server.call(t, args.clone()),
+            RouteKind::ListResources => server.list_resources(),
+            RouteKind::ReadResource => {
+                let uri = args.get("uri").and_then(|u| u.as_str()).unwrap_or("");
+                if uri.is_empty() {
+                    Err("read_resource needs a `uri`".to_string())
+                } else {
+                    server.read_resource(uri)
                 }
             }
-            None => (label, format!("Error: no MCP server '{server_name}'.")),
+        };
+        match result {
+            Ok(content) => (label, content),
+            Err(e) => (label, format!("Error: {e}")),
         }
     }
 }
@@ -626,6 +938,31 @@ mod tests {
         // No content array: falls back to JSON.
         let r2 = json!({"structuredContent": {"x": 1}});
         assert!(render_tool_result(&r2).contains("structuredContent"));
+    }
+
+    #[test]
+    fn renders_resource_contents() {
+        let r = json!({"contents": [
+            {"uri": "file:///a", "text": "line one"},
+            {"uri": "file:///b", "text": "line two"}
+        ]});
+        assert_eq!(render_resource_contents(&r), "line one\nline two");
+        // A blob entry is noted, not dumped.
+        let b = json!({"contents": [{"uri": "file:///img.png", "blob": "AAAA"}]});
+        assert!(render_resource_contents(&b).contains("binary resource file:///img.png"));
+    }
+
+    #[test]
+    fn renders_prompt_messages() {
+        // Array-of-blocks and single-object content, with a non-user role prefix.
+        let p = json!({"messages": [
+            {"role": "user", "content": [{"type": "text", "text": "Summarize this:"}]},
+            {"role": "assistant", "content": {"type": "text", "text": "ok"}}
+        ]});
+        let out = render_prompt_messages(&p);
+        assert!(out.contains("Summarize this:"));
+        assert!(out.contains("[assistant]"));
+        assert!(out.contains("ok"));
     }
 
     #[test]

@@ -72,6 +72,36 @@ MCP tools (yolo mode):
   ...
 ```
 
+## Resources
+
+If a server declares the `resources` capability, aishe offers the yolo loop two
+extra tools per server:
+
+- `mcp__<server>__list_resources` - list the server's resources (uri, name,
+  description).
+- `mcp__<server>__read_resource` - read a resource by its `uri` and return its
+  text (binary `blob` contents are noted, not dumped).
+
+So the agent can discover and pull in server-provided data (files, database rows,
+docs) as it works.
+
+## Prompts
+
+If a server declares the `prompts` capability, its prompts are loaded at startup
+and exposed as slash-commands named `/<server>:<prompt>`. Running one calls
+`prompts/get` (mapping your positional arguments to the prompt's declared
+argument names), flattens the returned messages to text, and runs that as a
+request in your current mode. List them with `aishe mcp`:
+
+```
+MCP prompts (run as /<server>:<prompt>):
+  /docs:summarize  -  Summarize a document
+```
+
+```sh
+/docs:summarize report.md
+```
+
 ## Transport and limits
 
 - Two transports are supported:
@@ -84,8 +114,9 @@ MCP tools (yolo mode):
     `initialize` response is captured and echoed on every later request and
     notification. Notifications expect any 2xx (typically `202 Accepted`).
 - aishe performs the `initialize` handshake, sends `notifications/initialized`,
-  then `tools/list`. Only **tools** are consumed today (not prompts or
-  resources), on either transport.
+  then `tools/list`, and (per the server's declared capabilities) `prompts/list`.
+  **Tools**, **resources**, and **prompts** are all consumed (see below), on
+  either transport.
 - A stdio request waits up to 30 seconds for its response, so a wedged server
   can't hang the shell; stdio servers are terminated when aishe exits. HTTP
   calls use a 10s connect and 30s read timeout.
