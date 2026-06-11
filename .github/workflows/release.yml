@@ -18,12 +18,27 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          # Linux: built with cargo-zigbuild so musl/aarch64 cross-compile
+          # cleanly from a single ubuntu runner (zig provides the C toolchain).
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
+            builder: zig
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-musl
+            builder: zig
+          - os: ubuntu-latest
+            target: aarch64-unknown-linux-gnu
+            builder: zig
+          - os: ubuntu-latest
+            target: aarch64-unknown-linux-musl
+            builder: zig
+          # macOS: native builds on the macOS runner.
           - os: macos-latest
             target: aarch64-apple-darwin
+            builder: native
           - os: macos-latest
             target: x86_64-apple-darwin
+            builder: native
     steps:
       - uses: actions/checkout@v4
 
@@ -32,7 +47,22 @@ jobs:
         with:
           targets: ${{ matrix.target }}
 
-      - name: Build release binary
+      - name: Set up Zig
+        if: matrix.builder == 'zig'
+        uses: mlugg/setup-zig@v2
+
+      - name: Install cargo-zigbuild
+        if: matrix.builder == 'zig'
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-zigbuild
+
+      - name: Build release binary (zig cross)
+        if: matrix.builder == 'zig'
+        run: cargo zigbuild --release --target ${{ matrix.target }}
+
+      - name: Build release binary (native)
+        if: matrix.builder == 'native'
         run: cargo build --release --target ${{ matrix.target }}
 
       - name: Package tarball + checksum
@@ -46,10 +76,82 @@ jobs:
             shasum -a 256 "$tarball" > "$tarball.sha256"
           fi
 
-      - name: Attach to GitHub Release
+      # Stash the raw Linux gnu binaries so the packaging job can turn them into
+      # .deb/.rpm without rebuilding.
+      - name: Stage Linux binary for packaging
+        if: matrix.target == 'x86_64-unknown-linux-gnu' || matrix.target == 'aarch64-unknown-linux-gnu'
+        uses: actions/upload-artifact@v4
+        with:
+          name: bin-${{ matrix.target }}
+          path: target/${{ matrix.target }}/release/aishe
+          retention-days: 1
+
+      - name: Attach tarball to GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           files: |
             aishe-${{ matrix.target }}.tar.gz
             aishe-${{ matrix.target }}.tar.gz.sha256
           generate_release_notes: true
+
+  package:
+    name: linux packages (.deb / .rpm)
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download x86_64 binary
+        uses: actions/download-artifact@v4
+        with:
+          name: bin-x86_64-unknown-linux-gnu
+          path: dist/amd64
+
+      - name: Download aarch64 binary
+        uses: actions/download-artifact@v4
+        with:
+          name: bin-aarch64-unknown-linux-gnu
+          path: dist/arm64
+
+      - name: Generate completions and man page
+        run: |
+          chmod +x dist/amd64/aishe dist/arm64/aishe
+          mkdir -p dist/completions dist/man
+          # Completions and the man page are arch-independent, so generate them
+          # once from the (native) amd64 binary.
+          dist/amd64/aishe completions bash > dist/completions/aishe.bash
+          dist/amd64/aishe completions zsh  > dist/completions/_aishe
+          dist/amd64/aishe completions fish > dist/completions/aishe.fish
+          sudo apt-get update && sudo apt-get install -y help2man
+          version="${GITHUB_REF_NAME#v}"
+          help2man --no-info --no-discard-stderr \
+            --name "natural-language-aware shell" \
+            --version-string "aishe $version" \
+            dist/amd64/aishe > dist/man/aishe.1
+          gzip -9 -n -f dist/man/aishe.1
+
+      - name: Install nfpm
+        uses: taiki-e/install-action@v2
+        with:
+          tool: nfpm
+
+      - name: Build .deb and .rpm packages
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          for arch in amd64 arm64; do
+            for pkger in deb rpm; do
+              VERSION="$version" ARCH="$arch" BINARY="dist/$arch/aishe" \
+                nfpm package --config nfpm.yaml --packager "$pkger" --target dist/
+            done
+          done
+          ( cd dist && for f in *.deb *.rpm; do sha256sum "$f" > "$f.sha256"; done )
+          ls -l dist/*.deb dist/*.rpm
+
+      - name: Attach packages to GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/*.deb
+            dist/*.rpm
+            dist/*.deb.sha256
+            dist/*.rpm.sha256

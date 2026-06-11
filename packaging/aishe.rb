@@ -22,6 +22,10 @@ class Aishe < Formula
   end
 
   on_linux do
+    on_arm do
+      url "https://github.com/billiondollarsolo/aishe/releases/download/v#{version}/aishe-aarch64-unknown-linux-gnu.tar.gz"
+      sha256 "REPLACE_WITH_aarch64-unknown-linux-gnu_SHA256"
+    end
     on_intel do
       url "https://github.com/billiondollarsolo/aishe/releases/download/v#{version}/aishe-x86_64-unknown-linux-gnu.tar.gz"
       sha256 "REPLACE_WITH_x86_64-unknown-linux-gnu_SHA256"

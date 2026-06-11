@@ -331,7 +331,10 @@ produces working tarballs + checksums on all three targets, and that
 **H2. Repo identity reconciliation.** Align `Cargo.toml` `repository`, the
 binstall `pkg-url`, the Homebrew formula URLs, and the README badges with the
 actual GitHub remote. Decide canonical owner.
-- Effort: S. Priority: P0. Status: OPEN (decision needed).
+- Effort: S. Priority: P0. Status: DONE. Canonical owner is
+  `billiondollarsolo/aishe` (the actual remote); `Cargo.toml`, the binstall
+  `pkg-url`, the Homebrew formula (now incl. aarch64-linux), and the docs all
+  resolve there.
 
 **H3. Man page.** Generate `aishe.1` (clap_mangen via build.rs or an `aishe man`
 command) and install it from Homebrew + the tarball.
@@ -340,14 +343,17 @@ command) and install it from Homebrew + the tarball.
 **H4. aarch64-linux + musl static builds.** Add `aarch64-unknown-linux-gnu` and a
 `x86_64-unknown-linux-musl` fully-static target to the release matrix (cross or
 `cargo-zigbuild`).
-- Effort: M. Priority: P2. Status: open.
+- Effort: M. Priority: P2. Status: DONE. The release matrix now builds
+  `x86_64`/`aarch64` for both `-gnu` and static `-musl` via `cargo-zigbuild`.
 
 **H5. Publish to crates.io.** Ensure metadata, license, and a clean
 `cargo publish --dry-run`; decide whether to publish the lib.
 - Effort: S. Priority: P2. Status: open.
 
 **H6. Linux packages.** A `.deb`/`.rpm` (nfpm) and an AUR/Nix expression.
-- Effort: M. Priority: P3. Status: open.
+- Effort: M. Priority: P3. Status: partial. `.deb`/`.rpm` ship from the release
+  workflow (nfpm, `nfpm.yaml`) for amd64/arm64 with completions + man page; a
+  `curl | sh` `install.sh` is also added. AUR/Nix expressions still open.
 
 ### I. Documentation
 
@@ -471,8 +477,8 @@ A feature is "done" only when all of:
 
 1. **Architectural direction** (section 2): Option A, B, or C. Blocks the scope
    of all `(reedline)` parity work. **P0.**
-2. **Canonical repository identity** (H2): which GitHub owner is canonical, so
-   binstall/Homebrew/release URLs resolve. **P0.**
+2. ~~**Canonical repository identity** (H2): which GitHub owner is canonical, so
+   binstall/Homebrew/release URLs resolve.~~ **Resolved: `billiondollarsolo/aishe`.**
 3. **Telemetry stance** (K2/I4): none, or opt-in anonymized counts.
 4. **crates.io publishing** (H5): publish the binary and/or the library.
 5. **Minimum supported platforms** and whether Windows is ever in scope.

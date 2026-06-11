@@ -1,0 +1,60 @@
+# nfpm config for building aishe .deb and .rpm packages.
+# https://nfpm.goreleaser.com
+#
+# Driven by the release workflow (.github/workflows/release.yml), which sets the
+# templated environment variables and runs, per arch and packager:
+#
+#   VERSION=0.2.0 ARCH=amd64 BINARY=dist/amd64/aishe \
+#     nfpm package --config nfpm.yaml --packager deb --target dist/
+#
+# It expects the shell completions and man page to have been generated into
+# dist/completions/ and dist/man/ first (see the workflow). You can also build
+# locally the same way once those files exist.
+name: aishe
+arch: ${ARCH}
+platform: linux
+version: ${VERSION}
+section: utils
+priority: optional
+maintainer: "billiondollarsolo <billiondollarsolo@users.noreply.github.com>"
+description: |
+  Natural-language-aware shell: zsh for commands, an LLM for everything else.
+  aishe behaves like zsh for real commands and routes anything that is not a
+  command to an LLM, which either suggests a command to confirm or runs
+  autonomously in a tool-use loop. Single binary, no services.
+vendor: billiondollarsolo
+homepage: https://github.com/billiondollarsolo/aishe
+license: MIT
+
+# aishe delegates command execution to zsh (preferred) or bash. bash is present
+# on essentially every Linux box, so we only recommend zsh.
+recommends:
+  - zsh
+
+contents:
+  - src: ${BINARY}
+    dst: /usr/bin/aishe
+    file_info:
+      mode: 0755
+
+  - src: dist/completions/aishe.bash
+    dst: /usr/share/bash-completion/completions/aishe
+  - src: dist/completions/_aishe
+    dst: /usr/share/zsh/site-functions/_aishe
+  - src: dist/completions/aishe.fish
+    dst: /usr/share/fish/vendor_completions.d/aishe.fish
+
+  - src: dist/man/aishe.1.gz
+    dst: /usr/share/man/man1/aishe.1.gz
+
+  - src: LICENSE
+    dst: /usr/share/doc/aishe/LICENSE
+  - src: README.md
+    dst: /usr/share/doc/aishe/README.md
+  - src: CHANGELOG.md
+    dst: /usr/share/doc/aishe/CHANGELOG.md
+
+deb:
+  compression: zstd
+rpm:
+  compression: zstd:default

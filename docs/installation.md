@@ -14,11 +14,65 @@ source with Cargo.
 - Platforms: macOS (arm64 and x86_64) and Linux (x86_64 and arm64). Windows is
   not supported.
 
-## Prebuilt binary
+## Quick install (Linux and macOS)
+
+The fastest path is the install script. It detects your OS and CPU, downloads the
+right prebuilt binary from the latest release (the fully-static musl build on
+Linux, so there are no glibc requirements), verifies its checksum, and installs
+it:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/billiondollarsolo/aishe/main/install.sh | sh
+```
+
+It installs to `/usr/local/bin` when writable, otherwise `~/.local/bin`. Override
+with environment variables:
+
+```sh
+AISHE_VERSION=v0.2.0 AISHE_BIN_DIR="$HOME/.local/bin" \
+  sh -c "$(curl -fsSL https://raw.githubusercontent.com/billiondollarsolo/aishe/main/install.sh)"
+```
+
+## Linux packages (.deb / .rpm)
+
+Each tagged release attaches Debian and RPM packages for `amd64` and `arm64`.
+They install the binary to `/usr/bin/aishe` plus shell completions (bash, zsh,
+fish) and the `aishe(1)` man page into the standard system locations.
+
+Debian / Ubuntu:
+
+```sh
+arch=amd64   # or arm64
+curl -fsSL -O "https://github.com/billiondollarsolo/aishe/releases/latest/download/aishe_0.2.0_${arch}.deb"
+sudo apt install "./aishe_0.2.0_${arch}.deb"
+```
+
+Fedora / RHEL / openSUSE:
+
+```sh
+arch=x86_64  # or aarch64
+curl -fsSL -O "https://github.com/billiondollarsolo/aishe/releases/latest/download/aishe-0.2.0.${arch}.rpm"
+sudo dnf install "./aishe-0.2.0.${arch}.rpm"
+```
+
+(Substitute the release version for `0.2.0`.)
+
+## Prebuilt binary (tarball)
 
 Each tagged release attaches per-platform tarballs (and `.sha256` checksums):
-`aishe-<target>.tar.gz` for `x86_64-unknown-linux-gnu`, `aarch64-apple-darwin`,
-and `x86_64-apple-darwin`.
+`aishe-<target>.tar.gz` for these targets:
+
+| Platform        | Target                          |
+| --------------- | ------------------------------- |
+| Linux x86_64    | `x86_64-unknown-linux-gnu`      |
+| Linux x86_64    | `x86_64-unknown-linux-musl` (static) |
+| Linux arm64     | `aarch64-unknown-linux-gnu`     |
+| Linux arm64     | `aarch64-unknown-linux-musl` (static) |
+| macOS arm64     | `aarch64-apple-darwin`          |
+| macOS x86_64    | `x86_64-apple-darwin`           |
+
+The `-musl` builds are fully static and have no glibc version requirement, which
+makes them the most portable choice on Linux (and what the install script uses).
 
 With [cargo-binstall](https://github.com/cargo-bins/cargo-binstall) (no Rust build
 needed, just the installer):
@@ -30,7 +84,7 @@ cargo binstall aishe
 Or download and install the tarball for your platform by hand:
 
 ```sh
-target=x86_64-unknown-linux-gnu   # or aarch64-apple-darwin, x86_64-apple-darwin
+target=x86_64-unknown-linux-musl   # see the table above
 curl -fsSL -O "https://github.com/billiondollarsolo/aishe/releases/latest/download/aishe-$target.tar.gz"
 tar -xzf "aishe-$target.tar.gz"
 sudo install -m 0755 aishe /usr/local/bin/aishe

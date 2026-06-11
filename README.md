@@ -34,25 +34,38 @@ all work unmodified.
 
 ## Install
 
-Requires Rust 1.80 or newer and `zsh` or `bash` on your `PATH`. Targets macOS
-(arm64 / x86_64) and Linux (x86_64 / arm64).
+Needs `zsh` or `bash` on your `PATH`. Targets macOS (arm64 / x86_64) and Linux
+(x86_64 / arm64). No Rust toolchain required for the prebuilt binaries.
 
-Install a prebuilt binary from a tagged release, or build from source:
+Quickest, on Linux or macOS (downloads the right prebuilt binary, verifies its
+checksum, installs it):
 
 ```sh
-cargo binstall aishe              # prebuilt binary, no Rust build (cargo-binstall)
-# or build from a checkout:
+curl -fsSL https://raw.githubusercontent.com/billiondollarsolo/aishe/main/install.sh | sh
+```
+
+Or pick a packaged install:
+
+```sh
+cargo binstall aishe                       # prebuilt binary via cargo-binstall
+sudo apt install ./aishe_<ver>_amd64.deb   # Debian/Ubuntu (.deb from the release)
+sudo dnf install ./aishe-<ver>.x86_64.rpm  # Fedora/RHEL  (.rpm from the release)
+brew install --formula ./packaging/aishe.rb
+```
+
+Or build from a checkout (needs Rust 1.80+):
+
+```sh
 cargo install --path .            # installs to ~/.cargo/bin
 cargo build --release             # or just the binary at target/release/aishe
 ```
 
-Releases also attach per-platform tarballs (`aishe-<target>.tar.gz` + `.sha256`),
-and there is a Homebrew formula template in [`packaging/`](packaging/aishe.rb).
-See [docs/installation.md](docs/installation.md) for all options and shell
-completions (`aishe completions <shell>`).
-
-See [docs/installation.md](docs/installation.md) for the full guide, including
-uninstalling and the planned prebuilt packages.
+Every tagged release attaches per-platform tarballs (`aishe-<target>.tar.gz` +
+`.sha256`) for Linux x86_64/arm64 (gnu and static musl) and macOS arm64/x86_64,
+plus `.deb`/`.rpm` packages and the Homebrew formula in
+[`packaging/`](packaging/aishe.rb). See [docs/installation.md](docs/installation.md)
+for the full guide, shell completions (`aishe completions <shell>`), and
+uninstalling.
 
 ## Quickstart
 

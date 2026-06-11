@@ -120,3 +120,8 @@ is tagged `(reedline)` so we can re-scope quickly.
   `aishe completions <shell>`, build metadata (git SHA + date) in
   `aishe --version`, and a richer `aishe doctor` all ship. A man page is still
   open.
+- [x] Linux distribution: the release workflow now also builds static musl and
+  aarch64 Linux tarballs, `.deb`/`.rpm` packages (via nfpm, with completions and
+  a generated `aishe(1)` man page), and a `curl | sh` `install.sh`. Repo identity
+  is reconciled on `billiondollarsolo/aishe` across `Cargo.toml`, binstall, the
+  Homebrew formula, and docs.

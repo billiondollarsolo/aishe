@@ -7,6 +7,18 @@ breaking changes can land in any release.
 ## [Unreleased]
 
 ### Added
+- **Linux releases and packages.** The release workflow now produces, for every
+  `v*` tag: static-musl and aarch64 Linux tarballs (built with `cargo-zigbuild`)
+  in addition to the existing gnu/macOS ones; `.deb` and `.rpm` packages for
+  `amd64`/`arm64` (via nfpm, installing the binary, bash/zsh/fish completions, and
+  a generated `aishe(1)` man page); and `.sha256` checksums for all of them. A new
+  `install.sh` (`curl -fsSL .../install.sh | sh`) detects the platform, downloads
+  the right (static) binary, verifies its checksum, and installs it. See
+  `nfpm.yaml`, `.github/workflows/release.yml`, and `docs/installation.md`.
+- **Repo identity reconciled.** `billiondollarsolo/aishe` is the canonical
+  repository; `Cargo.toml` `repository`, the `cargo binstall` `pkg-url`, the
+  Homebrew formula URLs (now including aarch64-linux), and the docs all point
+  there consistently.
 - **Distribution and polish.** `aishe --version` now reports the build's git SHA
   and date (via `build.rs`); `aishe completions <bash|zsh|fish|...>` prints a
   shell completion script for aishe itself; `aishe doctor` adds version, MCP
