@@ -720,6 +720,8 @@ fn repl(
     );
 
     loop {
+        // Report any background jobs that finished since the last prompt.
+        executor.reap_jobs();
         // Computed once per prompt (not per keystroke). The branch comes from
         // .git/HEAD (cheap); the dirty/ahead-behind markers run a short, timed
         // `git status` when `git_status` is on.
@@ -840,6 +842,11 @@ fn handle_line(
 
     match dispatcher::dispatch(line, cache) {
         Dispatch::Shell(cmd) => {
+            // A trailing `&` backgrounds the command (reedline job control).
+            if let Some(bg) = aishe::executor::background_command(&cmd) {
+                executor.run_background(bg);
+                return Ok(false);
+            }
             executor.run(&cmd);
             // A newly-defined alias/function must be recognized as a command on
             // later lines (the executor persists the definition via the rc).

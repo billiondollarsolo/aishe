@@ -22,6 +22,8 @@ pub enum Dispatch {
 /// Builtins we handle in-process to persist shell state.
 const INTERCEPTED: &[&str] = &[
     "cd", "export", "unset", "source", ".", "exit", "quit", "aishe", "pushd", "popd", "dirs",
+    // Background-job builtins (reedline front-end manages the job table).
+    "jobs", "fg", "bg", "wait", "disown",
 ];
 
 /// Hardcoded fallback list of zsh builtins, used if querying zsh fails.

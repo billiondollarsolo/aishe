@@ -6,11 +6,26 @@ use std::collections::{HashMap, VecDeque};
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::process::ExitStatusExt;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::{Child, Command, Stdio};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use anyhow::{anyhow, Result};
+
+/// A background job started with a trailing `&`. The reedline front-end manages
+/// a table of these so `jobs`/`fg`/`bg`/`wait`/`disown` work for backgrounded
+/// commands. Full TTY job control (Ctrl-Z suspend, process groups) remains the
+/// zsh-PTY front-end's domain.
+struct Job {
+    /// Small, stable job number shown as `[id]`.
+    id: u32,
+    /// The OS process id of the backgrounded shell.
+    pid: u32,
+    /// The command line (without the trailing `&`).
+    command: String,
+    /// The child handle; `None` once it has been reaped or disowned.
+    child: Option<Child>,
+}
 
 /// Captured-output truncation limit handed to the LLM.
 const CAPTURE_TRUNCATE_CHARS: usize = 8_000;
@@ -42,6 +57,8 @@ pub struct Executor {
     /// Directory stack for `pushd`/`popd`/`dirs` (most-recent first; the cwd is
     /// not stored here — it's shown first by `dirs`).
     dir_stack: Vec<PathBuf>,
+    /// Background jobs started with a trailing `&` (reedline front-end).
+    jobs: Vec<Job>,
 }
 
 impl Executor {
@@ -66,6 +83,7 @@ impl Executor {
             history: VecDeque::with_capacity(10),
             session_rc: init_session_rc().ok(),
             dir_stack: Vec::new(),
+            jobs: Vec::new(),
         })
     }
 
@@ -261,6 +279,11 @@ impl Executor {
             "pushd" => self.builtin_pushd(tokens.get(1).map(|s| s.as_str())),
             "popd" => self.builtin_popd(),
             "dirs" => self.builtin_dirs(&tokens[1..]),
+            "jobs" => self.builtin_jobs(),
+            "fg" => self.builtin_fg(tokens.get(1).map(|s| s.as_str())),
+            "bg" => self.builtin_bg(tokens.get(1).map(|s| s.as_str())),
+            "wait" => self.builtin_wait(tokens.get(1).map(|s| s.as_str())),
+            "disown" => self.builtin_disown(tokens.get(1).map(|s| s.as_str())),
             other => {
                 eprintln!("aishe: builtin not handled: {other}");
                 1
@@ -268,6 +291,186 @@ impl Executor {
         };
         self.record(&tokens.join(" "), code);
         code
+    }
+
+    // ----- Background jobs (reedline front-end) -------------------------------
+
+    /// Spawn `line` as a background job (it had a trailing `&`), tracking it so
+    /// `jobs`/`fg`/`bg`/`wait`/`disown` can manage it. stdin is closed (a
+    /// background job must not steal terminal input); stdout/stderr are inherited.
+    pub fn run_background(&mut self, line: &str) -> i32 {
+        let mut cmd = Command::new(&self.shell);
+        self.apply_rc(&mut cmd, line);
+        let child = cmd
+            .envs(&self.env)
+            .current_dir(&self.cwd)
+            .stdin(Stdio::null())
+            .stdout(Stdio::inherit())
+            .stderr(Stdio::inherit())
+            .spawn();
+        self.last_duration = None;
+        match child {
+            Ok(child) => {
+                let id = self.next_job_id();
+                let pid = child.id();
+                self.jobs.push(Job {
+                    id,
+                    pid,
+                    command: line.to_string(),
+                    child: Some(child),
+                });
+                println!("[{id}] {pid}");
+                self.record(&format!("{line} &"), 0);
+                0
+            }
+            Err(e) => {
+                eprintln!("aishe: failed to launch shell: {e}");
+                self.record(&format!("{line} &"), 127);
+                127
+            }
+        }
+    }
+
+    /// The lowest unused positive job id.
+    fn next_job_id(&self) -> u32 {
+        let mut id = 1;
+        while self.jobs.iter().any(|j| j.id == id) {
+            id += 1;
+        }
+        id
+    }
+
+    /// Poll background jobs, printing a `[id]+ Done` / `Exit N` notice for any that
+    /// have finished and dropping them from the table. Call before each prompt.
+    pub fn reap_jobs(&mut self) {
+        let mut finished = Vec::new();
+        for job in &mut self.jobs {
+            if let Some(child) = &mut job.child {
+                if let Ok(Some(status)) = child.try_wait() {
+                    finished.push((job.id, job.command.clone(), exit_code(&status)));
+                    job.child = None;
+                }
+            }
+        }
+        for (id, command, code) in &finished {
+            if *code == 0 {
+                println!("[{id}]+ Done       {command}");
+            } else {
+                println!("[{id}]+ Exit {code:<3}  {command}");
+            }
+        }
+        // Drop reaped (and previously disowned) jobs whose child is gone.
+        self.jobs.retain(|j| j.child.is_some());
+    }
+
+    /// Select a job by a `%n` / `n` spec, or the most recent when `spec` is `None`
+    /// / `%%` / `%+`. Returns the index into `self.jobs`.
+    fn job_index(&self, spec: Option<&str>) -> Option<usize> {
+        match spec {
+            None | Some("%%") | Some("%+") | Some("%-") => {
+                self.jobs.iter().enumerate().map(|(i, _)| i).next_back()
+            }
+            Some(s) => {
+                let n: u32 = s.trim_start_matches('%').parse().ok()?;
+                self.jobs.iter().position(|j| j.id == n)
+            }
+        }
+    }
+
+    fn builtin_jobs(&mut self) -> i32 {
+        self.reap_jobs();
+        for job in &self.jobs {
+            println!("[{}]+ Running  {:>7}  {} &", job.id, job.pid, job.command);
+        }
+        0
+    }
+
+    /// Bring a background job to the foreground and wait for it to finish.
+    fn builtin_fg(&mut self, spec: Option<&str>) -> i32 {
+        self.reap_jobs();
+        let Some(idx) = self.job_index(spec) else {
+            eprintln!("fg: no such job");
+            return 1;
+        };
+        let mut job = self.jobs.remove(idx);
+        println!("{}", job.command);
+        let code = match job.child.take() {
+            Some(mut child) => match child.wait() {
+                Ok(status) => exit_code(&status),
+                Err(e) => {
+                    eprintln!("fg: {e}");
+                    1
+                }
+            },
+            None => 0,
+        };
+        self.last_exit = code;
+        code
+    }
+
+    /// Resume a job in the background. In this model a backgrounded job is already
+    /// running, so this is informational (there is no Ctrl-Z stop to resume).
+    fn builtin_bg(&mut self, spec: Option<&str>) -> i32 {
+        self.reap_jobs();
+        match self.job_index(spec) {
+            Some(idx) => {
+                let job = &self.jobs[idx];
+                println!("[{}]+ {} &", job.id, job.command);
+                0
+            }
+            None => {
+                eprintln!("bg: no such job");
+                1
+            }
+        }
+    }
+
+    /// Wait for one job (`%n`) or, with no argument, all jobs.
+    fn builtin_wait(&mut self, spec: Option<&str>) -> i32 {
+        let indices: Vec<usize> = match spec {
+            None => (0..self.jobs.len()).collect(),
+            some => match self.job_index(some) {
+                Some(i) => vec![i],
+                None => return 0,
+            },
+        };
+        let mut last = 0;
+        // Collect target job ids first (indices shift as we remove).
+        let ids: Vec<u32> = indices.iter().map(|&i| self.jobs[i].id).collect();
+        for id in ids {
+            if let Some(pos) = self.jobs.iter().position(|j| j.id == id) {
+                let mut job = self.jobs.remove(pos);
+                if let Some(mut child) = job.child.take() {
+                    if let Ok(status) = child.wait() {
+                        last = exit_code(&status);
+                    }
+                }
+            }
+        }
+        last
+    }
+
+    /// Remove a job (`%n`) or all jobs from the table without killing them.
+    fn builtin_disown(&mut self, spec: Option<&str>) -> i32 {
+        match spec {
+            None => {
+                // Detach every job: forget the handles (the processes keep running).
+                for job in &mut self.jobs {
+                    job.child = None;
+                }
+                self.jobs.clear();
+            }
+            some => match self.job_index(some) {
+                Some(idx) => {
+                    self.jobs.remove(idx);
+                }
+                None => {
+                    eprintln!("disown: no such job");
+                    return 1;
+                }
+            },
+        }
+        0
     }
 
     /// Resolve a `cd`/`pushd` argument to a canonical existing directory. A bare
@@ -651,6 +854,23 @@ fn is_bare_name(arg: &str) -> bool {
     !arg.is_empty() && !arg.starts_with('/') && !arg.starts_with('~') && !arg.starts_with('.')
 }
 
+/// If `line` is a background request (ends with a single trailing `&`, not the
+/// logical `&&`), return the command with that `&` removed. Only a trailing `&`
+/// is recognized; inline `a & b` is left to the shell.
+pub fn background_command(line: &str) -> Option<&str> {
+    let trimmed = line.trim_end();
+    let rest = trimmed.strip_suffix('&')?;
+    if rest.ends_with('&') {
+        return None; // `&&`
+    }
+    let cmd = rest.trim_end();
+    if cmd.is_empty() {
+        None
+    } else {
+        Some(cmd)
+    }
+}
+
 /// Parse a `cd -N` / `cd +N` argument into a directory-stack index. Returns
 /// `None` for a bare `-`/`+` or a non-numeric argument.
 fn stack_index(arg: &str) -> Option<usize> {
@@ -817,6 +1037,54 @@ mod tests {
         assert!(!is_bare_name("./rel"));
         assert!(!is_bare_name("../up"));
         assert!(!is_bare_name(""));
+    }
+
+    #[test]
+    fn background_command_detects_trailing_amp() {
+        assert_eq!(background_command("sleep 10 &"), Some("sleep 10"));
+        assert_eq!(background_command("sleep 10&"), Some("sleep 10"));
+        assert_eq!(
+            background_command("find / -name x 2>/dev/null &"),
+            Some("find / -name x 2>/dev/null")
+        );
+        assert_eq!(background_command("echo hi && echo bye"), None);
+        assert_eq!(background_command("echo hi"), None);
+        assert_eq!(background_command("&"), None);
+    }
+
+    #[test]
+    fn background_job_lifecycle() {
+        let mut ex = Executor::new().unwrap();
+        // Start two quick background jobs and one slow one.
+        assert_eq!(ex.run_background("true"), 0);
+        assert_eq!(ex.run_background("sleep 5"), 0);
+        // Job ids start at 1 and increment to the lowest free.
+        assert_eq!(ex.jobs.len(), 2);
+        assert_eq!(ex.jobs[0].id, 1);
+        assert_eq!(ex.jobs[1].id, 2);
+        // `wait %1` reaps the quick job; the sleeper is disowned (not killed/waited).
+        let _ = ex.builtin_wait(Some("%1"));
+        assert!(ex.jobs.iter().all(|j| j.id != 1));
+        assert_eq!(ex.builtin_disown(None), 0);
+        assert!(ex.jobs.is_empty());
+    }
+
+    #[test]
+    fn next_job_id_fills_lowest_gap() {
+        let mut ex = Executor::new().unwrap();
+        ex.jobs.push(Job {
+            id: 1,
+            pid: 0,
+            command: "a".into(),
+            child: None,
+        });
+        ex.jobs.push(Job {
+            id: 3,
+            pid: 0,
+            command: "c".into(),
+            child: None,
+        });
+        assert_eq!(ex.next_job_id(), 2);
     }
 
     #[test]
