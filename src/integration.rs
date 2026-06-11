@@ -117,6 +117,7 @@ aishe_precmd() {
 aishe-nl-widget() {
   emulate -L zsh
   [[ -z "$BUFFER" ]] && return
+  print -s -- "$BUFFER"   # keep the NL line in history (up-arrow recall)
   _aishe_force_nl "$BUFFER"
   BUFFER=""
   zle .accept-line
@@ -129,6 +130,7 @@ aishe-nl-widget() {
 aishe-accept-line() {
   emulate -L zsh
   if [[ "$BUFFER" == [#?]* ]]; then
+    print -s -- "$BUFFER"   # keep the NL line in history (up-arrow recall)
     local body="${BUFFER#[#?]}"
     body="${body# }"
     if [[ -n "$body" ]]; then
