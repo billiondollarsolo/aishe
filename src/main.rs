@@ -859,10 +859,17 @@ fn add_aishe_bindings(kb: &mut Keybindings) {
             ReedlineEvent::MenuNext,
         ]),
     );
+    // Shift-Tab: navigate a completion menu backward when one is open, otherwise
+    // cycle the interaction mode (suggest -> auto -> yolo), like Claude Code.
+    // MenuPrevious reports Inapplicable when no menu is active, so UntilFound
+    // falls through to the host command.
     kb.add_binding(
         KeyModifiers::SHIFT,
         KeyCode::BackTab,
-        ReedlineEvent::MenuPrevious,
+        ReedlineEvent::UntilFound(vec![
+            ReedlineEvent::MenuPrevious,
+            ReedlineEvent::ExecuteHostCommand("aishe mode --cycle".to_string()),
+        ]),
     );
     // Ctrl-R → browsable, filterable history menu (upgrade over the default
     // single-line incremental search): type to filter, arrows to pick.
@@ -1529,7 +1536,17 @@ fn handle_meta(
         "mcp" => print_mcp_listing(mcp),
         "mode" => {
             if let Some(m) = tokens.get(2) {
-                if matches!(m.as_str(), "suggest" | "auto" | "yolo") {
+                if m == "--cycle" {
+                    // Session toggle (Shift-Tab): rotate the mode without
+                    // persisting, mirroring the zsh-PTY AISHE_MODE cycle.
+                    config.aishe.mode = match config.aishe.mode.as_str() {
+                        "suggest" => "auto",
+                        "auto" => "yolo",
+                        _ => "suggest",
+                    }
+                    .to_string();
+                    println!("aishe mode: {}", config.aishe.mode);
+                } else if matches!(m.as_str(), "suggest" | "auto" | "yolo") {
                     config.aishe.mode = m.clone();
                     persist(config);
                     println!("mode → {m}");

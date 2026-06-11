@@ -31,6 +31,13 @@ breaking changes can land in any release.
   `tests/pty_fuzz.py` generatively runs hundreds of cases (real commands with
   pipes/redirs/globs/quoting, sigil NL stuffed with shell metacharacters, and
   adversarial model responses), asserting no parse/glob/eval error ever leaks.
+- **Shift-Tab cycles the interaction mode** (`suggest -> auto -> yolo`), like
+  Claude Code. In the zsh-PTY / `init zsh` front-end a ZLE widget rotates
+  `AISHE_MODE` and repaints the prompt glyph (Shift-Tab still navigates an open
+  completion menu first); bash binds the same to `\e[Z`; reedline falls through to
+  the cycle only when no menu is open. Override the key with `AISHE_MODE_KEY`. The
+  safety gate and `yolo_confirm` tier still apply, so cycling never bypasses a
+  confirmation.
 - **Config-precedence and provider step-down tests.** `Config::apply_overrides`
   makes the `--flags > file > defaults` order explicit and unit-tested;
   `resolve_audit` does the same for `AISHE_LOG`/`AISHE_LOG_FILE` vs the config

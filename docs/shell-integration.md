@@ -45,6 +45,22 @@ sequence:
 export AISHE_NL_KEY='^o'
 ```
 
+### mode-cycle keybinding
+
+Press **Shift-Tab** to rotate the interaction mode for the session
+(`suggest -> auto -> yolo -> suggest`), like Claude Code. The prompt glyph
+updates (`❯` suggest, `»` auto, `⚡` yolo) and the new mode is shown. In zsh,
+Shift-Tab still navigates an open completion menu first; it only cycles the mode
+when no menu is showing. This changes how the *next* natural-language line routes;
+the safety gate and `yolo_confirm` tier always still apply, so it never bypasses a
+confirmation. Override the key:
+
+```sh
+export AISHE_MODE_KEY='^[[Z'   # zsh bindkey sequence (default Shift-Tab)
+```
+
+(bash binds the same to `\e[Z`; re-bind with `bind -x` if you need a different key.)
+
 ### How it works
 
 Shells run the not-found handler in a subshell, so it cannot touch the line editor

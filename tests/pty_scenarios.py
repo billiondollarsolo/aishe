@@ -226,6 +226,15 @@ def main():
         check(sh, "up-arrow recalls previous command", sh.expect("echo HISTMARK_42"))
         sh.raw(b"\x03")    # Ctrl-C to clear the recalled line
 
+        # 8. Shift-Tab cycles the interaction mode for the session (the config
+        #    starts in auto, so one press lands on yolo). The widget reports the
+        #    new mode via `zle -M`.
+        sh.settle(0.3)
+        sh.buf = ""
+        sh.raw(b"\x1b[Z")  # Shift-Tab
+        check(sh, "Shift-Tab cycles the mode", sh.expect("aishe mode: yolo"))
+        sh.raw(b"\x03")
+
         # Global invariant: no parse/glob/eval errors anywhere in the session.
         leaked = [s for s in FORBIDDEN if s in sh.transcript]
         check(sh, "no parse/glob/eval errors leaked", not leaked)

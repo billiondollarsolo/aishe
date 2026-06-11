@@ -150,11 +150,31 @@ aishe-accept-line() {
   fi
   zle "${_aishe_orig_accept_line:-.accept-line}"
 }
+
+# Mode-cycle key (default Shift-Tab; override with AISHE_MODE_KEY). Rotates
+# AISHE_MODE suggest -> auto -> yolo -> suggest for the rest of the session, like
+# Claude Code's Shift-Tab. The safety gate and yolo_confirm tier still apply, so
+# this never bypasses confirmation; it only changes how the next NL line routes.
+aishe-cycle-mode() {
+  emulate -L zsh
+  case "${AISHE_MODE:-suggest}" in
+    suggest) AISHE_MODE=auto ;;
+    auto)    AISHE_MODE=yolo ;;
+    *)       AISHE_MODE=suggest ;;
+  esac
+  export AISHE_MODE
+  # Repaint the branded prompt glyph if the PTY prompt function is loaded.
+  (( $+functions[aishe_set_prompt] )) && aishe_set_prompt
+  zle reset-prompt
+  zle -M "aishe mode: ${AISHE_MODE}"
+}
 if [[ -o interactive ]]; then
   autoload -Uz add-zsh-hook
   add-zsh-hook precmd aishe_precmd
   zle -N aishe-nl-widget
   bindkey "${AISHE_NL_KEY:-^[^M}" aishe-nl-widget
+  zle -N aishe-cycle-mode
+  bindkey "${AISHE_MODE_KEY:-^[[Z}" aishe-cycle-mode
   # Wrap accept-line once, chaining any existing widget (plugin-friendly).
   if [[ "${widgets[accept-line]}" != "user:aishe-accept-line" ]]; then
     case "${widgets[accept-line]}" in
@@ -176,7 +196,8 @@ pub fn zsh_script() -> String {
 # Set AISHE_MODE=suggest|auto|yolo to control behavior (default: suggest).
 # In auto mode, safe commands run directly (cd/export persist); dangerous ones
 # are pre-filled for review. Press Alt-Enter (or $AISHE_NL_KEY) to force a line
-# to be treated as natural language.
+# to be treated as natural language, and Shift-Tab (or $AISHE_MODE_KEY) to cycle
+# the mode for the session.
 {ZSH_HOOK}"#
     )
 }
@@ -303,6 +324,19 @@ __aishe_nl() {
   fi
 }
 bind -x '"\C-g": __aishe_nl' 2>/dev/null
+
+# Mode-cycle: Shift-Tab rotates AISHE_MODE suggest -> auto -> yolo -> suggest for
+# the session (override the key by re-binding "\e[Z"). The next prompt reflects
+# it; the safety gate and yolo_confirm tier still apply.
+__aishe_cycle_mode() {
+  case "${AISHE_MODE:-suggest}" in
+    suggest) export AISHE_MODE=auto ;;
+    auto)    export AISHE_MODE=yolo ;;
+    *)       export AISHE_MODE=suggest ;;
+  esac
+  printf '\naishe mode: %s\n' "$AISHE_MODE"
+}
+bind -x '"\e[Z": __aishe_cycle_mode' 2>/dev/null
 "#;
 
 #[cfg(test)]
@@ -326,6 +360,25 @@ mod tests {
         assert!(s.contains("eval \"$cmd\""));
         // history record so eval'd commands show up in history.
         assert!(s.contains("print -s"));
+    }
+
+    #[test]
+    fn zsh_script_has_mode_cycle_widget() {
+        let s = script("zsh").unwrap();
+        assert!(s.contains("aishe-cycle-mode"));
+        assert!(s.contains("zle -N aishe-cycle-mode"));
+        // Default key is Shift-Tab, overridable via AISHE_MODE_KEY.
+        assert!(s.contains("${AISHE_MODE_KEY:-^[[Z}"));
+        // It repaints and reports the new mode.
+        assert!(s.contains("reset-prompt"));
+        assert!(s.contains("aishe mode: "));
+    }
+
+    #[test]
+    fn bash_script_has_mode_cycle_binding() {
+        let s = script("bash").unwrap();
+        assert!(s.contains("__aishe_cycle_mode"));
+        assert!(s.contains(r#"bind -x '"\e[Z": __aishe_cycle_mode'"#));
     }
 
     #[test]

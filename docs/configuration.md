@@ -164,6 +164,8 @@ Roles: `cwd`, `glyph_ok`, `glyph_err`, `right_prompt`, `known_cmd`,
 - `AISHE_MODE`: mode used by the native shell hook (`suggest`, `auto`, `yolo`).
 - `AISHE_NL_KEY`: override the force-NL keybinding for the zsh hook (a `bindkey`
   sequence, for example `^o`).
+- `AISHE_MODE_KEY`: override the mode-cycle keybinding for the zsh hook (a
+  `bindkey` sequence; default `^[[Z`, Shift-Tab).
 - `XDG_CONFIG_HOME`, `XDG_DATA_HOME`: respected for config and history locations.
 
 ## Command-line flags

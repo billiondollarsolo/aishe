@@ -119,8 +119,11 @@ The hook (in `src/integration.rs`) is the subtle part:
   in history) or holds a dangerous one for review; in `yolo` the handler runs
   `aishe --yolo-line` inline.
 - A ZLE accept-line wrapper strips the `?`/`#` sigil before zsh parses the line
-  (so the metacharacters never reach zsh's grammar), and a force-NL widget
-  (default Alt-Enter) rewrites the current buffer with an LLM suggestion.
+  (so the metacharacters never reach zsh's grammar), a force-NL widget
+  (default Alt-Enter) rewrites the current buffer with an LLM suggestion, and a
+  mode-cycle widget (default Shift-Tab) rotates `AISHE_MODE` and repaints the
+  prompt glyph. In reedline the same Shift-Tab is an `ExecuteHostCommand("aishe
+  mode --cycle")` that falls through only when no completion menu is open.
 
 The same `init` mechanism also works as a pure hook in the user's own shell
 without the PTY (`eval "$(aishe init zsh)"` in `.zshrc`); the PTY wrapper is just

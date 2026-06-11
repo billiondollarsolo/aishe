@@ -42,7 +42,8 @@ command. To force a line to the AI, **start it with `?` or `#`** (e.g.
 `? who was the first man on the moon`); the sigil is stripped by the line editor
 before zsh sees it, so the shell's comment and glob rules never apply. The
 force-NL key (Alt-Enter, or `AISHE_NL_KEY`) does the same for the line you are
-editing.
+editing. **Shift-Tab** (or `AISHE_MODE_KEY`) cycles the interaction mode for the
+session (`suggest -> auto -> yolo`); the prompt glyph updates to match.
 
 Use this front-end when you want your real shell experience with aishe layered on
 top. It also gives you real job control, because it is genuinely your zsh.
