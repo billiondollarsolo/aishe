@@ -20,12 +20,13 @@ VERSION="${AISHE_VERSION:-latest}"
 err() { printf 'aishe-install: %s\n' "$1" >&2; exit 1; }
 
 # --- detect platform --------------------------------------------------------
+command -v uname >/dev/null 2>&1 || err "'uname' not found; cannot detect platform"
 os="$(uname -s)"
 arch="$(uname -m)"
 
 case "$os" in
-  Linux)  os_part="unknown-linux-musl" ;;
-  Darwin) os_part="apple-darwin" ;;
+  Linux)  os_part="unknown-linux-musl"; want_fmt="ELF" ;;
+  Darwin) os_part="apple-darwin";       want_fmt="Mach-O" ;;
   *) err "unsupported OS '$os' (aishe supports Linux and macOS)" ;;
 esac
 
@@ -37,6 +38,7 @@ esac
 
 target="${arch_part}-${os_part}"
 tarball="aishe-${target}.tar.gz"
+printf 'aishe-install: detected %s/%s -> target %s\n' "$os" "$arch" "$target" >&2
 
 # --- resolve download URL ---------------------------------------------------
 base="https://github.com/${REPO}/releases"
@@ -79,6 +81,21 @@ fi
 tar -xzf "$tmp/$tarball" -C "$tmp"
 [ -f "$tmp/aishe" ] || err "archive did not contain an 'aishe' binary"
 chmod +x "$tmp/aishe"
+
+# Sanity-check that the binary matches this OS, so a wrong download can never be
+# silently installed. ELF = Linux, Mach-O = macOS (Mach-O magic has no "ELF").
+got_fmt="unknown"
+if head -c 4 "$tmp/aishe" | grep -q "ELF"; then
+  got_fmt="ELF"
+elif command -v file >/dev/null 2>&1 && file "$tmp/aishe" | grep -q "Mach-O"; then
+  got_fmt="Mach-O"
+fi
+if [ "$want_fmt" = "ELF" ] && [ "$got_fmt" != "ELF" ]; then
+  err "downloaded a non-Linux binary ($got_fmt) for target $target; aborting. Please report this with the lines above."
+fi
+if [ "$want_fmt" = "Mach-O" ] && [ "$got_fmt" = "ELF" ]; then
+  err "downloaded a Linux binary for a macOS target ($target); aborting. Please report this with the lines above."
+fi
 
 # --- choose an install dir --------------------------------------------------
 if [ -n "${AISHE_BIN_DIR:-}" ]; then
