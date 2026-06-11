@@ -27,7 +27,8 @@ If you are new, start with [Installation](installation.md) and then
 - [Shell integration and .aishrc](shell-integration.md) - the native hook and startup file
 - [Troubleshooting](troubleshooting.md) - common issues and `aishe doctor`
 - [Development](development.md) - building, testing, and the validation harness
-- [Roadmap](ROADMAP.md) - where aishe is headed
+- [Roadmap](ROADMAP.md) - the tracked checklist of where aishe is headed
+- [Master plan](PLAN.md) - the long-form plan: reasoning, sequencing, and acceptance criteria
 
 ## Reference files in the repo
 
