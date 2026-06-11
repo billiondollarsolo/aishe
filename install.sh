@@ -5,7 +5,7 @@
 #   curl -fsSL https://raw.githubusercontent.com/billiondollarsolo/aishe/main/install.sh | sh
 #
 # Environment overrides:
-#   AISHE_VERSION   release tag to install (default: latest), e.g. v0.1.1
+#   AISHE_VERSION   release tag to install (default: latest), e.g. v0.1.2
 #   AISHE_BIN_DIR   install directory (default: /usr/local/bin, or ~/.local/bin
 #                   if that is not writable)
 #

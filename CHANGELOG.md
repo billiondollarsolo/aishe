@@ -6,6 +6,8 @@ breaking changes can land in any release.
 
 ## [Unreleased]
 
+## [0.1.2] - 2026-06-11
+
 ### Fixed
 - **Reedline front-end no longer exits after one command on some terminals.** A
   transient terminal read error — most often reedline's cursor-position (DSR)
