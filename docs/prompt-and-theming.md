@@ -28,8 +28,10 @@ For a full powerlevel10k or oh-my-zsh prompt, use the zsh-PTY front-end.
 - `git_prompt = true` shows the current git branch (for example `⎇ main`), read
   directly from `.git/HEAD` without spawning git.
 - `git_status = true` adds `+` (staged), `*` (unstaged changes), ahead/behind
-  counts (`⇡N`/`⇣N`), and `⚑N` (stashes) to the git segment, via one short,
-  time-limited `git status` call per prompt. Turn it off in very large repos.
+  counts (`⇡N`/`⇣N`), and `⚑N` (stashes) to the git segment. The `git status` runs
+  on a **background thread** and is cached (zsh `vcs_info` async style), so the
+  prompt never blocks on a slow or huge repo; the markers refresh by the next
+  prompt. The branch itself is always instant (read from `.git/HEAD`).
 - `report_time` shows the **last command's duration** on the right when it ran at
   least that many seconds (default 3; `0` disables it). For example `3.2s`,
   `1m05s`.

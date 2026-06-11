@@ -707,14 +707,19 @@ fn repl(
             .collect(),
     );
 
+    // Background-refreshed VCS info: the branch is read cheaply each prompt, while
+    // the dirty/ahead-behind/stash markers are computed off-thread and cached, so
+    // a slow or huge repo never blocks the prompt (markers lag by one prompt).
+    let vcs = aishe::prompt::VcsCache::new();
+
     loop {
         // Report any background jobs that finished since the last prompt.
         executor.reap_jobs();
         // Computed once per prompt (not per keystroke). The branch comes from
-        // .git/HEAD (cheap); the dirty/ahead-behind markers run a short, timed
-        // `git status` when `git_status` is on.
+        // .git/HEAD (cheap); the dirty/ahead-behind/stash markers come from the
+        // async VCS cache when `git_status` is on.
         let git = if config.aishe.git_prompt {
-            aishe::prompt::git_segment_full(executor.cwd(), config.aishe.git_status)
+            vcs.segment(executor.cwd(), config.aishe.git_status)
         } else {
             None
         };

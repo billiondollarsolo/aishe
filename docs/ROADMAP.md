@@ -82,9 +82,11 @@ is tagged `(reedline)` so we can re-scope quickly.
 - [~] **Richer history**: dedup (`HIST_IGNORE_DUPS`), ignore-space, and
   `HISTIGNORE` glob patterns shipped (`hist_ignore_dups`/`hist_ignore_space`/
   `hist_ignore`). Timestamps and cross-session sharing still open. (reedline)
-- [~] **Prompt depth**: command duration (`report_time`) and git
+- [x] **Prompt depth**: command duration (`report_time`) and git
   staged/unstaged/ahead-behind/stash (`git_status`) shipped; an exit-status glyph
-  already colors the prompt. Async vcs_info still open. (reedline)
+  colors the prompt; and the git status is now computed **async** (off-thread,
+  cached, so the prompt never blocks on a slow/huge repo - markers lag by one
+  prompt). Done. (reedline)
 - [~] **Spelling correction** (`CORRECT`, `correct`) and **named dirs**
   (`~proj`, `[named_dirs]`) shipped, along with `AUTO_PUSHD` and `cdpath`. Global
   and suffix aliases still open. (reedline)

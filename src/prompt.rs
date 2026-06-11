@@ -3,6 +3,7 @@
 
 use std::borrow::Cow;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use reedline::{
@@ -67,7 +68,7 @@ impl AishePrompt {
 }
 
 /// Git status flags for the prompt segment.
-#[derive(Debug, Default, PartialEq, Eq)]
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
 struct GitStatus {
     staged: bool,
     dirty: bool,
@@ -75,16 +76,100 @@ struct GitStatus {
     behind: u32,
 }
 
-/// The full git prompt segment: branch (from `.git/HEAD`, cheap) plus, when
-/// `show_status` is set, `+` (staged), `*` (unstaged changes), `⇡N`/`⇣N`
-/// ahead/behind the upstream (one short, time-limited `git status` call), and
-/// `⚑N` for stashes. `None` outside a repo.
-pub fn git_segment_full(cwd: &Path, show_status: bool) -> Option<String> {
-    let git_dir = find_git_dir(cwd)?;
-    let branch = branch_from_head(&git_dir)?;
-    let mut out = format!("⎇ {branch}");
-    if show_status {
-        if let Some(st) = git_status(cwd) {
+/// Count stash entries by counting lines in `<git_dir>/logs/refs/stash` (cheap,
+/// no `git` process). `0` when there are none.
+fn stash_count(git_dir: &Path) -> usize {
+    std::fs::read_to_string(git_dir.join("logs/refs/stash"))
+        .map(|s| s.lines().filter(|l| !l.trim().is_empty()).count())
+        .unwrap_or(0)
+}
+
+/// Run `git status` directly (no internal timeout). Used on a background thread by
+/// [`VcsCache`], where blocking is fine because the prompt does not wait on it.
+fn git_status_run(cwd: &Path) -> Option<GitStatus> {
+    let out = std::process::Command::new("git")
+        .arg("-C")
+        .arg(cwd)
+        .args([
+            "status",
+            "--porcelain=v2",
+            "--branch",
+            "--untracked-files=no",
+        ])
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    Some(parse_git_status(&String::from_utf8_lossy(&out.stdout)))
+}
+
+/// Background-refreshed git status/stash counts, so the prompt never blocks on a
+/// slow repo. The branch is read cheaply from `.git/HEAD` on every prompt; the
+/// `git status` and stash counts are computed on a background thread and cached.
+/// Status markers therefore lag by at most one prompt (zsh `vcs_info` async
+/// style). Held by the REPL and cloned into the worker.
+#[derive(Clone, Default)]
+pub struct VcsCache {
+    inner: Arc<Mutex<VcsState>>,
+}
+
+#[derive(Default)]
+struct VcsState {
+    /// The directory the cached status belongs to (cleared on `cd`).
+    cwd: Option<PathBuf>,
+    status: Option<GitStatus>,
+    stashes: usize,
+    /// A refresh is running; don't spawn another.
+    inflight: bool,
+}
+
+impl VcsCache {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// The git segment for `cwd`: the branch computed now, plus status markers
+    /// from the cache (and a background refresh kicked off for next time). Returns
+    /// `None` outside a repo. When `show_status` is false, just the branch.
+    pub fn segment(&self, cwd: &Path, show_status: bool) -> Option<String> {
+        let git_dir = find_git_dir(cwd)?;
+        let branch = branch_from_head(&git_dir)?;
+        let mut out = format!("⎇ {branch}");
+        if !show_status {
+            return Some(out);
+        }
+
+        let (status, stashes) = {
+            let mut st = self.inner.lock().ok()?;
+            if st.cwd.as_deref() != Some(cwd) {
+                // Directory changed: drop stale markers until the refresh lands.
+                st.cwd = Some(cwd.to_path_buf());
+                st.status = None;
+                st.stashes = 0;
+            }
+            if !st.inflight {
+                st.inflight = true;
+                let inner = Arc::clone(&self.inner);
+                let dir = cwd.to_path_buf();
+                let gdir = git_dir.clone();
+                std::thread::spawn(move || {
+                    let status = git_status_run(&dir);
+                    let stashes = stash_count(&gdir);
+                    if let Ok(mut st) = inner.lock() {
+                        // Only store if we're still in the same directory.
+                        if st.cwd.as_deref() == Some(dir.as_path()) {
+                            st.status = status;
+                            st.stashes = stashes;
+                        }
+                        st.inflight = false;
+                    }
+                });
+            }
+            (st.status.clone(), st.stashes)
+        };
+
+        if let Some(st) = status {
             if st.staged {
                 out.push('+');
             }
@@ -98,48 +183,11 @@ pub fn git_segment_full(cwd: &Path, show_status: bool) -> Option<String> {
                 out.push_str(&format!("⇣{}", st.behind));
             }
         }
-        let stashes = stash_count(&git_dir);
         if stashes > 0 {
             out.push_str(&format!("⚑{stashes}"));
         }
+        Some(out)
     }
-    Some(out)
-}
-
-/// Count stash entries by counting lines in `<git_dir>/logs/refs/stash` (cheap,
-/// no `git` process). `0` when there are none.
-fn stash_count(git_dir: &Path) -> usize {
-    std::fs::read_to_string(git_dir.join("logs/refs/stash"))
-        .map(|s| s.lines().filter(|l| !l.trim().is_empty()).count())
-        .unwrap_or(0)
-}
-
-/// Run `git status --porcelain=v2 --branch` with a short timeout and parse the
-/// dirty flag and ahead/behind counts. Best-effort: `None` on error/timeout, so a
-/// slow or huge repo never freezes the prompt.
-fn git_status(cwd: &Path) -> Option<GitStatus> {
-    use std::sync::mpsc;
-    let (tx, rx) = mpsc::channel();
-    let dir = cwd.to_path_buf();
-    std::thread::spawn(move || {
-        let out = std::process::Command::new("git")
-            .arg("-C")
-            .arg(&dir)
-            .args([
-                "status",
-                "--porcelain=v2",
-                "--branch",
-                "--untracked-files=no",
-            ])
-            .output();
-        let _ = tx.send(out);
-    });
-    let out = match rx.recv_timeout(Duration::from_millis(250)) {
-        Ok(Ok(o)) if o.status.success() => o.stdout,
-        _ => return None,
-    };
-    let text = String::from_utf8_lossy(&out);
-    Some(parse_git_status(&text))
 }
 
 /// Parse `git status --porcelain=v2 --branch` output. Changed/renamed entries
@@ -313,6 +361,33 @@ impl Prompt for AishePrompt {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn vcs_cache_returns_branch_without_blocking() {
+        let dir = std::env::temp_dir().join(format!("aishe-vcs-{}", std::process::id()));
+        let gitdir = dir.join(".git");
+        std::fs::create_dir_all(&gitdir).unwrap();
+        std::fs::write(gitdir.join("HEAD"), "ref: refs/heads/main\n").unwrap();
+
+        let vcs = VcsCache::new();
+        // Branch only.
+        assert_eq!(vcs.segment(&dir, false).as_deref(), Some("⎇ main"));
+        // With status: the branch is returned immediately; markers come from the
+        // background refresh, which fails on this fake repo, so just the branch.
+        let started = std::time::Instant::now();
+        assert_eq!(vcs.segment(&dir, true).as_deref(), Some("⎇ main"));
+        assert!(
+            started.elapsed() < Duration::from_millis(100),
+            "segment must not block on git status"
+        );
+        // Outside a repo: None.
+        let outside = std::env::temp_dir().join(format!("aishe-vcs-none-{}", std::process::id()));
+        std::fs::create_dir_all(&outside).unwrap();
+        assert!(vcs.segment(&outside, true).is_none());
+
+        std::fs::remove_dir_all(&dir).ok();
+        std::fs::remove_dir_all(&outside).ok();
+    }
 
     #[test]
     fn git_segment_reads_branch_from_head() {
