@@ -132,3 +132,25 @@ fn piped_stdin_runs_each_line() {
         .stdout(contains("piped-a"))
         .stdout(contains("piped-b"));
 }
+
+#[test]
+fn version_includes_build_metadata() {
+    Command::cargo_bin("aishe")
+        .unwrap()
+        .arg("--version")
+        .assert()
+        .success()
+        .stdout(contains("aishe "))
+        // build.rs appends "(<sha>, <date>)".
+        .stdout(contains("("));
+}
+
+#[test]
+fn completions_emits_a_script() {
+    Command::cargo_bin("aishe")
+        .unwrap()
+        .args(["completions", "zsh"])
+        .assert()
+        .success()
+        .stdout(contains("_aishe"));
+}

@@ -7,6 +7,14 @@ breaking changes can land in any release.
 ## [Unreleased]
 
 ### Added
+- **Distribution and polish.** `aishe --version` now reports the build's git SHA
+  and date (via `build.rs`); `aishe completions <bash|zsh|fish|...>` prints a
+  shell completion script for aishe itself; `aishe doctor` adds version, MCP
+  server, and history-file lines. The release workflow attaches per-target
+  tarballs with `.sha256` checksums, `cargo binstall aishe` is wired up
+  (`[package.metadata.binstall]`), and a Homebrew formula template
+  (`packaging/aishe.rb`, which also installs completions) plus updated
+  installation docs are included.
 - **Pipe / script mode.** Piping into aishe with no `-c`
   (`printf 'cmd1\ncmd2\n' | aishe`) now runs each line like a one-shot command and
   returns the last exit code, instead of launching the interactive editor (which

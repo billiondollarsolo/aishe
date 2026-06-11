@@ -10,6 +10,14 @@ readme = "README.md"
 keywords = ["shell", "llm", "ai", "repl", "cli"]
 categories = ["command-line-utilities"]
 
+# `cargo binstall aishe` fetches the prebuilt binary from the GitHub release
+# artifacts produced by .github/workflows/release.yml (named aishe-<target>.tar.gz
+# with the `aishe` binary at the archive root).
+[package.metadata.binstall]
+pkg-url = "{ repo }/releases/download/v{ version }/aishe-{ target }{ archive-suffix }"
+pkg-fmt = "tgz"
+bin-dir = "aishe{ binary-ext }"
+
 [[bin]]
 name = "aishe"
 path = "src/main.rs"
@@ -30,6 +38,7 @@ toml = "0.8"
 crossterm = "0.28"
 termimad = "0.31"
 clap = { version = "4", features = ["derive"] }
+clap_complete = "4"
 anyhow = "1"
 thiserror = "2"
 regex = "1"

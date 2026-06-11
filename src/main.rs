@@ -37,6 +37,17 @@ use aishe::{context, history_expand, integration, modes};
 /// running. (See `integration::ZSH_HOOK`.)
 const EXIT_AUTO_DANGEROUS: u8 = 20;
 
+/// Version string shown by `aishe --version`: crate version plus the build's git
+/// SHA and date (captured by `build.rs`).
+const VERSION: &str = concat!(
+    env!("CARGO_PKG_VERSION"),
+    " (",
+    env!("AISHE_GIT_SHA"),
+    ", ",
+    env!("AISHE_BUILD_DATE"),
+    ")"
+);
+
 /// Set by the SIGINT handler; checked by the yolo loop and reset around runs.
 static INTERRUPTED: AtomicBool = AtomicBool::new(false);
 
@@ -45,7 +56,7 @@ extern "C" fn handle_sigint(_sig: libc::c_int) {
 }
 
 #[derive(Parser, Debug)]
-#[command(name = "aishe", version, about = "A natural-language-aware shell")]
+#[command(name = "aishe", version = VERSION, about = "A natural-language-aware shell")]
 struct Args {
     /// Override the interaction mode for this session.
     #[arg(long, value_parser = ["suggest", "auto", "yolo"])]
@@ -94,6 +105,11 @@ enum Cmd {
     Zsh,
     /// Check your environment: shell, config, front-end, provider, API key.
     Doctor,
+    /// Print a shell completion script for `aishe` itself (bash/zsh/fish/...).
+    Completions {
+        /// Shell to generate completions for.
+        shell: clap_complete::Shell,
+    },
 }
 
 fn main() -> ExitCode {
@@ -112,6 +128,13 @@ fn run() -> Result<u8> {
     // `doctor` inspects the environment without loading/initializing config.
     if matches!(args.cmd, Some(Cmd::Doctor)) {
         return Ok(doctor());
+    }
+
+    // `completions <shell>` prints a completion script and exits.
+    if let Some(Cmd::Completions { shell }) = args.cmd {
+        use clap::CommandFactory;
+        clap_complete::generate(shell, &mut Args::command(), "aishe", &mut std::io::stdout());
+        return Ok(0);
     }
 
     // `init <shell>` needs no config or provider.
@@ -295,6 +318,7 @@ fn doctor() -> u8 {
 
     println!("{}", "aishe doctor".bold());
     println!("────────────");
+    println!("{ok} version: aishe {VERSION}");
 
     // Backing shell.
     let zsh = aishe::executor::which("zsh");
@@ -390,6 +414,27 @@ fn doctor() -> u8 {
     } else {
         println!("{warn} audit log: off (enable with [logging] enabled=true or AISHE_LOG=1)");
     }
+
+    // MCP servers and history.
+    let enabled_mcp = cfg.mcp_servers.values().filter(|s| s.enabled).count();
+    if cfg.mcp_servers.is_empty() {
+        println!("{ok} MCP servers: none configured");
+    } else {
+        println!(
+            "{ok} MCP servers: {} configured ({enabled_mcp} enabled) — `aishe mcp` to list",
+            cfg.mcp_servers.len()
+        );
+    }
+    let (_, hist_log) = history_paths(&cfg);
+    println!(
+        "{ok} history: {} ({})",
+        hist_log.display(),
+        if cfg.aishe.share_history {
+            "shared"
+        } else {
+            "per-session"
+        }
+    );
 
     println!();
     if critical_ok {

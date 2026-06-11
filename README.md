@@ -37,15 +37,19 @@ all work unmodified.
 Requires Rust 1.80 or newer and `zsh` or `bash` on your `PATH`. Targets macOS
 (arm64 / x86_64) and Linux (x86_64 / arm64).
 
-For now aishe is built from source with Cargo. Prebuilt packages for common
-systems (Homebrew, a Linux package or tarball, cargo-binstall) are planned but
-not available yet.
+Install a prebuilt binary from a tagged release, or build from source:
 
 ```sh
-cargo install --path .
-# or, from a checkout:
-cargo build --release   # binary at target/release/aishe
+cargo binstall aishe              # prebuilt binary, no Rust build (cargo-binstall)
+# or build from a checkout:
+cargo install --path .            # installs to ~/.cargo/bin
+cargo build --release             # or just the binary at target/release/aishe
 ```
+
+Releases also attach per-platform tarballs (`aishe-<target>.tar.gz` + `.sha256`),
+and there is a Homebrew formula template in [`packaging/`](packaging/aishe.rb).
+See [docs/installation.md](docs/installation.md) for all options and shell
+completions (`aishe completions <shell>`).
 
 See [docs/installation.md](docs/installation.md) for the full guide, including
 uninstalling and the planned prebuilt packages.

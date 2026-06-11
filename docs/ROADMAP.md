@@ -115,6 +115,8 @@ is tagged `(reedline)` so we can re-scope quickly.
 
 ## 5. Distribution and polish
 
-- [ ] Prebuilt packages (Homebrew, a Linux package or tarball, cargo-binstall),
-  shell completion for `aishe` itself, a man page, build metadata in
-  `aishe --version`, and a richer `aishe doctor`.
+- [~] Distribution and polish: release tarballs + `.sha256` checksums,
+  `cargo binstall` metadata, a Homebrew formula template (`packaging/aishe.rb`),
+  `aishe completions <shell>`, build metadata (git SHA + date) in
+  `aishe --version`, and a richer `aishe doctor` all ship. A man page is still
+  open.

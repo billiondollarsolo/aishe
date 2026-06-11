@@ -1,10 +1,8 @@
 # Installation
 
-aishe is distributed as source today. Prebuilt packages for common systems
-(Homebrew, a Linux tarball or package, cargo-binstall, and similar) are planned
-but not available yet. Until then, you build from source with Cargo. It is a
-single static-ish binary with no runtime services, so building is quick and the
-result is easy to move around.
+aishe is a single static-ish binary with no runtime services. You can install a
+prebuilt binary from a tagged release (fastest, no Rust toolchain) or build from
+source with Cargo.
 
 ## Requirements
 
@@ -15,6 +13,42 @@ result is easy to move around.
   variable. See [Providers](providers.md).
 - Platforms: macOS (arm64 and x86_64) and Linux (x86_64 and arm64). Windows is
   not supported.
+
+## Prebuilt binary
+
+Each tagged release attaches per-platform tarballs (and `.sha256` checksums):
+`aishe-<target>.tar.gz` for `x86_64-unknown-linux-gnu`, `aarch64-apple-darwin`,
+and `x86_64-apple-darwin`.
+
+With [cargo-binstall](https://github.com/cargo-bins/cargo-binstall) (no Rust build
+needed, just the installer):
+
+```sh
+cargo binstall aishe
+```
+
+Or download and install the tarball for your platform by hand:
+
+```sh
+target=x86_64-unknown-linux-gnu   # or aarch64-apple-darwin, x86_64-apple-darwin
+curl -fsSL -O "https://github.com/billiondollarsolo/aishe/releases/latest/download/aishe-$target.tar.gz"
+tar -xzf "aishe-$target.tar.gz"
+sudo install -m 0755 aishe /usr/local/bin/aishe
+```
+
+A [Homebrew formula](../packaging/aishe.rb) is provided (point a tap at it, or
+`brew install --formula ./packaging/aishe.rb` once the release shas are filled
+in). It also installs shell completions.
+
+## Shell completions
+
+aishe can print a completion script for itself:
+
+```sh
+aishe completions zsh  > ~/.zfunc/_aishe          # zsh (ensure ~/.zfunc is in $fpath)
+aishe completions bash > /etc/bash_completion.d/aishe
+aishe completions fish > ~/.config/fish/completions/aishe.fish
+```
 
 ## Build and install with Cargo
 
@@ -91,12 +125,5 @@ rm -rf ~/.local/share/aishe   # history
 - `~/.config/aishe/config.toml` is written by the first-run wizard.
 - `~/.local/share/aishe/history` stores reedline command history.
 - Nothing else is created until you add custom commands or skills.
-
-## Prebuilt packages (planned)
-
-We intend to publish prebuilt binaries and packages so you do not need a Rust
-toolchain. This is not ready yet. When it lands, this page will list the exact
-commands (for example a Homebrew formula, a `cargo binstall aishe` line, and a
-download for tagged releases). For now, build from source as above.
 
 Next: [Getting started](getting-started.md).
