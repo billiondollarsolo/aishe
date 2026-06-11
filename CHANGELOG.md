@@ -31,6 +31,18 @@ breaking changes can land in any release.
   `tests/pty_fuzz.py` generatively runs hundreds of cases (real commands with
   pipes/redirs/globs/quoting, sigil NL stuffed with shell metacharacters, and
   adversarial model responses), asserting no parse/glob/eval error ever leaks.
+- **Config-precedence and provider step-down tests.** `Config::apply_overrides`
+  makes the `--flags > file > defaults` order explicit and unit-tested;
+  `resolve_audit` does the same for `AISHE_LOG`/`AISHE_LOG_FILE` vs the config
+  file; `tests/cli.rs` adds E2E coverage of flag overrides and the legacy `llmsh`
+  -> `aishe` config migration. The OpenAI-compatible structured-output step-down
+  (`json_schema` -> `json_object` -> plain text, then give up) is now covered end
+  to end in `tests/providers.rs`, with unit tests for the `step_down` /
+  `is_format_error` helpers.
+- **`SECURITY.md`.** A security policy: private vulnerability reporting (GitHub
+  advisories + a contact email), supported versions, the security model
+  (deterministic safety gate, confirmation tiers, best-effort sandbox,
+  prompt-injection threats), data-handling/privacy notes, and hardening tips.
 
 ## [0.1.5] - 2026-06-11
 

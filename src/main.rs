@@ -155,15 +155,12 @@ fn run() -> Result<u8> {
     }
 
     let mut config = Config::load_or_init()?;
-    if let Some(m) = &args.mode {
-        config.aishe.mode = m.clone();
-    }
-    if let Some(p) = &args.provider {
-        config.aishe.provider = p.clone();
-    }
-    if let Some(m) = &args.model {
-        config.set_active_model(m.clone());
-    }
+    // CLI flags win over the config file (which wins over compiled defaults).
+    config.apply_overrides(
+        args.mode.as_deref(),
+        args.provider.as_deref(),
+        args.model.as_deref(),
+    );
 
     // Initialize the audit log (off unless enabled in config or via $AISHE_LOG).
     init_audit(&config);
@@ -1698,16 +1695,28 @@ fn resolve_cdpath(config: &Config) -> Vec<std::path::PathBuf> {
 
 /// Initialize the audit logger from config, with environment overrides:
 /// `AISHE_LOG=1` forces it on, `AISHE_LOG_FILE` overrides the path.
-fn init_audit(config: &Config) {
-    let env_on = matches!(
-        std::env::var("AISHE_LOG").ok().as_deref(),
-        Some("1") | Some("true") | Some("yes")
-    );
+/// Resolve the effective audit-log settings from the config file and the
+/// environment. Precedence: `AISHE_LOG` *enables* logging on top of the config
+/// flag (either turns it on; neither leaves it off), and `AISHE_LOG_FILE`
+/// *overrides* the configured path. Pure so the precedence is unit-testable
+/// without touching the process environment or the global audit state.
+fn resolve_audit(
+    config: &Config,
+    env_log: Option<&str>,
+    env_file: Option<&str>,
+) -> (bool, Option<std::path::PathBuf>) {
+    let env_on = matches!(env_log, Some("1") | Some("true") | Some("yes"));
     let enabled = config.logging.enabled || env_on;
-    let path = std::env::var("AISHE_LOG_FILE")
-        .ok()
+    let path = env_file
         .map(std::path::PathBuf::from)
         .or_else(|| config.logging.file.clone().map(std::path::PathBuf::from));
+    (enabled, path)
+}
+
+fn init_audit(config: &Config) {
+    let env_log = std::env::var("AISHE_LOG").ok();
+    let env_file = std::env::var("AISHE_LOG_FILE").ok();
+    let (enabled, path) = resolve_audit(config, env_log.as_deref(), env_file.as_deref());
     aishe::audit::init(enabled, path, config.logging.redact);
 }
 
@@ -1722,6 +1731,38 @@ mod tests {
         assert_eq!(alias_name("alias"), None); // listing
         assert_eq!(alias_name("alias g=git; rm x"), None); // operators
         assert_eq!(alias_name("git status"), None);
+    }
+
+    #[test]
+    fn audit_precedence_env_over_file() {
+        let mut cfg = Config::default();
+
+        // Off in the file, no env: stays off.
+        cfg.logging.enabled = false;
+        cfg.logging.file = None;
+        let (on, path) = resolve_audit(&cfg, None, None);
+        assert!(!on);
+        assert!(path.is_none());
+
+        // AISHE_LOG=1 turns it on even though the file says off.
+        let (on, _) = resolve_audit(&cfg, Some("1"), None);
+        assert!(on);
+        // Non-truthy values do not enable it.
+        let (on, _) = resolve_audit(&cfg, Some("0"), None);
+        assert!(!on);
+
+        // File enables it; env unset keeps it on.
+        cfg.logging.enabled = true;
+        let (on, _) = resolve_audit(&cfg, None, None);
+        assert!(on);
+
+        // AISHE_LOG_FILE overrides the configured path.
+        cfg.logging.file = Some("/from/config.jsonl".into());
+        let (_, path) = resolve_audit(&cfg, None, Some("/from/env.jsonl"));
+        assert_eq!(path.unwrap(), std::path::PathBuf::from("/from/env.jsonl"));
+        // Without the env var, the configured path wins.
+        let (_, path) = resolve_audit(&cfg, None, None);
+        assert_eq!(path.unwrap(), std::path::PathBuf::from("/from/config.jsonl"));
     }
 
     #[test]

@@ -516,4 +516,35 @@ mod tests {
         assert_eq!(c.tool_calls.len(), 1);
         assert_eq!(c.tool_calls[0].arguments["command"], "ls -la");
     }
+
+    #[test]
+    fn step_down_walks_schema_to_json_to_text_to_none() {
+        // schema → json → text → (give up). The chain must terminate so the
+        // retry loop in `complete` cannot spin forever.
+        let schema = ResponseFormat::JsonSchema {
+            name: "s".into(),
+            schema: json!({"type": "object"}),
+        };
+        let next = step_down(&schema).expect("schema steps down");
+        assert!(matches!(next, ResponseFormat::Json));
+        let next = step_down(&next).expect("json steps down");
+        assert!(matches!(next, ResponseFormat::Text));
+        assert!(step_down(&ResponseFormat::Text).is_none());
+    }
+
+    #[test]
+    fn format_errors_are_recognized_loosely() {
+        // Real 400 bodies vary in wording; any of these means "drop the
+        // response_format and retry looser".
+        assert!(is_format_error(
+            "Invalid value for 'response_format': json_schema is not supported"
+        ));
+        assert!(is_format_error("This model does not support json_schema."));
+        assert!(is_format_error("Unrecognized request argument: schema"));
+        assert!(is_format_error("RESPONSE_FORMAT rejected")); // case-insensitive
+        // Unrelated 400s must NOT be mistaken for a format error (we would hide
+        // a real client bug behind endless step-downs otherwise).
+        assert!(!is_format_error("context length exceeded"));
+        assert!(!is_format_error("invalid api key"));
+    }
 }

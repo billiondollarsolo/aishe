@@ -265,6 +265,75 @@ fn openai_steps_down_when_schema_unsupported() {
 }
 
 #[test]
+fn openai_steps_down_all_the_way_to_text() {
+    // A stricter server rejects BOTH json_schema and json_object; the provider
+    // must keep stepping down to a plain (no response_format) request and
+    // succeed there, rather than giving up after one hop.
+    let mut server = mockito::Server::new();
+    let schema_mock = server
+        .mock("POST", "/v1/chat/completions")
+        .match_body(Matcher::PartialJson(
+            json!({"response_format": {"type": "json_schema"}}),
+        ))
+        .with_status(400)
+        .with_body(r#"{"error":{"message":"json_schema not supported"}}"#)
+        .create();
+    let json_mock = server
+        .mock("POST", "/v1/chat/completions")
+        .match_body(Matcher::PartialJson(
+            json!({"response_format": {"type": "json_object"}}),
+        ))
+        .with_status(400)
+        .with_body(r#"{"error":{"message":"response_format is not supported"}}"#)
+        .create();
+    // The text retry carries no response_format at all; match its absence by
+    // matching the messages and expecting a 200.
+    let text_mock = server
+        .mock("POST", "/v1/chat/completions")
+        .match_body(Matcher::PartialJson(json!({"model": "m"})))
+        .with_status(200)
+        .with_body(r#"{"choices":[{"message":{"content":"plain text answer"}}]}"#)
+        .create();
+
+    let p = OpenAiProvider::new(server.url(), "k".into(), "m".into());
+    let fmt = ResponseFormat::JsonSchema {
+        name: "s".into(),
+        schema: json!({"type": "object"}),
+    };
+    let out = p.complete("SYS", &[Msg::User("hi".into())], &fmt).unwrap();
+    assert!(out.contains("plain text answer"), "out: {out}");
+    schema_mock.assert();
+    json_mock.assert();
+    text_mock.assert();
+}
+
+#[test]
+fn openai_gives_up_when_even_text_is_rejected() {
+    // If every format (including no response_format) yields a format-shaped 400,
+    // step_down eventually returns None and the original 400 surfaces. This is
+    // the guard against an endless retry loop.
+    let mut server = mockito::Server::new();
+    let _m = server
+        .mock("POST", "/v1/chat/completions")
+        .with_status(400)
+        .with_body(r#"{"error":{"message":"response_format rejected"}}"#)
+        // schema + json + text = three attempts, then give up.
+        .expect(3)
+        .create();
+
+    let p = OpenAiProvider::new(server.url(), "k".into(), "m".into());
+    let fmt = ResponseFormat::JsonSchema {
+        name: "s".into(),
+        schema: json!({"type": "object"}),
+    };
+    let err = p
+        .complete("SYS", &[Msg::User("hi".into())], &fmt)
+        .unwrap_err();
+    assert!(matches!(err, ProviderError::Api { status: 400, .. }));
+    _m.assert();
+}
+
+#[test]
 fn openai_tool_schema_uses_function_parameters() {
     let mut server = mockito::Server::new();
     let m = server

@@ -100,10 +100,11 @@ is tagged `(reedline)` so we can re-scope quickly.
 ## 4. Test surface not yet exercised
 
 - [ ] Adversarial safety corpus (see section 2).
-- [~] Provider failure modes: 429/5xx/connection retries with backoff + jitter +
+- [x] Provider failure modes: 429/5xx/connection retries with backoff + jitter +
   `Retry-After`, truncated-SSE tolerance, defensive non-JSON/malformed-data
-  parsing, and usage parsing are covered (`tests/providers.rs`, provider unit
-  tests). The schema-to-json-to-prompt step-down path is still untested.
+  parsing, usage parsing, and the schema-to-json-to-text step-down (full chain
+  plus terminal give-up) are all covered (`tests/providers.rs`, provider unit
+  tests).
 - [~] Interactive PTY behaviors: a deterministic PTY suite now runs in CI -
   `tests/pty_scenarios.py` (targeted flows), `tests/pty_fuzz.py` (thousands of
   generative cases, logged to `test-results/fuzz-*.md`), and `tests/zsh_features.py`
@@ -117,7 +118,10 @@ is tagged `(reedline)` so we can re-scope quickly.
   Unicode/emoji line editing still open.
 - [x] Exit-code propagation: `aishe -c 'false'` returns 1, pipelines, `$?` chains,
   and `exit N` are covered (`tests/cli.rs`). Done.
-- [ ] Config precedence: env vs flags vs file, legacy migration.
+- [x] Config precedence: `--flags > file > defaults` (`Config::apply_overrides`),
+  audit env-vs-file (`AISHE_LOG`/`AISHE_LOG_FILE` via `resolve_audit`), and the
+  legacy `llmsh` -> `aishe` migration are covered by unit and CLI E2E tests. A
+  per-project config overlay is not built yet (tracked as A2).
 
 ## 5. Distribution and polish
 

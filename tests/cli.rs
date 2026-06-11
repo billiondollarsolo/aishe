@@ -146,6 +146,65 @@ fn version_includes_build_metadata() {
 }
 
 #[test]
+fn cli_flags_are_accepted_over_config() {
+    // The config selects anthropic/suggest; flags switch provider/model/mode.
+    // The forced `!` command still runs, proving apply_overrides is wired in
+    // without breaking the non-interactive path.
+    let home = temp_config_home();
+    Command::cargo_bin("aishe")
+        .unwrap()
+        .env("XDG_CONFIG_HOME", &home)
+        .env("XDG_DATA_HOME", home.join("data"))
+        .args(["--provider", "openai", "--model", "some-model", "--mode", "yolo"])
+        .arg("-c")
+        .arg("!echo flags-ok")
+        .assert()
+        .success()
+        .stdout(contains("flags-ok"));
+}
+
+#[test]
+fn legacy_llmsh_config_is_migrated_on_run() {
+    // A pre-rename ~/.config/llmsh/config.toml (and no aishe config) is ported
+    // to the new location on first run, with the [llmsh] section rewritten.
+    let dir = std::env::temp_dir().join(format!("aishe-migrate-{}", std::process::id()));
+    let legacy_dir = dir.join("llmsh");
+    std::fs::create_dir_all(&legacy_dir).unwrap();
+    std::fs::write(
+        legacy_dir.join("config.toml"),
+        r#"[llmsh]
+mode = "auto"
+provider = "openai"
+
+[providers.openai]
+base_url = "http://localhost:11434"
+api_key_env = "OPENAI_API_KEY"
+model = "llama3"
+"#,
+    )
+    .unwrap();
+
+    Command::cargo_bin("aishe")
+        .unwrap()
+        .env("XDG_CONFIG_HOME", &dir)
+        .env("XDG_DATA_HOME", dir.join("data"))
+        .arg("-c")
+        .arg("!echo migrated-run")
+        .assert()
+        .success()
+        .stdout(contains("migrated-run"))
+        .stderr(contains("migrated config"));
+
+    // The new aishe config exists with the section header rewritten.
+    let ported = std::fs::read_to_string(dir.join("aishe").join("config.toml")).unwrap();
+    assert!(ported.contains("[aishe]"), "ported config: {ported}");
+    assert!(!ported.contains("[llmsh]"), "ported config: {ported}");
+    assert!(ported.contains("llama3"), "ported config: {ported}");
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
 fn completions_emits_a_script() {
     Command::cargo_bin("aishe")
         .unwrap()

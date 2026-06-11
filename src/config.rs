@@ -501,6 +501,29 @@ impl Config {
             _ => self.providers.anthropic.model = model,
         }
     }
+
+    /// Apply command-line overrides on top of the loaded file. Precedence is
+    /// CLI flags > config file > compiled defaults: a `Some` value here replaces
+    /// whatever the file (or default) provided, while `None` leaves it in place.
+    /// `provider` is applied before `model` so that `--model` targets the
+    /// provider selected on this same invocation (via `--provider`), not the one
+    /// that happened to be active in the file.
+    pub fn apply_overrides(
+        &mut self,
+        mode: Option<&str>,
+        provider: Option<&str>,
+        model: Option<&str>,
+    ) {
+        if let Some(m) = mode {
+            self.aishe.mode = m.to_string();
+        }
+        if let Some(p) = provider {
+            self.aishe.provider = p.to_string();
+        }
+        if let Some(m) = model {
+            self.set_active_model(m.to_string());
+        }
+    }
 }
 
 /// Known OpenAI-compatible services: (key, label, base_url, default_model,
@@ -802,6 +825,42 @@ mod tests {
         // Unspecified fields still fall back to defaults.
         assert_eq!(cfg.aishe.front_end, "auto");
         assert_eq!(cfg.providers.anthropic.api_key_env, "ANTHROPIC_API_KEY");
+    }
+
+    #[test]
+    fn cli_overrides_win_over_file() {
+        // Start from a "file" that selects anthropic in suggest mode.
+        let text = r#"
+            [aishe]
+            mode = "suggest"
+            provider = "anthropic"
+        "#;
+        let mut cfg: Config = toml::from_str(text).unwrap();
+
+        // Flags override the file: switch provider+mode and set the model. The
+        // model must land on the provider chosen on this same call (openai),
+        // because apply_overrides applies --provider before --model.
+        cfg.apply_overrides(Some("yolo"), Some("openai"), Some("gpt-4o-mini"));
+        assert_eq!(cfg.aishe.mode, "yolo");
+        assert_eq!(cfg.aishe.provider, "openai");
+        assert_eq!(cfg.active_model(), "gpt-4o-mini");
+        // The anthropic model was left untouched.
+        assert_eq!(cfg.providers.anthropic.model, "claude-sonnet-4-20250514");
+    }
+
+    #[test]
+    fn absent_flags_leave_file_values() {
+        let mut cfg = Config::default();
+        cfg.aishe.mode = "auto".into();
+        cfg.aishe.provider = "openai".into();
+        // All-None overrides are a no-op (file/default values survive).
+        cfg.apply_overrides(None, None, None);
+        assert_eq!(cfg.aishe.mode, "auto");
+        assert_eq!(cfg.aishe.provider, "openai");
+        // A lone --model targets the file's active provider.
+        cfg.apply_overrides(None, None, Some("o1-mini"));
+        assert_eq!(cfg.providers.openai.model, "o1-mini");
+        assert_eq!(cfg.aishe.provider, "openai");
     }
 
     #[test]

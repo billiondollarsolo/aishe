@@ -262,7 +262,10 @@ status. Stretch.
 fallback path is untested end to end.
 - Approach: mock a provider that rejects `json_schema` then `json_object`; assert
   the step-down in `tests/providers.rs`.
-- Effort: S. Priority: P1. Status: open.
+- Effort: S. Priority: P1. Status: DONE. `tests/providers.rs` covers the full
+  chain (`openai_steps_down_all_the_way_to_text`) and the terminal give-up
+  (`openai_gives_up_when_even_text_is_rejected`); the pure `step_down` /
+  `is_format_error` helpers are unit-tested in `openai_compat.rs`.
 
 **E2. More providers / presets.** First-class presets for Groq, Ollama,
 OpenRouter, Together, Azure OpenAI, Bedrock (auth differences); `aishe` wizard
@@ -314,7 +317,13 @@ Unicode/emoji line editing, very long lines.
 
 **G3. Config precedence + migration tests.** env vs `--flags` vs file vs project
 overlay; the legacy `llmsh` migration path.
-- Effort: S. Priority: P1. Status: open.
+- Effort: S. Priority: P1. Status: DONE for the layers that exist today.
+  `--flags > file > defaults` is covered by `Config::apply_overrides` unit tests
+  plus an E2E (`tests/cli.rs::cli_flags_are_accepted_over_config`); the audit
+  env-vs-file precedence by `resolve_audit` unit tests; and the legacy `llmsh`
+  migration by `tests/cli.rs::legacy_llmsh_config_is_migrated_on_run`. A
+  per-project config overlay does not exist yet (tracked under A2), so there is
+  nothing to test there until it ships.
 
 **G4. Harness as CI gate.** Run the deterministic suites (no key) in CI on every
 PR; nightly run with a key (and real MCP) in a protected workflow.
@@ -438,7 +447,10 @@ so future renames migrate cleanly (we already migrated `llmsh` -> `aishe`).
 - Effort: S. Priority: P2. Status: open.
 
 **M2. Security policy (SECURITY.md)** and a disclosure contact.
-- Effort: S. Priority: P1. Status: open.
+- Effort: S. Priority: P1. Status: DONE. `SECURITY.md` covers private reporting
+  (GitHub advisories + mj@alphabravo.io), supported versions, the security model
+  (deterministic gate, confirmation tiers, best-effort sandbox, prompt-injection
+  threats), data handling/privacy, and hardening recommendations.
 
 **M3. A public roadmap board / labels** mapping to this plan.
 - Effort: S. Priority: P3. Status: open.
@@ -505,13 +517,14 @@ Done (struck through) are kept for the record; the live order continues below.
    and `install.sh`).
 2. ~~Section 2 architectural decision.~~ DONE (Option B).
 3. ~~H3 man page.~~ DONE (help2man `aishe.1` ships from the release/package jobs).
-4. ~~G4 harness in CI~~ (DONE) + **G3 config precedence tests** (still open).
-5. **E1 schema step-down test** (P1, closes a provider gap).
-6. **I3 architecture doc** + **M2 SECURITY.md** (P1, contributor/trust readiness).
+4. ~~G4 harness in CI~~ + ~~G3 config precedence tests~~. DONE (apply_overrides /
+   resolve_audit / legacy-migration tests).
+5. ~~E1 schema step-down test.~~ DONE (full chain + give-up, in `tests/providers.rs`).
+6. **I3 architecture doc** + ~~M2 SECURITY.md~~ (DONE). I3 still open.
 7. **A2 per-project profiles** (P1, high user value).
-8. **G1 interactive PTY tests** (P1, Ctrl-C/Ctrl-Z/resize — biggest untested
+8. **G1 interactive PTY tests** (P1, Ctrl-C/Ctrl-Z/resize, the biggest untested
    surface; the fuzz + zsh-feature suites cover non-signal behavior).
 9. **B1 real sandbox behind a flag** (P2, the headline safety upgrade).
 10. **C2 completion depth round 2** (P2, daily-use polish).
 
-Live shortlist, in order: G3, E1, I3, M2, A2, G1.
+Live shortlist, in order: I3, A2, G1.
