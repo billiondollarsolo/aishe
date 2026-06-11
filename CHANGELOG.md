@@ -6,6 +6,8 @@ breaking changes can land in any release.
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-06-11
+
 ### Added
 - **First-run wizard: service presets and an endpoint prompt.** Choosing an
   OpenAI-compatible provider now asks which service (OpenAI, Groq, OpenRouter,

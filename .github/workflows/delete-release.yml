@@ -1,0 +1,28 @@
+name: Delete release
+
+# Manual maintenance: delete a GitHub release and its git tag. Runs on GitHub
+# (via the GITHUB_TOKEN), so it is not subject to local tag-push restrictions.
+# Use with care; this removes published artifacts.
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to delete (also deletes the git tag), e.g. v0.1.0"
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  delete:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Delete release and tag
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          tag="${{ inputs.tag }}"
+          echo "Deleting release and tag $tag from ${{ github.repository }}"
+          gh release delete "$tag" \
+            --repo "${{ github.repository }}" \
+            --cleanup-tag --yes
