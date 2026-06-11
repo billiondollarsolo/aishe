@@ -3,14 +3,14 @@ name: Release
 on:
   push:
     tags: ["v*"]
-  # Allow cutting a release without pushing a tag (the release step creates the
-  # tag from this input). Useful where tag pushes are restricted.
+  # Allow cutting a release without pushing a tag (the create_release job makes
+  # the tag from this input). Useful where tag pushes are restricted.
   workflow_dispatch:
     inputs:
       version:
-        description: "Version to release, without the leading v (e.g. 0.1.0)"
+        description: "Version to release, without the leading v (e.g. 0.1.1)"
         required: true
-        default: "0.1.0"
+        default: "0.1.1"
 
 permissions:
   contents: write
@@ -19,8 +19,47 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  # Create (or reuse) the release and tag ONCE, before any uploads. Doing this in
+  # a single upstream job avoids the race where multiple concurrent build jobs
+  # each try to create the same release and end up with a duplicate/draft.
+  create_release:
+    name: create release
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.ver.outputs.version }}
+      tag: ${{ steps.ver.outputs.tag }}
+    steps:
+      - name: Determine version and tag
+        id: ver
+        shell: bash
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            v="${{ inputs.version }}"
+          else
+            v="${GITHUB_REF_NAME#v}"
+          fi
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+          echo "tag=v$v" >> "$GITHUB_OUTPUT"
+
+      - name: Create the release and tag
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.ver.outputs.tag }}
+          name: ${{ steps.ver.outputs.tag }}
+          append_body: false
+          body: |
+            aishe ${{ steps.ver.outputs.tag }}
+
+            Prebuilt binaries (Linux x86_64/aarch64 in gnu and static musl;
+            macOS arm64/x86_64) and Linux packages (.deb / .rpm for amd64 and
+            arm64) are attached below, each with a .sha256 checksum.
+
+            Install guide: https://github.com/billiondollarsolo/aishe/blob/main/docs/installation.md
+            Changelog: https://github.com/billiondollarsolo/aishe/blob/main/CHANGELOG.md
+
   build:
     name: build ${{ matrix.target }}
+    needs: create_release
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -49,18 +88,6 @@ jobs:
             builder: native
     steps:
       - uses: actions/checkout@v4
-
-      - name: Determine version and tag
-        id: ver
-        shell: bash
-        run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            v="${{ inputs.version }}"
-          else
-            v="${GITHUB_REF_NAME#v}"
-          fi
-          echo "version=$v" >> "$GITHUB_OUTPUT"
-          echo "tag=v$v" >> "$GITHUB_OUTPUT"
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -106,34 +133,21 @@ jobs:
           path: target/${{ matrix.target }}/release/aishe
           retention-days: 1
 
-      # Note: release notes are generated once, by the packaging job (which runs
-      # last), so the body is not appended to by all six build jobs.
-      - name: Attach tarball to GitHub Release
+      # The release already exists (create_release), so this only uploads assets.
+      - name: Upload tarball to the release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ steps.ver.outputs.tag }}
+          tag_name: ${{ needs.create_release.outputs.tag }}
           files: |
             aishe-${{ matrix.target }}.tar.gz
             aishe-${{ matrix.target }}.tar.gz.sha256
 
   package:
     name: linux packages (.deb / .rpm)
-    needs: build
+    needs: [create_release, build]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
-      - name: Determine version and tag
-        id: ver
-        shell: bash
-        run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            v="${{ inputs.version }}"
-          else
-            v="${GITHUB_REF_NAME#v}"
-          fi
-          echo "version=$v" >> "$GITHUB_OUTPUT"
-          echo "tag=v$v" >> "$GITHUB_OUTPUT"
 
       - name: Download x86_64 binary
         uses: actions/download-artifact@v4
@@ -157,7 +171,7 @@ jobs:
           dist/amd64/aishe completions zsh  > dist/completions/_aishe
           dist/amd64/aishe completions fish > dist/completions/aishe.fish
           sudo apt-get update && sudo apt-get install -y help2man
-          version="${{ steps.ver.outputs.version }}"
+          version="${{ needs.create_release.outputs.version }}"
           help2man --no-info --no-discard-stderr \
             --name "natural-language-aware shell" \
             --version-string "aishe $version" \
@@ -176,7 +190,7 @@ jobs:
       - name: Build .deb and .rpm packages
         run: |
           sudo apt-get install -y gettext-base   # provides envsubst
-          version="${{ steps.ver.outputs.version }}"
+          version="${{ needs.create_release.outputs.version }}"
           for arch in amd64 arm64; do
             # Render a concrete config per arch (nfpm does not reliably expand
             # ${...} env vars in the contents.src field).
@@ -189,22 +203,10 @@ jobs:
           ( cd dist && for f in *.deb *.rpm; do sha256sum "$f" > "$f.sha256"; done )
           ls -l dist/*.deb dist/*.rpm
 
-      # The packaging job runs last, so it sets the release body once (replacing,
-      # not appending) to a clean, deterministic description.
-      - name: Attach packages to GitHub Release
+      - name: Upload packages to the release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ steps.ver.outputs.tag }}
-          append_body: false
-          body: |
-            aishe ${{ steps.ver.outputs.tag }}
-
-            Prebuilt binaries (Linux x86_64/aarch64 in gnu and static musl;
-            macOS arm64/x86_64) and Linux packages (.deb / .rpm for amd64 and
-            arm64) are attached below, each with a .sha256 checksum.
-
-            Install guide: https://github.com/billiondollarsolo/aishe/blob/main/docs/installation.md
-            Changelog: https://github.com/billiondollarsolo/aishe/blob/main/CHANGELOG.md
+          tag_name: ${{ needs.create_release.outputs.tag }}
           files: |
             dist/*.deb
             dist/*.rpm

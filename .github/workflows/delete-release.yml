@@ -17,12 +17,26 @@ jobs:
   delete:
     runs-on: ubuntu-latest
     steps:
-      - name: Delete release and tag
+      - name: Delete release(s) and tag
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           tag="${{ inputs.tag }}"
-          echo "Deleting release and tag $tag from ${{ github.repository }}"
-          gh release delete "$tag" \
-            --repo "${{ github.repository }}" \
-            --cleanup-tag --yes
+          repo="${{ github.repository }}"
+          echo "Cleaning up release(s) tagged $tag in $repo"
+          # Delete EVERY release object whose tag_name matches, by id. This also
+          # catches duplicate or draft releases (e.g. left by a creation race),
+          # which a plain `gh release delete <tag>` would miss.
+          ids=$(gh api --paginate "repos/$repo/releases" \
+            --jq ".[] | select(.tag_name == \"$tag\") | .id")
+          if [ -z "$ids" ]; then
+            echo "No releases found for $tag."
+          else
+            for id in $ids; do
+              echo "Deleting release id $id"
+              gh api -X DELETE "repos/$repo/releases/$id"
+            done
+          fi
+          # Delete the git tag ref if it still exists (404 is fine).
+          gh api -X DELETE "repos/$repo/git/refs/tags/$tag" \
+            && echo "Deleted tag $tag" || echo "Tag $tag not present."
