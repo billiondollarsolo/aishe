@@ -714,6 +714,28 @@ for line in sys.stdin:
         send({"jsonrpc": "2.0", "id": mid, "error": {"code": -32601, "message": "no method"}})
 '''
 
+# An MCP stdio server advertising resources + prompts (for the prompts/resources
+# part of the deterministic MCP suite).
+MCP_RP_SERVER_PY = r'''
+import sys, json
+def send(o):
+    sys.stdout.write(json.dumps(o) + "\n"); sys.stdout.flush()
+for line in sys.stdin:
+    line = line.strip()
+    if not line: continue
+    m = json.loads(line); mid = m.get("id"); method = m.get("method")
+    if method == "initialize":
+        send({"jsonrpc": "2.0", "id": mid, "result": {"protocolVersion": "2025-06-18", "capabilities": {"tools": {}, "resources": {}, "prompts": {}}, "serverInfo": {"name": "rp", "version": "0"}}})
+    elif method == "notifications/initialized":
+        pass
+    elif method == "tools/list":
+        send({"jsonrpc": "2.0", "id": mid, "result": {"tools": []}})
+    elif method == "prompts/list":
+        send({"jsonrpc": "2.0", "id": mid, "result": {"prompts": [{"name": "greet", "description": "greet someone", "arguments": [{"name": "who"}]}]}})
+    elif mid is not None:
+        send({"jsonrpc": "2.0", "id": mid, "error": {"code": -32601, "message": "no method"}})
+'''
+
 
 def write_config(text):
     """Create a temp config root containing `text` as config.toml."""
@@ -1004,9 +1026,27 @@ def main():
         "enabled = false\n"
     )
     rc, out, err = run([BIN, "-c", "/mcp"], base_env(mcp_off, with_key=False), timeout=30)
-    add("mcp: disabled server is skipped", "no MCP tools" in out,
-        "" if "no MCP tools" in out else f"(out={out.strip()[:120]!r})")
+    add("mcp: disabled server is skipped", "no MCP servers" in out,
+        "" if "no MCP servers" in out else f"(out={out.strip()[:120]!r})")
     shutil.rmtree(mcp_off, ignore_errors=True)
+
+    # A resources+prompts server exposes the synthetic resource tools and prompts.
+    rp_py = os.path.join(mcp_root, "rp.py")
+    with open(rp_py, "w") as f:
+        f.write(MCP_RP_SERVER_PY)
+    rp_cfg = write_config(
+        '[aishe]\nmode = "yolo"\nprovider = "openai"\nfront_end = "reedline"\n'
+        "\n[providers.openai]\n"
+        'base_url = "https://api.groq.com/openai"\napi_key_env = "GROQ_API_KEY"\n'
+        'model = "openai/gpt-oss-120b"\n\n'
+        f'[mcp_servers.rp]\ncommand = "{sys.executable}"\nargs = ["{rp_py}"]\n'
+    )
+    rc, out, err = run([BIN, "-c", "/mcp"], base_env(rp_cfg, with_key=False), timeout=30)
+    add("mcp: resource tools exposed", "mcp__rp__read_resource" in out,
+        "" if "mcp__rp__read_resource" in out else f"(out={out.strip()[:160]!r})")
+    add("mcp: prompt exposed as /rp:greet", "/rp:greet" in out,
+        "" if "/rp:greet" in out else f"(out={out.strip()[:160]!r})")
+    shutil.rmtree(rp_cfg, ignore_errors=True)
     shutil.rmtree(mcp_cfg, ignore_errors=True)
     shutil.rmtree(mcp_root, ignore_errors=True)
 
