@@ -8,27 +8,86 @@ This is current being coded using only Claude Code on my phone. It's not ready t
 
 # aishe - AI Shell
 
-A natural-language-aware shell. `aishe` behaves like zsh for real commands, and
-treats anything that is not a command as a natural-language request handled by an
-LLM. The model either **suggests** a command for you to confirm, or **runs
-autonomously** in a tool-use loop.
+**It's your shell, with an AI built in.** `aishe` runs real commands exactly like
+zsh, and treats anything that isn't a command as a plain-English request for an
+LLM — which either **suggests** a command for you to confirm or **runs
+autonomously** until the task is done.
 
 ```
 ~/projects/app ❯ git status            # runs exactly like zsh
 ~/projects/app ❯ whats eating my disk  # LLM suggests: du -sh * | sort -rh | head
 ```
 
-aishe does not reimplement a shell grammar. It wraps your real interactive zsh
-over a PTY and injects a `command_not_found` hook, so natural language is routed
-to the model while pipes, globs, redirection, subshells, job control, your
-plugins/theme, and interactive programs (vim, ssh, top) all work unmodified. The
-interactive shell requires zsh; `aishe -c …`, piped stdin, and the bash hook
-(`aishe init bash`) work without it.
+## Features
+
+- 🐚 **Your real zsh, untouched.** aishe wraps your actual interactive zsh, so
+  your plugins, completions, prompt, aliases, key bindings, and job control all
+  work unmodified — it's not a shell reimplementation.
+- 🗣️ **Plain English → commands.** Anything that isn't a real command is routed to
+  the model. A leading `?` forces a question; a leading `!` forces a raw command.
+- 🎚️ **Three modes.** `suggest` (propose, you confirm), `auto` (run safe commands,
+  confirm risky ones), and `yolo` (an agentic loop that runs, reads output, and
+  iterates). Cycle them live with Shift-Tab.
+- 🛡️ **A safety gate you control.** A deterministic, path-aware screen flags
+  destructive commands (`rm -rf /`, recursive `chmod`/`chown` on system paths, …)
+  before they can run — the model never gets to decide what executes.
+- 🔌 **Any provider.** Anthropic and any OpenAI-compatible endpoint — OpenAI, Groq,
+  Ollama (local), OpenRouter, Together — selected by `base_url`.
+- 🧰 **Agentic tools.** In yolo, the model edits files precisely, fetches web pages,
+  and calls your [MCP servers](docs/mcp.md) and [skills](docs/custom-commands-and-skills.md).
+- 💸 **Cost-aware.** Per-session token and cost metering with an optional hard
+  budget cap, so there are no surprise bills.
+- 🔒 **Private by default.** API keys are read from the environment (never written
+  to disk), secrets are redacted from the model context, and there's an optional
+  local audit log.
+- ⚡ **Works anywhere.** `aishe -c '<line>'`, piped stdin, and a bash hook
+  (`aishe init bash`) all work without launching the interactive shell.
+
+## Install
+
+**One line on Linux or macOS** (downloads the right prebuilt binary, verifies its
+checksum, installs it, and ensures `zsh` is present):
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/billiondollarsolo/aishe/main/install.sh | sh
+```
+
+<details>
+<summary>Other ways to install (packages, cargo, from source)</summary>
+
+```sh
+cargo binstall aishe                       # prebuilt binary via cargo-binstall
+sudo apt install ./aishe_<ver>_amd64.deb   # Debian/Ubuntu (.deb from the release)
+sudo dnf install ./aishe-<ver>.x86_64.rpm  # Fedora/RHEL  (.rpm from the release)
+brew install --formula ./packaging/aishe.rb
+cargo install --path .                     # from a checkout (needs Rust 1.80+)
+```
+
+Every tagged release attaches per-platform tarballs (`aishe-<target>.tar.gz` +
+`.sha256`) for Linux x86_64/arm64 (gnu and static musl) and macOS arm64/x86_64,
+plus `.deb`/`.rpm` packages and the Homebrew formula in
+[`packaging/`](packaging/aishe.rb). Full guide, completions, and uninstalling in
+[docs/installation.md](docs/installation.md).
+</details>
+
+**Requirements:** `zsh` on your `PATH` for the interactive shell (the installer
+adds it); `bash` is enough for `aishe -c …` and piped input. Prebuilt binaries
+target macOS (arm64 / x86_64) and Linux (x86_64 / arm64) — no Rust toolchain
+needed.
+
+## Quickstart
+
+```sh
+export ANTHROPIC_API_KEY=sk-ant-...   # or OPENAI_API_KEY=...  (never written to disk)
+aishe                                 # first run writes ~/.config/aishe/config.toml
+```
+
+Then type real commands as usual, or type a request in plain English. Not sure
+your setup is right? Run `aishe doctor`. A full walkthrough is in
+[docs/getting-started.md](docs/getting-started.md).
 
 ## Contents
 
-- [Install](#install)
-- [Quickstart](#quickstart)
 - [Modes](#modes)
 - [Front-ends](#front-ends)
 - [Providers](#providers)
@@ -40,65 +99,6 @@ interactive shell requires zsh; `aishe -c …`, piped stdin, and the bash hook
 - [Configuration](#configuration)
 - [Documentation](#documentation)
 - [Development](#development)
-
-## Install
-
-Needs **`zsh`** on your `PATH` for the interactive shell (aishe drives your real
-zsh; the installer ensures it). `bash` suffices for `aishe -c …` and piped input.
-Targets macOS (arm64 / x86_64) and Linux (x86_64 / arm64). No Rust toolchain
-required for the prebuilt binaries.
-
-Quickest, on Linux or macOS (downloads the right prebuilt binary, verifies its
-checksum, installs it):
-
-```sh
-curl -fsSL https://raw.githubusercontent.com/billiondollarsolo/aishe/main/install.sh | sh
-```
-
-Or pick a packaged install:
-
-```sh
-cargo binstall aishe                       # prebuilt binary via cargo-binstall
-sudo apt install ./aishe_<ver>_amd64.deb   # Debian/Ubuntu (.deb from the release)
-sudo dnf install ./aishe-<ver>.x86_64.rpm  # Fedora/RHEL  (.rpm from the release)
-brew install --formula ./packaging/aishe.rb
-```
-
-Or build from a checkout (needs Rust 1.80+):
-
-```sh
-cargo install --path .            # installs to ~/.cargo/bin
-cargo build --release             # or just the binary at target/release/aishe
-```
-
-Every tagged release attaches per-platform tarballs (`aishe-<target>.tar.gz` +
-`.sha256`) for Linux x86_64/arm64 (gnu and static musl) and macOS arm64/x86_64,
-plus `.deb`/`.rpm` packages and the Homebrew formula in
-[`packaging/`](packaging/aishe.rb). See [docs/installation.md](docs/installation.md)
-for the full guide, shell completions (`aishe completions <shell>`), and
-uninstalling.
-
-## Quickstart
-
-1. Set your API key in the environment. It is never written to the config file.
-
-   ```sh
-   export ANTHROPIC_API_KEY=sk-ant-...      # or OPENAI_API_KEY=...
-   ```
-
-2. Start aishe. On first run an interactive wizard writes
-   `~/.config/aishe/config.toml` (provider, API key env var, model, default mode).
-
-   ```sh
-   aishe
-   ```
-
-3. Type real commands as usual, or type a request in plain English.
-
-Not sure your setup is right? Run `aishe doctor` for a quick check of your shell,
-config, resolved front-end, provider, and API key.
-
-A full walkthrough is in [docs/getting-started.md](docs/getting-started.md).
 
 ## Modes
 
@@ -128,8 +128,8 @@ error.
 
 ## Front-ends
 
-There are three ways to use aishe, in increasing order of real-zsh fidelity.
-Details in [docs/front-ends.md](docs/front-ends.md).
+There are three ways to use aishe. Details in
+[docs/front-ends.md](docs/front-ends.md).
 
 1. **zsh-PTY (the interactive shell).** aishe runs your real interactive zsh
    inside a pseudo-terminal, so your full `~/.zshrc` and every plugin you already
