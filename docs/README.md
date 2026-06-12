@@ -22,6 +22,7 @@ If you are new, start with [Installation](installation.md) and then
 - [Token usage and cost](usage-and-cost.md) - metering, the price table, and budgets
 - [Safety gate](safety.md) - how dangerous commands are screened
 - [Logging and privacy](logging.md) - secret redaction and the audit log
+- [Runbooks](runbooks.md) - export a yolo session as a script + markdown runbook
 - [Shell integration and .aishrc](shell-integration.md) - the native hook and startup file
 - [Troubleshooting](troubleshooting.md) - common issues and `aishe doctor`
 - [Development](development.md) - building, testing, and the validation harness

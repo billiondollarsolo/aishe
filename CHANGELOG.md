@@ -6,6 +6,15 @@ breaking changes can land in any release.
 
 ## [Unreleased]
 
+### Added
+- **Replayable runbooks (`aishe runbook`).** Turn a recorded yolo session into a
+  committable `runbook-<id>.sh` (the exact commands, in order, with the request in
+  the header) and `runbook-<id>.md` (a narrative: numbered steps with exit codes
+  and the model's notes). Generated from the audit log after the fact
+  (`--session`, `-o <dir>`); `--replay` re-runs the recorded commands through the
+  safety gate (never the model) for deterministic reproduction. Secrets stay
+  redacted. This is proposal N5 from [docs/proposals.md](docs/proposals.md).
+
 ## [0.2.6] - 2026-06-12
 
 ### Added

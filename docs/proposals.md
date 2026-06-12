@@ -481,7 +481,7 @@ a genuinely novel feature.
 
 ## N5 — Replayable runbooks
 
-**Track:** Noteworthy · **Priority:** P3 · **Effort:** M · **Risk:** Low · **Depends on:** —
+**Track:** Noteworthy · **Priority:** P3 · **Effort:** M · **Risk:** Low · **Depends on:** — · **Status: Shipped (v1)** — `aishe runbook` renders a session (from the audit log) to a runnable `.sh` + a markdown `.md`; `--replay` re-runs recorded commands through the safety gate (not the model). Built on R5's `audit::read_entries` (`src/main.rs`, `docs/runbooks.md`).
 
 ### Problem
 A successful yolo session ("set up nginx with TLS") is throwaway today. Turning it

@@ -473,3 +473,36 @@ fn log_and_usage_read_the_audit_log() {
 
     std::fs::remove_dir_all(&dir).ok();
 }
+
+#[test]
+fn runbook_generates_script_and_markdown() {
+    let dir = std::env::temp_dir().join(format!("aishe-cli-rb-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let log = dir.join("audit.jsonl");
+    std::fs::write(
+        &log,
+        "{\"ts_ms\":1781304001000,\"session\":\"sx\",\"kind\":\"ai_request\",\"mode\":\"yolo\",\"model\":\"gpt-4o\",\"prompt\":\"install nginx\"}\n\
+         {\"ts_ms\":1781304003000,\"session\":\"sx\",\"kind\":\"action\",\"source\":\"yolo:run_command\",\"command\":\"apt-get install -y nginx\",\"exit\":0}\n",
+    )
+    .unwrap();
+
+    Command::cargo_bin("aishe")
+        .unwrap()
+        .env("AISHE_LOG_FILE", &log)
+        .args(["runbook", "-o", dir.to_str().unwrap()])
+        .assert()
+        .success()
+        .stdout(contains("runbook-sx.sh").and(contains("runbook-sx.md")));
+
+    let sh = std::fs::read_to_string(dir.join("runbook-sx.sh")).unwrap();
+    assert!(sh.starts_with("#!/usr/bin/env bash"));
+    assert!(sh.contains("apt-get install -y nginx"));
+    assert!(sh.contains("install nginx")); // request in the header
+
+    let md = std::fs::read_to_string(dir.join("runbook-sx.md")).unwrap();
+    assert!(md.contains("# Runbook: install nginx"));
+    assert!(md.contains("`apt-get install -y nginx`"));
+    assert!(md.contains("## Reproduce"));
+
+    std::fs::remove_dir_all(&dir).ok();
+}

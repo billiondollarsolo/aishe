@@ -26,6 +26,7 @@ aishe undo [--list]                 revert the most recent AI file change
 aishe log [filters]                 show the audit log of AI calls and actions
 aishe usage [--by model|day|session]  token/cost totals from the audit log
 aishe context                       print the context block sent to the model
+aishe runbook [--session ID|-o DIR|--replay]  export a session as a script + runbook
 ```
 
 These are real subcommands, so they work the same in the interactive zsh-PTY
