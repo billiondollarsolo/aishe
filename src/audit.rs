@@ -179,6 +179,95 @@ fn now_ms() -> u128 {
         .unwrap_or(0)
 }
 
+// --- Reading the log back (for `aishe log` / `aishe usage`) -----------------
+
+/// One parsed audit line. Fields absent for a given `kind` are `None`. The raw
+/// JSON is kept so `--json` can re-emit it verbatim.
+#[derive(Debug, Clone)]
+pub struct Entry {
+    pub ts_ms: u64,
+    pub session: String,
+    pub kind: String,
+    pub model: Option<String>,
+    pub mode: Option<String>,
+    pub tokens_in: Option<u64>,
+    pub tokens_out: Option<u64>,
+    pub source: Option<String>,
+    pub command: Option<String>,
+    pub exit: Option<i64>,
+    /// A short human label: the response summary, request prompt, or error text.
+    pub text: Option<String>,
+    pub raw: Value,
+}
+
+/// Read and parse every line of an audit log. Missing file or malformed lines
+/// yield an empty list / are skipped (best-effort, never panics).
+pub fn read_entries(path: &std::path::Path) -> Vec<Entry> {
+    let Ok(text) = std::fs::read_to_string(path) else {
+        return Vec::new();
+    };
+    text.lines()
+        .filter_map(|l| serde_json::from_str::<Value>(l).ok())
+        .map(entry_from)
+        .collect()
+}
+
+fn entry_from(v: Value) -> Entry {
+    let s = |k: &str| v.get(k).and_then(|x| x.as_str()).map(str::to_string);
+    let u = |k: &str| v.get(k).and_then(|x| x.as_u64());
+    Entry {
+        ts_ms: u("ts_ms").unwrap_or(0),
+        session: s("session").unwrap_or_default(),
+        kind: s("kind").unwrap_or_default(),
+        model: s("model"),
+        mode: s("mode"),
+        tokens_in: u("tokens_in"),
+        tokens_out: u("tokens_out"),
+        source: s("source"),
+        command: s("command"),
+        exit: v.get("exit").and_then(|x| x.as_i64()),
+        text: s("summary").or_else(|| s("prompt")).or_else(|| s("error")),
+        raw: v,
+    }
+}
+
+/// Format epoch milliseconds as `YYYY-MM-DD HH:MM` UTC.
+pub fn fmt_utc(ts_ms: u64) -> String {
+    let secs = (ts_ms / 1000) as i64;
+    let (y, m, d) = civil_from_days(secs.div_euclid(86400));
+    let sod = secs.rem_euclid(86400);
+    format!(
+        "{y:04}-{m:02}-{d:02} {:02}:{:02}",
+        sod / 3600,
+        (sod % 3600) / 60
+    )
+}
+
+/// Format epoch milliseconds as `YYYY-MM-DD` UTC (for daily aggregation).
+pub fn fmt_date(ts_ms: u64) -> String {
+    let (y, m, d) = civil_from_days(((ts_ms / 1000) as i64).div_euclid(86400));
+    format!("{y:04}-{m:02}-{d:02}")
+}
+
+/// Civil date from a day count since the Unix epoch (Howard Hinnant's algorithm).
+fn civil_from_days(z: i64) -> (i64, u32, u32) {
+    let z = z + 719_468;
+    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146_096) / 365;
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = (doy - (153 * mp + 2) / 5 + 1) as u32;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 } as u32;
+    (if m <= 2 { y + 1 } else { y }, m, d)
+}
+
+/// Current epoch milliseconds (for `--since` cutoffs).
+pub fn now_ms_u64() -> u64 {
+    now_ms() as u64
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -193,6 +282,39 @@ mod tests {
     #[test]
     fn default_path_ends_in_audit_jsonl() {
         assert!(default_path().ends_with("aishe/audit.jsonl"));
+    }
+
+    #[test]
+    fn utc_formatting_matches_known_epochs() {
+        assert_eq!(fmt_date(0), "1970-01-01");
+        assert_eq!(fmt_utc(0), "1970-01-01 00:00");
+        // 2026-06-12 22:45:40 UTC = 1781304340 s.
+        assert_eq!(fmt_utc(1_781_304_340_000), "2026-06-12 22:45");
+        assert_eq!(fmt_date(1_781_304_340_000), "2026-06-12");
+    }
+
+    #[test]
+    fn read_entries_parses_kinds() {
+        let dir = std::env::temp_dir().join(format!("aishe-audit-rd-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let p = dir.join("a.jsonl");
+        std::fs::write(
+            &p,
+            "{\"ts_ms\":1,\"session\":\"s1\",\"kind\":\"ai_response\",\"model\":\"gpt-4o\",\"tokens_in\":10,\"tokens_out\":5,\"summary\":\"ok\"}\n\
+             {\"ts_ms\":2,\"session\":\"s1\",\"kind\":\"action\",\"source\":\"yolo\",\"command\":\"ls\",\"exit\":0}\n\
+             not json — skipped\n",
+        )
+        .unwrap();
+        let es = read_entries(&p);
+        assert_eq!(es.len(), 2);
+        assert_eq!(es[0].kind, "ai_response");
+        assert_eq!(es[0].tokens_in, Some(10));
+        assert_eq!(es[0].model.as_deref(), Some("gpt-4o"));
+        assert_eq!(es[1].command.as_deref(), Some("ls"));
+        assert_eq!(es[1].exit, Some(0));
+        // Missing file → empty, no panic.
+        assert!(read_entries(&dir.join("nope.jsonl")).is_empty());
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]

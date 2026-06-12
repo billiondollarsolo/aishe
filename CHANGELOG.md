@@ -6,6 +6,15 @@ breaking changes can land in any release.
 
 ## [Unreleased]
 
+### Added
+- **Queryable audit log + cost history (`aishe log`, `aishe usage`).** `aishe log`
+  prints the audit log as a filtered table — by `--session`, `--action` (kind),
+  `--model`, `--since` (`30m`/`2h`/`3d`/`1w`), `-n` last-N, or `--json` for raw
+  JSONL. `aishe usage` aggregates token counts and estimated cost from the log,
+  `--by model` (default), `day`, or `session`. Both are read-only and never
+  un-redact (the log is already scrubbed on write). This is proposal R5 from
+  [docs/proposals.md](docs/proposals.md).
+
 ## [0.2.3] - 2026-06-12
 
 ### Added

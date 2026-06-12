@@ -3,6 +3,7 @@
 use std::io::Write;
 
 use assert_cmd::Command;
+use predicates::prelude::PredicateBooleanExt;
 use predicates::str::contains;
 
 /// Write a minimal valid config into a temp XDG_CONFIG_HOME so the binary does
@@ -421,6 +422,54 @@ fn undo_restores_a_recorded_file_change() {
         .assert()
         .success()
         .stdout(contains("nothing to undo"));
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn log_and_usage_read_the_audit_log() {
+    // Seed an audit log and confirm `aishe log` / `aishe usage` read it via the
+    // AISHE_LOG_FILE override (child env only; never touches a real log).
+    let dir = std::env::temp_dir().join(format!("aishe-cli-log-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let log = dir.join("audit.jsonl");
+    std::fs::write(
+        &log,
+        "{\"ts_ms\":1781304002000,\"session\":\"s1\",\"kind\":\"ai_response\",\"model\":\"gpt-4o\",\"tokens_in\":1000,\"tokens_out\":200,\"summary\":\"ok\"}\n\
+         {\"ts_ms\":1781304003000,\"session\":\"s1\",\"kind\":\"action\",\"source\":\"yolo\",\"command\":\"apt-get install nginx\",\"exit\":0}\n",
+    )
+    .unwrap();
+
+    // `aishe log` shows both entries.
+    Command::cargo_bin("aishe")
+        .unwrap()
+        .env("AISHE_LOG_FILE", &log)
+        .arg("log")
+        .assert()
+        .success()
+        .stdout(contains("apt-get install nginx").and(contains("gpt-4o")));
+
+    // `aishe log --action action` filters to the command.
+    Command::cargo_bin("aishe")
+        .unwrap()
+        .env("AISHE_LOG_FILE", &log)
+        .args(["log", "--action", "action"])
+        .assert()
+        .success()
+        .stdout(contains("apt-get install nginx"));
+
+    // `aishe usage` totals tokens and estimates cost (gpt-4o known price).
+    Command::cargo_bin("aishe")
+        .unwrap()
+        .env("AISHE_LOG_FILE", &log)
+        .arg("usage")
+        .assert()
+        .success()
+        .stdout(
+            contains("1000 in")
+                .and(contains("~$"))
+                .and(contains("TOTAL")),
+        );
 
     std::fs::remove_dir_all(&dir).ok();
 }

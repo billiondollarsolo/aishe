@@ -92,3 +92,32 @@ jq -s 'map(.tokens_in // 0 + (.tokens_out // 0)) | add' ~/.local/share/aishe/aud
 
 Long text fields are truncated to keep lines bounded. The log grows over time;
 rotate or delete it yourself if needed.
+
+### Built-in queries: `aishe log` and `aishe usage`
+
+You don't need `jq` for the common questions. `aishe log` reads the same file
+(`$AISHE_LOG_FILE`, else `[logging] file`, else the default) and prints a table:
+
+```sh
+aishe log                       # all entries, newest last
+aishe log --action action       # only commands the AI ran (with exit codes)
+aishe log --model gpt-4o        # only calls to a model matching this substring
+aishe log --session <id>        # one session
+aishe log --since 2h -n 50      # last 50 entries from the past 2 hours
+aishe log --json                # raw JSONL (pipe to jq for more)
+```
+
+`--since` accepts `30m` / `2h` / `3d` / `1w` (a bare number means minutes).
+
+`aishe usage` aggregates token counts and estimated cost (using the same price
+table as the live `/usage` line, overridable in `[pricing]`):
+
+```sh
+aishe usage                     # totals per model
+aishe usage --by day            # per calendar day (UTC)
+aishe usage --by session        # per session
+aishe usage --since 1w          # only the last week
+```
+
+Both commands are **read-only** and never un-redact: secrets are already scrubbed
+when the log is written, so nothing sensitive is reconstructed on read.

@@ -263,7 +263,7 @@ with the no-hang work already shipped — we should *degrade*, not fail.
 
 ## R5 — Queryable audit log + cost observability
 
-**Track:** Robustness · **Priority:** P2 · **Effort:** M · **Risk:** Low · **Depends on:** —
+**Track:** Robustness · **Priority:** P2 · **Effort:** M · **Risk:** Low · **Depends on:** — · **Status: Shipped (v1)** — `aishe log` (filters: session/action/model/since/-n/--json) and `aishe usage` (`--by model|day|session`) read the audit log read-only via `audit::read_entries` (`src/audit.rs`); cost reuses the `usage` price table. A compact post-session summary line is a follow-up.
 
 ### Problem
 `src/audit.rs` already writes a JSONL log of prompts, responses, and AI-initiated

@@ -23,6 +23,8 @@ aishe mcp                           list the MCP tools offered to yolo
 aishe commands                      list your custom slash-commands
 aishe skills                        list model-invoked skills
 aishe undo [--list]                 revert the most recent AI file change
+aishe log [filters]                 show the audit log of AI calls and actions
+aishe usage [--by model|day|session]  token/cost totals from the audit log
 ```
 
 These are real subcommands, so they work the same in the interactive zsh-PTY

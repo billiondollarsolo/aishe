@@ -170,6 +170,36 @@ enum Cmd {
         #[arg(long)]
         list: bool,
     },
+    /// Show the audit log of AI calls and actions (needs logging enabled).
+    Log {
+        /// Only this session id.
+        #[arg(long)]
+        session: Option<String>,
+        /// Only this event kind (ai_request, ai_response, ai_error, action).
+        #[arg(long)]
+        action: Option<String>,
+        /// Only entries whose model name contains this substring.
+        #[arg(long)]
+        model: Option<String>,
+        /// Only entries newer than this, e.g. 30m, 2h, 3d, 1w.
+        #[arg(long)]
+        since: Option<String>,
+        /// Show at most the last N entries.
+        #[arg(short = 'n', long)]
+        limit: Option<usize>,
+        /// Emit raw JSONL instead of a table.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Summarize token usage and estimated cost from the audit log.
+    Usage {
+        /// Group by: model (default), day, or session.
+        #[arg(long, value_parser = ["model", "day", "session"])]
+        by: Option<String>,
+        /// Only entries newer than this, e.g. 30m, 2h, 3d, 1w.
+        #[arg(long)]
+        since: Option<String>,
+    },
 }
 
 fn main() -> ExitCode {
@@ -286,6 +316,31 @@ fn run() -> Result<u8> {
         Some(Cmd::Model { value }) => return Ok(set_or_show("model", value.as_deref(), &config)),
         Some(Cmd::Provider { value }) => {
             return Ok(set_or_show("provider", value.as_deref(), &config))
+        }
+        Some(Cmd::Log {
+            session,
+            action,
+            model,
+            since,
+            limit,
+            json,
+        }) => {
+            return Ok(log_command(
+                &config,
+                session.as_deref(),
+                action.as_deref(),
+                model.as_deref(),
+                since.as_deref(),
+                *limit,
+                *json,
+            ));
+        }
+        Some(Cmd::Usage { by, since }) => {
+            return Ok(usage_history_command(
+                &config,
+                by.as_deref(),
+                since.as_deref(),
+            ));
         }
         _ => {}
     }
@@ -1341,6 +1396,242 @@ fn undo_command(list: bool) -> u8 {
             1
         }
     }
+}
+
+/// Resolve the audit log path for the read-only `log`/`usage` commands, without
+/// initializing the writer: `$AISHE_LOG_FILE`, else `[logging] file`, else the
+/// default `$XDG_DATA_HOME/aishe/audit.jsonl`.
+fn audit_log_path(config: &Config) -> std::path::PathBuf {
+    if let Ok(p) = std::env::var("AISHE_LOG_FILE") {
+        if !p.is_empty() {
+            return std::path::PathBuf::from(p);
+        }
+    }
+    if let Some(p) = &config.logging.file {
+        return std::path::PathBuf::from(p);
+    }
+    aishe::audit::default_path()
+}
+
+/// Parse a relative `--since` like `30m`, `2h`, `3d`, `1w` into a cutoff epoch-ms.
+/// A bare number means minutes. Returns `None` if unparseable.
+fn parse_since(s: &str) -> Option<u64> {
+    let s = s.trim();
+    let split = s.find(|c: char| !c.is_ascii_digit()).unwrap_or(s.len());
+    let n: u64 = s[..split].parse().ok()?;
+    let secs = match &s[split..] {
+        "" | "m" => 60,
+        "s" => 1,
+        "h" => 3600,
+        "d" => 86_400,
+        "w" => 604_800,
+        _ => return None,
+    };
+    Some(aishe::audit::now_ms_u64().saturating_sub(n * secs * 1000))
+}
+
+/// `aishe log`: print (filtered) audit entries as a table, or raw JSONL.
+#[allow(clippy::too_many_arguments)]
+fn log_command(
+    config: &Config,
+    session: Option<&str>,
+    action: Option<&str>,
+    model: Option<&str>,
+    since: Option<&str>,
+    limit: Option<usize>,
+    json: bool,
+) -> u8 {
+    let path = audit_log_path(config);
+    let mut entries = aishe::audit::read_entries(&path);
+    if entries.is_empty() && !path.exists() {
+        eprintln!(
+            "aishe: no audit log at {} (enable it in [logging] or with AISHE_LOG=1)",
+            path.display()
+        );
+        return 0;
+    }
+    let cutoff = since.and_then(parse_since);
+    entries.retain(|e| {
+        if let Some(c) = cutoff {
+            if e.ts_ms < c {
+                return false;
+            }
+        }
+        if let Some(s) = session {
+            if e.session != s {
+                return false;
+            }
+        }
+        if let Some(a) = action {
+            if e.kind != a {
+                return false;
+            }
+        }
+        if let Some(m) = model {
+            if !e.model.as_deref().is_some_and(|em| em.contains(m)) {
+                return false;
+            }
+        }
+        true
+    });
+    if let Some(n) = limit {
+        let len = entries.len();
+        if len > n {
+            entries.drain(0..len - n);
+        }
+    }
+    if entries.is_empty() {
+        println!("no matching audit entries");
+        return 0;
+    }
+    if json {
+        for e in &entries {
+            println!("{}", e.raw);
+        }
+        return 0;
+    }
+    for e in &entries {
+        let detail = match e.kind.as_str() {
+            "session_start" => format!("── session {} ──", e.session),
+            "ai_request" => format!(
+                "→ ask {} ({})",
+                e.model.as_deref().unwrap_or("?"),
+                e.mode.as_deref().unwrap_or("?")
+            ),
+            "ai_response" => format!(
+                "← {} · {} in / {} out",
+                e.model.as_deref().unwrap_or("?"),
+                e.tokens_in.unwrap_or(0),
+                e.tokens_out.unwrap_or(0)
+            ),
+            "ai_error" => format!(
+                "✗ {} {}",
+                e.model.as_deref().unwrap_or("?"),
+                e.text.as_deref().unwrap_or("")
+            ),
+            "action" => {
+                let exit = e.exit.map(|c| format!(" [exit {c}]")).unwrap_or_default();
+                format!(
+                    "$ {}{}  ({})",
+                    e.command.as_deref().unwrap_or(""),
+                    exit,
+                    e.source.as_deref().unwrap_or("")
+                )
+            }
+            other => other.to_string(),
+        };
+        let colored = if e.kind == "ai_error" {
+            detail.red().to_string()
+        } else if e.kind == "session_start" {
+            detail.dim().to_string()
+        } else {
+            detail
+        };
+        println!("{}  {}", aishe::audit::fmt_utc(e.ts_ms).dim(), colored);
+    }
+    0
+}
+
+/// `aishe usage`: aggregate token counts and estimated cost from the audit log.
+fn usage_history_command(config: &Config, by: Option<&str>, since: Option<&str>) -> u8 {
+    use aishe::usage::{self, Usage};
+    let path = audit_log_path(config);
+    let entries = aishe::audit::read_entries(&path);
+    if entries.is_empty() && !path.exists() {
+        eprintln!(
+            "aishe: no audit log at {} (enable it in [logging] or with AISHE_LOG=1)",
+            path.display()
+        );
+        return 0;
+    }
+    let cutoff = since.and_then(parse_since);
+    let by = by.unwrap_or("model");
+
+    #[derive(Default)]
+    struct Agg {
+        tin: u64,
+        tout: u64,
+        reqs: u64,
+        cost: f64,
+        unknown: u64,
+    }
+    let mut groups: std::collections::BTreeMap<String, Agg> = std::collections::BTreeMap::new();
+    let mut total = Agg::default();
+    for e in &entries {
+        if e.kind != "ai_response" {
+            continue;
+        }
+        if let Some(c) = cutoff {
+            if e.ts_ms < c {
+                continue;
+            }
+        }
+        let tin = e.tokens_in.unwrap_or(0);
+        let tout = e.tokens_out.unwrap_or(0);
+        let model = e.model.as_deref().unwrap_or("?");
+        let (cost, known) = match usage::price_for(model, &config.pricing) {
+            Some(p) => (
+                usage::cost(
+                    Usage {
+                        input: tin,
+                        output: tout,
+                        requests: 1,
+                    },
+                    p,
+                ),
+                true,
+            ),
+            None => (0.0, false),
+        };
+        let key = match by {
+            "day" => aishe::audit::fmt_date(e.ts_ms),
+            "session" => e.session.clone(),
+            _ => model.to_string(),
+        };
+        let g = groups.entry(key).or_default();
+        for agg in [g, &mut total] {
+            agg.tin += tin;
+            agg.tout += tout;
+            agg.reqs += 1;
+            agg.cost += cost;
+            if !known {
+                agg.unknown += 1;
+            }
+        }
+    }
+    if total.reqs == 0 {
+        println!("no model calls recorded in the audit log");
+        return 0;
+    }
+    println!("usage by {by}:");
+    let fmt_cost = |a: &Agg| {
+        if a.unknown == 0 {
+            format!("~${:.4}", a.cost)
+        } else if a.cost > 0.0 {
+            format!("~${:.4} (+{} unpriced)", a.cost, a.unknown)
+        } else {
+            "cost n/a".to_string()
+        }
+    };
+    for (k, a) in &groups {
+        println!(
+            "  {:<28} {:>10} in  {:>9} out  {:>4} req  {}",
+            k,
+            a.tin,
+            a.tout,
+            a.reqs,
+            fmt_cost(a)
+        );
+    }
+    println!(
+        "  {:<28} {:>10} in  {:>9} out  {:>4} req  {}",
+        "TOTAL".to_string(),
+        total.tin,
+        total.tout,
+        total.reqs,
+        fmt_cost(&total)
+    );
+    0
 }
 
 fn init_audit(config: &Config) {
