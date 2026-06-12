@@ -45,6 +45,44 @@ extern "C" fn handle_sigint(_sig: libc::c_int) {
     INTERRUPTED.store(true, Ordering::SeqCst);
 }
 
+/// Hard wall-clock budget for the prompt-blocking shell hooks (`--suggest-line`,
+/// `--auto-line`). On a dead/slow network these would otherwise hang the user's
+/// prompt for the provider read timeout plus retries; instead we arm a SIGALRM
+/// and bail out cleanly when it fires. See [`arm_hook_budget`].
+const HOOK_BUDGET_SECS: u32 = 15;
+
+/// SIGALRM handler for the hook budget. The whole point is to leave stdout EMPTY
+/// so the shell hook sees no suggestion and the prompt simply returns. This runs
+/// in signal context, so it must be async-signal-safe: only a single raw
+/// `libc::write` to fd 2 (stderr) and `libc::_exit` — no Rust stdlib I/O and no
+/// allocation.
+extern "C" fn handle_hook_alarm(_sig: libc::c_int) {
+    const MSG: &[u8] = b"aishe: suggestion timed out\n";
+    unsafe {
+        libc::write(2, MSG.as_ptr() as *const libc::c_void, MSG.len());
+        libc::_exit(0);
+    }
+}
+
+/// Install the SIGALRM handler and arm a `HOOK_BUDGET_SECS` alarm. The caller is
+/// responsible for cancelling it (`libc::alarm(0)`) before returning normally.
+fn arm_hook_budget() {
+    unsafe {
+        libc::signal(
+            libc::SIGALRM,
+            handle_hook_alarm as *const () as libc::sighandler_t,
+        );
+        libc::alarm(HOOK_BUDGET_SECS);
+    }
+}
+
+/// Cancel a previously armed hook budget alarm.
+fn cancel_hook_budget() {
+    unsafe {
+        libc::alarm(0);
+    }
+}
+
 #[derive(Parser, Debug)]
 #[command(name = "aishe", version = VERSION, about = "A natural-language-aware shell")]
 struct Args {
@@ -596,6 +634,8 @@ fn suggest_line(
         eprintln!("aishe: LLM not configured");
         return Ok(1);
     };
+    // Bound the blocking LLM call so a dead/slow network can't freeze the prompt.
+    arm_hook_budget();
     // Hook calls are one per process; share memory across them via a file so
     // follow-ups ("is it enabled?") keep the prior turns' context.
     let mem = hook_session_path(config);
@@ -604,6 +644,8 @@ fn suggest_line(
         None => Session::new(false),
     };
     let suggestion = modes::suggest::request(line, p, executor, config, session.history())?;
+    // The blocking network work is done; let the rest run unbounded.
+    cancel_hook_budget();
     let reply = match &suggestion {
         modes::suggest::Suggestion::Command {
             command,
@@ -705,12 +747,16 @@ fn auto_line(
         eprintln!("aishe: LLM not configured");
         return Ok(1);
     };
+    // Bound the blocking LLM call so a dead/slow network can't freeze the prompt.
+    arm_hook_budget();
     let mem = hook_session_path(config);
     let mut session = match &mem {
         Some(path) => Session::load_persisted(path),
         None => Session::new(false),
     };
     let suggestion = modes::suggest::request(line, p, executor, config, session.history())?;
+    // The blocking network work is done; let the rest run unbounded.
+    cancel_hook_budget();
     let (reply, code) = match &suggestion {
         modes::suggest::Suggestion::Command {
             command,

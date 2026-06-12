@@ -178,9 +178,11 @@ pub(crate) fn stream_post(
 ) -> Result<ureq::Response, ProviderError> {
     let mut attempt = 0;
     loop {
-        // Per-read timeout (not a whole-call deadline) so long streams aren't cut.
+        // Fast-fail the TCP connect so an unreachable endpoint doesn't sit on the
+        // read timeout, but keep the per-read timeout (not a whole-call deadline)
+        // so legitimate slow streams aren't cut.
         let agent = ureq::AgentBuilder::new()
-            .timeout_connect(Duration::from_secs(10))
+            .timeout_connect(Duration::from_secs(5))
             .timeout_read(Duration::from_secs(HTTP_TIMEOUT_SECS))
             .build();
         let mut req = agent.post(url);
