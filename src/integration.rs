@@ -122,6 +122,12 @@ aishe_precmd() {
   esac
 }
 
+# Clean up this shell's per-shell temp files when the interactive shell exits, so
+# they don't accumulate in $TMPDIR. Registered as a zshexit hook below.
+aishe_zshexit() {
+  command rm -f "$AISHE_PENDING_FILE" "$AISHE_FORCE_FILE" "$AISHE_SESSION_FILE"
+}
+
 # Force-NL key: send the current line to the AI even if it starts with a real
 # command. Default key Alt-Enter; override with AISHE_NL_KEY (a zsh bindkey seq).
 aishe-nl-widget() {
@@ -171,6 +177,7 @@ aishe-cycle-mode() {
 if [[ -o interactive ]]; then
   autoload -Uz add-zsh-hook
   add-zsh-hook precmd aishe_precmd
+  add-zsh-hook zshexit aishe_zshexit   # remove per-shell temp files on exit
   zle -N aishe-nl-widget
   bindkey "${AISHE_NL_KEY:-^[^M}" aishe-nl-widget
   zle -N aishe-cycle-mode
@@ -311,6 +318,20 @@ case ":${PROMPT_COMMAND}:" in
   *) PROMPT_COMMAND="__aishe_prompt${PROMPT_COMMAND:+;$PROMPT_COMMAND}" ;;
 esac
 
+# Remove this shell's per-shell temp files when it exits, so they don't pile up in
+# $TMPDIR. Chain onto any existing EXIT trap (don't clobber it), and only install
+# once so sourcing twice is safe.
+__aishe_cleanup() {
+  command rm -f "$AISHE_PENDING_FILE" "$AISHE_FORCE_FILE" "$AISHE_SESSION_FILE"
+}
+__aishe_existing_exit_trap="$(trap -p EXIT)"
+case "$__aishe_existing_exit_trap" in
+  *__aishe_cleanup*) ;;
+  '') trap '__aishe_cleanup' EXIT ;;
+  *)  trap "__aishe_cleanup; ${__aishe_existing_exit_trap#trap -- \'}" EXIT ;;
+esac
+unset __aishe_existing_exit_trap
+
 # Force-NL: Ctrl-G turns the current line into an aishe suggestion even if it is
 # a valid command. `bind -x` runs in the current shell, so READLINE_LINE sticks.
 __aishe_nl() {
@@ -389,6 +410,31 @@ mod tests {
         assert!(s.contains("AISHE_PENDING_FILE"));
         assert!(s.contains("aishe_precmd"));
         assert!(s.contains("add-zsh-hook precmd aishe_precmd"));
+    }
+
+    #[test]
+    fn zsh_script_cleans_up_temp_files_on_exit() {
+        // A zshexit hook removes this shell's per-shell temp files so they don't
+        // pile up in $TMPDIR. It's registered alongside the precmd hook, under
+        // the same interactive guard.
+        let s = script("zsh").unwrap();
+        assert!(s.contains("aishe_zshexit"));
+        assert!(s.contains("add-zsh-hook zshexit aishe_zshexit"));
+        assert!(s.contains(
+            r#"command rm -f "$AISHE_PENDING_FILE" "$AISHE_FORCE_FILE" "$AISHE_SESSION_FILE""#
+        ));
+    }
+
+    #[test]
+    fn bash_script_cleans_up_temp_files_on_exit() {
+        // An EXIT trap removes this shell's per-shell temp files. It chains onto
+        // any existing EXIT trap (so it doesn't clobber it) and only installs once.
+        let s = script("bash").unwrap();
+        assert!(s.contains("__aishe_cleanup"));
+        assert!(s.contains("trap '__aishe_cleanup' EXIT"));
+        assert!(s.contains(
+            r#"command rm -f "$AISHE_PENDING_FILE" "$AISHE_FORCE_FILE" "$AISHE_SESSION_FILE""#
+        ));
     }
 
     #[test]

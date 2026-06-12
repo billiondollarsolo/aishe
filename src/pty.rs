@@ -20,6 +20,18 @@ use crate::config::Config;
 use crate::executor::which;
 use crate::integration;
 
+/// Set by the SIGTERM/SIGHUP handlers so the main PTY loop breaks and the normal
+/// RAII cleanup (RawGuard + ZdotdirGuard) runs. A `kill`/SIGHUP would otherwise
+/// bypass those Drops and could leave the terminal in raw mode and the temp
+/// ZDOTDIR on disk. The handler does nothing unsafe — just flips this flag; the
+/// blocked `reader.read()` returns with EINTR, so the loop sees the flag and
+/// exits cleanly, running Drops on the way out.
+static TERMINATED: AtomicBool = AtomicBool::new(false);
+
+extern "C" fn handle_term(_sig: libc::c_int) {
+    TERMINATED.store(true, Ordering::SeqCst);
+}
+
 /// Run the user's real zsh inside a PTY, returning its exit code.
 pub fn run_zsh(config: &Config) -> Result<u8> {
     let zsh = which("zsh").ok_or_else(|| {
@@ -27,8 +39,11 @@ pub fn run_zsh(config: &Config) -> Result<u8> {
     })?;
 
     // Build an isolated ZDOTDIR whose startup files load the user's real config
-    // and then append the aishe hook.
+    // and then append the aishe hook. The guard removes the temp dir on every
+    // return path (normal exit, `?` error, or panic-unwind); it must outlive zsh,
+    // so it's bound for the whole function.
     let zdotdir = make_zdotdir().context("preparing zsh integration dir")?;
+    let _zdotdir_guard = ZdotdirGuard(zdotdir.clone());
     let real_zdotdir = std::env::var("ZDOTDIR").unwrap_or_else(|_| {
         dirs::home_dir()
             .map(|h| h.display().to_string())
@@ -82,6 +97,20 @@ pub fn run_zsh(config: &Config) -> Result<u8> {
     crossterm::terminal::enable_raw_mode().context("entering raw mode")?;
     let _guard = RawGuard;
 
+    // Catch SIGTERM/SIGHUP (e.g. `kill`, terminal close) so we break the loop and
+    // run the RAII Drops (cooked-mode restore + temp ZDOTDIR removal) instead of
+    // dying with the terminal left in raw mode. The handler only sets a flag; the
+    // blocked read below returns EINTR and the loop observes it. Reset the flag
+    // first so a stale value from a prior call can't short-circuit this session.
+    TERMINATED.store(false, Ordering::SeqCst);
+    unsafe {
+        libc::signal(
+            libc::SIGTERM,
+            handle_term as *const () as libc::sighandler_t,
+        );
+        libc::signal(libc::SIGHUP, handle_term as *const () as libc::sighandler_t);
+    }
+
     let done = Arc::new(AtomicBool::new(false));
 
     // stdin -> pty
@@ -130,6 +159,9 @@ pub fn run_zsh(config: &Config) -> Result<u8> {
     let mut stdout = std::io::stdout();
     let mut buf = [0u8; 4096];
     loop {
+        if TERMINATED.load(Ordering::SeqCst) {
+            break;
+        }
         match reader.read(&mut buf) {
             Ok(0) => break,
             Ok(n) => {
@@ -138,11 +170,18 @@ pub fn run_zsh(config: &Config) -> Result<u8> {
                 }
                 let _ = stdout.flush();
             }
+            // A signal (EINTR) or a real read error both land here; in either case
+            // we stop and let the Drops run. Re-check the flag is implicit: we break.
             Err(_) => break,
         }
     }
 
     done.store(true, Ordering::Relaxed);
+    // If we broke out because of SIGTERM/SIGHUP, zsh is probably still running and
+    // `wait()` would block; ask it to exit so we can reap it and let the Drops run.
+    if TERMINATED.load(Ordering::SeqCst) {
+        let _ = child.kill();
+    }
     let status = child.wait().map_err(|e| anyhow!("waiting for zsh: {e}"))?;
     Ok((status.exit_code() & 0xff) as u8)
 }
@@ -162,5 +201,15 @@ struct RawGuard;
 impl Drop for RawGuard {
     fn drop(&mut self) {
         let _ = crossterm::terminal::disable_raw_mode();
+    }
+}
+
+/// Removes the temp ZDOTDIR on drop (best-effort, ignoring errors) so each PTY
+/// session cleans up its `${TMPDIR}/aishe-zdotdir-<pid>` instead of leaking it.
+/// Covers normal exit, error returns, and panic-unwind.
+struct ZdotdirGuard(std::path::PathBuf);
+impl Drop for ZdotdirGuard {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
     }
 }
