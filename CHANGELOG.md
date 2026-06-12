@@ -6,6 +6,8 @@ breaking changes can land in any release.
 
 ## [Unreleased]
 
+## [0.2.4] - 2026-06-12
+
 ### Added
 - **Queryable audit log + cost history (`aishe log`, `aishe usage`).** `aishe log`
   prints the audit log as a filtered table — by `--session`, `--action` (kind),
