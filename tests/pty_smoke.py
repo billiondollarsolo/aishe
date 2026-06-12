@@ -112,12 +112,7 @@ def make_env():
     os.makedirs(cfgdir, exist_ok=True)
     # Pre-write a config so the first-run wizard never blocks the PTY.
     with open(os.path.join(cfgdir, "config.toml"), "w") as f:
-        f.write(
-            "[aishe]\n"
-            'mode = "suggest"\n'
-            'provider = "anthropic"\n'
-            'front_end = "reedline"\n'
-        )
+        f.write("[aishe]\n" 'mode = "suggest"\n' 'provider = "anthropic"\n')
     env = dict(os.environ)
     env.update(
         {
@@ -164,8 +159,10 @@ def main():
         if not sh.expect("HOOK_IS=1"):
             fail("command_not_found_handler not installed", sh)
 
-        # 3) the auto eval path is present inside that hook.
-        sh.send("print -r -- AUTO=$(functions command_not_found_handler | grep -c -- --auto-line)")
+        # 3) the auto eval path is present in the hook. command_not_found_handler
+        #    delegates to _aishe_handle_nl, which is where the mode dispatch (and
+        #    the `aishe --auto-line` call) lives.
+        sh.send("print -r -- AUTO=$(functions _aishe_handle_nl | grep -c -- --auto-line)")
         if not sh.expect("AUTO=1"):
             fail("auto-line eval path missing from hook", sh)
 
