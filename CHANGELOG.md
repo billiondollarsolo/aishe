@@ -6,6 +6,8 @@ breaking changes can land in any release.
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-06-12
+
 ### Added
 - **First-class `mode`/`model`/`provider`/`config`/`mcp`/`commands`/`skills`
   subcommands.** `aishe mode`, `aishe model`, and `aishe provider` show the
