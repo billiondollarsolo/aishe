@@ -14,30 +14,42 @@ aishe doctor           check shell, config, provider, and API key
 aishe completions ...  print a shell completion script for aishe itself
 aishe trust [--list]   trust this repo's .aishe/config.toml (and list trusted)
 aishe untrust [--all]  drop trust for this repo (or all repos)
+
+aishe mode [suggest|auto|yolo]      show or set the interaction mode
+aishe model [NAME]                  show or set the model (for the active provider)
+aishe provider [anthropic|openai]   show or set the provider
+aishe config                        print the active configuration
+aishe mcp                           list the MCP tools offered to yolo
+aishe commands                      list your custom slash-commands
+aishe skills                        list model-invoked skills
 ```
+
+These are real subcommands, so they work the same in the interactive zsh-PTY
+shell, a plain shell, or a script.
 
 ## Changing settings
 
-There is no in-session settings command; set things one of these ways:
+`aishe mode`, `aishe model`, and `aishe provider` show the current value with no
+argument, or save a new one to `~/.config/aishe/config.toml` with an argument:
 
-- **Per session:** the `--mode`, `--model`, and `--provider` flags, or
-  `$AISHE_MODE`.
-- **In the interactive shell:** **Shift-Tab** (or `$AISHE_MODE_KEY`) cycles the
-  mode `suggest -> auto -> yolo`; the prompt glyph follows.
-- **Persistently:** edit `~/.config/aishe/config.toml` (every field is in
-  [Configuration reference](configuration.md)).
+```sh
+aishe mode auto         # persist the default mode
+aishe provider openai   # switch provider...
+aishe model gpt-4o      # ...then set that provider's model
+```
+
+The saved value goes to your user config (a project overlay or a `--mode`/
+`--provider` flag on the same command is not baked in). You can also set these
+per session with the `--mode`/`--model`/`--provider` flags or `$AISHE_MODE`, and
+in the interactive shell **Shift-Tab** (or `$AISHE_MODE_KEY`) cycles the mode
+`suggest -> auto -> yolo`. Every field is in
+[Configuration reference](configuration.md).
 
 ## Inspecting things
 
-The read-only listings work in the non-interactive `-c` form:
-
-```sh
-aishe -c '/config'      # print the active config
-aishe -c '/usage'       # session token and cost (per process)
-aishe -c '/mcp'         # MCP tools offered to yolo
-aishe -c '/skills'      # model-invoked skills
-aishe -c '/commands'    # your custom slash-commands
-```
+`aishe config`, `aishe mcp`, `aishe commands`, and `aishe skills` print the active
+config and registries. They also work as slash-commands in the `-c` form
+(`aishe -c '/config'`, `aishe -c '/usage'`, ...).
 
 ## Input prefixes
 

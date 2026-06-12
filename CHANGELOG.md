@@ -6,6 +6,16 @@ breaking changes can land in any release.
 
 ## [Unreleased]
 
+### Added
+- **First-class `mode`/`model`/`provider`/`config`/`mcp`/`commands`/`skills`
+  subcommands.** `aishe mode`, `aishe model`, and `aishe provider` show the
+  current value or save a new one to your config (`aishe mode auto`); `aishe
+  config`/`mcp`/`commands`/`skills` print the active config and registries. Being
+  real subcommands, they work the same in the zsh-PTY shell, a plain shell, or a
+  script — replacing the interactive-only meta commands that lived in the removed
+  reedline REPL. Setters write to the user config (a project overlay or a
+  same-command `--mode`/`--provider` flag is not baked in).
+
 ### Removed
 - **The built-in reedline editor is gone; aishe now commits to zsh.** The
   interactive shell is the zsh-PTY wrapper (your real zsh with the AI hook), so

@@ -180,13 +180,16 @@ aishe doctor           check shell, config, provider, and API key
 aishe completions ...  print a shell completion script for aishe itself
 aishe trust [--list]   trust this repo's .aishe/config.toml (and list trusted)
 aishe untrust [--all]  drop trust for this repo (or all repos)
+
+aishe mode|model|provider [VALUE]   show or set (and persist) a setting
+aishe config|mcp|commands|skills    print the active config / registries
 ```
 
-Set the **mode/model/provider** with the `--mode`/`--model`/`--provider` flags,
-the config file, or `$AISHE_MODE`; in the interactive shell, **Shift-Tab** cycles
-the mode for the session. Inspect things with `aishe -c '/config'`,
-`aishe -c '/usage'`, `aishe -c '/mcp'`, `aishe -c '/skills'`, and run user-defined
-`/commands` the same way. Full reference in [docs/commands.md](docs/commands.md).
+`aishe mode`, `model`, and `provider` show the current value with no argument or
+save a new one to your config with one (`aishe mode auto`). You can also override
+per session with the `--mode`/`--model`/`--provider` flags or `$AISHE_MODE`, and
+in the interactive shell **Shift-Tab** cycles the mode. Full reference in
+[docs/commands.md](docs/commands.md).
 
 ## Conversation memory
 

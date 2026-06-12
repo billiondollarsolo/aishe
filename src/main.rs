@@ -106,6 +106,26 @@ enum Cmd {
         #[arg(long)]
         all: bool,
     },
+    /// Show or set the interaction mode (with a value, saves it to your config).
+    Mode {
+        #[arg(value_parser = ["suggest", "auto", "yolo"])]
+        value: Option<String>,
+    },
+    /// Show or set the model for the active provider (saves it to your config).
+    Model { value: Option<String> },
+    /// Show or set the provider (with a value, saves it to your config).
+    Provider {
+        #[arg(value_parser = ["anthropic", "openai"])]
+        value: Option<String>,
+    },
+    /// Print the active configuration.
+    Config,
+    /// List the MCP tools offered to yolo.
+    Mcp,
+    /// List your custom slash-commands.
+    Commands,
+    /// List model-invoked skills.
+    Skills,
 }
 
 fn main() -> ExitCode {
@@ -171,6 +191,56 @@ fn run() -> Result<u8> {
         args.provider.as_deref(),
         args.model.as_deref(),
     );
+
+    // First-class inspection / settings subcommands. They print (or persist a
+    // setting) and exit, so they work the same in the zsh-PTY, a bare shell, or a
+    // script. The inspectors show the *effective* config (project overlay + flags
+    // applied); the setters write to the user config file (see `set_or_show`).
+    match &args.cmd {
+        Some(Cmd::Config) => {
+            println!("config file: {}", Config::path().display());
+            match toml::to_string_pretty(&config) {
+                Ok(t) => println!("\n{t}"),
+                Err(e) => eprintln!("aishe: {e}"),
+            }
+            return Ok(0);
+        }
+        Some(Cmd::Mcp) => {
+            print_mcp_listing(&aishe::mcp::McpRegistry::connect(&config.mcp_servers));
+            return Ok(0);
+        }
+        Some(Cmd::Commands) => {
+            let commands = CommandRegistry::load();
+            if commands.is_empty() {
+                println!("no custom commands (add *.md files to ~/.config/aishe/commands/)");
+            } else {
+                println!("custom slash-commands:");
+                for (name, desc) in commands.list() {
+                    println!("\x20 /{name}  —  {desc}");
+                }
+            }
+            return Ok(0);
+        }
+        Some(Cmd::Skills) => {
+            let skills = SkillRegistry::load();
+            if skills.is_empty() {
+                println!("no skills (add <name>/SKILL.md files to ~/.config/aishe/skills/)");
+            } else {
+                println!("model-invoked skills (yolo mode):");
+                for (name, desc) in skills.list() {
+                    println!("\x20 {name}  —  {desc}");
+                }
+            }
+            return Ok(0);
+        }
+        Some(Cmd::Mode { value }) => return Ok(set_or_show("mode", value.as_deref(), &config)),
+        Some(Cmd::Model { value }) => return Ok(set_or_show("model", value.as_deref(), &config)),
+        Some(Cmd::Provider { value }) => {
+            return Ok(set_or_show("provider", value.as_deref(), &config))
+        }
+        _ => {}
+    }
+
     // Tell an interactive user what a project config did (and how to trust it).
     let interactive_entry = args.command.is_none()
         && args.suggest_line.is_none()
@@ -948,6 +1018,41 @@ fn print_usage_summary(provider: Option<&dyn Provider>, config: &Config) {
         }
         None => println!("usage: provider not configured"),
     }
+}
+
+/// Back the `mode` / `model` / `provider` subcommands. With no `value`, print the
+/// effective current value. With a `value`, persist it to the *user* config file:
+/// we reload a fresh `Config` (no project overlay, no this-invocation flags) so a
+/// project overlay or a `--mode`/`--provider` flag can't get baked into the saved
+/// file. Clap already validated `mode`/`provider` against their allowed sets.
+fn set_or_show(field: &str, value: Option<&str>, effective: &Config) -> u8 {
+    let Some(value) = value else {
+        let current = match field {
+            "mode" => effective.aishe.mode.clone(),
+            "provider" => effective.aishe.provider.clone(),
+            _ => effective.active_model().to_string(),
+        };
+        println!("{field}: {current}");
+        return 0;
+    };
+    let mut cfg = match Config::load_or_init() {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("aishe: {e}");
+            return 1;
+        }
+    };
+    match field {
+        "mode" => cfg.aishe.mode = value.to_string(),
+        "provider" => cfg.aishe.provider = value.to_string(),
+        _ => cfg.set_active_model(value.to_string()),
+    }
+    if let Err(e) = cfg.save() {
+        eprintln!("aishe: {e}");
+        return 1;
+    }
+    println!("{field} = {value}  (saved to {})", Config::path().display());
+    0
 }
 
 fn data_dir() -> std::path::PathBuf {

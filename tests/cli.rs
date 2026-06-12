@@ -300,3 +300,80 @@ fn completions_emits_a_script() {
         .success()
         .stdout(contains("_aishe"));
 }
+
+#[test]
+fn settings_subcommands_show_and_persist() {
+    // A dedicated config home: these subcommands write to the config file, so
+    // they must not share state with the other tests' config.
+    let dir = std::env::temp_dir().join(format!("aishe-cli-set-{}", std::process::id()));
+    let cfg_dir = dir.join("aishe");
+    std::fs::create_dir_all(&cfg_dir).unwrap();
+    std::fs::write(
+        cfg_dir.join("config.toml"),
+        r#"[aishe]
+mode = "suggest"
+provider = "anthropic"
+
+[providers.anthropic]
+base_url = "https://api.anthropic.com"
+api_key_env = "ANTHROPIC_API_KEY"
+model = "claude-x"
+
+[providers.openai]
+base_url = "https://api.openai.com"
+api_key_env = "OPENAI_API_KEY"
+model = "gpt-x"
+"#,
+    )
+    .unwrap();
+
+    let run = |args: &[&str]| {
+        let mut c = Command::cargo_bin("aishe").unwrap();
+        c.env("XDG_CONFIG_HOME", &dir)
+            .env("XDG_DATA_HOME", dir.join("data"))
+            .args(args);
+        c
+    };
+
+    // Show current values.
+    run(&["mode"])
+        .assert()
+        .success()
+        .stdout(contains("mode: suggest"));
+    run(&["provider"])
+        .assert()
+        .success()
+        .stdout(contains("provider: anthropic"));
+
+    // Set and persist.
+    run(&["mode", "auto"])
+        .assert()
+        .success()
+        .stdout(contains("saved to"));
+    run(&["provider", "openai"]).assert().success();
+    // `model` targets the now-active provider (openai).
+    run(&["model", "gpt-z2"]).assert().success();
+
+    // The effective config reflects the persisted changes.
+    run(&["config"])
+        .assert()
+        .success()
+        .stdout(contains("mode = \"auto\""))
+        .stdout(contains("provider = \"openai\""))
+        .stdout(contains("gpt-z2"));
+
+    // Inspectors work without any custom commands/skills configured.
+    run(&["commands"])
+        .assert()
+        .success()
+        .stdout(contains("no custom commands"));
+    run(&["skills"])
+        .assert()
+        .success()
+        .stdout(contains("no skills"));
+
+    // Clap rejects an invalid mode.
+    run(&["mode", "bogus"]).assert().failure();
+
+    std::fs::remove_dir_all(&dir).ok();
+}
