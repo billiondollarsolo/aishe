@@ -235,6 +235,21 @@ def main():
         check(sh, "Shift-Tab cycles the mode", sh.expect("aishe mode: yolo"))
         sh.raw(b"\x03")
 
+        # 9. Fix-the-last-command: after a real command fails, Ctrl-X Ctrl-F asks
+        #    the model for a correction and pre-fills it on the line (never runs
+        #    it). `false` is a real command that exits non-zero (an *unknown*
+        #    command would route to the AI instead, so use a real failing one).
+        sh.send("")  # land on a clean, fresh prompt after the prior raw keys
+        sh.settle(0.3)
+        sh.buf = ""
+        set_fake(sh, command("echo FIXED_SCEN9_42", "corrected"))
+        sh.send("false")
+        sh.settle(0.4)
+        sh.buf = ""
+        sh.raw(b"\x18\x06")  # Ctrl-X Ctrl-F
+        check(sh, "fix key pre-fills a correction", sh.expect("echo FIXED_SCEN9_42"))
+        sh.raw(b"\x03")  # clear the pre-filled line without running it
+
         # Global invariant: no parse/glob/eval errors anywhere in the session.
         leaked = [s for s in FORBIDDEN if s in sh.transcript]
         check(sh, "no parse/glob/eval errors leaked", not leaked)

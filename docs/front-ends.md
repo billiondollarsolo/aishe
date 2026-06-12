@@ -48,6 +48,11 @@ the shell's comment and glob rules never apply. The force-NL key (Alt-Enter, or
 `AISHE_MODE_KEY`) cycles the interaction mode for the session
 (`suggest -> auto -> yolo`); the prompt glyph updates to match.
 
+When a command **fails**, press **Ctrl-X Ctrl-F** (or `AISHE_FIX_KEY`) to ask the
+model for a corrected command — it is pre-filled on your line for review, never
+run automatically. Set `AISHE_AUTODIAGNOSE=1` to also print a one-line hint after
+any failure pointing at the fix key. (Both work in the bash hook too.)
+
 ## Native zsh/bash hook
 
 If you prefer to keep your own shell session rather than launching aishe, add the

@@ -94,6 +94,11 @@ _aishe_force_nl() { printf '%s' "$1" > "$AISHE_FORCE_FILE"; }
 # Runs in the MAIN shell before each prompt: route a forced-NL line (from the
 # sigil or key), then act on a staged command.
 aishe_precmd() {
+  # Opt-in (AISHE_AUTODIAGNOSE): after a command fails, hint that the fix key is
+  # available. AISHE_LAST_EXIT is set by _aishe_capture_exit, which runs first.
+  if [[ -n "$AISHE_AUTODIAGNOSE" && "${AISHE_LAST_EXIT:-0}" != 0 && -n "$AISHE_LAST_CMD" ]]; then
+    print -P "%F{244}aishe: last command exited ${AISHE_LAST_EXIT}; press ${AISHE_FIX_KEY:-^X^F} to fix it%f"
+  fi
   if [[ -f "$AISHE_FORCE_FILE" ]]; then
     local fline
     fline="$(cat "$AISHE_FORCE_FILE")"
@@ -139,6 +144,34 @@ aishe-nl-widget() {
   zle .accept-line
 }
 
+# Capture the exit status and command line of the last command, so the fix-it key
+# can ask the model to correct a command that just failed. _aishe_capture_exit is
+# moved to the FRONT of precmd_functions (below) so it sees $? before a prompt
+# theme resets it; _aishe_capture_cmd records the command via preexec.
+_aishe_capture_exit() { AISHE_LAST_EXIT=$?; }
+_aishe_capture_cmd() { AISHE_LAST_CMD="$1"; }
+
+# Fix-the-last-command (default Ctrl-X Ctrl-F; override AISHE_FIX_KEY). When the
+# previous command failed, ask the model for a corrected command and pre-fill it
+# on the line for review — it never auto-runs. The call is synchronous but bounded
+# by aishe's own hook timeout, so it can't hang the editor.
+aishe-fix-command() {
+  emulate -L zsh
+  if [[ "${AISHE_LAST_EXIT:-0}" == 0 || -z "$AISHE_LAST_CMD" ]]; then
+    zle -M "aishe: no failed command to fix"
+    return
+  fi
+  zle -M "aishe: asking for a fix…"
+  local fix
+  fix="$(command aishe --suggest-line "The previous shell command failed with exit status ${AISHE_LAST_EXIT}. Command: ${AISHE_LAST_CMD}. Reply with a corrected shell command." 2>/dev/null)"
+  if [[ -n "$fix" ]]; then
+    BUFFER="$fix"
+    CURSOR=${#BUFFER}
+  else
+    zle -M "aishe: no fix available"
+  fi
+}
+
 # accept-line wrapper: a line starting with `?` or `#` is natural language. Strip
 # the sigil here (before zsh parses it, so the shell's comment/glob rules never
 # apply) and force it to the AI; otherwise behave as before, chaining whatever
@@ -178,10 +211,17 @@ if [[ -o interactive ]]; then
   autoload -Uz add-zsh-hook
   add-zsh-hook precmd aishe_precmd
   add-zsh-hook zshexit aishe_zshexit   # remove per-shell temp files on exit
+  # Last-command capture for the fix-it key. The exit capture must run before any
+  # prompt theme's precmd (which resets $?), so pull it to the front.
+  add-zsh-hook precmd _aishe_capture_exit
+  precmd_functions=(_aishe_capture_exit ${precmd_functions:#_aishe_capture_exit})
+  add-zsh-hook preexec _aishe_capture_cmd
   zle -N aishe-nl-widget
   bindkey "${AISHE_NL_KEY:-^[^M}" aishe-nl-widget
   zle -N aishe-cycle-mode
   bindkey "${AISHE_MODE_KEY:-^[[Z}" aishe-cycle-mode
+  zle -N aishe-fix-command
+  bindkey "${AISHE_FIX_KEY:-^X^F}" aishe-fix-command
   # Wrap accept-line once, chaining any existing widget (plugin-friendly).
   if [[ "${widgets[accept-line]}" != "user:aishe-accept-line" ]]; then
     case "${widgets[accept-line]}" in
@@ -291,6 +331,14 @@ command_not_found_handle() {
 # suggestion. (readline can't be reliably pre-filled from PROMPT_COMMAND, so a
 # suggestion is printed and stashed; recall it with Ctrl-X Ctrl-R.)
 __aishe_prompt() {
+  # Capture the last command's exit status and text first (this hook is prepended
+  # to PROMPT_COMMAND, so it runs before anything resets $?), for the fix-it key.
+  AISHE_LAST_EXIT=$?
+  AISHE_LAST_CMD="$(HISTTIMEFORMAT='' builtin history 1 2>/dev/null | sed 's/^ *[0-9][0-9]* *//')"
+  # Opt-in (AISHE_AUTODIAGNOSE): hint that the fix key is available after a failure.
+  if [ -n "$AISHE_AUTODIAGNOSE" ] && [ "${AISHE_LAST_EXIT:-0}" -ne 0 ] && [ -n "$AISHE_LAST_CMD" ]; then
+    printf '\033[2maishe: last command exited %s; press Ctrl-X Ctrl-F to fix it\033[0m\n' "$AISHE_LAST_EXIT"
+  fi
   [ -f "$AISHE_PENDING_FILE" ] || return
   local action cmd
   action="$(head -n 1 "$AISHE_PENDING_FILE")"
@@ -353,6 +401,22 @@ __aishe_nl() {
 }
 bind -x '"\C-g": __aishe_nl' 2>/dev/null
 
+# Fix-the-last-command (Ctrl-X Ctrl-F): when the previous command failed, ask the
+# model for a corrected command and pre-fill it on the line for review (never
+# auto-run). `bind -x` runs in the current shell so READLINE_LINE sticks.
+__aishe_fix() {
+  if [ "${AISHE_LAST_EXIT:-0}" -eq 0 ] || [ -z "$AISHE_LAST_CMD" ]; then
+    return
+  fi
+  local fix
+  fix="$(command aishe --suggest-line "The previous shell command failed with exit status ${AISHE_LAST_EXIT}. Command: ${AISHE_LAST_CMD}. Reply with a corrected shell command." 2>/dev/null)"
+  if [ -n "$fix" ]; then
+    READLINE_LINE="$fix"
+    READLINE_POINT=${#fix}
+  fi
+}
+bind -x '"\C-x\C-f": __aishe_fix' 2>/dev/null
+
 # Mode-cycle: Shift-Tab rotates AISHE_MODE suggest -> auto -> yolo -> suggest for
 # the session (override the key by re-binding "\e[Z"). The next prompt reflects
 # it; the safety gate and yolo_confirm tier still apply.
@@ -388,6 +452,36 @@ mod tests {
         assert!(s.contains("eval \"$cmd\""));
         // history record so eval'd commands show up in history.
         assert!(s.contains("print -s"));
+    }
+
+    #[test]
+    fn zsh_script_has_fix_command_key() {
+        let s = script("zsh").unwrap();
+        // Capture the last command + exit status, with the exit capture pulled to
+        // the front of precmd_functions (so a prompt theme can't reset $? first).
+        assert!(s.contains("_aishe_capture_exit() { AISHE_LAST_EXIT=$?; }"));
+        assert!(s.contains("_aishe_capture_cmd() { AISHE_LAST_CMD=\"$1\"; }"));
+        assert!(s.contains(
+            "precmd_functions=(_aishe_capture_exit ${precmd_functions:#_aishe_capture_exit})"
+        ));
+        assert!(s.contains("add-zsh-hook preexec _aishe_capture_cmd"));
+        // The fix widget asks for a corrected command and pre-fills the buffer.
+        assert!(s.contains("aishe-fix-command"));
+        assert!(s.contains("zle -N aishe-fix-command"));
+        assert!(s.contains("${AISHE_FIX_KEY:-^X^F}"));
+        assert!(s.contains("--suggest-line"));
+        // Opt-in ambient hint after a failure.
+        assert!(s.contains("AISHE_AUTODIAGNOSE"));
+    }
+
+    #[test]
+    fn bash_script_has_fix_command_key() {
+        let s = script("bash").unwrap();
+        assert!(s.contains("AISHE_LAST_EXIT=$?"));
+        assert!(s.contains("AISHE_LAST_CMD="));
+        assert!(s.contains("__aishe_fix"));
+        assert!(s.contains(r#"bind -x '"\C-x\C-f": __aishe_fix'"#));
+        assert!(s.contains("AISHE_AUTODIAGNOSE"));
     }
 
     #[test]

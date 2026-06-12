@@ -6,6 +6,15 @@ breaking changes can land in any release.
 
 ## [Unreleased]
 
+### Added
+- **Fix-the-last-command key (error-driven autopilot).** When a command fails,
+  press **Ctrl-X Ctrl-F** (override with `$AISHE_FIX_KEY`) to ask the model for a
+  corrected command — it is pre-filled on your line for review and never
+  auto-runs. Set `$AISHE_AUTODIAGNOSE=1` for a one-line hint after any failure.
+  Works in both the zsh-PTY shell and the bash hook; the call is bounded by the
+  same hook timeout, so it can't hang the prompt. This is proposal N1 from
+  [docs/proposals.md](docs/proposals.md).
+
 ## [0.2.2] - 2026-06-12
 
 ### Added
