@@ -2,12 +2,14 @@
 //! cause irreversible loss, while staying path-aware for `rm -rf` (a relative
 //! in-tree target is the user's own files and is allowed).
 //!
-//! Each command line is normalized (lowercased, whitespace-collapsed), split on
-//! shell operators, and each segment has its leading prefixes stripped (env
-//! assignments and privilege/wrapper words like `sudo`, `doas`, `env`, `time`,
-//! `nohup`, `nice`, `timeout`) so wrappers cannot smuggle a dangerous command
-//! past the anchored patterns. `rm` targets are unquoted before the path check so
-//! `rm -rf "$HOME"` and `rm -rf '/'` are still caught.
+//! Each command line is normalized (lowercased, whitespace-collapsed), then split
+//! into top-level command segments *quote- and nesting-aware* (an operator inside
+//! a quote or `$( … )`/`( … )` is content, not a boundary), the bodies of command
+//! substitutions and subshells are assessed recursively, and each segment has its
+//! leading prefixes stripped (env assignments and privilege/wrapper words like
+//! `sudo`, `doas`, `env`, `time`, `nohup`, `nice`, `timeout`) so wrappers cannot
+//! smuggle a dangerous command past the anchored patterns. `rm` targets are
+//! unquoted before the path check so `rm -rf "$HOME"` and `rm -rf '/'` are caught.
 
 use std::sync::LazyLock;
 
@@ -128,10 +130,10 @@ pub fn assess(command: &str) -> Risk {
         }
     }
     for segment in split_segments(&normalized) {
-        // Drop leading env assignments and privilege/wrapper prefixes so a
-        // wrapped command (`sudo -i rm -rf /`, `FOO=bar rm -rf /`, `env rm …`,
-        // `time rm …`) is judged on its real head.
-        let stripped = strip_prefixes(segment.trim());
+        // Unwrap a `( … )` subshell, then drop leading env assignments and
+        // privilege/wrapper prefixes (`sudo -i`, `FOO=bar`, `env`, `time`, …), so
+        // `(sudo rm -rf /)` and `FOO=bar rm -rf /` are judged on their real head.
+        let stripped = strip_prefixes(unwrap_subshell(&segment));
         let seg = stripped.trim();
         if seg.is_empty() {
             continue;
@@ -548,37 +550,99 @@ fn command_substitution_bodies(command: &str) -> Vec<String> {
     bodies
 }
 
-/// Split on `;`, `&&`, `||`, `|` (naive; good enough for the safety gate).
+/// Split a command line into top-level command segments, *quote- and
+/// nesting-aware*: split on `;`, `&&`, `||`, `|`, and newline only when they are
+/// unquoted and outside any paren group. So a quoted operator (`echo "a; rm -rf
+/// /"`) or one inside `$( … )` is content, not a boundary — fixing both the false
+/// splits and the brittle anchoring a naive char-split forces.
 fn split_segments(command: &str) -> Vec<String> {
     let mut segments = Vec::new();
     let mut current = String::new();
-    let bytes = command.as_bytes();
-    let mut i = 0;
-    while i < bytes.len() {
-        let c = bytes[i] as char;
-        let next = bytes.get(i + 1).map(|&b| b as char);
-        match (c, next) {
-            ('&', Some('&')) | ('|', Some('|')) => {
-                segments.push(std::mem::take(&mut current));
-                i += 2;
+    let mut chars = command.chars().peekable();
+    let mut in_single = false;
+    let mut in_double = false;
+    let mut in_backtick = false;
+    let mut depth: i32 = 0; // `$( … )` and `( … )` nesting
+
+    while let Some(c) = chars.next() {
+        // Backslash escapes the next char (no effect inside single quotes).
+        if c == '\\' && !in_single {
+            current.push(c);
+            if let Some(n) = chars.next() {
+                current.push(n);
             }
-            (';', _) | ('|', _) => {
-                segments.push(std::mem::take(&mut current));
-                i += 1;
-            }
-            _ => {
+            continue;
+        }
+        if in_single {
+            current.push(c);
+            in_single = c != '\'';
+            continue;
+        }
+        if in_double {
+            current.push(c);
+            in_double = c != '"';
+            continue;
+        }
+        if in_backtick {
+            current.push(c);
+            in_backtick = c != '`';
+            continue;
+        }
+        match c {
+            '\'' => {
+                in_single = true;
                 current.push(c);
-                i += 1;
             }
+            '"' => {
+                in_double = true;
+                current.push(c);
+            }
+            '`' => {
+                in_backtick = true;
+                current.push(c);
+            }
+            '(' => {
+                depth += 1;
+                current.push(c);
+            }
+            ')' => {
+                depth = (depth - 1).max(0);
+                current.push(c);
+            }
+            // Inside a paren group, operators belong to a sub-command (assessed
+            // via the substitution/subshell recursion), not a top-level boundary.
+            _ if depth > 0 => current.push(c),
+            ';' | '\n' => segments.push(std::mem::take(&mut current)),
+            '|' => {
+                if chars.peek() == Some(&'|') {
+                    chars.next();
+                }
+                segments.push(std::mem::take(&mut current));
+            }
+            '&' if chars.peek() == Some(&'&') => {
+                chars.next();
+                segments.push(std::mem::take(&mut current));
+            }
+            // A lone `&` (background / part of `2>&1`) is not a split point.
+            _ => current.push(c),
         }
     }
     if !current.is_empty() {
         segments.push(current);
     }
     // For pipe-into-shell detection we also keep the whole line as a segment,
-    // since the pattern spans the `|`.
+    // since that pattern spans the `|`.
     segments.push(command.to_string());
     segments
+}
+
+/// Strip a balanced outer subshell wrapper, so `(rm -rf /)` / `( sudo rm -rf / )`
+/// are judged on the inner command. Trims leading `(`/spaces and trailing
+/// `)`/spaces; harmless on non-subshell segments.
+fn unwrap_subshell(seg: &str) -> &str {
+    seg.trim()
+        .trim_start_matches(['(', ' '])
+        .trim_end_matches([')', ' '])
 }
 
 #[cfg(test)]
@@ -593,6 +657,28 @@ mod tests {
     }
     fn safe(cmd: &str) {
         assert_eq!(assess(cmd), Risk::Safe, "expected SAFE: {cmd}");
+    }
+
+    #[test]
+    fn quote_and_nesting_aware_splitting() {
+        // Operators inside quotes are NOT command boundaries, so a dangerous-
+        // looking string is no longer a false positive (a naive splitter would
+        // split at the quoted `;`/`|` and flag the inner text).
+        safe(r#"echo "step 1; rm -rf /tmp/foo""#);
+        safe("echo 'rm -rf /'");
+        safe(r#"echo "a | rm -rf /" && ls"#);
+        safe(r#"git commit -m "remove; rm -rf / cleanup""#);
+        // Real, unquoted operators still split and the dangerous part is caught.
+        dangerous("ls && rm -rf /");
+        dangerous("make || rm -rf /etc");
+        dangerous("true; rm -rf /var");
+        dangerous("cat x | rm -rf /usr"); // (nonsense, but the boundary is real)
+                                          // Subshells are unwrapped and judged on the inner command.
+        dangerous("(rm -rf /)");
+        dangerous("( sudo rm -rf /etc )");
+        // Command substitution recursion is unaffected.
+        dangerous("echo $(rm -rf /)");
+        dangerous(r#"echo "$(rm -rf /)""#);
     }
 
     #[test]

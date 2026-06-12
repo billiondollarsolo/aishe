@@ -6,6 +6,15 @@ breaking changes can land in any release.
 
 ## [Unreleased]
 
+### Changed
+- **Safety gate is now quote- and nesting-aware.** Command segmentation no longer
+  splits on operators that sit inside quotes or `$( … )`/`( … )` groups, so a
+  dangerous-looking *string* (`echo "step 1; rm -rf /tmp/foo"`) is no longer a
+  false positive, while real boundaries (`ls && rm -rf /`) still split. Subshells
+  are unwrapped and judged on their inner command (`(sudo rm -rf /)`), alongside
+  the existing command-substitution recursion. The whole adversarial corpus stays
+  green. This is proposal R3 from [docs/proposals.md](docs/proposals.md).
+
 ## [0.2.7] - 2026-06-12
 
 ### Added
