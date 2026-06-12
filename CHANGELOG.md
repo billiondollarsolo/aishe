@@ -6,6 +6,8 @@ breaking changes can land in any release.
 
 ## [Unreleased]
 
+## [0.2.8] - 2026-06-12
+
 ### Changed
 - **Safety gate is now quote- and nesting-aware.** Command segmentation no longer
   splits on operators that sit inside quotes or `$( … )`/`( … )` groups, so a
