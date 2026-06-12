@@ -6,6 +6,8 @@ breaking changes can land in any release.
 
 ## [Unreleased]
 
+## [0.2.5] - 2026-06-12
+
 ### Added
 - **Provider fallback chain + offline (`provider_fallback`).** List providers to
   try in order when the primary fails after its own retries — a dead endpoint,
