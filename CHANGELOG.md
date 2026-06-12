@@ -6,6 +6,8 @@ breaking changes can land in any release.
 
 ## [Unreleased]
 
+## [0.2.6] - 2026-06-12
+
 ### Added
 - **Project- and host-aware context.** The model context now automatically
   includes this repo's task surface (`justfile`/`Makefile` targets, `package.json`
