@@ -6,6 +6,8 @@ breaking changes can land in any release.
 
 ## [Unreleased]
 
+## [0.2.3] - 2026-06-12
+
 ### Added
 - **Fix-the-last-command key (error-driven autopilot).** When a command fails,
   press **Ctrl-X Ctrl-F** (override with `$AISHE_FIX_KEY`) to ask the model for a
