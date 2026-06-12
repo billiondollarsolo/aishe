@@ -106,6 +106,32 @@ aishe model gpt-4o-mini
 `aishe model` sets the model for the currently selected provider. Both persist to
 the config.
 
+## Fallback chain (resilience and offline)
+
+`provider_fallback` lists providers (by block name) to try, in order, when the
+primary `provider` fails *after its own retries* — a dead endpoint, a hard auth
+error, or a blown budget degrades to the next provider instead of failing the
+call. It's how you keep working when your main API is down, or fall back to a
+**local** model for offline use:
+
+```toml
+[aishe]
+provider = "anthropic"
+provider_fallback = ["openai"]   # then a local Ollama configured below
+
+[providers.openai]
+base_url = "http://localhost:11434"   # Ollama
+api_key_env = "OPENAI_API_KEY"        # set it to any non-empty value
+model = "llama3"
+```
+
+Each named block must have its API-key env set or it is skipped (so a missing key
+in a fallback never breaks the primary). `aishe doctor` shows the resolved chain.
+When a fallback is used, a one-line notice is printed once. Note: configuring a
+chain serves answers non-streamed (resilience over live token streaming); a
+single provider streams as usual. The setting is treated as sensitive, so a
+project overlay needs `aishe trust` to apply it.
+
 ## Cost and trust storage
 
 aishe honors the system trust store, so it works behind corporate or

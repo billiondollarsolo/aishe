@@ -220,7 +220,7 @@ reactive.
 
 ## R4 — Provider fallback chain + offline
 
-**Track:** Robustness · **Priority:** P2 · **Effort:** M · **Risk:** Low · **Depends on:** —
+**Track:** Robustness · **Priority:** P2 · **Effort:** M · **Risk:** Low · **Depends on:** — · **Status: Shipped (v1)** — `provider_fallback` builds a `FallbackProvider` (`src/providers/fallback.rs`) that advances on terminal error, folds usage into one meter, and announces once; `doctor` shows the chain. Live-streaming across the chain and a reachability probe are follow-ups.
 
 ### Problem
 `providers::make(&config)` returns a single provider. A dead endpoint, a 5xx

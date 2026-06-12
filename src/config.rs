@@ -91,6 +91,12 @@ pub struct AisheConfig {
     /// "anthropic" | "openai"
     #[serde(default = "default_provider")]
     pub provider: String,
+    /// Ordered fallback providers tried (in turn) when `provider` fails after its
+    /// own retries — e.g. `["openai"]` to fall back to a local Ollama configured
+    /// in `[providers.openai]`. Names refer to the configured provider blocks;
+    /// each must have its API-key env set or it is skipped. Empty = no fallback.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub provider_fallback: Vec<String>,
     #[serde(default = "default_true")]
     pub yolo_confirm_dangerous: bool,
     /// When the yolo loop pauses to confirm a `run_command` call: "never",
@@ -249,6 +255,7 @@ impl Default for AisheConfig {
         Self {
             mode: default_mode(),
             provider: default_provider(),
+            provider_fallback: Vec::new(),
             yolo_confirm_dangerous: true,
             yolo_confirm: default_yolo_confirm(),
             yolo_sandbox: false,
@@ -616,6 +623,7 @@ pub struct OverlayOutcome {
 fn aishe_key_is_sensitive(key: &str, value: &toml::Value) -> bool {
     match key {
         "provider"
+        | "provider_fallback"
         | "redact_secrets"
         | "yolo_confirm"
         | "yolo_confirm_dangerous"

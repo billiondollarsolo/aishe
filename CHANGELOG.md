@@ -6,6 +6,15 @@ breaking changes can land in any release.
 
 ## [Unreleased]
 
+### Added
+- **Provider fallback chain + offline (`provider_fallback`).** List providers to
+  try in order when the primary fails after its own retries — a dead endpoint,
+  hard auth error, or blown budget degrades to a secondary (or a local Ollama)
+  instead of failing. Usage is folded into one meter so cost/budget stay correct;
+  `aishe doctor` shows the chain; a one-line notice prints once on fallback. A
+  configured chain serves non-streamed (single providers stream as before). This
+  is proposal R4 from [docs/proposals.md](docs/proposals.md).
+
 ## [0.2.4] - 2026-06-12
 
 ### Added

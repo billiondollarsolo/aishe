@@ -13,6 +13,7 @@ use crate::config::Config;
 
 pub mod anthropic;
 pub mod fake;
+pub mod fallback;
 pub mod openai_compat;
 
 /// A single message in a conversation, in our canonical (provider-neutral) form.
@@ -307,26 +308,25 @@ pub fn make(config: &Config) -> Result<std::sync::Arc<dyn Provider>> {
     if let Some(resp) = fake_resp {
         return Ok(Arc::new(fake::FakeProvider::new(resp)));
     }
-    let inner: Arc<dyn Provider> = match config.aishe.provider.as_str() {
-        "anthropic" => {
-            let p = &config.providers.anthropic;
-            let key = read_key(&p.api_key_env)?;
-            Arc::new(anthropic::AnthropicProvider::new(
-                p.base_url.clone(),
-                key,
-                p.model.clone(),
-            ))
+    // Primary provider (errors if its key is missing — same as before).
+    let primary = build_one(config, &config.aishe.provider)?;
+    let mut chain: Vec<(String, Arc<dyn Provider>)> =
+        vec![(config.aishe.provider.clone(), primary)];
+    // Append any configured fallbacks, skipping the primary, duplicates, and any
+    // that can't be built (e.g. a missing API key) so a bad fallback never breaks
+    // the primary.
+    for name in &config.aishe.provider_fallback {
+        if chain.iter().any(|(n, _)| n == name) {
+            continue;
         }
-        "openai" => {
-            let p = &config.providers.openai;
-            let key = read_key(&p.api_key_env)?;
-            Arc::new(openai_compat::OpenAiProvider::new(
-                p.base_url.clone(),
-                key,
-                p.model.clone(),
-            ))
+        if let Ok(p) = build_one(config, name) {
+            chain.push((name.clone(), p));
         }
-        other => anyhow::bail!("unknown provider '{other}' (expected 'anthropic' or 'openai')"),
+    }
+    let inner: Arc<dyn Provider> = if chain.len() > 1 {
+        Arc::new(fallback::FallbackProvider::new(chain))
+    } else {
+        chain.into_iter().next().unwrap().1
     };
     // Optionally wrap in a response cache so identical suggest-mode repeats are
     // instant and free. Streaming and the tool loop pass straight through.
@@ -338,6 +338,33 @@ pub fn make(config: &Config) -> Result<std::sync::Arc<dyn Provider>> {
         )))
     } else {
         Ok(inner)
+    }
+}
+
+/// Build one provider by name from its configured block. Errors if the name is
+/// unknown or the block's API key is missing.
+fn build_one(config: &Config, name: &str) -> Result<std::sync::Arc<dyn Provider>> {
+    use std::sync::Arc;
+    match name {
+        "anthropic" => {
+            let p = &config.providers.anthropic;
+            let key = read_key(&p.api_key_env)?;
+            Ok(Arc::new(anthropic::AnthropicProvider::new(
+                p.base_url.clone(),
+                key,
+                p.model.clone(),
+            )))
+        }
+        "openai" => {
+            let p = &config.providers.openai;
+            let key = read_key(&p.api_key_env)?;
+            Ok(Arc::new(openai_compat::OpenAiProvider::new(
+                p.base_url.clone(),
+                key,
+                p.model.clone(),
+            )))
+        }
+        other => anyhow::bail!("unknown provider '{other}' (expected 'anthropic' or 'openai')"),
     }
 }
 

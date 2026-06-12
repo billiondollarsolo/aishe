@@ -589,6 +589,13 @@ fn doctor() -> u8 {
         ),
     };
     println!("{ok} provider: {provider} · model {model}");
+    if !cfg.aishe.provider_fallback.is_empty() {
+        println!(
+            "{ok} fallback chain: {} → {}",
+            provider,
+            cfg.aishe.provider_fallback.join(" → ")
+        );
+    }
     let key_set = std::env::var(key_env)
         .map(|v| !v.trim().is_empty())
         .unwrap_or(false);
