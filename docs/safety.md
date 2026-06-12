@@ -95,6 +95,30 @@ does not look like the patterns above. It also does **not** affect the zsh-PTY /
 real-shell front-end paths (those run your own typed commands, not model tool
 calls). It is one more guardrail for an autonomous loop, not a security boundary.
 
+## Defense-in-depth, not a sandbox
+
+The destructive-command gate is conservative pattern plus path-aware matching. It
+is a **backstop against mistakes**, not a security boundary. It can be evaded:
+a dangerous command hidden inside command substitution (`$(…)` or backticks), an
+unusual interpreter, or sufficient obfuscation can slip past patterns that look
+for the obvious shapes. Treat it as defense-in-depth, not a sandbox.
+
+This matters most in `auto` and `yolo`, where commands can run without a
+per-command confirmation. In `suggest` mode nothing runs until you explicitly
+confirm it, so the gate is only an extra warning. For untrusted input or a
+fully-autonomous loop, do not rely on the gate alone — raise the confirmation tier
+and/or turn on the sandbox:
+
+- Raise [`yolo_confirm`](configuration.md#aishe-section) to `"writes"` (confirm
+  any state-modifying command) or `"all"` (confirm every command).
+- Enable [`yolo_sandbox`](configuration.md#aishe-section) (`= true`), the
+  policy sandbox that refuses network access and out-of-tree writes (see the
+  previous section; toggle live with `aishe sandbox on`).
+
+The gate may improve over time (for example, inspecting inside `$(…)`), but the
+guidance is evergreen: it is a backstop, and for autonomous or untrusted use you
+should raise the tier rather than trust pattern-matching to be exhaustive.
+
 ## Secrets in the model context
 
 aishe sends an environment context block (including your recent commands) with

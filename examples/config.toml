@@ -17,7 +17,12 @@ provider = "anthropic"
 
 # In the zsh-PTY front-end, show aishe's branded prompt (`<cwd> <glyph>`, with the
 # glyph reflecting the mode: ❯ suggest, » auto, ⚡ yolo) instead of your normal zsh
-# prompt, so it's obvious you're in aishe. Set false to keep your real prompt.
+# prompt, so it's obvious you're in aishe. This OVERRIDES your real prompt, so any
+# git/branch/dirty segments from powerlevel10k & friends are hidden while in aishe.
+# Set false to keep your own prompt (recommended for p10k users, whose instant- and
+# transient-prompt can otherwise conflict). Everything else — autosuggestions,
+# syntax highlighting, completions, fzf-tab, oh-my-zsh — is inherited natively
+# regardless; only the prompt is overridden.
 pty_prompt = true
 
 # In yolo mode, confirm commands the safety gate flags as dangerous.

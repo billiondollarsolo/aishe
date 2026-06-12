@@ -29,6 +29,16 @@ branded prompt whose glyph reflects the mode). The hook ergonomics described in
 [Shell integration](shell-integration.md) apply here, since the PTY wrapper
 injects the same hook.
 
+**The branded prompt overrides your own.** By default (`pty_prompt = true`) aishe
+replaces your zsh prompt with its `<cwd> <glyph>` + `model · mode` line, so any
+git-aware segments (branch, dirty, ahead/behind) from powerlevel10k or a similar
+theme are hidden while you are in aishe. Only the *prompt* is overridden:
+everything else is your real zsh, so zsh-autosuggestions, zsh-syntax-highlighting,
+your completions, fzf-tab, and oh-my-zsh all behave exactly as usual. To keep your
+own prompt, set `pty_prompt = false`. This is recommended for powerlevel10k users
+in particular, since p10k's instant-prompt and transient-prompt can otherwise
+conflict with the branded prompt.
+
 Because routing is by command name, a question whose first word is a real command
 (`who`, `which`, `find`, `time`, `test`, `make`) would otherwise run that command.
 To force a line to the AI, **start it with `?` or `#`** (e.g. `? who was the first
