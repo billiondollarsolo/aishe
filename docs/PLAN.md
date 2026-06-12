@@ -96,15 +96,16 @@ We have three coherent end states:
   hardest engineering (synchronizing prompts, capturing output boundaries,
   signal handling); essentially building a terminal multiplexer. Cost: XL.
 
-**Decision: Option B.** The zsh-PTY front-end is the flagship ("your real shell,
-now with AI"); reedline is the opt-in lightweight AI command runner (`aishe
---no-pty` or `front_end = reedline`), kept for environments where zsh cannot be
-installed. `front_end = auto` selects zsh-pty whenever zsh is present, and the
-binary prints an install hint (with the reedline opt-out) when it is not. This
-gives us real shell semantics for free and stops the reedline parity treadmill:
-the `(reedline)` items below are now P3 "only if cheap", not roadmap blockers.
-**Status: RESOLVED.** A scoped slice of C (a persistent backing shell for
-reedline) remains a stretch/moonshot, not planned work.
+**Decision: Option B, fully executed.** The zsh-PTY front-end is *the*
+interactive shell ("your real shell, now with AI"); the binary requires zsh for
+it and prints an install hint when it is missing. The built-in reedline editor
+has been **removed entirely** (the `completer`/`highlight`/`ghost`/`prompt`/
+`theme`/`validator`/`history_expand`/`histfilter` modules, the `reedline`
+dependency, the `--pty`/`--no-pty` flags, and the reedline-only config keys all
+gone). Non-interactive use (`aishe -c …`, piped stdin) and the bash hook still
+work without zsh. **Status: RESOLVED and shipped.** Every `(reedline)` parity
+item below is therefore moot/dropped. Option C (a persistent backing shell)
+remains a stretch/moonshot, not planned work.
 
 ---
 

@@ -46,7 +46,7 @@ jobs:
         run: cargo test --verbose
 
   pty-smoke:
-    name: PTY smoke tests (zsh-pty + reedline)
+    name: PTY smoke tests (zsh-pty)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -88,9 +88,5 @@ jobs:
         env:
           AISHE_REALTEST_KEY: ${{ secrets.AISHE_REALTEST_KEY }}
         run: python3 tests/real_model.py target/release/aishe
-
-      - name: Drive the reedline front-end through a PTY
-        run: python3 tests/reedline_smoke.py target/release/aishe
-
       - name: Admin validation (shell pass-through + file ops; NL skipped w/o key)
         run: python3 tests/admin_validation.py target/release/aishe

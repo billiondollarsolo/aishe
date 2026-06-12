@@ -23,7 +23,7 @@ use crate::integration;
 /// Run the user's real zsh inside a PTY, returning its exit code.
 pub fn run_zsh(config: &Config) -> Result<u8> {
     let zsh = which("zsh").ok_or_else(|| {
-        anyhow!("zsh not found on $PATH — the PTY front-end requires zsh (install it, or use the default reedline front-end)")
+        anyhow!("zsh not found on $PATH — the interactive front-end requires zsh (install it, or use `aishe -c …` / the bash hook)")
     })?;
 
     // Build an isolated ZDOTDIR whose startup files load the user's real config

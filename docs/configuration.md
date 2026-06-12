@@ -22,8 +22,6 @@ which persist your choice back to the file.
 |-------|------|---------|---------|
 | `mode` | string | `suggest` | Interaction mode: `suggest`, `auto`, or `yolo`. |
 | `provider` | string | `anthropic` | Which provider block to use: `anthropic` or `openai`. |
-| `front_end` | string | `auto` | Input loop: `auto`, `reedline`, or `zsh-pty`. |
-| `edit_mode` | string | `emacs` | reedline keymap: `emacs` or `vi`. |
 | `yolo_confirm_dangerous` | bool | `true` | In yolo, confirm commands the safety gate flags. Honored only when `yolo_confirm` is unset. |
 | `yolo_confirm` | string | `dangerous` | When the yolo loop confirms a command: `never`, `dangerous`, `writes`, or `all`. See [Safety gate](safety.md). |
 | `yolo_sandbox` | bool | `false` | Policy sandbox: refuse yolo commands that reach the network or write outside the working tree. Toggle with `aishe sandbox`. |
@@ -32,17 +30,8 @@ which persist your choice back to the file.
 | `project_context` | bool | `true` | Include a per-project `.aishe/context.md` (at or above the cwd) in the model context. See [Per-project context](project-context.md). |
 | `file_tools` | bool | `true` | Offer the built-in `read_file`/`write_file`/`edit_file`/`list_dir` tools to yolo. |
 | `web_tool` | bool | `true` | Offer the built-in `fetch_url` tool to yolo (read web pages/docs; HTML stripped to text, size-capped). |
-| `show_right_prompt` | bool | `true` | Show "model and mode" on the right (reedline). |
-| `git_prompt` | bool | `true` | Show a git branch segment in the right prompt (reedline). |
-| `git_status` | bool | `true` | Add dirty (`*`) and ahead/behind (`⇡`/`⇣`) markers to the git segment (one `git status` per prompt). |
-| `report_time` | integer | `3` | Show the last command's duration when it ran at least this many seconds. `0` disables. |
 | `auto_pushd` | bool | `false` | zsh `AUTO_PUSHD`: every `cd` pushes the previous dir (`cd -N`/`cd +N`, `dirs -v`). |
-| `hist_ignore_dups` | bool | `true` | Don't save a command equal to the previous one (`HIST_IGNORE_DUPS`). |
-| `hist_ignore_space` | bool | `false` | Don't save commands that start with a space (`HIST_IGNORE_SPACE`). |
-| `hist_ignore` | array | `[]` | Glob patterns of commands to keep out of history (`HISTIGNORE`), e.g. `["ls", "cd *"]`. |
 | `cdpath` | array | `[]` | Extra base dirs searched by `cd <name>` (`CDPATH`); falls back to `$CDPATH`. |
-| `correct` | bool | `false` | zsh `CORRECT`: offer to fix a near-miss command word instead of routing it to the LLM. |
-| `complete_flags` | bool | `true` | Tab-complete a command's flags from its `--help` (parsed, cached, time-limited) when the word starts with `-` (reedline). |
 | `share_history` | bool | `true` | Share one timestamped history across sessions (zsh `SHARE_HISTORY`); off makes history per-session. Backs the `history` builtin. |
 
 ## `[named_dirs]` section (optional)
@@ -56,16 +45,14 @@ dl = "/home/me/Downloads"
 ```
 
 Then `cd ~proj` and `cd ~proj/app` work.
-| `prompt_format` | string | unset | Custom left prompt. Placeholders: `{cwd}`, `{mode}`, `{model}`, `{exit}`. |
 | `structured` | string | `schema` | Suggest output format: `schema`, `json`, or `prompt`. |
-| `stream` | bool | `false` | Stream answers token-by-token in the REPL (suggest and auto). |
+| `stream` | bool | `false` | Stream answers token-by-token (suggest and auto). |
 | `show_usage` | bool | `true` | Print a per-session token and cost line after each interaction. |
 | `budget_usd` | float | `0.0` | Stop calling the model past this session cost. `0` = unlimited. |
-| `memory` | bool | `true` | Remember recent natural-language turns in the REPL so follow-ups have context. Clear with `aishe reset`. |
+| `memory` | bool | `true` | Remember recent natural-language turns so follow-ups have context. Clear with `aishe reset`. |
 | `cache` | bool | `true` | Cache identical suggest-mode responses briefly so repeats are instant and free. Toggle with `aishe cache`. |
 | `cache_ttl_secs` | integer | `300` | How long a cached response stays valid, in seconds. |
 | `redact_secrets` | bool | `true` | Scrub likely secrets from the context block sent to the model. See [Logging and privacy](logging.md). |
-| `ghost_text` | bool | `false` | Inline AI ghost-text autosuggestion (reedline). Toggle with `aishe ghost`. See [Inline AI ghost text](ghost-text.md). |
 
 ## `[logging]` section (optional)
 
@@ -140,23 +127,6 @@ Per-server keys: `command`/`args`/`env` (stdio), `url`/`headers` (HTTP), and
 server launched from `command`. List connected tools with `aishe mcp`. See
 [MCP servers](mcp.md).
 
-## `[theme]` (optional)
-
-Colors for the reedline prompt and syntax highlighter. Pick a preset and override
-any role. Colors may be names (`red`, `bright-green`), a palette index (`0`-`255`),
-or hex (`#ff8800`).
-
-```toml
-[theme]
-preset = "nord"     # default | vivid | mono | nord | gruvbox
-cwd = "bright-cyan"
-known_cmd = "#98c379"
-```
-
-Roles: `cwd`, `glyph_ok`, `glyph_err`, `right_prompt`, `known_cmd`,
-`unknown_cmd`, `flag`, `string`, `operator`, `path`, `assignment`, `sigil_nl`,
-`sigil_shell`. See [Prompt and theming](prompt-and-theming.md).
-
 ## Environment variables
 
 - `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, or whatever `api_key_env` names: your
@@ -171,9 +141,9 @@ Roles: `cwd`, `glyph_ok`, `glyph_err`, `right_prompt`, `known_cmd`,
 ## Command-line flags
 
 ```
-aishe [--mode suggest|auto|yolo] [--model NAME] [--provider anthropic|openai]
-      [--pty | --no-pty] [-c "INPUT"]
+aishe [--mode suggest|auto|yolo] [--model NAME] [--provider anthropic|openai] [-c "INPUT"]
 
+aishe zsh                 launch the interactive zsh-PTY shell explicitly
 aishe init <zsh|bash>     print a shell integration snippet
 aishe zsh                 launch your real zsh under aishe (zsh-PTY)
 aishe doctor              environment check

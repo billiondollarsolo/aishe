@@ -21,8 +21,7 @@ cargo fmt --check
     front-end, driven by a fake provider (no key). `pty_signals.py` covers
     Ctrl-C / Ctrl-Z / window resize / multi-line continuation; the fuzz and
     feature suites write Markdown reports under `test-results/`.
-  - `tests/pty_smoke.py`, `tests/reedline_smoke.py`: PTY smoke tests for the two
-    front-ends.
+  - `tests/pty_smoke.py`: PTY smoke test for the zsh-PTY front-end.
   - `tests/real_model.py`: opt-in classification corpus against a live endpoint
     (`AISHE_REALTEST_KEY`).
   - `tests/admin_validation.py`: the end-to-end validation harness.
@@ -50,10 +49,7 @@ suites:
    commands, model-invoked skills, the token-usage line, the budget cap, and
    audit logging.
 
-The two PTY smoke tests are part of the suite too: `tests/reedline_smoke.py`
-exercises interactive, REPL-only features without a key (editing, multi-line
-continuation, aliases/functions, history expansion, `AUTO_PUSHD`/`dirs -v`, and
-spelling correction), and `tests/pty_smoke.py` drives the zsh-PTY front-end.
+`tests/pty_smoke.py` drives the zsh-PTY front-end as part of the suite too.
 
 Run it:
 

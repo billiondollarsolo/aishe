@@ -18,12 +18,12 @@ autonomously** in a tool-use loop.
 ~/projects/app ❯ whats eating my disk  # LLM suggests: du -sh * | sort -rh | head
 ```
 
-aishe does not reimplement a shell grammar. By default it wraps your real
-interactive zsh over a PTY and injects a `command_not_found` hook, so natural
-language is routed to the model while pipes, globs, redirection, subshells, job
-control, your plugins/theme, and interactive programs (vim, ssh, top) all work
-unmodified. (A built-in reedline editor that runs each line via `zsh -c`, falling
-back to `bash -c`, is available with `--no-pty` for hosts without zsh.)
+aishe does not reimplement a shell grammar. It wraps your real interactive zsh
+over a PTY and injects a `command_not_found` hook, so natural language is routed
+to the model while pipes, globs, redirection, subshells, job control, your
+plugins/theme, and interactive programs (vim, ssh, top) all work unmodified. The
+interactive shell requires zsh; `aishe -c …`, piped stdin, and the bash hook
+(`aishe init bash`) work without it.
 
 ## Contents
 
@@ -32,11 +32,10 @@ back to `bash -c`, is available with `--no-pty` for hosts without zsh.)
 - [Modes](#modes)
 - [Front-ends](#front-ends)
 - [Providers](#providers)
-- [Meta commands and slash-commands](#meta-commands-and-slash-commands)
+- [Commands and settings](#commands-and-settings)
 - [Custom commands and skills](#custom-commands-and-skills)
 - [Token usage and cost](#token-usage-and-cost)
 - [Safety gate](#safety-gate)
-- [Prompt and theming](#prompt-and-theming)
 - [Startup file (.aishrc)](#startup-file-aishrc)
 - [Configuration](#configuration)
 - [Documentation](#documentation)
@@ -132,33 +131,25 @@ error.
 There are three ways to use aishe, in increasing order of real-zsh fidelity.
 Details in [docs/front-ends.md](docs/front-ends.md).
 
-1. **zsh-PTY (default when zsh is present).** aishe runs your real interactive
-   zsh inside a pseudo-terminal, so your full `~/.zshrc` and every plugin you
-   already use (zsh-autosuggestions, zsh-syntax-highlighting, fzf-tab,
-   powerlevel10k, oh-my-zsh, completions) work unmodified. A
-   `command_not_found_handler` routes natural language to the LLM.
+1. **zsh-PTY (the interactive shell).** aishe runs your real interactive zsh
+   inside a pseudo-terminal, so your full `~/.zshrc` and every plugin you already
+   use (zsh-autosuggestions, zsh-syntax-highlighting, fzf-tab, powerlevel10k,
+   oh-my-zsh, completions) work unmodified, including job control. A
+   `command_not_found_handler` routes natural language to the LLM. **This requires
+   zsh**; without it, aishe tells you to install it.
 
    ```sh
-   aishe              # "auto" front-end uses zsh-PTY when zsh is on $PATH
-   aishe zsh          # force it (same as aishe --pty, or front_end = "zsh-pty")
-   aishe --no-pty     # force the built-in reedline editor instead
+   aishe        # launch your zsh under aishe
+   aishe zsh    # the same, explicitly
    ```
 
-2. **Built-in reedline editor.** A self-contained line editor with
-   context-aware tab completion, history autosuggestions, `Ctrl-R` history
-   search, history expansion, multi-line continuation, syntax highlighting,
-   emacs or vi keymaps, and optional
-   [inline AI ghost text](docs/ghost-text.md) (`aishe ghost on`). It also brings
-   a lot of zsh ergonomics: a rich prompt (command duration and git
-   staged/dirty/ahead-behind/stash markers), navigation (autocd, directory stack,
-   `AUTO_PUSHD`, `cdpath`, named dirs `~proj`), history filtering
-   (`HIST_IGNORE_DUPS`, `HISTIGNORE`), and spelling correction (`CORRECT`). See
-   [docs/front-ends.md](docs/front-ends.md).
+2. **Native zsh/bash hook.** Add `eval "$(aishe init zsh)"` to your `~/.zshrc`
+   (or `~/.bashrc` with `init bash`) to keep your own shell session while routing
+   unknown input to aishe. The bash hook is how to use aishe interactively without
+   zsh. See [docs/shell-integration.md](docs/shell-integration.md).
 
-3. **Native zsh/bash hook.** Add `eval "$(aishe init zsh)"` to your `~/.zshrc`
-   (or `~/.bashrc` with `init bash`) to keep your own shell and editor while
-   routing unknown input to aishe. See
-   [docs/shell-integration.md](docs/shell-integration.md).
+3. **Non-interactive.** `aishe -c '<line>'` and piped stdin run lines through the
+   in-process executor (zsh, falling back to bash) with no interactive terminal.
 
 ## Providers
 
@@ -176,39 +167,34 @@ model = "openai/gpt-oss-120b"
 API keys are read only from the named environment variable, never stored in the
 config. See [docs/providers.md](docs/providers.md) for per-provider setup.
 
-## Meta commands and slash-commands
+## Commands and settings
+
+aishe's subcommands:
 
 ```
-aishe mode [suggest|auto|yolo]    show or set the interaction mode
-aishe model [NAME]                show or set the model
-aishe provider [anthropic|openai] show or set the provider
-aishe editor [emacs|vi]           show or set the line-editor keymap
-aishe frontend [auto|reedline|zsh-pty]  show or set the front-end
-aishe stream [on|off]             show or toggle token streaming
-aishe structured [schema|json|prompt]   output-format strategy (default: schema)
-aishe theme [PRESET]              show or set the color preset
-aishe usage                       session token and cost usage
-aishe reset                       clear conversation memory
-aishe ghost [on|off]              inline AI ghost-text autosuggestion
-aishe commands                    list custom slash-commands
-aishe skills                      list model-invoked skills
-aishe config                      print the active config
-aishe rehash                      rebuild the command cache
-aishe help                        show help
+aishe                  launch the interactive zsh-PTY shell
+aishe zsh              the same, explicitly
+aishe -c '<line>'      run one line non-interactively and exit
+aishe init zsh|bash    print the shell-hook snippet (for ~/.zshrc / ~/.bashrc)
+aishe doctor           check shell, config, provider, and API key
+aishe completions ...  print a shell completion script for aishe itself
+aishe trust [--list]   trust this repo's .aishe/config.toml (and list trusted)
+aishe untrust [--all]  drop trust for this repo (or all repos)
 ```
 
-Each meta command also works as a slash-command (Claude Code style), for example
-`/mode auto`, `/config`, `/help`. They are tab-completable, and `/`-prefixed
-paths like `/usr/bin/x` still run normally. Full reference in
-[docs/commands.md](docs/commands.md).
+Set the **mode/model/provider** with the `--mode`/`--model`/`--provider` flags,
+the config file, or `$AISHE_MODE`; in the interactive shell, **Shift-Tab** cycles
+the mode for the session. Inspect things with `aishe -c '/config'`,
+`aishe -c '/usage'`, `aishe -c '/mcp'`, `aishe -c '/skills'`, and run user-defined
+`/commands` the same way. Full reference in [docs/commands.md](docs/commands.md).
 
 ## Conversation memory
 
-In the interactive REPL, aishe remembers recent natural-language turns so
-follow-ups have context: after "create alpha.txt containing apple", a follow-up
-"now do the same for beta.txt" knows what "the same" means. Memory lives only for
-the session (never written to disk), is capped in size, and is cleared with
-`aishe reset`. Turn it off with `memory = false`. See [docs/modes.md](docs/modes.md).
+aishe remembers recent natural-language turns so follow-ups have context: after
+"create alpha.txt containing apple", a follow-up "now do the same for beta.txt"
+knows what "the same" means. Memory lives only for the session (never written to
+disk), is capped in size, and is on by default. Turn it off with
+`memory = false`. See [docs/modes.md](docs/modes.md).
 
 ## Custom commands and skills
 
@@ -282,21 +268,6 @@ AI-initiated command (with exit code) as JSONL. It is off by default; enable it
 with `[logging] enabled = true` or `AISHE_LOG=1`. Logged text is redacted too.
 See [docs/logging.md](docs/logging.md).
 
-## Prompt and theming
-
-The reedline front-end supports a custom left prompt (`prompt_format` with
-`{cwd}`, `{mode}`, `{model}`, `{exit}`), a right prompt with `model and mode` and
-a git branch segment, and color themes. Pick a preset (`default`, `vivid`,
-`mono`, `nord`, `gruvbox`) or override individual roles.
-
-```toml
-[theme]
-preset = "nord"
-cwd = "bright-cyan"
-```
-
-See [docs/prompt-and-theming.md](docs/prompt-and-theming.md).
-
 ## Startup file (.aishrc)
 
 aishe sources `~/.aishrc` and `~/.config/aishe/aishrc` (in that order) into every
@@ -323,18 +294,14 @@ in [docs/configuration.md](docs/configuration.md).
 [aishe]
 mode = "suggest"               # suggest | auto | yolo
 provider = "anthropic"         # anthropic | openai
-front_end = "auto"             # auto | reedline | zsh-pty
-edit_mode = "emacs"            # emacs | vi
+pty_prompt = true              # branded prompt in the zsh-PTY shell
 structured = "schema"          # schema | json | prompt
 stream = false                 # stream answers token-by-token
 show_usage = true              # print token/cost after each model call
 budget_usd = 0.0               # 0 = unlimited
-memory = true                  # remember recent turns (aishe reset to clear)
-ghost_text = false             # inline AI ghost text (aishe ghost on)
+memory = true                  # remember recent turns
 redact_secrets = true          # scrub secrets from the model context
-report_time = 3                # show command duration over N seconds
-auto_pushd = false             # zsh AUTO_PUSHD
-correct = false                # zsh CORRECT (fix mistyped commands)
+auto_pushd = false             # zsh AUTO_PUSHD for in-process cd
 # many more fields: see examples/config.toml and docs/configuration.md
 
 [providers.anthropic]
@@ -356,7 +323,6 @@ The [docs/](docs/) directory has the full user guide:
 - [Getting started](docs/getting-started.md)
 - [Modes](docs/modes.md)
 - [Front-ends](docs/front-ends.md)
-- [Inline AI ghost text](docs/ghost-text.md)
 - [Providers](docs/providers.md)
 - [Configuration reference](docs/configuration.md)
 - [Commands and slash-commands](docs/commands.md)
@@ -364,7 +330,6 @@ The [docs/](docs/) directory has the full user guide:
 - [Token usage and cost](docs/usage-and-cost.md)
 - [Safety gate](docs/safety.md)
 - [Logging and privacy](docs/logging.md)
-- [Prompt and theming](docs/prompt-and-theming.md)
 - [Shell integration and .aishrc](docs/shell-integration.md)
 - [Per-project config and trust](docs/project-config.md)
 - [Troubleshooting](docs/troubleshooting.md)

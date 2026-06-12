@@ -6,6 +6,22 @@ breaking changes can land in any release.
 
 ## [Unreleased]
 
+### Removed
+- **The built-in reedline editor is gone; aishe now commits to zsh.** The
+  interactive shell is the zsh-PTY wrapper (your real zsh with the AI hook), so
+  the self-contained line editor and everything specific to it were removed: the
+  `completer`, `highlight`, `ghost`, `prompt`, `theme`, `validator`,
+  `history_expand`, and `histfilter` modules; the `reedline`/`nu-ansi-term`
+  dependencies; the `--pty`/`--no-pty` flags; and the reedline-only config keys
+  (`front_end`, `edit_mode`, `prompt_format`, `git_prompt`, `git_status`,
+  `show_right_prompt`, `report_time`, `hist_ignore*`, `correct`, `complete_flags`,
+  `ghost_text`, `[theme]`). Unknown keys are ignored on load, so existing config
+  files keep working. **The interactive shell now requires zsh**; `aishe -c …`,
+  piped stdin, and the bash hook (`aishe init bash`) still work without it. The
+  live `aishe <meta>` toggles (mode/provider/theme/...) that only existed in the
+  removed REPL are gone; set mode/model/provider via flags, the config file,
+  `$AISHE_MODE`, or Shift-Tab (mode cycle) instead.
+
 ### Fixed
 - **`run_captured` no longer hangs past its timeout.** Captured commands now run
   in their own process group, and the whole group is reaped on timeout or

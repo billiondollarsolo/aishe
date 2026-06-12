@@ -640,7 +640,7 @@ def make_config():
     os.makedirs(cdir)
     with open(os.path.join(cdir, "config.toml"), "w") as f:
         f.write(
-            '[aishe]\nmode = "suggest"\nprovider = "openai"\nfront_end = "reedline"\n'
+            '[aishe]\nmode = "suggest"\nprovider = "openai"\n'
             'structured = "schema"\n\n[providers.openai]\n'
             'base_url = "https://api.groq.com/openai"\napi_key_env = "GROQ_API_KEY"\n'
             'model = "openai/gpt-oss-120b"\n'
@@ -654,8 +654,6 @@ FULL_CONFIG = """\
 [aishe]
 mode = "auto"
 provider = "openai"
-front_end = "reedline"
-edit_mode = "vi"
 structured = "json"
 stream = true
 show_usage = false
@@ -663,19 +661,9 @@ budget_usd = 1.5
 memory = false
 cache = false
 cache_ttl_secs = 120
-ghost_text = true
 redact_secrets = false
-report_time = 7
-git_status = false
-git_prompt = false
-show_right_prompt = false
 auto_pushd = true
-hist_ignore_dups = false
-hist_ignore_space = true
-hist_ignore = ["ls", "cd *"]
 cdpath = ["/tmp", "/srv"]
-correct = true
-complete_flags = false
 share_history = false
 file_tools = false
 web_tool = false
@@ -995,10 +983,7 @@ def main():
     report.append("\n**Full config round-trips (`/config`):**\n")
     expected = [
         'mode = "auto"',
-        "report_time = 7",
         "auto_pushd = true",
-        "correct = true",
-        "complete_flags = false",
         "share_history = false",
         "file_tools = false",
         "web_tool = false",
@@ -1009,8 +994,6 @@ def main():
         "cache = false",
         "cache_ttl_secs = 120",
         "budget_usd = 1.5",
-        "hist_ignore_space = true",
-        "ghost_text = true",
         "redact_secrets = false",
         "[logging]",
         "[pricing.",
@@ -1069,7 +1052,7 @@ def main():
     # exit-code propagation, and pipe/script mode.
     report.append("\n**CLI & distribution:**\n")
     rc, out, err = run([BIN, "--version"], env_local)
-    add("cli: --version has build metadata", rc == 0 and "aishe 0.1.0" in out and "(" in out,
+    add("cli: --version has build metadata", rc == 0 and out.startswith("aishe 0.") and "(" in out,
         f"→ `{out.strip()}`")
     rc, out, err = run([BIN, "completions", "zsh"], env_local)
     add("cli: completions zsh emits a script", rc == 0 and "_aishe" in out)

@@ -7,16 +7,12 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
-use crate::theme::ThemeConfig;
-
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Config {
     #[serde(default)]
     pub aishe: AisheConfig,
     #[serde(default)]
     pub providers: Providers,
-    #[serde(default)]
-    pub theme: ThemeConfig,
     #[serde(default)]
     pub logging: LoggingConfig,
     /// Per-model price overrides (USD per 1M tokens) for cost estimates, keyed by
@@ -144,76 +140,29 @@ pub struct AisheConfig {
     /// docs (HTTP GET, HTML stripped to text, size-capped). On by default.
     #[serde(default = "default_true")]
     pub web_tool: bool,
-    #[serde(default = "default_true")]
-    pub show_right_prompt: bool,
-    /// Front-end: "auto"/"zsh-pty" (default) drive the user's real interactive
-    /// zsh in a PTY (requires zsh), so all native zsh plugins work; "reedline"
-    /// is the opt-in built-in editor (also `aishe --no-pty`) for environments
-    /// without zsh.
-    #[serde(default = "default_front_end")]
-    pub front_end: String,
     /// In the zsh-PTY front-end, override the prompt with aishe's branded prompt
     /// (`<cwd> <glyph>`, glyph per mode) so it's obvious you're in aishe. On by
     /// default; set false to keep your real zsh prompt untouched.
     #[serde(default = "default_true")]
     pub pty_prompt: bool,
-    /// reedline line-editor keymap: "emacs" (default) or "vi".
-    #[serde(default = "default_edit_mode")]
-    pub edit_mode: String,
-    /// Optional custom left-prompt format for the reedline front-end. Supports
-    /// `{cwd}`, `{mode}`, `{model}`, `{exit}`. `None` = just the cwd.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub prompt_format: Option<String>,
-    /// Show a git branch segment in the right prompt (reedline front-end).
-    #[serde(default = "default_true")]
-    pub git_prompt: bool,
-    /// Add dirty (`*`) and ahead/behind (`⇡`/`⇣`) markers to the git segment
-    /// (one short `git status` call per prompt). Disable in huge repos.
-    #[serde(default = "default_true")]
-    pub git_status: bool,
-    /// Show the last command's duration in the right prompt when it took at least
-    /// this many seconds. `0` disables it.
-    #[serde(default = "default_report_time")]
-    pub report_time: u64,
     /// zsh `AUTO_PUSHD`: every `cd` pushes the previous directory onto the stack
-    /// (navigate with `cd -N` / `cd +N`, list with `dirs -v`).
+    /// (navigate with `cd -N` / `cd +N`, list with `dirs -v`). Applies to aishe's
+    /// in-process `cd` (the `-c` and shell-hook paths).
     #[serde(default)]
     pub auto_pushd: bool,
-    /// Don't save a command to history when it equals the previous one
-    /// (`HIST_IGNORE_DUPS`).
-    #[serde(default = "default_true")]
-    pub hist_ignore_dups: bool,
-    /// Don't save commands to history when it starts with a space
-    /// (`HIST_IGNORE_SPACE`).
-    #[serde(default)]
-    pub hist_ignore_space: bool,
-    /// Glob patterns (`*`/`?`) of commands to keep out of history (`HISTIGNORE`),
-    /// e.g. `["ls", "cd *", "* --help"]`.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub hist_ignore: Vec<String>,
     /// Extra base directories searched by `cd <name>` (`CDPATH`).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub cdpath: Vec<String>,
-    /// zsh `CORRECT`: when an unknown first word is a near-miss of a known
-    /// command, offer to correct it instead of treating the line as natural
-    /// language. Off by default.
-    #[serde(default)]
-    pub correct: bool,
-    /// Complete a command's flags from its `--help` output when you tab-complete a
-    /// word starting with `-` (parsed, cached, time-limited). On by default.
-    #[serde(default = "default_true")]
-    pub complete_flags: bool,
     /// Share one timestamped history across sessions (zsh `SHARE_HISTORY`): the
-    /// `history` builtin and the reedline history file are shared, so commands
-    /// from other sessions are visible. When off, history is per-session
-    /// (pid-suffixed files). On by default.
+    /// `history` builtin sees commands from other sessions. When off, history is
+    /// per-session (pid-suffixed files). On by default.
     #[serde(default = "default_true")]
     pub share_history: bool,
     /// Structured-output strategy for suggest mode: "schema" (strict JSON schema,
     /// default), "json" (any JSON object), or "prompt" (unconstrained).
     #[serde(default = "default_structured")]
     pub structured: String,
-    /// Stream answers token-by-token in the interactive REPL (suggest/auto).
+    /// Stream answers token-by-token (suggest/auto).
     #[serde(default)]
     pub stream: bool,
     /// Print a dim per-session token/cost line after each model interaction.
@@ -223,19 +172,14 @@ pub struct AisheConfig {
     /// `0` = unlimited. Only enforced when the model's price is known.
     #[serde(default)]
     pub budget_usd: f64,
-    /// Remember recent natural-language turns in the interactive REPL so
-    /// follow-ups ("now do the same for the other file") have context. Clear it
-    /// with `aishe reset`.
+    /// Remember recent natural-language turns so follow-ups ("now do the same for
+    /// the other file") have context. Clear it with `aishe reset`.
     #[serde(default = "default_true")]
     pub memory: bool,
     /// Redact likely secrets (tokens, passwords, URL credentials) from the
     /// environment context block sent to the model. On by default.
     #[serde(default = "default_true")]
     pub redact_secrets: bool,
-    /// Inline AI ghost-text autosuggestion in the reedline front-end. Off by
-    /// default (it spends tokens as you type). Toggle with `aishe ghost`.
-    #[serde(default)]
-    pub ghost_text: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -280,15 +224,6 @@ fn default_yolo_confirm() -> String {
 fn default_cache_ttl() -> u64 {
     300
 }
-fn default_report_time() -> u64 {
-    3
-}
-fn default_front_end() -> String {
-    "auto".to_string()
-}
-fn default_edit_mode() -> String {
-    "emacs".to_string()
-}
 fn default_structured() -> String {
     "schema".to_string()
 }
@@ -325,21 +260,9 @@ impl Default for AisheConfig {
             cache_ttl_secs: default_cache_ttl(),
             file_tools: true,
             web_tool: true,
-            show_right_prompt: true,
-            front_end: default_front_end(),
             pty_prompt: true,
-            edit_mode: default_edit_mode(),
-            prompt_format: None,
-            git_prompt: true,
-            git_status: true,
-            report_time: default_report_time(),
             auto_pushd: false,
-            hist_ignore_dups: true,
-            hist_ignore_space: false,
-            hist_ignore: Vec::new(),
             cdpath: Vec::new(),
-            correct: false,
-            complete_flags: true,
             share_history: true,
             structured: default_structured(),
             stream: false,
@@ -347,7 +270,6 @@ impl Default for AisheConfig {
             budget_usd: 0.0,
             memory: true,
             redact_secrets: true,
-            ghost_text: false,
         }
     }
 }
@@ -635,7 +557,7 @@ impl Config {
 
         // Whole tables: theme/named_dirs/pricing are safe; mcp_servers/logging
         // are sensitive.
-        for name in ["theme", "named_dirs", "pricing"] {
+        for name in ["named_dirs", "pricing"] {
             if let Some(v) = proj.get(name) {
                 overlay.insert(name.into(), v.clone());
                 applied.push(format!("[{name}]"));
@@ -1009,7 +931,7 @@ mod tests {
         assert_eq!(cfg.aishe.provider, "openai");
         assert_eq!(cfg.providers.openai.model, "llama3");
         // Unspecified fields still fall back to defaults.
-        assert_eq!(cfg.aishe.front_end, "auto");
+        assert_eq!(cfg.aishe.structured, "schema");
         assert_eq!(cfg.providers.anthropic.api_key_env, "ANTHROPIC_API_KEY");
     }
 
@@ -1070,7 +992,7 @@ mod tests {
             r#"
             [aishe]
             stream = true
-            report_time = 9
+            auto_pushd = true
             mode = "auto"
 
             [providers.anthropic]
@@ -1080,7 +1002,7 @@ mod tests {
         let (applied, deferred) = cfg.merge_project_table(&table, false);
         // Safe keys land even without trust.
         assert!(cfg.aishe.stream);
-        assert_eq!(cfg.aishe.report_time, 9);
+        assert!(cfg.aishe.auto_pushd);
         assert_eq!(cfg.aishe.mode, "auto");
         // Per-provider model is safe.
         assert_eq!(cfg.providers.anthropic.model, "claude-from-repo");
@@ -1180,6 +1102,6 @@ mod tests {
             "stream",
             &toml::Value::Boolean(true)
         ));
-        assert!(!aishe_key_is_sensitive("theme", &auto));
+        assert!(!aishe_key_is_sensitive("stream", &auto));
     }
 }

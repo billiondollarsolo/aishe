@@ -511,24 +511,23 @@ fn read_choice() -> Result<Choice> {
     Ok(result)
 }
 
-/// Re-open a line editor pre-filled with the command for editing.
+/// Prompt for an edited version of the command: show it and read a replacement
+/// line from stdin (empty input keeps the original). A plain stdin read, so it
+/// has no dependency on a built-in line editor.
 fn edit_line(initial: &str) -> Result<Option<String>> {
-    use reedline::{DefaultPrompt, DefaultPromptSegment, Reedline, Signal};
-
-    let mut line_editor = Reedline::create();
-    let prompt = DefaultPrompt::new(
-        DefaultPromptSegment::Basic("edit".to_string()),
-        DefaultPromptSegment::Empty,
-    );
-
-    // Pre-fill the buffer with the command to edit.
-    line_editor.run_edit_commands(&[reedline::EditCommand::InsertString(initial.to_string())]);
-
-    match line_editor.read_line(&prompt) {
-        Ok(Signal::Success(buffer)) => Ok(Some(buffer)),
-        Ok(Signal::CtrlC) | Ok(Signal::CtrlD) => Ok(None),
-        Err(_) => Ok(None),
+    use std::io::Write;
+    eprint!("  edit (Enter to keep) [{initial}]: ");
+    std::io::stderr().flush().ok();
+    let mut line = String::new();
+    if std::io::stdin().read_line(&mut line)? == 0 {
+        return Ok(None); // EOF / Ctrl-D
     }
+    let edited = line.trim();
+    Ok(Some(if edited.is_empty() {
+        initial.to_string()
+    } else {
+        edited.to_string()
+    }))
 }
 
 #[cfg(test)]

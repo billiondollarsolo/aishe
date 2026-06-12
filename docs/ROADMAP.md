@@ -4,20 +4,15 @@ A living backlog of where aishe is headed. Grounded in a code audit (June 2026).
 Ordered by theme, not strictly by priority. The Now / Next / Later tags at the
 end of each item are the current intent.
 
-## The architectural fork (read this first)
+## The architectural fork (resolved)
 
-The reedline front-end runs each input line as a fresh `zsh -c "..."`
-(`executor.rs`). Shell state is simulated by intercepting `cd`, `export`,
-aliases, and functions and replaying them from a generated rc file. That model
-cannot do real job control, because `cmd &`, `jobs`, `fg`, `bg`, and `Ctrl-Z`
-need a persistent shell that owns the job table. The zsh-PTY front-end
-(`pty.rs`, the `auto` default when zsh is present) is a real zsh and gets all of
-this for free.
-
-So most zsh-parity work below only matters if reedline stays a flagship. The
-alternative is to make zsh-pty the flagship real shell and position reedline as
-the lightweight AI command runner. Decision: deferred. Every reedline-only item
-is tagged `(reedline)` so we can re-scope quickly.
+This was the central design question, and it is now settled: **the zsh-PTY
+front-end (`pty.rs`) is the one interactive shell, and the built-in reedline
+editor has been removed.** A real zsh gets job control, completion, highlighting,
+and every plugin for free; reimplementing those was a treadmill. So every item
+below tagged `(reedline)` is **obsolete/dropped** - it only mattered while
+reedline was a flagship. Non-interactive use (`aishe -c …`, piped stdin) and the
+bash hook still work without zsh; the interactive shell requires zsh.
 
 ## 1. AI-shell features (the differentiators), building now
 
@@ -34,7 +29,7 @@ is tagged `(reedline)` so we can re-scope quickly.
 - [x] **Inline ghost-text AI autosuggestion.** Warp/Copilot style: a background
   worker (debounced, cached, budget-aware, shared provider) predicts the rest of
   the command; reedline shows it as dim ghost text, accept with the Right arrow.
-  Off by default (`aishe ghost on`). See `src/ghost.rs` and docs/ghost-text.md.
+  (reedline-only; removed with the reedline front-end.)
   Done. (Live-during-pause repaint is a possible future polish.)
 - [x] **Richer yolo toolset and MCP.** Built-in file tools
   (`read_file`/`write_file`/`edit_file`/`list_dir`, `file_tools`) and a web tool

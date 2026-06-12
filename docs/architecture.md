@@ -1,7 +1,7 @@
 # Architecture
 
 A contributor's map of how aishe is put together: how one line of input becomes
-either a shell command or an LLM action, how the two front-ends differ, how the
+either a shell command or an LLM action, how the front-end works, how the
 provider / tool / MCP layers stack up, and where the tests live. For user-facing
 behavior see [front-ends.md](front-ends.md), [modes.md](modes.md), and
 [safety.md](safety.md); for build/test commands see
@@ -19,7 +19,7 @@ behavior see [front-ends.md](front-ends.md), [modes.md](modes.md), and
    provider HTTP layer is hand-rolled (no vendor SDKs) to keep request/response
    shapes under our control.
 4. **Best-effort, never blocking.** Anything that hits the network or a slow
-   subprocess (git status, `--help` parsing, the command cache, ghost text) runs
+   subprocess (git status, `--help` parsing, the command cache) runs
    off the hot path or under a timeout. The prompt never hangs.
 
 ## Crate layout
@@ -40,7 +40,7 @@ tests in `tests/` can exercise internals directly.
 | `mcp` | Minimal MCP client (stdio + Streamable HTTP); exposes server tools to yolo as `mcp__<server>__<tool>`. |
 | `safety` / `sandbox` | Destructive-command gate; best-effort policy sandbox (network / out-of-tree writes) for yolo. |
 | `context` | The environment context block (cwd, dir listing, recent history, project context) prepended to LLM requests. |
-| `session` | In-session conversation memory; in-RAM for reedline, persisted to a per-session file for the hook front-ends. |
+| `session` | In-session conversation memory, persisted to a per-session file for the hook front-ends (whose NL calls are separate processes). |
 | `config` | Config schema, load/migrate/save, the first-run wizard, CLI-override and project-overlay precedence. |
 | `trust` | Trust store for project `.aishe/config.toml` overlays (`aishe trust`). |
 | `cache` | Short-TTL response cache wrapping a `Provider` for identical suggest repeats. |
@@ -49,9 +49,8 @@ tests in `tests/` can exercise internals directly.
 | `usage` | Token meter, pricing table, cost/budget math. |
 | `skills` | Progressive-disclosure skill registry (Claude-Code-compatible). |
 | `commands` | User-defined slash-commands. |
-| `completer` / `highlight` / `prompt` / `theme` / `ghost` | reedline UX: completion, syntax highlighting, prompt rendering, theming, AI ghost text. |
-| `histlog` / `histfilter` / `history_expand` | History storage (zsh EXTENDED_HISTORY format), filtering, `!`-expansion. |
-| `fuzzy` / `validator` | Fuzzy matching + spelling correction; multi-line input completeness. |
+| `histlog` | History storage/format (zsh EXTENDED_HISTORY) for the `history` builtin. |
+| `fuzzy` | Fuzzy matching + spelling correction for the command cache. |
 
 ## The routing decision (the heart of it)
 
@@ -95,11 +94,12 @@ The classification logic is pure and exhaustively unit-tested at the bottom of
 
 ## Front-ends
 
-aishe ships two input loops over the same library. The architectural decision
-(PLAN section 2) settled on the zsh-PTY front-end as the flagship and reedline as
-an opt-in fallback.
+The interactive shell is the zsh-PTY wrapper; the same hook also works as a pure
+shell integration, and there are the non-interactive `-c`/pipe paths. There is no
+built-in line editor (the architectural decision, PLAN section 2, committed to
+zsh; the former reedline front-end was removed).
 
-### zsh-PTY (`src/pty.rs` + `src/integration.rs`) - the default
+### zsh-PTY (`src/pty.rs` + `src/integration.rs`) - the interactive shell
 
 Runs the user's genuine interactive zsh (`zsh -i`) inside a pseudo-terminal, so
 every zsh extension (autosuggestions, syntax-highlighting, fzf-tab, powerlevel10k,
@@ -122,22 +122,19 @@ The hook (in `src/integration.rs`) is the subtle part:
   (so the metacharacters never reach zsh's grammar), a force-NL widget
   (default Alt-Enter) rewrites the current buffer with an LLM suggestion, and a
   mode-cycle widget (default Shift-Tab) rotates `AISHE_MODE` and repaints the
-  prompt glyph. In reedline the same Shift-Tab is an `ExecuteHostCommand("aishe
-  mode --cycle")` that falls through only when no completion menu is open.
+  prompt glyph.
 
 The same `init` mechanism also works as a pure hook in the user's own shell
 without the PTY (`eval "$(aishe init zsh)"` in `.zshrc`); the PTY wrapper is just
-the turnkey path that needs no rc edit. bash has an equivalent script.
+the turnkey path that needs no rc edit. bash has an equivalent script (the way to
+use aishe interactively without zsh).
 
-### reedline (`src/main.rs` REPL) - opt-in
+### Non-interactive (`-c`, piped stdin)
 
-A built-in line editor (the `reedline` crate) for hosts where zsh cannot be
-installed (`aishe --no-pty` or `front_end = reedline`). It owns the prompt and
-input loop, runs `dispatch()` on each line itself, and executes shell lines as a
-fresh `zsh -c` (replaying intercepted builtins from in-process state). This is why
-exotic shell state and full TTY job control are weaker here, and why reedline
-parity work is now low priority. It is also where the richer aishe-native UX lives
-(ghost text, custom completion/highlighting, theming).
+`aishe -c '<line>'` and piped stdin drive the in-process `executor` + `dispatcher`
++ `modes` directly (no PTY, no zsh required - `zsh -c` with a `bash -c` fallback).
+These share the engine with the shell hooks; they never touch an interactive
+front-end.
 
 ## The LLM path
 
@@ -173,7 +170,7 @@ rejected so the loop can't spin. Callers always parse defensively regardless. Se
 listing, recent command history, and an optional per-project `.aishe/context.md`.
 It never includes file contents. `redact.rs` scrubs likely secrets first (when
 `redact_secrets` is on). `session.rs` keeps a rolling transcript so follow-ups
-have context: held in RAM by reedline, persisted to a per-session file by the hook
+have context, persisted to a per-session file by the hook
 front-ends (whose NL calls are separate processes).
 
 ### Modes (`src/modes/`)
@@ -253,6 +250,6 @@ informational because model output varies.
 - To change routing: `src/dispatcher.rs` (and its tests).
 - To change how commands run: `src/executor.rs`.
 - To change the interactive experience: `src/pty.rs` + `src/integration.rs` (the
-  default) or the REPL in `src/main.rs` (reedline).
+  default) — the only interactive front-end.
 - To change LLM behavior: `src/modes/` and `src/providers/`.
 - To add a tool: `src/tools.rs` (built-in) or an MCP server in config.

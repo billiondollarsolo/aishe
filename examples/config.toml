@@ -15,22 +15,10 @@ mode = "suggest"
 # Which provider block below to use: "anthropic" or "openai".
 provider = "anthropic"
 
-# Front-end (input loop). The interactive shell is the zsh-PTY front-end, which
-# drives your real zsh and therefore requires zsh.
-#   auto     = zsh-PTY (the default; needs zsh installed)
-#   zsh-pty  = same as auto
-#   reedline = the built-in line editor, opt-in only (also `aishe --no-pty`). It
-#              reimplements a shell and is more sensitive to terminal quirks; use
-#              it only where zsh cannot be installed.
-front_end = "auto"
-
 # In the zsh-PTY front-end, show aishe's branded prompt (`<cwd> <glyph>`, with the
 # glyph reflecting the mode: ❯ suggest, » auto, ⚡ yolo) instead of your normal zsh
 # prompt, so it's obvious you're in aishe. Set false to keep your real prompt.
 pty_prompt = true
-
-# reedline line-editor keymap: "emacs" or "vi".
-edit_mode = "emacs"
 
 # In yolo mode, confirm commands the safety gate flags as dangerous.
 # (Honored only when `yolo_confirm` below is left at its default.)
@@ -71,41 +59,13 @@ file_tools = true
 # (HTTP GET, HTML stripped to text, size-capped) instead of curl/wget.
 web_tool = true
 
-# Show "model and mode" on the right of the reedline prompt.
-show_right_prompt = true
-
-# Show a git branch segment in the right prompt (reedline front-end).
-git_prompt = true
-
-# Add a dirty marker (*) and ahead/behind counts to the git segment (one short
-# `git status` per prompt). Turn off in very large repos.
-git_status = true
-
-# Show the last command's duration on the right when it ran at least this many
-# seconds (like zsh REPORTTIME). 0 disables.
-report_time = 3
-
-# zsh AUTO_PUSHD: every `cd` pushes the previous directory onto the stack.
-# Navigate with `cd -N` / `cd +N`, list with `dirs -v`.
+# zsh AUTO_PUSHD for aishe's in-process `cd` (the `-c` and shell-hook paths):
+# every `cd` pushes the previous directory onto the stack. Navigate with
+# `cd -N` / `cd +N`, list with `dirs -v`.
 auto_pushd = false
-
-# History filtering (zsh-style):
-hist_ignore_dups = true     # don't save a command equal to the previous one
-hist_ignore_space = false   # don't save commands that start with a space
-# hist_ignore = ["ls", "cd *", "* --help"]   # glob patterns to keep out of history
 
 # Extra base directories searched by `cd <name>` (like zsh cdpath / $CDPATH).
 # cdpath = ["/home/me/projects", "/srv"]
-
-# zsh CORRECT: when an unknown first word is a near-miss of a known command,
-# offer to fix it ("correct 'gti' to 'git'? [Y/n]") instead of treating the line
-# as a natural-language request.
-correct = false
-
-# Tab-complete a command's flags from its `--help` output (parsed, cached, and
-# time-limited) when the word you are completing starts with `-`. For example
-# `grep --<Tab>` offers `--ignore-case`, `--color`, ... with descriptions.
-complete_flags = true
 
 # Share one timestamped history across sessions (zsh SHARE_HISTORY), so commands
 # from other running/past sessions are visible to the `history` builtin. Off makes
@@ -113,17 +73,13 @@ complete_flags = true
 # EXTENDED_HISTORY format (`: <epoch>:0;<command>`), which zsh can also read.
 share_history = true
 
-# Custom reedline left prompt. Placeholders: {cwd} {mode} {model} {exit}.
-# Leave commented out for the default (just the cwd).
-# prompt_format = "[{mode}] {cwd}"
-
 # Output-format strategy for suggest mode.
 #   schema = strict JSON schema where supported, with automatic step-down (default)
 #   json   = ask for any JSON object
 #   prompt = unconstrained text, parsed defensively
 structured = "schema"
 
-# Stream answers token-by-token in the interactive REPL (suggest and auto).
+# Stream answers token-by-token (suggest and auto).
 stream = false
 
 # Print a dim per-session token and cost line after each model interaction.
@@ -133,7 +89,7 @@ show_usage = true
 # 0 = unlimited. Only enforced when the model's price is known.
 budget_usd = 0.0
 
-# Remember recent natural-language turns in the interactive REPL so follow-ups
+# Remember recent natural-language turns so follow-ups
 # ("now do the same for the other file") have context. Clear with `aishe reset`.
 memory = true
 
@@ -157,11 +113,6 @@ project_context = true
 # (model, mode, budget, cosmetics) apply automatically; sensitive keys (provider/
 # endpoint, [mcp_servers], logging, safety toggles, mode = "yolo") apply only
 # after you run `aishe trust` in that repo. See docs/project-config.md.
-
-# Inline AI ghost-text autosuggestion in the reedline front-end (predicts the
-# rest of your command as you type; accept with the Right arrow). Off by default
-# because it spends tokens as you type. Toggle live with `aishe ghost on`.
-ghost_text = false
 
 # ---------------------------------------------------------------------------
 # Optional: audit logging of AI calls, responses, and AI-initiated actions.
@@ -234,19 +185,3 @@ model = "gpt-4o"
 # [named_dirs]
 # proj = "/home/me/projects"
 # dl = "/home/me/Downloads"
-
-# ---------------------------------------------------------------------------
-# Optional: theming for the reedline prompt and syntax highlighter.
-# Pick a preset (default, vivid, mono, nord, gruvbox) and override any role.
-# Colors may be names (red, bright-green), a palette index (0-255), or hex.
-# ---------------------------------------------------------------------------
-
-[theme]
-preset = "default"
-# cwd = "bright-cyan"
-# known_cmd = "#98c379"
-# unknown_cmd = "red"
-# flag = "yellow"
-# string = "green"
-# operator = "magenta"
-# path = "blue"
