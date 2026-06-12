@@ -109,7 +109,7 @@ whether the API key is set.
 ## Where to go next
 
 - [Modes](modes.md) for streaming and structured output.
-- [Front-ends](front-ends.md) to understand zsh-PTY vs the built-in editor.
+- [Front-ends](front-ends.md) for the zsh-PTY shell, the native hook, and `-c`.
 - [Custom commands and skills](custom-commands-and-skills.md) to add your own
   `/commands`.
 - [Configuration reference](configuration.md) for every setting.

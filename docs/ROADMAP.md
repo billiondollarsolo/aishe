@@ -68,7 +68,14 @@ bash hook still work without zsh; the interactive shell requires zsh.
   access and out-of-tree writes) ship (`src/sandbox.rs`, docs/safety.md). A true
   kernel/scratch-dir sandbox is still open.
 
-## 3. zsh parity (mostly reedline)
+## 3. zsh parity (obsolete - reedline removed)
+
+> Settled by the fork above: the interactive shell is your real zsh, which has
+> all of this natively. These items only existed to give the removed built-in
+> editor zsh-like ergonomics, so they are **dropped**. A few left durable
+> artifacts that still serve the `-c`/hook paths (the `EXTENDED_HISTORY` log and
+> `history` builtin in `src/histlog.rs`; `auto_pushd`/`cdpath`/`share_history`).
+> Kept here for historical context.
 
 - [~] **Job control**: background jobs ship in the reedline front-end - a trailing
   `&` backgrounds a command, with `jobs`/`fg`/`bg`/`wait`/`disown` and a

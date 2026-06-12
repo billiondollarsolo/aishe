@@ -11,7 +11,7 @@ which persist your choice back to the file.
 ## File locations
 
 - Config: `~/.config/aishe/config.toml`
-- History (reedline): `~/.local/share/aishe/history`
+- History (the `history` builtin): `~/.local/share/aishe/history`
 - Custom commands: `~/.config/aishe/commands/` and `<project>/.aishe/commands/`
 - Skills: `~/.config/aishe/skills/` and `<project>/.aishe/skills/`
 - Startup file: `~/.aishrc` and `~/.config/aishe/aishrc`

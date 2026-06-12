@@ -54,18 +54,21 @@ system trust store. Set `HTTPS_PROXY` if your environment requires it.
 
 suggest mode asks for strict JSON by default and parses defensively, so malformed
 output becomes a plain answer rather than a crash. If a provider rejects the
-schema, aishe steps down automatically. You can loosen the constraint:
+schema, aishe steps down automatically. You can loosen the constraint in your
+config:
 
-```sh
-aishe structured json       # or: aishe structured prompt
+```toml
+[aishe]
+structured = "json"     # or "prompt" for unconstrained text
 ```
 
-## Job control (Ctrl-Z, bg, fg) does not work
+## Job control (Ctrl-Z, bg, fg)
 
-In the reedline front-end, each command runs as a fresh shell invocation, so job
-control of delegated processes is not supported. `Ctrl-C` reaches the foreground
-child and aishe itself survives. For full job control, use the zsh-PTY front-end
-(the default when zsh is present), which is your real zsh.
+The interactive shell is your real zsh in a PTY, so job control works exactly as
+it does in zsh. The only exception is the non-interactive paths (`aishe -c …`,
+piped stdin), which run each line in a fresh shell and so do not manage
+long-lived background jobs; `Ctrl-C` reaches the foreground child and aishe
+survives.
 
 ## Costs or budgets look wrong
 

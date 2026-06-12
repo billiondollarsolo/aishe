@@ -29,9 +29,9 @@ curl -fsSL https://raw.githubusercontent.com/billiondollarsolo/aishe/main/instal
 ```
 
 The script also ensures **zsh** is installed (best effort, via your system
-package manager), because aishe is most robust when it can drive your real zsh in
-a PTY; without zsh it falls back to a built-in editor that is more sensitive to
-terminal quirks. Opt out of the zsh step with `AISHE_SKIP_ZSH=1`.
+package manager), because aishe's interactive shell drives your real zsh in a
+PTY. Without zsh you can still use `aishe -c …`, piped input, and the bash hook
+(`aishe init bash`). Opt out of the zsh step with `AISHE_SKIP_ZSH=1`.
 
 It installs to `/usr/local/bin` when writable, otherwise `~/.local/bin`. Override
 with environment variables:
@@ -185,7 +185,7 @@ rm -rf ~/.local/share/aishe   # history
 ## What gets created on first run
 
 - `~/.config/aishe/config.toml` is written by the first-run wizard.
-- `~/.local/share/aishe/history` stores reedline command history.
+- `~/.local/share/aishe/history` stores command history for the `history` builtin.
 - Nothing else is created until you add custom commands or skills.
 
 Next: [Getting started](getting-started.md).

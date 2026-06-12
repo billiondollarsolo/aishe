@@ -87,35 +87,27 @@ export EDITOR=nvim
 gco() { git checkout "$@"; }
 ```
 
-This is shell-agnostic setup that applies in both front-ends. The zsh-PTY
-front-end also runs your real `~/.zshrc`. A ready-to-copy example is at
-[examples/aishrc](../examples/aishrc).
+This applies whether you launch the zsh-PTY shell or add the hook to your own
+shell. Both run your real `~/.zshrc` (or `~/.bashrc`), so a ready-to-copy example
+of `.aishrc` is at [examples/aishrc](../examples/aishrc).
 
-### Interactive definitions persist too
+### Interactive definitions persist
 
-In the reedline front-end, aliases, shell options (`setopt` and `unsetopt`), and
-functions you define interactively persist to later commands in the same session.
-aishe replays the definition through the same mechanism. Multi-line function
-bodies continue until the braces close, then become callable.
+Because aishe runs your genuine zsh (or bash), aliases, shell options (`setopt`/
+`unsetopt`), and functions you define interactively are owned by your real shell
+and persist natively — there is nothing for aishe to replay.
 
-The remaining gap is functions and aliases created by a file you `source` at
-runtime: only that file's environment changes are captured. Put such definitions
-in `.aishrc`, or use the zsh-PTY front-end.
+The one gap is the non-interactive paths (`aishe -c …`, piped stdin), which run
+each line in a fresh shell and so do not see your interactive definitions. Put
+anything you want available there in `.aishrc`.
 
 ## History and completion
 
-In the reedline front-end:
+In the zsh-PTY shell and the native hook, history, `Ctrl-R` search, history
+expansion (`!!`, `!$`, ...), and tab completion are all your real shell's own —
+unmodified, with every plugin.
 
-- History is stored at `~/.local/share/aishe/history` and persists across
-  restarts.
-- **Filtering** (zsh-style): consecutive duplicate commands are not saved
-  (`hist_ignore_dups`, default on); commands starting with a space are not saved
-  when `hist_ignore_space` is on; and `hist_ignore` is a list of glob patterns
-  (`*`/`?`) for commands to keep out of history, for example
-  `hist_ignore = ["ls", "cd *", "* --help"]`.
-- `Ctrl-R` opens a browsable, filterable history menu.
-- History expansion supports `!!`, `!$`, `!^`, `!*`, `!-N`, `!!:N` word
-  selection, and `^old^new` quick substitution. Note that `!cmd` stays aishe's
-  force-shell prefix, so `!`-prefix history matching is intentionally not used.
-- Tab completion is context-aware. See [Front-ends](front-ends.md) for the full
-  list.
+Separately, aishe keeps a timestamped history file at
+`~/.local/share/aishe/history` (zsh `EXTENDED_HISTORY` format) that backs its
+own `history` builtin in the `-c` and hook paths. `share_history` (default on)
+shares it across sessions; turn it off for per-session (pid-suffixed) files.

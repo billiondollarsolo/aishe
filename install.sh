@@ -10,10 +10,10 @@
 #                   if that is not writable)
 #   AISHE_SKIP_ZSH  set to 1 to skip ensuring zsh is installed
 #
-# aishe works best with zsh: when zsh is present it drives your real zsh in a
-# PTY (robust line editing, history, plugins); without it, it falls back to a
-# built-in editor that is more sensitive to terminal quirks. So this installer
-# also ensures zsh is installed (best effort; set AISHE_SKIP_ZSH=1 to opt out).
+# aishe's interactive shell drives your real zsh in a PTY (your plugins, history,
+# job control, completions), so it needs zsh. This installer ensures zsh is
+# installed (best effort; set AISHE_SKIP_ZSH=1 to opt out). Without zsh you can
+# still use `aishe -c …`, piped input, and the bash hook (`aishe init bash`).
 #
 # On Linux this prefers the fully-static musl build, so there are no glibc
 # version requirements. For apt/dnf-managed installs, grab the .deb/.rpm from the
@@ -26,16 +26,17 @@ VERSION="${AISHE_VERSION:-latest}"
 err() { printf 'aishe-install: %s\n' "$1" >&2; exit 1; }
 note() { printf 'aishe-install: %s\n' "$1" >&2; }
 
-# Best-effort: make sure zsh is installed (aishe drives it for the robust
-# front-end). Never fatal -- the binary is already installed by the time this
-# runs, and aishe still works (reedline front-end) without zsh.
+# Best-effort: make sure zsh is installed (aishe's interactive shell drives it).
+# Never fatal -- the binary is already installed by the time this runs, and the
+# non-interactive paths (`aishe -c …`, piped input) and the bash hook work
+# without zsh.
 ensure_zsh() {
   if command -v zsh >/dev/null 2>&1; then
     note "zsh present ($(command -v zsh)); aishe will use the zsh front-end"
     return 0
   fi
   if [ "${AISHE_SKIP_ZSH:-0}" = 1 ]; then
-    note "zsh not found; skipping (AISHE_SKIP_ZSH=1). Falling back to the reedline front-end."
+    note "zsh not found; skipping (AISHE_SKIP_ZSH=1). The interactive shell needs zsh; -c and the bash hook still work."
     return 0
   fi
   note "zsh not found; aishe is most robust with it. Attempting to install zsh..."
@@ -45,7 +46,7 @@ ensure_zsh() {
     if command -v sudo >/dev/null 2>&1; then
       sudo_cmd="sudo"
     else
-      note "need root or sudo to install zsh; install it manually (e.g. 'apt install zsh'). aishe will use the reedline front-end until then."
+      note "need root or sudo to install zsh; install it manually (e.g. 'apt install zsh'). The interactive shell needs zsh until then."
       return 0
     fi
   fi
@@ -73,7 +74,7 @@ ensure_zsh() {
   if command -v zsh >/dev/null 2>&1; then
     note "zsh installed ($(command -v zsh))"
   else
-    note "could not install zsh automatically; install it manually for the best experience. aishe will use the reedline front-end until then."
+    note "could not install zsh automatically; install it manually for the interactive shell (e.g. 'apt install zsh')."
   fi
 }
 

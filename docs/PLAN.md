@@ -19,13 +19,12 @@ aishe is a natural-language-aware shell. It behaves like zsh for real commands
 and routes anything else to an LLM in one of three modes (suggest / auto / yolo).
 Already shipped and validated:
 
-- **Two front-ends.** The flagship is a zsh-PTY wrapper that drives the user's
-  real interactive zsh with all native plugins (a `command_not_found` hook plus
-  `precmd`/accept-line wrappers route natural language to the model). The opt-in
-  reedline editor (each line run as a fresh `zsh -c`, with state replayed from a
-  generated rc) is a lightweight AI command runner for hosts without zsh.
-  `front_end = auto` picks zsh-pty when zsh is present (the architectural
-  decision, section 2, resolved as Option B).
+- **One interactive front-end.** A zsh-PTY wrapper that drives the user's real
+  interactive zsh with all native plugins (a `command_not_found` hook plus
+  `precmd`/accept-line wrappers route natural language to the model). It requires
+  zsh; the non-interactive paths (`aishe -c …`, piped stdin) and the bash hook
+  work without it. The former opt-in reedline editor was removed (the
+  architectural decision, section 2, resolved as Option B and shipped).
 - **Providers.** Anthropic Messages API and any OpenAI-compatible Chat
   Completions API, with SSE streaming, tool use, token/cost metering, a budget
   cap, and (new) retry with exponential backoff + jitter + `Retry-After`.
@@ -35,8 +34,9 @@ Already shipped and validated:
 - **MCP client.** stdio and Streamable HTTP transports; consumes tools,
   resources, and prompts; namespaced `mcp__<server>__<tool>`; verified against
   real `npx`/`uvx` servers.
-- **zsh parity (reedline).** Completion (commands, paths, env vars, subcommands,
-  `--help` flags), multi-line editing, history expansion, autocd, dir stack,
+- **zsh parity (removed with reedline).** Completion (commands, paths, env vars,
+  subcommands, `--help` flags), multi-line editing, history expansion, autocd,
+  dir stack,
   spelling correction, named dirs, AUTO_PUSHD, cdpath, a rich async git prompt,
   background job control, and a timestamped cross-session `history`.
 - **Trust and safety.** Path-aware safety gate with an adversarial corpus, secret
@@ -46,7 +46,7 @@ Already shipped and validated:
   `--version`, a richer `aishe doctor`.
 
 Quality bar today: ~215 Rust tests, a Python validation harness (~483 checks
-across 7 suites, including real model and real MCP servers), two PTY smoke tests,
+across 7 suites, including real model and real MCP servers), a PTY smoke test,
 CI on Linux + macOS, clippy `-D warnings` and rustfmt clean.
 
 The gaps that remain are mostly **depth, polish, robustness, and the one big
@@ -64,7 +64,7 @@ architectural decision** below.
 3. **Single binary, no services.** No daemon, no database, minimal C deps. Easy
    to install, copy, and reason about.
 4. **Best-effort, never blocking.** Anything that talks to the network or a slow
-   subprocess (git status, `--help`, ghost text) runs off the hot path or with a
+   subprocess (git status, `--help` parsing, the command cache) runs off the hot path or with a
    timeout; the prompt never hangs.
 5. **Documented and tested as we go.** Every feature ships with docs, a config
    toggle where relevant, unit tests, and harness coverage.
@@ -184,9 +184,9 @@ Get to a confidently installable, documented 0.2 / 0.3.
 - Acceptance: a yolo task survives a restart and resumes with context.
 - Effort: L. Priority: P3. Status: open.
 
-**A5. Inline-AI polish.** Ghost-text live repaint during pause; accept-word vs
-accept-line; a "why" affordance to expand the suggestion rationale.
-- Effort: M. Priority: P3. Status: open (ghost text shipped).
+**A5. Inline-AI polish.** ~~Ghost-text live repaint during pause; accept-word vs
+accept-line; a "why" affordance to expand the suggestion rationale.~~
+- Status: DROPPED. Ghost text was a reedline feature and was removed with it.
 
 **A6. Output understanding.** Let the model see (truncated, redacted) output of
 the *last real command* on `?` follow-ups automatically, not just on yolo tool
@@ -223,7 +223,10 @@ results.
 JWTs, private-key blocks; add a redaction self-test corpus.
 - Effort: S. Priority: P2. Status: open.
 
-### C. zsh parity (mostly reedline; re-scope per section 2)
+### C. zsh parity (DROPPED - reedline removed per section 2)
+
+> The interactive shell is now the user's real zsh, which has all of this
+> natively, so this whole backlog is dropped. Retained for historical context.
 
 **C1. Full job control** (only if Option A/C). `Ctrl-Z`/`SIGTSTP`, process
 groups, `fg`/`bg` of suspended jobs. Requires a persistent backing shell.
@@ -399,7 +402,7 @@ per-project profiles.
 front-ends, the provider/tool/MCP layering, the harness.
 - Effort: M. Priority: P1. Status: DONE. [docs/architecture.md](architecture.md)
   covers the design principles, crate/module map, the routing decision order +
-  command cache, both front-ends (zsh-PTY hook handoff and reedline), the
+  command cache, the zsh-PTY hook handoff, the
   provider/`ResponseFormat`/step-down layer, modes/safety/sandbox, tools/MCP/skills,
   config precedence, and the test layout. Linked from the README and development.md.
 
@@ -514,7 +517,7 @@ A feature is "done" only when all of:
 ## 8. Open decisions (need a human)
 
 1. ~~**Architectural direction** (section 2): Option A, B, or C.~~ **Resolved:
-   Option B** (zsh-PTY flagship, reedline opt-in). `(reedline)` parity work is now
+   Option B** (zsh-PTY the one interactive shell; reedline removed). `(reedline)` parity work is now
    P3.
 2. ~~**Canonical repository identity** (H2): which GitHub owner is canonical, so
    binstall/Homebrew/release URLs resolve.~~ **Resolved: `billiondollarsolo/aishe`.**

@@ -34,11 +34,9 @@ tiers:
 **Safe (always applied).** Cosmetic and behavioral keys, and a per-provider
 `model`: `mode` (for `suggest`/`auto`), `stream`, `structured`, `memory`,
 `cache`/`cache_ttl_secs`, `budget_usd`, `max_yolo_iterations`, `yolo_plan`,
-`yolo_verbose`, `file_tools`, `web_tool`, `report_time`, `auto_pushd`,
-`hist_*`, `cdpath`, `correct`, `complete_flags`, `share_history`,
-`prompt_format`, `pty_prompt`, `edit_mode`, `ghost_text`, `git_prompt`,
-`git_status`, `project_context`, `[theme]`, `[named_dirs]`, `[pricing]`, and
-`[providers.<name>].model`.
+`yolo_verbose`, `file_tools`, `web_tool`, `auto_pushd`, `cdpath`,
+`share_history`, `pty_prompt`, `project_context`, `[named_dirs]`, `[pricing]`,
+and `[providers.<name>].model`.
 
 **Sensitive (applied only when you trust the file).** Anything that could
 exfiltrate prompts, run code, or weaken safety: `provider`, a
