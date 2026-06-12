@@ -396,6 +396,10 @@ impl Config {
     }
 
     /// Persist the config to disk, creating parent directories as needed.
+    ///
+    /// The write is atomic: the serialized TOML is written to a temporary file in
+    /// the same directory and then `rename`d over the destination, so a crash or
+    /// power loss mid-write can never leave a truncated/corrupt config behind.
     pub fn save(&self) -> Result<()> {
         let path = Self::path();
         if let Some(parent) = path.parent() {
@@ -403,7 +407,7 @@ impl Config {
                 .with_context(|| format!("creating config dir {}", parent.display()))?;
         }
         let text = toml::to_string_pretty(self).context("serializing config")?;
-        std::fs::write(&path, text)
+        write_atomic(&path, text.as_bytes())
             .with_context(|| format!("writing config {}", path.display()))?;
         Ok(())
     }
@@ -619,6 +623,42 @@ fn aishe_key_is_sensitive(key: &str, value: &toml::Value) -> bool {
         "mode" => value.as_str() == Some("yolo"),
         _ => false,
     }
+}
+
+/// Atomically write `bytes` to `dest`: the data is written to a temporary file
+/// in the *same directory* as the destination (so the final `rename` stays on
+/// one filesystem and is atomic on POSIX), flushed, then renamed over `dest`.
+/// A crash or power loss can therefore never expose a half-written `dest`; the
+/// old contents survive intact until the rename succeeds. On any error the temp
+/// file is cleaned up before the error is returned. The caller is expected to
+/// have created the parent directory and to add its own `.with_context(...)`.
+pub(crate) fn write_atomic(dest: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    let parent = dest.parent().unwrap_or_else(|| Path::new("."));
+    let file_name = dest
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "file".to_string());
+    // Unique per-pid temp name in the destination directory; keep it hidden.
+    let tmp = parent.join(format!(".{file_name}.tmp.{}", std::process::id()));
+
+    // Write the full contents and flush to the OS before renaming. If anything
+    // fails, remove the partial temp file so we never leak it.
+    let write_result = (|| -> std::io::Result<()> {
+        let mut f = std::fs::File::create(&tmp)?;
+        f.write_all(bytes)?;
+        f.flush()?;
+        Ok(())
+    })();
+    if let Err(e) = write_result {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(e);
+    }
+
+    if let Err(e) = std::fs::rename(&tmp, dest) {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(e);
+    }
+    Ok(())
 }
 
 /// Recursively merge `overlay` into `base`: nested tables are merged key by key;
@@ -1085,6 +1125,95 @@ mod tests {
         assert_eq!(cfg.aishe.provider, "openai");
         assert_eq!(cfg.providers.openai.base_url, "https://my.endpoint");
         assert!(cfg.mcp_servers.contains_key("git"));
+    }
+
+    /// A unique-per-pid temp directory for filesystem tests, removed on drop so
+    /// each test cleans up after itself even on failure.
+    struct TempDir {
+        path: PathBuf,
+    }
+
+    impl TempDir {
+        fn new(tag: &str) -> Self {
+            let path = std::env::temp_dir().join(format!(
+                "aishe-config-test-{tag}-{}-{:p}",
+                std::process::id(),
+                &tag as *const _
+            ));
+            std::fs::create_dir_all(&path).unwrap();
+            Self { path }
+        }
+    }
+
+    impl Drop for TempDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.path);
+        }
+    }
+
+    /// Count files in `dir` whose name contains ".tmp." (our temp-write suffix).
+    fn leftover_tmp_count(dir: &Path) -> usize {
+        std::fs::read_dir(dir)
+            .map(|rd| {
+                rd.filter_map(|e| e.ok())
+                    .filter(|e| e.file_name().to_string_lossy().contains(".tmp."))
+                    .count()
+            })
+            .unwrap_or(0)
+    }
+
+    #[test]
+    fn write_atomic_writes_contents_and_leaves_no_tmp() {
+        let dir = TempDir::new("atomic");
+        let dest = dir.path.join("config.toml");
+        write_atomic(&dest, b"hello world").unwrap();
+        assert_eq!(std::fs::read_to_string(&dest).unwrap(), "hello world");
+
+        // Overwriting an existing file also works and leaves no temp file.
+        write_atomic(&dest, b"second").unwrap();
+        assert_eq!(std::fs::read_to_string(&dest).unwrap(), "second");
+        assert_eq!(
+            leftover_tmp_count(&dir.path),
+            0,
+            "a .tmp. file was left behind"
+        );
+    }
+
+    #[test]
+    fn save_load_round_trip_via_xdg_dir() {
+        // Point XDG_CONFIG_HOME at a temp dir so Config::path() lands there, then
+        // round-trip a Config through save()/load_from(). Env vars are global, so
+        // restore the prior value afterward.
+        let dir = TempDir::new("xdg");
+        let prev = std::env::var_os("XDG_CONFIG_HOME");
+        std::env::set_var("XDG_CONFIG_HOME", &dir.path);
+
+        let mut cfg = Config::default();
+        cfg.aishe.mode = "yolo".into();
+        cfg.aishe.provider = "openai".into();
+        cfg.providers.openai.model = "gpt-4o-mini".into();
+        cfg.aishe.budget_usd = 1.25;
+        cfg.save().unwrap();
+
+        let path = Config::path();
+        let loaded = Config::load_from(&path).unwrap();
+        assert_eq!(loaded.aishe.mode, "yolo");
+        assert_eq!(loaded.aishe.provider, "openai");
+        assert_eq!(loaded.providers.openai.model, "gpt-4o-mini");
+        assert_eq!(loaded.aishe.budget_usd, 1.25);
+
+        // No temp file should remain next to the config after a successful save.
+        let cfg_parent = path.parent().unwrap();
+        assert_eq!(
+            leftover_tmp_count(cfg_parent),
+            0,
+            "a .tmp. file was left behind in the config dir"
+        );
+
+        match prev {
+            Some(v) => std::env::set_var("XDG_CONFIG_HOME", v),
+            None => std::env::remove_var("XDG_CONFIG_HOME"),
+        }
     }
 
     #[test]

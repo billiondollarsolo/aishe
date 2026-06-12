@@ -116,6 +116,13 @@ impl Session {
     }
 
     /// Write the (char-budget-trimmed) transcript back as JSONL. Best-effort.
+    ///
+    /// This is a whole-file rewrite, not an append: the transcript is
+    /// char-budget-trimmed (oldest turns dropped) so each save replaces the
+    /// entire file rather than adding to it. An `O_APPEND` write is therefore
+    /// wrong here, and a plain `fs::write` could leave a truncated/corrupt JSONL
+    /// file on a crash. So we write to a temp file in the same directory and
+    /// `rename` it over the destination, an atomic swap on POSIX.
     pub fn save_persisted(&self, path: &Path) {
         use std::fmt::Write as _;
         let mut out = String::new();
@@ -139,7 +146,7 @@ impl Session {
         if let Some(parent) = path.parent() {
             let _ = std::fs::create_dir_all(parent);
         }
-        let _ = std::fs::write(path, out);
+        let _ = crate::config::write_atomic(path, out.as_bytes());
     }
 
     pub fn enabled(&self) -> bool {
@@ -202,6 +209,39 @@ mod tests {
         let empty = Session::load_persisted(&dir.join("nope.jsonl"));
         assert!(empty.history().is_empty());
         assert!(empty.enabled());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn save_persisted_round_trips_and_leaves_no_tmp() {
+        let dir =
+            std::env::temp_dir().join(format!("aishe-sess-atomic-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("mem.jsonl");
+
+        let mut s = Session::new(true);
+        s.record_user("first request");
+        s.record_assistant("first reply");
+        s.record_user("second request");
+        s.save_persisted(&path);
+
+        // The stored turns survive a reload (whole-file atomic rewrite).
+        let loaded = Session::load_persisted(&path);
+        let h = loaded.history();
+        assert_eq!(h.len(), 3);
+        assert!(matches!(&h[0], Msg::User(t) if t == "first request"));
+        assert!(matches!(&h[1], Msg::Assistant(a) if a.text.as_deref() == Some("first reply")));
+        assert!(matches!(&h[2], Msg::User(t) if t == "second request"));
+        assert_eq!(loaded.turns(), 2);
+
+        // No leftover temp file from the atomic write should remain in the dir.
+        let leftover = std::fs::read_dir(&dir)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| e.file_name().to_string_lossy().contains(".tmp."))
+            .count();
+        assert_eq!(leftover, 0, "a .tmp. file was left behind");
 
         let _ = std::fs::remove_dir_all(&dir);
     }
