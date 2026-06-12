@@ -6,6 +6,27 @@ breaking changes can land in any release.
 
 ## [Unreleased]
 
+### Security
+- **Safety gate closes several evasions.** Dangerous commands hidden inside
+  command substitution `$(…)` or backticks are now inspected recursively; the
+  `curl … | <shell>` check covers more interpreters (`zsh`/`ksh`/`dash`/`fish`,
+  absolute paths, `python`/`perl`/`ruby`/`node`, `source`); and path-aware checks
+  now catch `truncate` of a system file, `dd of=` to an out-of-tree file, and
+  redirects into `/proc`//`sys`. (The gate is still defense-in-depth, not a
+  sandbox — see docs/safety.md.)
+
+### Fixed
+- **The interactive prompt can no longer hang on a slow/dead LLM endpoint.** The
+  shell-hook helpers (`--suggest-line`/`--auto-line`) enforce a hard wall-clock
+  budget (SIGALRM) so a typo never freezes your prompt, and the provider now uses
+  a 5s connect timeout to fast-fail an unreachable endpoint.
+- **Lifecycle cleanup.** The PTY front-end removes its temp `ZDOTDIR` on exit
+  (incl. panic), restores the terminal on `SIGTERM`/`SIGHUP`, and the zsh/bash
+  hooks remove their per-shell temp files on shell exit (chaining onto any
+  existing bash `EXIT` trap without mangling it).
+- **Atomic writes.** `config.toml` and the session-memory file are written via a
+  temp file + `rename`, so a crash mid-write can't corrupt them.
+
 ## [0.2.0] - 2026-06-12
 
 ### Added
