@@ -6,6 +6,8 @@ breaking changes can land in any release.
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-06-12
+
 ### Security
 - **Safety gate closes several evasions.** Dangerous commands hidden inside
   command substitution `$(…)` or backticks are now inspected recursively; the
