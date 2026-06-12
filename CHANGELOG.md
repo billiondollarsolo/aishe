@@ -6,6 +6,8 @@ breaking changes can land in any release.
 
 ## [Unreleased]
 
+## [0.2.2] - 2026-06-12
+
 ### Added
 - **Reversible AI file edits + `aishe undo`.** Every change the built-in file
   tools (`write_file` / `edit_file`) make in yolo is now shown as a unified diff
