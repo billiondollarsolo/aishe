@@ -200,6 +200,8 @@ enum Cmd {
         #[arg(long)]
         since: Option<String>,
     },
+    /// Print the environment context block aishe sends to the model (redacted).
+    Context,
 }
 
 fn main() -> ExitCode {
@@ -341,6 +343,12 @@ fn run() -> Result<u8> {
                 by.as_deref(),
                 since.as_deref(),
             ));
+        }
+        Some(Cmd::Context) => {
+            let executor = Executor::new()?;
+            context::init(executor.shell());
+            print!("{}", context::build(&executor, &config));
+            return Ok(0);
         }
         _ => {}
     }

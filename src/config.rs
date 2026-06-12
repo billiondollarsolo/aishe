@@ -130,6 +130,16 @@ pub struct AisheConfig {
     /// default.
     #[serde(default = "default_true")]
     pub project_context: bool,
+    /// Include this repo's task surface (justfile/Makefile/package.json scripts,
+    /// compose services, ...) in the model context, so "run the tests" maps to the
+    /// project's real command. On by default; cheap (cached file reads).
+    #[serde(default = "default_true")]
+    pub project_tasks: bool,
+    /// Include a one-line list of tools installed on `$PATH` (package manager,
+    /// container runtime, ...) so the model proposes commands that exist here. On
+    /// by default; cheap (cached `which` lookups).
+    #[serde(default = "default_true")]
+    pub host_profile: bool,
     /// Cache identical suggest-mode model responses for a short while to make
     /// repeats instant and free. On by default.
     #[serde(default = "default_true")]
@@ -263,6 +273,8 @@ impl Default for AisheConfig {
             yolo_plan: false,
             yolo_verbose: false,
             project_context: true,
+            project_tasks: true,
+            host_profile: true,
             cache: true,
             cache_ttl_secs: default_cache_ttl(),
             file_tools: true,

@@ -138,11 +138,7 @@ fn run_stream(
     session: &mut Session,
 ) -> Result<()> {
     let _ = config; // streaming needs no further per-request tuning yet
-    let ctx = context::build(
-        executor,
-        config.aishe.redact_secrets,
-        config.aishe.project_context,
-    );
+    let ctx = context::build(executor, config);
     let shell = executor
         .shell()
         .file_name()
@@ -336,11 +332,7 @@ pub fn request(
     config: &Config,
     history: Vec<Msg>,
 ) -> Result<Suggestion> {
-    let ctx = context::build(
-        executor,
-        config.aishe.redact_secrets,
-        config.aishe.project_context,
-    );
+    let ctx = context::build(executor, config);
     let shell = executor
         .shell()
         .file_name()

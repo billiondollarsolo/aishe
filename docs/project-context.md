@@ -45,3 +45,32 @@ The file is plain context, like the directory listing: it is never executed, and
 it is sent only when you make a natural-language request. If you keep secrets in
 the repo, do not put them in `.aishe/context.md`, since its contents are sent to
 the model (the secret-redaction pass scrubs recent commands, not this file).
+
+## Project- and host-aware context
+
+Beyond `.aishe/context.md`, aishe automatically adds two compact, derived blocks
+so suggestions fit *this* repo and *this* machine — no setup required:
+
+- **Project tasks** (`project_tasks = true`, default on): aishe reads the build
+  files in the working directory and lists their entry points — `justfile` /
+  `Makefile` targets, `package.json` and `composer.json` scripts, `compose`
+  services, and Cargo/Python/CI markers. So "run the tests" resolves to the
+  project's real command (`just test`, `npm test`, `cargo test`, …) instead of a
+  guess.
+- **Installed tools** (`host_profile = true`, default on): a one-line list of the
+  tools present on `$PATH` (package manager, `docker`/`podman`, `kubectl`, …), so
+  the model proposes commands that exist here — `apt install` on Debian, `dnf` on
+  Fedora, `brew` on macOS.
+
+Both are cheap (cached file reads / `which` lookups), capped, and contain only
+names — no file contents, no secrets. Disable either with
+`project_tasks = false` / `host_profile = false`.
+
+Preview exactly what aishe sends with:
+
+```sh
+aishe context
+```
+
+It prints the full (redacted) context block — the OS/shell, cwd, installed tools,
+project tasks, directory listing, recent commands, and any `.aishe/context.md`.

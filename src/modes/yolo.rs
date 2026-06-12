@@ -60,11 +60,7 @@ fn run_loop(
     mcp: &McpRegistry,
     history: Vec<Msg>,
 ) -> Result<Option<String>> {
-    let ctx = context::build(
-        executor,
-        config.aishe.redact_secrets,
-        config.aishe.project_context,
-    );
+    let ctx = context::build(executor, config);
     // Effective confirmation tier (resolves `yolo_confirm` and the legacy
     // `yolo_confirm_dangerous` boolean). Writes outside the tree by the file
     // tools are confirmed whenever the tier is not "never".

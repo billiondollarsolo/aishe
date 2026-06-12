@@ -392,7 +392,7 @@ arbitrary commands) into one UX.
 
 ## N3 — Project- and host-aware context
 
-**Track:** Noteworthy · **Priority:** P2 · **Effort:** M · **Risk:** Low · **Depends on:** —
+**Track:** Noteworthy · **Priority:** P2 · **Effort:** M · **Risk:** Low · **Depends on:** — · **Status: Shipped (v1)** — `context::build` now adds a project-tasks block (just/make/npm/composer/compose/cargo/python/CI) and a cached host-tools line; `project_tasks`/`host_profile` config toggles; `aishe context` previews the block (`src/context.rs`). Walking up to the project root and richer host facts (k8s context, init system) are follow-ups.
 
 ### Problem
 `src/context.rs` already sends cwd, a dir listing, and recent history. Suggestion

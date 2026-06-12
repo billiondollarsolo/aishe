@@ -6,6 +6,17 @@ breaking changes can land in any release.
 
 ## [Unreleased]
 
+### Added
+- **Project- and host-aware context.** The model context now automatically
+  includes this repo's task surface (`justfile`/`Makefile` targets, `package.json`
+  /`composer.json` scripts, `compose` services, Cargo/Python/CI markers) so "run
+  the tests" maps to the project's real command, plus a one-line list of tools
+  installed on `$PATH` so it proposes commands that exist on this host (`apt` vs
+  `dnf` vs `brew`). Both are cached, capped, names-only (no secrets), toggled by
+  `project_tasks` / `host_profile` (default on). New `aishe context` prints the
+  full redacted block. This is proposal N3 from
+  [docs/proposals.md](docs/proposals.md).
+
 ## [0.2.5] - 2026-06-12
 
 ### Added
