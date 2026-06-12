@@ -6,6 +6,8 @@ breaking changes can land in any release.
 
 ## [Unreleased]
 
+## [0.2.7] - 2026-06-12
+
 ### Added
 - **Replayable runbooks (`aishe runbook`).** Turn a recorded yolo session into a
   committable `runbook-<id>.sh` (the exact commands, in order, with the request in
