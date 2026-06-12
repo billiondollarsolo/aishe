@@ -227,15 +227,56 @@ fn write_file(args: &Value, cwd: &Path, confirm_writes: bool) -> (String, String
         return (format!("write {path}"), "User declined the write.".into());
     }
     println!("  {} {}", "✏️".yellow(), format!("write {path}").dim());
-    match std::fs::write(resolve(cwd, path), content) {
-        Ok(_) => (
-            format!("write {path}"),
-            format!("Wrote {} bytes to '{path}'.", content.len()),
-        ),
+    let resolved = resolve(cwd, path);
+    // Capture the pre-image before overwriting so the change is reversible.
+    let existed = resolved.exists();
+    let before = if existed {
+        std::fs::read_to_string(&resolved).ok()
+    } else {
+        None
+    };
+    match std::fs::write(&resolved, content) {
+        Ok(_) => {
+            // Journal for `aishe undo`. Skip when an existing file wasn't valid
+            // UTF-8 (we can't faithfully restore it); the write still stands.
+            if !(existed && before.is_none()) {
+                crate::undo::record(
+                    &resolved,
+                    existed,
+                    before.clone(),
+                    "write_file",
+                    &format!("write {path}"),
+                );
+            }
+            if let Some(b) = &before {
+                print_diff(&crate::undo::unified_diff(b, content));
+            }
+            (
+                format!("write {path}"),
+                format!("Wrote {} bytes to '{path}'.", content.len()),
+            )
+        }
         Err(e) => (
             format!("write {path}"),
             format!("Error writing '{path}': {e}"),
         ),
+    }
+}
+
+/// Print a (already `-`/`+`/` `-prefixed) diff under a tool step, colorized.
+fn print_diff(diff: &str) {
+    if diff.is_empty() {
+        return;
+    }
+    for line in diff.lines() {
+        let colored = if line.starts_with('-') {
+            line.red().to_string()
+        } else if line.starts_with('+') {
+            line.green().to_string()
+        } else {
+            line.dim().to_string()
+        };
+        println!("    {colored}");
     }
 }
 
@@ -277,11 +318,21 @@ fn edit_file(args: &Value, cwd: &Path, confirm_writes: bool) -> (String, String)
     };
     let replaced = if all { count } else { 1 };
     println!("  {} {}", "✏️".yellow(), format!("edit {path}").dim());
-    match std::fs::write(&resolved, new) {
-        Ok(_) => (
-            format!("edit {path}"),
-            format!("Replaced {replaced} occurrence(s) in '{path}'."),
-        ),
+    match std::fs::write(&resolved, &new) {
+        Ok(_) => {
+            crate::undo::record(
+                &resolved,
+                true,
+                Some(original.clone()),
+                "edit_file",
+                &format!("edit {path}"),
+            );
+            print_diff(&crate::undo::unified_diff(&original, &new));
+            (
+                format!("edit {path}"),
+                format!("Replaced {replaced} occurrence(s) in '{path}'."),
+            )
+        }
         Err(e) => (
             format!("edit {path}"),
             format!("Error writing '{path}': {e}"),
@@ -508,6 +559,7 @@ mod tests {
     fn write_then_read_roundtrip() {
         let dir = std::env::temp_dir().join(format!("aishe-tools-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
+        crate::undo::set_test_journal(Some(dir.join("undo.jsonl")));
         let (_, msg) = write_file(
             &json!({"path": "note.txt", "content": "hello\nworld"}),
             &dir,
@@ -523,6 +575,7 @@ mod tests {
     fn edit_replaces_text() {
         let dir = std::env::temp_dir().join(format!("aishe-tools-e-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
+        crate::undo::set_test_journal(Some(dir.join("undo.jsonl")));
         write_file(&json!({"path": "f.txt", "content": "a b a b"}), &dir, false);
         // first only
         let (_, m1) = edit_file(
@@ -546,6 +599,41 @@ mod tests {
             false,
         );
         assert!(m3.contains("not found"));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn file_tool_changes_are_undoable() {
+        let dir = std::env::temp_dir().join(format!("aishe-tools-u-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        crate::undo::set_test_journal(Some(dir.join("undo.jsonl")));
+
+        // create a file, then edit it (both within this process's batch)
+        write_file(
+            &json!({"path": "c.txt", "content": "one\ntwo"}),
+            &dir,
+            false,
+        );
+        edit_file(
+            &json!({"path": "c.txt", "find": "two", "replace": "TWO"}),
+            &dir,
+            false,
+        );
+        assert_eq!(
+            std::fs::read_to_string(dir.join("c.txt")).unwrap(),
+            "one\nTWO"
+        );
+
+        // One undo reverts the whole batch in reverse: the edit is rolled back and
+        // then the create is removed, so the file is gone (its original state).
+        let undone = crate::undo::undo_last().unwrap().unwrap();
+        assert!(undone.errors.is_empty(), "{:?}", undone.errors);
+        assert!(
+            !dir.join("c.txt").exists(),
+            "created-then-edited file should be removed on undo"
+        );
+
+        crate::undo::set_test_journal(None);
         std::fs::remove_dir_all(&dir).ok();
     }
 

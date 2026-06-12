@@ -377,3 +377,50 @@ model = "gpt-x"
 
     std::fs::remove_dir_all(&dir).ok();
 }
+
+#[test]
+fn undo_restores_a_recorded_file_change() {
+    // Seed an undo journal by hand (the format the file tools write) and confirm
+    // `aishe undo` restores the file's prior contents. Uses the AISHE_UNDO_JOURNAL
+    // override via the child's env, so it never touches the real journal.
+    let dir = std::env::temp_dir().join(format!("aishe-cli-undo-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let journal = dir.join("undo.jsonl");
+    let target = dir.join("f.txt");
+    std::fs::write(&target, "MODIFIED BY AI").unwrap();
+    let rec = format!(
+        r#"{{"kind":"change","batch":"b1","ts":1,"path":"{}","existed":true,"before":"ORIGINAL","tool":"write_file","summary":"write f.txt"}}"#,
+        target.display()
+    );
+    std::fs::write(&journal, format!("{rec}\n")).unwrap();
+
+    // `aishe undo --list` shows the recorded batch.
+    Command::cargo_bin("aishe")
+        .unwrap()
+        .env("AISHE_UNDO_JOURNAL", &journal)
+        .args(["undo", "--list"])
+        .assert()
+        .success()
+        .stdout(contains("b1"));
+
+    // `aishe undo` restores the prior contents.
+    Command::cargo_bin("aishe")
+        .unwrap()
+        .env("AISHE_UNDO_JOURNAL", &journal)
+        .arg("undo")
+        .assert()
+        .success()
+        .stdout(contains("restored"));
+    assert_eq!(std::fs::read_to_string(&target).unwrap(), "ORIGINAL");
+
+    // A second undo has nothing left (the batch is now marked reverted).
+    Command::cargo_bin("aishe")
+        .unwrap()
+        .env("AISHE_UNDO_JOURNAL", &journal)
+        .arg("undo")
+        .assert()
+        .success()
+        .stdout(contains("nothing to undo"));
+
+    std::fs::remove_dir_all(&dir).ok();
+}

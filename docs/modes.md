@@ -56,7 +56,8 @@ and decides what to do next, repeating until the task is done or it hits
   precisely, instead of round-tripping through `cat`/`sed`/heredocs (which it
   gets wrong more often). A write or edit to a path outside the working tree
   (absolute, `~`, or `..`-escaping) is confirmed whenever the confirmation tier
-  is not `"never"` (see `yolo_confirm` below).
+  is not `"never"` (see `yolo_confirm` below). Every such edit is shown as a diff
+  and is **reversible** — see [Reversible edits](#reversible-edits).
 - **Web tool** (`web_tool = true`, on by default): the model can call `fetch_url`
   to read a page or docs (HTTP GET over http/https only; HTML is stripped to
   readable text, the body is byte-capped while reading and char-capped before it
@@ -92,6 +93,29 @@ and decides what to do next, repeating until the task is done or it hits
   on demand. See [Custom commands and skills](custom-commands-and-skills.md).
 - Every tool call is recorded in the [audit log](logging.md) (`run_command` as an
   `action`, the built-in tools as `yolo:read_file` / `yolo:fetch_url` etc.).
+
+## Reversible edits
+
+Every file the built-in tools (`write_file` / `edit_file`) change in yolo is shown
+as a colored unified diff as it happens, and its prior contents are recorded to a
+journal — so you can take any AI edit back:
+
+```sh
+aishe undo          # revert the most recent AI file change
+aishe undo --list   # list recorded change sets (active / reverted)
+```
+
+All edits in one aishe run share a *batch*, so a single `aishe undo` reverts that
+run as a unit and in reverse order: a file the model created and then edited is
+removed entirely (back to not existing), and a file it overwrote is restored to its
+original bytes. Reverting marks the batch done, so a second `aishe undo` moves on to
+the previous run.
+
+This is a safety net, not a sandbox: it covers the built-in **file tools** only,
+not arbitrary `run_command` side effects (use `yolo_confirm` / `yolo_sandbox` for
+those — see [Safety gate](safety.md)). The journal is JSONL at
+`$XDG_DATA_HOME/aishe/undo.jsonl` (override with `$AISHE_UNDO_JOURNAL`); journaling
+is best-effort and never blocks or fails a write.
 
 ## Streaming
 

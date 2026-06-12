@@ -6,6 +6,15 @@ breaking changes can land in any release.
 
 ## [Unreleased]
 
+### Added
+- **Reversible AI file edits + `aishe undo`.** Every change the built-in file
+  tools (`write_file` / `edit_file`) make in yolo is now shown as a unified diff
+  and recorded to a journal (`$XDG_DATA_HOME/aishe/undo.jsonl`, override with
+  `$AISHE_UNDO_JOURNAL`). `aishe undo` reverts the most recent run as a unit (in
+  reverse order — a file created then edited is removed); `aishe undo --list` shows
+  recorded change sets. Journaling is best-effort and never blocks a write. This is
+  proposal R1 from [docs/proposals.md](docs/proposals.md).
+
 ## [0.2.1] - 2026-06-12
 
 ### Security

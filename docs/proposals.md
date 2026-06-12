@@ -37,7 +37,7 @@ N1 are the highest trust-and-stickiness per unit of effort and unlock the rest.
 
 ## R1 — Transactional file edits + `aishe undo`
 
-**Track:** Robustness · **Priority:** P1 · **Effort:** M · **Risk:** Low · **Depends on:** —
+**Track:** Robustness · **Priority:** P1 · **Effort:** M · **Risk:** Low · **Depends on:** — · **Status: Shipped (v1)** — journaling, diff-on-write, and `aishe undo [--list]` landed (`src/undo.rs`); pre-apply interactive approval and blob dedup remain as follow-ups.
 
 ### Problem
 In yolo, the model edits files through aishe's *own* built-in tools

@@ -164,6 +164,12 @@ enum Cmd {
     Commands,
     /// List model-invoked skills.
     Skills,
+    /// Undo the most recent AI file change (from the built-in file tools).
+    Undo {
+        /// List recorded change sets instead of reverting.
+        #[arg(long)]
+        list: bool,
+    },
 }
 
 fn main() -> ExitCode {
@@ -197,6 +203,11 @@ fn run() -> Result<u8> {
     }
     if let Some(Cmd::Untrust { all }) = &args.cmd {
         return Ok(untrust_command(*all));
+    }
+
+    // `undo` reverts AI file changes from the journal; no config or provider.
+    if let Some(Cmd::Undo { list }) = &args.cmd {
+        return Ok(undo_command(*list));
     }
 
     // `init <shell>` needs no config or provider.
@@ -1272,6 +1283,61 @@ fn untrust_command(all: bool) -> u8 {
         }
         Err(e) => {
             eprintln!("aishe: {e}");
+            1
+        }
+    }
+}
+
+/// `aishe undo` / `aishe undo --list`: revert the most recent AI file change (or
+/// list recorded change sets). Reads the reversible-edits journal written by the
+/// built-in file tools.
+fn undo_command(list: bool) -> u8 {
+    if list {
+        let batches = aishe::undo::list();
+        if batches.is_empty() {
+            println!("no recorded AI file changes");
+            return 0;
+        }
+        println!("recorded AI file changes (most recent last):");
+        for b in &batches {
+            let state = if b.reverted {
+                "reverted".dim().to_string()
+            } else {
+                "active".green().to_string()
+            };
+            println!(
+                "  {}  {} file(s)  [{}]  {}",
+                b.id,
+                b.files.len(),
+                state,
+                b.summary.as_str().dim()
+            );
+        }
+        return 0;
+    }
+    match aishe::undo::undo_last() {
+        Ok(Some(u)) => {
+            for f in &u.restored {
+                println!("{} {}", "restored".green(), f);
+            }
+            for e in &u.errors {
+                eprintln!("{} {}", "aishe undo:".red(), e);
+            }
+            if u.restored.is_empty() && u.errors.is_empty() {
+                println!("nothing to restore in the last change set");
+            }
+            if u.errors.is_empty() {
+                0
+            } else {
+                1
+            }
+        }
+        Ok(None) => {
+            println!("nothing to undo");
+            0
+        }
+        Err(e) => {
+            eprintln!("{}", format!("aishe: {e}").red());
             1
         }
     }

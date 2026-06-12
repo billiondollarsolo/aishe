@@ -22,10 +22,27 @@ aishe config                        print the active configuration
 aishe mcp                           list the MCP tools offered to yolo
 aishe commands                      list your custom slash-commands
 aishe skills                        list model-invoked skills
+aishe undo [--list]                 revert the most recent AI file change
 ```
 
 These are real subcommands, so they work the same in the interactive zsh-PTY
 shell, a plain shell, or a script.
+
+## Reversible AI file edits
+
+Every change the built-in file tools (`write_file` / `edit_file`) make in yolo is
+shown as a diff and recorded to a journal, so you can take it back:
+
+```sh
+aishe undo          # revert the most recent AI file change (a whole run, in reverse)
+aishe undo --list   # show recorded change sets and whether each is still active
+```
+
+All edits made in one aishe run share a batch, so a single `aishe undo` reverts
+that run as a unit — a file the model created and then edited ends up removed, back
+to its original state. The journal lives at `$XDG_DATA_HOME/aishe/undo.jsonl`
+(override with `$AISHE_UNDO_JOURNAL`). Journaling is best-effort and never blocks a
+write. See [Reversible edits](modes.md#reversible-edits) for details.
 
 ## Changing settings
 
