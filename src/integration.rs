@@ -328,7 +328,14 @@ __aishe_existing_exit_trap="$(trap -p EXIT)"
 case "$__aishe_existing_exit_trap" in
   *__aishe_cleanup*) ;;
   '') trap '__aishe_cleanup' EXIT ;;
-  *)  trap "__aishe_cleanup; ${__aishe_existing_exit_trap#trap -- \'}" EXIT ;;
+  *)  # Chain onto the existing EXIT trap. `trap -p` prints it wrapped as
+      # `trap -- '<cmds>' EXIT`; strip both the leading wrapper and the trailing
+      # `' EXIT` so we re-arm just `<cmds>` after our cleanup (a malformed trap
+      # results if the suffix is left on).
+      __aishe_prev="${__aishe_existing_exit_trap#trap -- \'}"
+      __aishe_prev="${__aishe_prev%\' EXIT}"
+      trap "__aishe_cleanup; ${__aishe_prev}" EXIT
+      unset __aishe_prev ;;
 esac
 unset __aishe_existing_exit_trap
 
@@ -435,6 +442,11 @@ mod tests {
         assert!(s.contains(
             r#"command rm -f "$AISHE_PENDING_FILE" "$AISHE_FORCE_FILE" "$AISHE_SESSION_FILE""#
         ));
+        // When chaining onto an existing EXIT trap, both the leading `trap -- '`
+        // wrapper and the trailing `' EXIT` that `trap -p` prints must be stripped,
+        // or the re-armed trap is malformed.
+        assert!(s.contains(r#"${__aishe_existing_exit_trap#trap -- \'}"#));
+        assert!(s.contains(r#"${__aishe_prev%\' EXIT}"#));
     }
 
     #[test]
