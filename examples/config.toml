@@ -43,10 +43,18 @@ yolo_confirm_dangerous = true
 #   all       = every command
 yolo_confirm = "dangerous"
 
-# Policy sandbox for yolo: refuse commands that reach the network or write outside
-# the working tree (the reason is fed back to the model). Best-effort, not a
-# kernel sandbox. Toggle live with `aishe sandbox on`.
+# Sandbox the yolo loop's commands. Toggle live with `aishe sandbox on`.
 yolo_sandbox = false
+
+# How yolo_sandbox is enforced:
+#   policy = best-effort string gate: refuse commands that reach the network or
+#            write outside the working tree (the reason is fed back to the model).
+#            Default. Not a kernel sandbox — can be evaded.
+#   bwrap  = real OS isolation via bubblewrap: the command runs with a read-only
+#            root, only the working tree and /tmp writable, so it *physically*
+#            cannot modify the system. Falls back to "policy" if bwrap isn't
+#            installed. (`aishe doctor` shows which is active.)
+sandbox_backend = "policy"
 
 # Maximum tool-use iterations for a single yolo request.
 max_yolo_iterations = 10

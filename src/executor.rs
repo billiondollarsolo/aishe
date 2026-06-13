@@ -61,6 +61,9 @@ pub struct Executor {
     jobs: Vec<Job>,
     /// Path to the timestamped history log read by the `history` builtin.
     history_log: Option<PathBuf>,
+    /// Optional wrapper argv (e.g. a `bwrap … --` prefix) prepended before the
+    /// shell in [`run_captured`], so a sandbox runs the command. Empty = none.
+    sandbox_wrap: Vec<String>,
 }
 
 impl Executor {
@@ -87,7 +90,14 @@ impl Executor {
             dir_stack: Vec::new(),
             jobs: Vec::new(),
             history_log: None,
+            sandbox_wrap: Vec::new(),
         })
+    }
+
+    /// Set (or clear, with an empty vec) the sandbox wrapper argv prepended before
+    /// the shell in [`run_captured`]. Used by the yolo loop's `bwrap` backend.
+    pub fn set_sandbox_wrap(&mut self, wrap: Vec<String>) {
+        self.sandbox_wrap = wrap;
     }
 
     /// Point the `history` builtin at the timestamped history log.
@@ -211,7 +221,16 @@ impl Executor {
     /// output is also streamed to the terminal as it arrives; when false it is
     /// captured silently (the caller decides what to show).
     pub fn run_captured(&mut self, line: &str, timeout: Duration, tee: bool) -> (i32, String) {
-        let mut cmd = Command::new(&self.shell);
+        // With a sandbox wrapper set, run `<wrapper…> -- <shell> -c <cmd>` so the
+        // command executes inside the sandbox; otherwise just `<shell> -c <cmd>`.
+        let mut cmd = if self.sandbox_wrap.is_empty() {
+            Command::new(&self.shell)
+        } else {
+            let mut c = Command::new(&self.sandbox_wrap[0]);
+            c.args(&self.sandbox_wrap[1..]);
+            c.arg(&self.shell);
+            c
+        };
         self.apply_rc(&mut cmd, line);
         // Run the shell in its own process group so a timeout (or completion)
         // can reap the *whole* process tree. Without this, `child.kill()` only
@@ -1024,6 +1043,22 @@ pub fn which(name: &str) -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sandbox_wrap_prefixes_the_shell() {
+        let mut e = Executor::new().unwrap();
+        // `env` is a transparent wrapper: `env <shell> -c <cmd>` runs the command,
+        // so this exercises the prefix wiring without needing bubblewrap.
+        e.set_sandbox_wrap(vec!["env".to_string()]);
+        let (code, out) = e.run_captured("echo SANDBOX_WRAP_OK", Duration::from_secs(10), false);
+        assert_eq!(code, 0, "{out}");
+        assert!(out.contains("SANDBOX_WRAP_OK"), "{out}");
+        // Clearing the wrapper restores normal execution.
+        e.set_sandbox_wrap(Vec::new());
+        let (code2, out2) = e.run_captured("echo PLAIN_OK", Duration::from_secs(10), false);
+        assert_eq!(code2, 0, "{out2}");
+        assert!(out2.contains("PLAIN_OK"), "{out2}");
+    }
 
     #[test]
     fn truncate_keeps_tail() {

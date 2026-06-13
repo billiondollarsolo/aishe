@@ -19,6 +19,75 @@
 use crate::config::Config;
 use crate::safety::{self, Risk};
 
+/// How yolo's `run_command` is sandboxed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Backend {
+    /// No sandbox (`yolo_sandbox = false`).
+    Off,
+    /// Best-effort policy gate ([`sandbox_refusal`]) — the default.
+    Policy,
+    /// Real OS isolation via `bubblewrap`: the command runs with a read-only root
+    /// and only the working tree (and `/tmp`) writable, so it *physically* cannot
+    /// modify the system. Falls back to [`Backend::Policy`] when `bwrap` is absent.
+    Bwrap,
+}
+
+/// Resolve the active sandbox backend from config: `yolo_sandbox` (on/off) plus
+/// `sandbox_backend` ("policy" | "bwrap"). A `bwrap` choice degrades to `Policy`
+/// when bubblewrap isn't installed (the caller warns once).
+pub fn backend(config: &Config) -> Backend {
+    if !config.aishe.yolo_sandbox {
+        return Backend::Off;
+    }
+    match config.aishe.sandbox_backend.as_str() {
+        "bwrap" if bwrap_available() => Backend::Bwrap,
+        "bwrap" => Backend::Policy, // requested but unavailable → degrade
+        _ => Backend::Policy,
+    }
+}
+
+/// Whether `bwrap` is requested but unavailable (so the caller can warn once).
+pub fn bwrap_requested_but_missing(config: &Config) -> bool {
+    config.aishe.yolo_sandbox && config.aishe.sandbox_backend == "bwrap" && !bwrap_available()
+}
+
+/// Whether `bubblewrap` (`bwrap`) is on `$PATH`.
+pub fn bwrap_available() -> bool {
+    crate::executor::which("bwrap").is_some()
+}
+
+/// The `bwrap` wrapper argv (without the trailing shell): a read-only root with
+/// the working tree and `/tmp` writable, a private `/dev` and `/proc`, started in
+/// `cwd`, and dying with the parent. Ends with `--`, so the executor appends the
+/// shell + `-c <command>`. Network is left intact (reads/lookups still work); the
+/// guarantee is that writes can't escape the working tree.
+pub fn bwrap_wrap_argv(cwd: &std::path::Path) -> Vec<String> {
+    let cwd = cwd.display().to_string();
+    [
+        "bwrap",
+        "--ro-bind",
+        "/",
+        "/", // everything read-only …
+        "--bind",
+        "/tmp",
+        "/tmp", // … except a writable /tmp …
+        "--bind",
+        &cwd,
+        &cwd, // … and the working tree.
+        "--dev",
+        "/dev",
+        "--proc",
+        "/proc",
+        "--chdir",
+        &cwd,
+        "--die-with-parent",
+        "--",
+    ]
+    .iter()
+    .map(|s| s.to_string())
+    .collect()
+}
+
 /// When the yolo loop pauses to confirm a `run_command` call.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Tier {
@@ -483,6 +552,38 @@ fn unquote(t: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn backend_selection() {
+        let mut c = Config::default();
+        c.aishe.yolo_sandbox = false;
+        assert_eq!(backend(&c), Backend::Off);
+        c.aishe.yolo_sandbox = true;
+        c.aishe.sandbox_backend = "policy".to_string();
+        assert_eq!(backend(&c), Backend::Policy);
+        // "bwrap" resolves to Bwrap when installed, else degrades to Policy.
+        c.aishe.sandbox_backend = "bwrap".to_string();
+        let expected = if bwrap_available() {
+            Backend::Bwrap
+        } else {
+            Backend::Policy
+        };
+        assert_eq!(backend(&c), expected);
+        assert_eq!(bwrap_requested_but_missing(&c), !bwrap_available());
+    }
+
+    #[test]
+    fn bwrap_argv_shape() {
+        let argv = bwrap_wrap_argv(std::path::Path::new("/home/me/proj"));
+        assert_eq!(argv[0], "bwrap");
+        assert!(argv.contains(&"--ro-bind".to_string()));
+        // the working tree is bound writable and is the chdir target
+        assert!(argv
+            .windows(3)
+            .any(|w| w == ["--bind", "/home/me/proj", "/home/me/proj"]));
+        assert!(argv.windows(2).any(|w| w == ["--chdir", "/home/me/proj"]));
+        assert_eq!(argv.last().unwrap(), "--"); // shell is appended after
+    }
 
     fn cfg_with(confirm: &str, dangerous: bool) -> Config {
         let mut c = Config::default();

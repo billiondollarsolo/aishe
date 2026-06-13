@@ -95,6 +95,23 @@ does not look like the patterns above. It also does **not** affect the zsh-PTY /
 real-shell front-end paths (those run your own typed commands, not model tool
 calls). It is one more guardrail for an autonomous loop, not a security boundary.
 
+### A real sandbox: `sandbox_backend = "bwrap"`
+
+For genuine isolation, set `sandbox_backend = "bwrap"` (with `yolo_sandbox =
+true`). When [bubblewrap](https://github.com/containers/bubblewrap) (`bwrap`) is
+installed, every `run_command` then runs with a **read-only root** and only the
+**working tree** and `/tmp` writable — so a yolo command *physically cannot*
+modify the system (`/etc`, `/usr`, your home), no matter how it's written. This
+replaces the advisory policy check above with OS-enforced isolation. Network is
+left intact (reads and lookups still work); the guarantee is that **writes can't
+escape the working tree**, which is the damage that matters.
+
+If `bwrap` isn't installed, aishe degrades to the policy gate and says so (`aishe
+doctor` shows which backend is active). The bwrap backend is Linux-only; on macOS,
+use the policy backend. (Because the root is read-only, commands that install
+system packages will fail inside it — that's the point; run those outside the
+sandbox or with the policy backend.)
+
 ## Defense-in-depth, not a sandbox
 
 The destructive-command gate is conservative pattern plus path-aware matching. It

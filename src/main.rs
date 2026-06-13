@@ -623,6 +623,20 @@ fn doctor() -> u8 {
             cfg.aishe.provider_fallback.join(" → ")
         );
     }
+    // Yolo sandbox backend.
+    if cfg.aishe.yolo_sandbox {
+        if cfg.aishe.sandbox_backend == "bwrap" {
+            if aishe::sandbox::bwrap_available() {
+                println!("{ok} yolo sandbox: bwrap (OS isolation: read-only root)");
+            } else {
+                println!(
+                    "{warn} yolo sandbox: bwrap requested but bubblewrap not installed — using policy"
+                );
+            }
+        } else {
+            println!("{ok} yolo sandbox: policy (best-effort gate)");
+        }
+    }
     let key_set = std::env::var(key_env)
         .map(|v| !v.trim().is_empty())
         .unwrap_or(false);

@@ -112,6 +112,12 @@ pub struct AisheConfig {
     /// kernel sandbox. Off by default. Toggle with `aishe sandbox on`.
     #[serde(default)]
     pub yolo_sandbox: bool,
+    /// How `yolo_sandbox` is enforced: "policy" (best-effort string gate, the
+    /// default) or "bwrap" (real OS isolation via bubblewrap — read-only root,
+    /// only the working tree and /tmp writable; falls back to policy if bwrap
+    /// isn't installed).
+    #[serde(default = "default_sandbox_backend")]
+    pub sandbox_backend: String,
     #[serde(default = "default_max_iters")]
     pub max_yolo_iterations: u32,
     /// Plan-first (dry run): before the yolo loop runs anything, ask the model
@@ -237,6 +243,9 @@ fn default_max_iters() -> u32 {
 fn default_yolo_confirm() -> String {
     crate::sandbox::DEFAULT_CONFIRM.to_string()
 }
+fn default_sandbox_backend() -> String {
+    "policy".to_string()
+}
 fn default_cache_ttl() -> u64 {
     300
 }
@@ -269,6 +278,7 @@ impl Default for AisheConfig {
             yolo_confirm_dangerous: true,
             yolo_confirm: default_yolo_confirm(),
             yolo_sandbox: false,
+            sandbox_backend: default_sandbox_backend(),
             max_yolo_iterations: default_max_iters(),
             yolo_plan: false,
             yolo_verbose: false,
@@ -639,7 +649,8 @@ fn aishe_key_is_sensitive(key: &str, value: &toml::Value) -> bool {
         | "redact_secrets"
         | "yolo_confirm"
         | "yolo_confirm_dangerous"
-        | "yolo_sandbox" => true,
+        | "yolo_sandbox"
+        | "sandbox_backend" => true,
         "mode" => value.as_str() == Some("yolo"),
         _ => false,
     }

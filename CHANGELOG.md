@@ -6,6 +6,16 @@ breaking changes can land in any release.
 
 ## [Unreleased]
 
+### Added
+- **Real OS sandbox for yolo (`sandbox_backend = "bwrap"`).** With
+  `yolo_sandbox = true`, choose how it's enforced: `"policy"` (the best-effort
+  string gate, default) or `"bwrap"` — when [bubblewrap](https://github.com/containers/bubblewrap)
+  is installed, every `run_command` runs with a read-only root and only the working
+  tree and `/tmp` writable, so it *physically cannot* modify the system. Degrades
+  to the policy gate (with a notice) when `bwrap` is absent; `aishe doctor` shows
+  the active backend. Linux-only. This is proposal R2 from
+  [docs/proposals.md](docs/proposals.md).
+
 ## [0.2.8] - 2026-06-12
 
 ### Changed

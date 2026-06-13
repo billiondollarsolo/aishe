@@ -66,6 +66,17 @@ fn run_loop(
     // tools are confirmed whenever the tier is not "never".
     let tier = sandbox::confirm_tier(config);
     let confirm_writes = tier != Tier::Never;
+    // Sandbox backend (Off / Policy gate / bwrap OS isolation). A `bwrap` request
+    // with bubblewrap missing degrades to the policy gate — warn once.
+    let sandbox_backend = sandbox::backend(config);
+    if sandbox::bwrap_requested_but_missing(config) {
+        eprintln!(
+            "{}",
+            "aishe: sandbox_backend=\"bwrap\" but bubblewrap (bwrap) isn't installed; \
+             using the best-effort policy sandbox instead."
+                .yellow()
+        );
+    }
     // Tools: always run_command; the built-in file tools when enabled; use_skill
     // when skills exist.
     let mut tools = vec![run_command_tool()];
@@ -282,9 +293,11 @@ fn run_loop(
                 continue;
             }
 
-            // Sandbox: refuse network access / out-of-tree writes before running,
-            // feeding the reason back to the model so it can adapt.
-            if config.aishe.yolo_sandbox {
+            // Policy sandbox: refuse network access / out-of-tree writes before
+            // running, feeding the reason back to the model so it can adapt. The
+            // bwrap backend enforces isolation at run time instead, so it does not
+            // pre-refuse here.
+            if sandbox_backend == sandbox::Backend::Policy {
                 if let Some(reason) = sandbox::sandbox_refusal(&command) {
                     println!("  {} {}", "⛔".red(), reason.as_str().yellow());
                     crate::audit::action("yolo:sandbox-refused", &command, None);
@@ -316,6 +329,12 @@ fn run_loop(
                 }
             }
 
+            // bwrap backend: run this command inside a sandbox (read-only root,
+            // writable working tree). Recomputed each time so it tracks the cwd.
+            if sandbox_backend == sandbox::Backend::Bwrap {
+                let wrap = sandbox::bwrap_wrap_argv(executor.cwd());
+                executor.set_sandbox_wrap(wrap);
+            }
             let verbose = config.aishe.yolo_verbose;
             let (code, output) = executor.run_captured(&command, DEFAULT_CAPTURE_TIMEOUT, verbose);
             // Quiet by default: the model still gets the full output, but the
