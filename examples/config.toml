@@ -104,6 +104,13 @@ embedding_model = "text-embedding-3-small"
 # semantic_history.
 semantic_history_autoindex = false
 
+# Give the fix-the-last-command key (Ctrl-X Ctrl-F) the failed command's actual
+# error output: when on, a read-only, safe failed command is re-run once (bounded
+# by a timeout) to capture its stderr, which is fed into the correction prompt for
+# a better fix. Off by default; only read-only commands are ever re-run, so a
+# destructive or network command is never re-executed.
+fix_capture_stderr = false
+
 # zsh AUTO_PUSHD for aishe's in-process `cd` (the `-c` and shell-hook paths):
 # every `cd` pushes the previous directory onto the stack. Navigate with
 # `cd -N` / `cd +N`, list with `dirs -v`.

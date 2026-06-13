@@ -68,6 +68,13 @@ command; it's pre-filled on the line for review and never auto-runs. Override th
 key with `AISHE_FIX_KEY` (a zsh `bindkey` sequence). Set `AISHE_AUTODIAGNOSE=1` to
 have the prompt hint at it after a non-zero exit.
 
+For sharper fixes, set `fix_capture_stderr = true`: aishe then re-runs the failed
+command once to capture its **actual error output** ("unknown option", "no such
+file", "not a git repository") and feeds that into the correction prompt. Only
+commands the safety gate deems read-only and safe are re-run (bounded by a
+timeout), so a destructive or network command is never re-executed — and the
+diagnostic run doesn't touch your recorded history.
+
 ### semantic-recall keybinding
 
 With [semantic history search](#semantic-history-search-opt-in) enabled, type a

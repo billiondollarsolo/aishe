@@ -6,6 +6,20 @@ breaking changes can land in any release.
 
 ## [Unreleased]
 
+## [0.2.18] - 2026-06-13
+
+### Added
+- **Stderr context for the fix key (`fix_capture_stderr`).** When on, the
+  fix-the-last-command key (Ctrl-X Ctrl-F) re-runs a *read-only, safe* failed
+  command once to capture its actual error output and feeds it into the correction
+  prompt, so the model fixes the real error ("unknown option", "no such file",
+  "not a git repository") rather than guessing from the command text. Off by
+  default; only commands the safety gate classifies read-only and safe are ever
+  re-run (bounded by a timeout), so a destructive or network command is never
+  re-executed, and the diagnostic run uses a throwaway executor that doesn't touch
+  recorded history. The fix widget now delegates to a tested `--fix-line` hook
+  helper (`src/fix.rs`). This is the stderr-tail follow-up to proposal N1.
+
 ## [0.2.17] - 2026-06-13
 
 ### Added

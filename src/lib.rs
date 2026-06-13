@@ -9,6 +9,7 @@ pub mod config;
 pub mod context;
 pub mod dispatcher;
 pub mod executor;
+pub mod fix;
 pub mod fuzzy;
 pub mod histlog;
 pub mod index;

@@ -110,6 +110,10 @@ struct Args {
     /// dangerous (caller pre-fills it for review).
     #[arg(long, hide = true)]
     auto_line: Option<String>,
+    /// (shell hook) Fix-the-last-command: given the failed command, print a
+    /// corrected one. Reads the exit status from `$AISHE_LAST_EXIT`.
+    #[arg(long, hide = true)]
+    fix_line: Option<String>,
     #[command(subcommand)]
     cmd: Option<Cmd>,
 }
@@ -413,6 +417,7 @@ fn run() -> Result<u8> {
         && args.suggest_line.is_none()
         && args.yolo_line.is_none()
         && args.auto_line.is_none()
+        && args.fix_line.is_none()
         && std::io::stdin().is_terminal();
     if interactive_entry {
         notify_project_overlay(&project_overlay);
@@ -427,7 +432,8 @@ fn run() -> Result<u8> {
     let non_interactive = args.command.is_some()
         || args.suggest_line.is_some()
         || args.yolo_line.is_some()
-        || args.auto_line.is_some();
+        || args.auto_line.is_some()
+        || args.fix_line.is_some();
 
     // The interactive shell is the zsh-PTY front-end: it drives the user's real
     // zsh, with the AI injected via a command_not_found hook, so zsh is required.
@@ -505,6 +511,11 @@ fn run() -> Result<u8> {
     }
     if let Some(line) = args.auto_line {
         let code = auto_line(&line, &mut executor, provider.as_deref(), &config)?;
+        record_session_usage(provider.as_deref(), &config);
+        return Ok(code);
+    }
+    if let Some(cmd) = args.fix_line {
+        let code = fix_line(&cmd, &mut executor, provider.as_deref(), &config)?;
         record_session_usage(provider.as_deref(), &config);
         return Ok(code);
     }
@@ -872,6 +883,62 @@ fn suggest_line(
         session.record_user(line);
         session.record_assistant(&reply);
         session.save_persisted(path);
+    }
+    Ok(0)
+}
+
+/// Shell-hook helper for the fix-the-last-command key: given the failed command
+/// (and `$AISHE_LAST_EXIT`), ask the model for a corrected command and print it
+/// for the widget to pre-fill. With `fix_capture_stderr`, a read-only safe
+/// command is re-run once to capture its error output for a better fix.
+fn fix_line(
+    cmd: &str,
+    executor: &mut Executor,
+    provider: Option<&dyn Provider>,
+    config: &Config,
+) -> Result<u8> {
+    let Some(p) = provider else {
+        eprintln!("aishe: LLM not configured");
+        return Ok(1);
+    };
+    let exit = std::env::var("AISHE_LAST_EXIT").unwrap_or_else(|_| "unknown".to_string());
+    let ctx = aishe::fix::error_context(cmd, config.aishe.fix_capture_stderr);
+    let prompt = aishe::fix::build_prompt(cmd, &exit, ctx.as_deref());
+
+    arm_hook_budget();
+    let suggestion = modes::suggest::request(&prompt, p, executor, config, Vec::new())?;
+    cancel_hook_budget();
+    match suggestion {
+        // A runnable corrected command: print to stdout for the widget to pre-fill.
+        modes::suggest::Suggestion::Command {
+            command,
+            explanation,
+        } if shell_syntax_ok(executor, &command) => {
+            if !explanation.is_empty() {
+                eprintln!("{}", explanation.as_str().dim());
+            }
+            println!("{command}");
+        }
+        // Prose (not valid shell) — show it on stderr, print nothing to stdout so
+        // the widget doesn't pre-fill a non-command.
+        modes::suggest::Suggestion::Command {
+            command,
+            explanation,
+        } => {
+            let answer = if explanation.is_empty() {
+                command
+            } else {
+                explanation
+            };
+            if !answer.is_empty() {
+                eprintln!("{answer}");
+            }
+        }
+        modes::suggest::Suggestion::Answer { explanation } => {
+            if !explanation.is_empty() {
+                eprintln!("{explanation}");
+            }
+        }
     }
     Ok(0)
 }

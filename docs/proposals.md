@@ -307,7 +307,7 @@ Sysadmins want "what did the AI do on this box, and what did it cost."
 
 ## N1 — Error-driven autopilot (fix-the-last-command)
 
-**Track:** Noteworthy · **Priority:** P1 · **Effort:** M · **Risk:** Low · **Depends on:** — · **Status: Shipped (v1)** — Ctrl-X Ctrl-F fix key (zsh + bash) with last-command/exit capture and an opt-in `AISHE_AUTODIAGNOSE` hint, reusing `--suggest-line` + the hook budget (`src/integration.rs`). Stderr-tail context is a follow-up.
+**Track:** Noteworthy · **Priority:** P1 · **Effort:** M · **Risk:** Low · **Depends on:** — · **Status: Shipped (v1)** — Ctrl-X Ctrl-F fix key (zsh + bash) with last-command/exit capture and an opt-in `AISHE_AUTODIAGNOSE` hint, reusing `--suggest-line` + the hook budget (`src/integration.rs`). 0.2.18 added **stderr-tail context** (`fix_capture_stderr`): the fix key re-runs a read-only, safe failed command once to capture its real error output for the correction prompt (`src/fix.rs`, a tested `--fix-line` hook helper); destructive/network commands are never re-run. No remaining follow-ups.
 
 ### Problem
 The stickiest daily-driver loop is not "translate English → command," it is *"my

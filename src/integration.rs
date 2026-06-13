@@ -190,7 +190,10 @@ aishe-fix-command() {
   fi
   zle -M "aishe: asking for a fix…"
   local fix
-  fix="$(command aishe --suggest-line "The previous shell command failed with exit status ${AISHE_LAST_EXIT}. Command: ${AISHE_LAST_CMD}. Reply with a corrected shell command." 2>/dev/null)"
+  # --fix-line builds the correction prompt (and, with fix_capture_stderr, re-runs
+  # a read-only failed command to capture its real error output). Pass the exit
+  # status through the environment.
+  fix="$(AISHE_LAST_EXIT="$AISHE_LAST_EXIT" command aishe --fix-line "$AISHE_LAST_CMD" 2>/dev/null)"
   if [[ -n "$fix" ]]; then
     BUFFER="$fix"
     CURSOR=${#BUFFER}
@@ -526,7 +529,8 @@ mod tests {
         assert!(s.contains("aishe-fix-command"));
         assert!(s.contains("zle -N aishe-fix-command"));
         assert!(s.contains("${AISHE_FIX_KEY:-^X^F}"));
-        assert!(s.contains("--suggest-line"));
+        // The fix widget delegates to the `--fix-line` hook helper.
+        assert!(s.contains("--fix-line"));
         // Opt-in ambient hint after a failure.
         assert!(s.contains("AISHE_AUTODIAGNOSE"));
     }

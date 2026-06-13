@@ -110,6 +110,28 @@ fn dash_c_commands_are_recorded_in_history() {
 }
 
 #[test]
+fn fix_line_prints_a_corrected_command() {
+    // The fix-the-last-command hook returns a corrected command for the widget to
+    // pre-fill. With fix_capture_stderr on, a read-only failed command is re-run
+    // to capture its error (here the fake model just echoes a fixed command).
+    let home = temp_config_home();
+    Command::cargo_bin("aishe")
+        .unwrap()
+        .env("XDG_CONFIG_HOME", &home)
+        .env("XDG_DATA_HOME", home.join("data"))
+        .env("ANTHROPIC_API_KEY", "sk-test")
+        .env("AISHE_LAST_EXIT", "2")
+        .env(
+            "AISHE_FAKE_LLM",
+            r#"{"type":"command","command":"ls -la /tmp","explanation":"fixed"}"#,
+        )
+        .args(["--fix-line", "ls /nonexistent-aishe-xyz"])
+        .assert()
+        .success()
+        .stdout(contains("ls -la /tmp"));
+}
+
+#[test]
 fn dash_c_runs_forced_shell_command() {
     let home = temp_config_home();
     Command::cargo_bin("aishe")

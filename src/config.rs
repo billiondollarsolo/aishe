@@ -192,6 +192,13 @@ pub struct AisheConfig {
     /// metered on a paid API). Requires `semantic_history`.
     #[serde(default)]
     pub semantic_history_autoindex: bool,
+    /// Give the fix-the-last-command key (Ctrl-X Ctrl-F) the failed command's
+    /// actual error output. When on, a *read-only, safe* failed command is re-run
+    /// once (bounded by a timeout) to capture its stderr, which is fed into the
+    /// correction prompt for a better fix. Off by default; only read-only commands
+    /// are ever re-run, so a destructive or network command is never re-executed.
+    #[serde(default)]
+    pub fix_capture_stderr: bool,
     /// In the zsh-PTY front-end, override the prompt with aishe's branded prompt
     /// (`<cwd> <glyph>`, glyph per mode) so it's obvious you're in aishe. On by
     /// default; set false to keep your real zsh prompt untouched.
@@ -327,6 +334,7 @@ impl Default for AisheConfig {
             embedding_model: default_embedding_model(),
             embedding_provider: String::new(),
             semantic_history_autoindex: false,
+            fix_capture_stderr: false,
             pty_prompt: true,
             auto_pushd: false,
             cdpath: Vec::new(),
