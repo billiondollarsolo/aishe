@@ -93,3 +93,46 @@ fn dry_run_apply_writes_the_changes() {
     );
     std::fs::remove_dir_all(cfg.parent().unwrap()).ok();
 }
+
+#[test]
+fn dry_run_apply_is_undoable() {
+    if !bwrap_available() {
+        eprintln!("SKIP: bubblewrap not installed");
+        return;
+    }
+    let (cfg, work) = setup("undo");
+    let data = cfg.join("data");
+    let run = |args: &[&str]| {
+        Command::cargo_bin("aishe")
+            .unwrap()
+            .env("XDG_CONFIG_HOME", &cfg)
+            .env("XDG_DATA_HOME", &data)
+            .current_dir(&work)
+            .args(args)
+            .assert()
+            .success();
+    };
+    // Apply a change set (modify + add), then revert it with `aishe undo`.
+    run(&[
+        "dry-run",
+        "--apply",
+        "echo v2 > config.ini; echo hi > new.txt",
+    ]);
+    assert_eq!(
+        std::fs::read_to_string(work.join("config.ini")).unwrap(),
+        "v2\n"
+    );
+    assert!(work.join("new.txt").exists());
+
+    run(&["undo"]);
+    assert_eq!(
+        std::fs::read_to_string(work.join("config.ini")).unwrap(),
+        "v1\n",
+        "undo restores the modified file"
+    );
+    assert!(
+        !work.join("new.txt").exists(),
+        "undo removes the added file"
+    );
+    std::fs::remove_dir_all(cfg.parent().unwrap()).ok();
+}

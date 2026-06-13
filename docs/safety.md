@@ -127,7 +127,7 @@ command really executes but its writes are confined to the copy and it has no
 external side effects. aishe then diffs the copy against the real tree and prints
 the added / modified / deleted files with unified diffs. By default the changes
 are **discarded** (nothing was touched); pass `--apply` to copy them onto the real
-tree.
+tree. An applied dry-run is journaled, so `aishe undo` reverts the whole batch.
 
 Notes: it needs `bubblewrap` (`aishe doctor` shows availability) and is Linux-only.
 Because there's no kernel overlay it copies the tree, so a very large tree (or a

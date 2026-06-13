@@ -6,6 +6,14 @@ breaking changes can land in any release.
 
 ## [Unreleased]
 
+## [0.2.20] - 2026-06-13
+
+### Added
+- **`aishe dry-run --apply` is now undoable.** Applying a previewed change set
+  journals each file's pre-image, so `aishe undo` reverts the whole batch — closing
+  the **preview → apply → undo** loop. Binary changes still apply but aren't
+  undoable (the text journal can't store them), matching the file tools.
+
 ## [0.2.19] - 2026-06-13
 
 ### Added

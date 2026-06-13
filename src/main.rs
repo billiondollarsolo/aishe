@@ -1471,12 +1471,31 @@ fn dry_run_command(command: &str, apply: bool) -> Result<u8> {
         print_change(c);
     }
     if apply {
+        // Journal each file's pre-image before applying, so the whole batch is
+        // reversible with `aishe undo`. Binary content can't be stored in the
+        // text journal, so those changes apply but aren't undoable (mirrors the
+        // file tools).
+        for c in &changes {
+            let dest = cwd.join(&c.rel);
+            let summary = format!("dry-run apply: {}", c.rel);
+            match c.kind {
+                aishe::overlay::ChangeKind::Added => {
+                    aishe::undo::record(&dest, false, None, "dry_run", &summary)
+                }
+                aishe::overlay::ChangeKind::Modified | aishe::overlay::ChangeKind::Deleted => {
+                    if let Ok(before) = std::fs::read_to_string(&dest) {
+                        aishe::undo::record(&dest, true, Some(before), "dry_run", &summary);
+                    }
+                }
+            }
+        }
         let failed = aishe::overlay::apply(&cwd, &staging, &changes);
         if failed.is_empty() {
             println!(
-                "\n{} applied {} change(s) to the working tree.",
+                "\n{} applied {} change(s) to the working tree ({} to revert).",
                 "✓".green(),
-                changes.len()
+                changes.len(),
+                "aishe undo".bold()
             );
         } else {
             println!(
