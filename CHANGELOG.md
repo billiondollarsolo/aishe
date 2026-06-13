@@ -6,6 +6,8 @@ breaking changes can land in any release.
 
 ## [Unreleased]
 
+## [0.2.9] - 2026-06-13
+
 ### Added
 - **Real OS sandbox for yolo (`sandbox_backend = "bwrap"`).** With
   `yolo_sandbox = true`, choose how it's enforced: `"policy"` (the best-effort
