@@ -369,6 +369,32 @@ impl Provider for OpenAiProvider {
         Ok(full)
     }
 
+    fn embed(&self, texts: &[String], model: &str) -> Result<Vec<Vec<f32>>, ProviderError> {
+        if texts.is_empty() {
+            return Ok(Vec::new());
+        }
+        let url = format!("{}/v1/embeddings", self.base_url);
+        let body = json!({ "model": model, "input": texts });
+        let resp = post_with_retry(&url, &self.api_key, &body)?;
+        let data = resp
+            .get("data")
+            .and_then(|d| d.as_array())
+            .ok_or_else(|| ProviderError::Parse("embeddings response missing data[]".into()))?;
+        let mut out = Vec::with_capacity(data.len());
+        for item in data {
+            let v = item
+                .get("embedding")
+                .and_then(|e| e.as_array())
+                .ok_or_else(|| ProviderError::Parse("embedding entry missing vector".into()))?;
+            out.push(
+                v.iter()
+                    .filter_map(|x| x.as_f64().map(|f| f as f32))
+                    .collect(),
+            );
+        }
+        Ok(out)
+    }
+
     fn meter(&self) -> Arc<UsageMeter> {
         Arc::clone(&self.meter)
     }

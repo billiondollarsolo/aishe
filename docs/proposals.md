@@ -33,6 +33,10 @@ Two tracks:
 A natural build order: **R1 → N1 → R5 → R4 → N3 → R3 → R2 → N2 → N5 → N4**. R1 and
 N1 are the highest trust-and-stickiness per unit of effort and unlock the rest.
 
+**Status: all ten proposals have shipped a v1** (each released as its own minor
+version). The per-proposal "Status" notes below record what landed and which
+refinements remain as follow-ups.
+
 ---
 
 ## R1 — Transactional file edits + `aishe undo`
@@ -437,7 +441,7 @@ actually installed on *this* host.
 
 ## N4 — Semantic history search
 
-**Track:** Noteworthy · **Priority:** P3 · **Effort:** L · **Risk:** Med · **Depends on:** R4 (embeddings)
+**Track:** Noteworthy · **Priority:** P3 · **Effort:** L · **Risk:** Med · **Depends on:** R4 (embeddings) · **Status: Shipped (v1)** — An `embed` capability was added to the provider trait (OpenAI-compatible `/v1/embeddings` impl; a deterministic bag-of-words fake for tests). `aishe history index` embeds history-log commands into a capped, rebuildable on-disk vector store (`src/semhist.rs`, `history.vec`) — incrementally by default, `--rebuild` from scratch — and `aishe history search "<q>"` returns cosine-top-k matches. Fully offline-capable via a local Ollama `embedding_provider`; opt-in (`semantic_history`) and silent when off (no embedding without an explicit index). The **interactive pre-fill key binding** (`?`-prefix / ZLE widget) and **idle-time background indexing** remain follow-ups; today you index explicitly.
 
 ### Problem
 aishe keeps a timestamped history (`src/histlog.rs`, zsh `EXTENDED_HISTORY`

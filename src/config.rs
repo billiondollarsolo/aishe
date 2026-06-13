@@ -168,6 +168,23 @@ pub struct AisheConfig {
     /// docs (HTTP GET, HTML stripped to text, size-capped). On by default.
     #[serde(default = "default_true")]
     pub web_tool: bool,
+    /// Opt-in semantic history search (`aishe history search "<query>"`). When on,
+    /// `aishe history index` embeds your shell-history commands into a local vector
+    /// store (`history.vec`) so you can recall past commands by meaning. Off by
+    /// default; nothing is embedded until you explicitly index, which sends those
+    /// commands to the embedding provider.
+    #[serde(default)]
+    pub semantic_history: bool,
+    /// Embedding model used for `semantic_history`. Must be served by the embedding
+    /// provider over an OpenAI-compatible `/v1/embeddings` endpoint — e.g.
+    /// `text-embedding-3-small` (OpenAI) or `nomic-embed-text` (local Ollama).
+    #[serde(default = "default_embedding_model")]
+    pub embedding_model: String,
+    /// Which configured provider block serves embeddings. `anthropic` has no
+    /// embeddings endpoint, so point this at `openai` or a local Ollama block.
+    /// Empty = use the active `provider`.
+    #[serde(default)]
+    pub embedding_provider: String,
     /// In the zsh-PTY front-end, override the prompt with aishe's branded prompt
     /// (`<cwd> <glyph>`, glyph per mode) so it's obvious you're in aishe. On by
     /// default; set false to keep your real zsh prompt untouched.
@@ -255,6 +272,9 @@ fn default_sandbox_backend() -> String {
 fn default_cache_ttl() -> u64 {
     300
 }
+fn default_embedding_model() -> String {
+    "text-embedding-3-small".to_string()
+}
 fn default_structured() -> String {
     "schema".to_string()
 }
@@ -296,6 +316,9 @@ impl Default for AisheConfig {
             cache_ttl_secs: default_cache_ttl(),
             file_tools: true,
             web_tool: true,
+            semantic_history: false,
+            embedding_model: default_embedding_model(),
+            embedding_provider: String::new(),
             pty_prompt: true,
             auto_pushd: false,
             cdpath: Vec::new(),
@@ -657,7 +680,9 @@ fn aishe_key_is_sensitive(key: &str, value: &toml::Value) -> bool {
         | "yolo_confirm"
         | "yolo_confirm_dangerous"
         | "yolo_sandbox"
-        | "sandbox_backend" => true,
+        | "sandbox_backend"
+        | "semantic_history"
+        | "embedding_provider" => true,
         "mode" => value.as_str() == Some("yolo"),
         _ => false,
     }

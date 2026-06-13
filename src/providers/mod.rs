@@ -142,6 +142,20 @@ pub trait Provider: Send + Sync {
         Ok(completion)
     }
 
+    /// Embed each text into a dense vector using the named embedding `model`,
+    /// returning one vector per input (same order). Used by semantic history
+    /// search. The default returns an error: only providers with an embeddings
+    /// endpoint (OpenAI-compatible `/v1/embeddings`) support it.
+    fn embed(&self, _texts: &[String], _model: &str) -> Result<Vec<Vec<f32>>, ProviderError> {
+        Err(ProviderError::Api {
+            status: 0,
+            message: "this provider has no embeddings endpoint \
+                      (set `embedding_provider` to an OpenAI-compatible block, \
+                      e.g. openai or a local Ollama)"
+                .into(),
+        })
+    }
+
     /// The shared token meter this provider records usage into. Callers read it
     /// for cost display and budget enforcement.
     fn meter(&self) -> std::sync::Arc<crate::usage::UsageMeter>;
@@ -302,11 +316,8 @@ pub fn make(config: &Config) -> Result<std::sync::Arc<dyn Provider>> {
     use std::sync::Arc;
     // Test hook: a deterministic fake provider (no network, no API key) when
     // AISHE_FAKE_LLM[_FILE] is set. Inert otherwise.
-    let fake_resp = std::env::var(fake::ENV)
-        .ok()
-        .or_else(|| std::env::var(fake::ENV_FILE).ok().map(|_| String::new()));
-    if let Some(resp) = fake_resp {
-        return Ok(Arc::new(fake::FakeProvider::new(resp)));
+    if let Some(p) = fake_from_env() {
+        return Ok(p);
     }
     // Primary provider (errors if its key is missing — same as before).
     let primary = build_one(config, &config.aishe.provider)?;
@@ -339,6 +350,31 @@ pub fn make(config: &Config) -> Result<std::sync::Arc<dyn Provider>> {
     } else {
         Ok(inner)
     }
+}
+
+/// The deterministic fake provider when `AISHE_FAKE_LLM[_FILE]` is set (no
+/// network, no API key); `None` otherwise. Shared by `make` and `embedder`.
+fn fake_from_env() -> Option<std::sync::Arc<dyn Provider>> {
+    let resp = std::env::var(fake::ENV)
+        .ok()
+        .or_else(|| std::env::var(fake::ENV_FILE).ok().map(|_| String::new()))?;
+    Some(std::sync::Arc::new(fake::FakeProvider::new(resp)))
+}
+
+/// Build a provider to serve embeddings for semantic history search: the block
+/// named by `embedding_provider`, or the active `provider` when that is empty.
+/// Honors the fake-provider test hook. Errors if the block is unknown or its API
+/// key is missing.
+pub fn embedder(config: &Config) -> Result<std::sync::Arc<dyn Provider>> {
+    if let Some(p) = fake_from_env() {
+        return Ok(p);
+    }
+    let name = if config.aishe.embedding_provider.trim().is_empty() {
+        config.aishe.provider.as_str()
+    } else {
+        config.aishe.embedding_provider.as_str()
+    };
+    build_one(config, name)
 }
 
 /// Build one provider by name from its configured block. Errors if the name is

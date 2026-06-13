@@ -68,7 +68,52 @@ impl Provider for FakeProvider {
         })
     }
 
+    fn embed(&self, texts: &[String], _model: &str) -> Result<Vec<Vec<f32>>, ProviderError> {
+        Ok(texts.iter().map(|t| fake_embed(t)).collect())
+    }
+
     fn meter(&self) -> Arc<UsageMeter> {
         self.meter.clone()
+    }
+}
+
+/// Dimensionality of the fake embedding (small but enough to keep token
+/// collisions rare for short commands).
+const FAKE_DIM: usize = 256;
+
+/// A deterministic bag-of-words embedding: each whitespace token is hashed (FNV-1a)
+/// into one dimension and counted. Commands that share words land near each other,
+/// so cosine similarity reflects lexical overlap — enough for tests to assert a
+/// meaningful, reproducible ranking without any network or real embedder.
+pub(crate) fn fake_embed(text: &str) -> Vec<f32> {
+    let mut v = vec![0f32; FAKE_DIM];
+    for tok in text.split_whitespace() {
+        let mut h: u64 = 0xcbf29ce484222325; // FNV-1a offset basis
+        for b in tok.to_ascii_lowercase().bytes() {
+            h ^= b as u64;
+            h = h.wrapping_mul(0x100000001b3);
+        }
+        v[(h as usize) % FAKE_DIM] += 1.0;
+    }
+    v
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn fake_embed_is_deterministic_and_overlap_sensitive() {
+        let a = fake_embed("docker run -v /data prometheus");
+        let b = fake_embed("docker run -v /data prometheus");
+        assert_eq!(a, b, "same text → same vector");
+        let shared = fake_embed("docker prometheus volume");
+        let unrelated = fake_embed("git commit message");
+        let sim_shared = crate::semhist::cosine(&a, &shared);
+        let sim_unrelated = crate::semhist::cosine(&a, &unrelated);
+        assert!(
+            sim_shared > sim_unrelated,
+            "overlapping query should score higher: {sim_shared} vs {sim_unrelated}"
+        );
     }
 }

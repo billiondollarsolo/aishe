@@ -111,3 +111,36 @@ Separately, aishe keeps a timestamped history file at
 `~/.local/share/aishe/history` (zsh `EXTENDED_HISTORY` format) that backs its
 own `history` builtin in the `-c` and hook paths. `share_history` (default on)
 shares it across sessions; turn it off for per-session (pid-suffixed) files.
+
+### Semantic history search (opt-in)
+
+`Ctrl-R` matches on substrings. Semantic history search matches on *meaning*, so
+"the docker run with the prometheus volume" finds the command even if you don't
+remember its exact words. It is **off by default** and never embeds anything until
+you explicitly index.
+
+Enable it in your config and pick an embedding provider (Anthropic has no
+embeddings endpoint, so point it at OpenAI or a local Ollama):
+
+```toml
+[aishe]
+semantic_history = true
+embedding_provider = "openai"            # or a local Ollama block
+embedding_model    = "text-embedding-3-small"   # nomic-embed-text for Ollama
+```
+
+Then build the index from your history log and search it:
+
+```sh
+aishe history index                 # embed new commands (incremental)
+aishe history index --rebuild       # re-embed everything from scratch
+aishe history search "the kubectl rollout for the api deployment"
+aishe history search "docker volume mount" -n 10
+```
+
+`index` only embeds commands not already in the store, so re-running it is cheap.
+The vectors live in a local, capped, rebuildable store at
+`~/.local/share/aishe/history.vec` (the newest ~5000 commands). With a local
+Ollama embedder the whole feature stays offline — your history never leaves the
+machine. `search` prints the closest past commands with a similarity score; an
+interactive key binding that pre-fills the chosen command is a planned follow-up.

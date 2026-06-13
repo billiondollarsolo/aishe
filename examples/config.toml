@@ -86,6 +86,18 @@ file_tools = true
 # (HTTP GET, HTML stripped to text, size-capped) instead of curl/wget.
 web_tool = true
 
+# Semantic history search (opt-in). When on, `aishe history index` embeds your
+# shell-history commands into a local vector store (history.vec) so
+# `aishe history search "<query>"` can recall past commands by meaning. Off by
+# default; nothing is embedded until you run `aishe history index`.
+semantic_history = false
+# Which provider serves embeddings (anthropic has none — use openai or a local
+# Ollama block). Empty = the active provider above.
+embedding_provider = ""
+# Embedding model, served over an OpenAI-compatible /v1/embeddings endpoint:
+# text-embedding-3-small (OpenAI) or e.g. nomic-embed-text (local Ollama).
+embedding_model = "text-embedding-3-small"
+
 # zsh AUTO_PUSHD for aishe's in-process `cd` (the `-c` and shell-hook paths):
 # every `cd` pushes the previous directory onto the stack. Navigate with
 # `cd -N` / `cd +N`, list with `dirs -v`.

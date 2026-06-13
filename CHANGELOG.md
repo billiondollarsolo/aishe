@@ -6,6 +6,24 @@ breaking changes can land in any release.
 
 ## [Unreleased]
 
+## [0.2.11] - 2026-06-13
+
+### Added
+- **Semantic history search (`aishe history search`).** Opt-in
+  (`semantic_history = true`) natural-language recall over your shell history:
+  `aishe history index` embeds your past commands into a small, capped, local
+  vector store (`history.vec`), and `aishe history search "the docker run with
+  the prometheus volume"` returns the closest commands by *meaning*, not
+  substring. Embeddings go through any OpenAI-compatible `/v1/embeddings`
+  endpoint (`embedding_provider`/`embedding_model`), so a local Ollama keeps the
+  whole feature offline — your history never leaves the machine. Indexing is
+  incremental (re-running only embeds new commands) and the store is rebuildable
+  with `--rebuild`. Off by default and silent until you index. Adds an `embed`
+  capability to the provider trait (OpenAI-compatible impl; deterministic fake for
+  tests). This is the first slice of proposal N4 from
+  [docs/proposals.md](docs/proposals.md); an interactive pre-fill key binding is a
+  planned follow-up.
+
 ## [0.2.10] - 2026-06-13
 
 ### Added

@@ -200,6 +200,11 @@ enum Cmd {
         #[arg(long)]
         since: Option<String>,
     },
+    /// Semantic search over your shell history (opt-in; needs an embedder).
+    History {
+        #[command(subcommand)]
+        cmd: HistoryCmd,
+    },
     /// Print the environment context block aishe sends to the model (redacted).
     Context,
     /// Generate a runnable script + markdown runbook from a recorded session.
@@ -213,6 +218,24 @@ enum Cmd {
         /// Re-run the recorded commands through the safety gate (not the model).
         #[arg(long)]
         replay: bool,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+enum HistoryCmd {
+    /// Find past commands by meaning, e.g. "the docker run with the volume mount".
+    Search {
+        /// The natural-language query (any number of words).
+        query: Vec<String>,
+        /// How many results to show.
+        #[arg(short = 'n', long, default_value_t = 5)]
+        limit: usize,
+    },
+    /// (Re)build the semantic index from your shell-history log.
+    Index {
+        /// Re-embed everything from scratch instead of only new commands.
+        #[arg(long)]
+        rebuild: bool,
     },
 }
 
@@ -368,6 +391,9 @@ fn run() -> Result<u8> {
             replay,
         }) => {
             return runbook_command(&config, session.as_deref(), out.as_deref(), *replay);
+        }
+        Some(Cmd::History { cmd }) => {
+            return history_command(&config, cmd);
         }
         _ => {}
     }
@@ -1234,6 +1260,130 @@ fn history_paths(config: &Config) -> (std::path::PathBuf, std::path::PathBuf) {
             data_dir().join(format!("history.{pid}.ext")),
         )
     }
+}
+
+/// The on-disk semantic-history vector store.
+fn semhist_path() -> std::path::PathBuf {
+    data_dir().join("history.vec")
+}
+
+/// Dispatch `aishe history <search|index>`.
+fn history_command(config: &Config, cmd: &HistoryCmd) -> Result<u8> {
+    match cmd {
+        HistoryCmd::Index { rebuild } => history_index(config, *rebuild),
+        HistoryCmd::Search { query, limit } => history_search(config, &query.join(" "), *limit),
+    }
+}
+
+/// Notice + early return when the feature is off, with how to turn it on.
+fn semantic_history_off_notice() -> u8 {
+    println!(
+        "semantic history is off. Enable it in {}:\n  \
+         [aishe]\n  semantic_history = true\n  \
+         embedding_provider = \"openai\"   # anthropic has no embeddings endpoint\n  \
+         embedding_model = \"text-embedding-3-small\"\n\
+         then run `aishe history index`.",
+        Config::path().display()
+    );
+    0
+}
+
+/// Embed any not-yet-indexed history commands (or all, with `--rebuild`) into the
+/// vector store. Reports how many were added.
+fn history_index(config: &Config, rebuild: bool) -> Result<u8> {
+    if !config.aishe.semantic_history {
+        return Ok(semantic_history_off_notice());
+    }
+    let store = semhist_path();
+    let hist = history_paths(config).1;
+    let candidates = aishe::semhist::candidates(&aishe::histlog::read(&hist));
+    if candidates.is_empty() {
+        println!("no history to index yet (run some commands first).");
+        return Ok(0);
+    }
+
+    // Incremental by default: skip commands already embedded. `--rebuild` starts
+    // the store fresh.
+    let mut existing: Vec<aishe::semhist::Entry> = if rebuild {
+        Vec::new()
+    } else {
+        aishe::semhist::load(&store)
+    };
+    let already: std::collections::HashSet<String> =
+        existing.iter().map(|e| e.cmd.clone()).collect();
+    let todo: Vec<String> = candidates
+        .into_iter()
+        .filter(|c| !already.contains(c))
+        .collect();
+    if todo.is_empty() {
+        println!(
+            "semantic index is up to date ({} commands).",
+            existing.len()
+        );
+        return Ok(0);
+    }
+
+    let provider = providers::embedder(config)?;
+    let model = &config.aishe.embedding_model;
+    // Embed in batches so one request doesn't carry the whole history.
+    let mut added = 0usize;
+    for chunk in todo.chunks(128) {
+        let batch: Vec<String> = chunk.to_vec();
+        let vecs = match provider.embed(&batch, model) {
+            Ok(v) => v,
+            Err(e) => {
+                eprintln!("aishe: embedding failed: {e}");
+                // Persist what we managed before the failure so progress isn't lost.
+                if added > 0 {
+                    let _ = aishe::semhist::save(&store, &existing);
+                }
+                return Ok(1);
+            }
+        };
+        for (cmd, vec) in batch.into_iter().zip(vecs) {
+            existing.push(aishe::semhist::Entry { cmd, vec });
+            added += 1;
+        }
+    }
+    aishe::semhist::save(&store, &existing)
+        .map_err(|e| anyhow::anyhow!("writing {}: {e}", store.display()))?;
+    let total = existing.len().min(aishe::semhist::STORE_CAP);
+    println!("indexed {added} command(s) ({total} in the store).");
+    Ok(0)
+}
+
+/// Embed the query and print the closest past commands by meaning.
+fn history_search(config: &Config, query: &str, limit: usize) -> Result<u8> {
+    if !config.aishe.semantic_history {
+        return Ok(semantic_history_off_notice());
+    }
+    if query.trim().is_empty() {
+        eprintln!(
+            "aishe: history search needs a query, e.g. aishe history search \"docker volume\""
+        );
+        return Ok(1);
+    }
+    let store = semhist_path();
+    let entries = aishe::semhist::load(&store);
+    if entries.is_empty() {
+        println!("the semantic index is empty — run `aishe history index` first.");
+        return Ok(0);
+    }
+    let provider = providers::embedder(config)?;
+    let qv = provider.embed(&[query.to_string()], &config.aishe.embedding_model)?;
+    let Some(qvec) = qv.into_iter().next() else {
+        eprintln!("aishe: the embedder returned no vector for the query.");
+        return Ok(1);
+    };
+    let hits = aishe::semhist::top_k(&entries, &qvec, limit.max(1));
+    if hits.is_empty() {
+        println!("no matches.");
+        return Ok(0);
+    }
+    for (score, cmd) in hits {
+        println!("{}  {cmd}", format!("{score:.2}").dim());
+    }
+    Ok(0)
 }
 
 /// `AISHE_LOG=1` forces it on, `AISHE_LOG_FILE` overrides the path.
