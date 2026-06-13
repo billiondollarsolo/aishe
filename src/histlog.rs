@@ -22,6 +22,10 @@ fn now() -> u64 {
 /// command are flattened so each entry stays on one line. Best-effort.
 pub fn append(path: &Path, command: &str) {
     let flat = command.replace('\n', " ");
+    // Ensure the data dir exists; a fresh install may not have created it yet.
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
     if let Ok(mut f) = std::fs::OpenOptions::new()
         .create(true)
         .append(true)

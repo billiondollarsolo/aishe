@@ -179,8 +179,24 @@ impl Executor {
         }
     }
 
+    /// History-management commands we don't persist to the log (they only read it,
+    /// so recording them would pollute what they show), mirroring zsh `HIST_NO_STORE`.
+    fn is_history_mgmt_cmd(line: &str) -> bool {
+        matches!(line.split_whitespace().next(), Some("history") | Some("fc"))
+    }
+
     fn record(&mut self, line: &str, code: i32) {
         self.last_exit = code;
+        // Persist to the timestamped history log so `aishe history` and semantic
+        // search have data from the `-c`/hook paths (the interactive PTY logs its
+        // own commands via a zsh preexec hook). History-management commands are not
+        // recorded (like zsh's HIST_NO_STORE), so they don't pollute the log they
+        // read. Best-effort.
+        if let Some(path) = self.history_log.clone() {
+            if !Self::is_history_mgmt_cmd(line) {
+                crate::histlog::append(&path, line);
+            }
+        }
         if self.history.len() == 10 {
             self.history.pop_front();
         }
@@ -1215,6 +1231,24 @@ mod tests {
             child: None,
         });
         assert_eq!(ex.next_job_id(), 2);
+    }
+
+    #[test]
+    fn run_appends_to_the_history_log() {
+        let dir = std::env::temp_dir().join(format!("aishe-histlog-exec-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let log = dir.join("history.ext");
+        std::fs::remove_file(&log).ok();
+        let mut ex = Executor::new().unwrap();
+        ex.set_history_log(log.clone());
+        // A builtin goes through `record`, which now persists to the log.
+        ex.run_builtin(&["cd".into(), dir.to_string_lossy().to_string()]);
+        let entries = crate::histlog::read(&log);
+        assert!(
+            entries.iter().any(|(_, c)| c.starts_with("cd ")),
+            "history log should contain the cd command, got: {entries:?}"
+        );
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]

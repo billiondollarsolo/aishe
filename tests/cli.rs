@@ -83,6 +83,33 @@ fn no_usage_file_means_no_tally_written() {
 }
 
 #[test]
+fn dash_c_commands_are_recorded_in_history() {
+    // Commands run via `-c` are persisted to the timestamped history log, so a
+    // later `aishe history` (and semantic indexing) can see them.
+    let home = temp_config_home();
+    let data = home.join("data");
+    for c in ["!echo alpha", "!echo bravo"] {
+        Command::cargo_bin("aishe")
+            .unwrap()
+            .env("XDG_CONFIG_HOME", &home)
+            .env("XDG_DATA_HOME", &data)
+            .arg("-c")
+            .arg(c)
+            .assert()
+            .success();
+    }
+    Command::cargo_bin("aishe")
+        .unwrap()
+        .env("XDG_CONFIG_HOME", &home)
+        .env("XDG_DATA_HOME", &data)
+        .arg("-c")
+        .arg("history")
+        .assert()
+        .success()
+        .stdout(contains("echo alpha").and(contains("echo bravo")));
+}
+
+#[test]
 fn dash_c_runs_forced_shell_command() {
     let home = temp_config_home();
     Command::cargo_bin("aishe")

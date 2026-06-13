@@ -185,6 +185,13 @@ def main():
         if not sh.expect("aishe-recall"):
             fail("semantic-recall key not bound", sh)
 
+        # 4c) interactive commands are persisted to aishe's history log (so
+        #     `aishe history` and semantic search have data). The very first
+        #     command above should now be recorded there.
+        sh.send("print -r -- HISTLOGGED=$(grep -c PTY_OK_42 \"$AISHE_HISTFILE\")")
+        if not sh.expect("HISTLOGGED=1"):
+            fail("interactive command not recorded to AISHE_HISTFILE", sh)
+
         # 5) clean exit: zsh should terminate on its own after `exit`.
         sh.send("exit")
         code = sh.wait_exit(timeout=10)

@@ -34,7 +34,7 @@ extern "C" fn handle_term(_sig: libc::c_int) {
 }
 
 /// Run the user's real zsh inside a PTY, returning its exit code.
-pub fn run_zsh(config: &Config) -> Result<u8> {
+pub fn run_zsh(config: &Config, history_log: &std::path::Path) -> Result<u8> {
     let zsh = which("zsh").ok_or_else(|| {
         anyhow!("zsh not found on $PATH — the interactive front-end requires zsh (install it, or use `aishe -c …` / the bash hook)")
     })?;
@@ -80,6 +80,13 @@ pub fn run_zsh(config: &Config) -> Result<u8> {
     std::fs::remove_file(&usage_file).ok();
     cmd.env("AISHE_USAGE_FILE", &usage_file);
     let _usage_guard = FileGuard(usage_file.clone());
+    // Persist interactive commands to aishe's timestamped history log (via a zsh
+    // preexec hook), so `aishe history` and semantic search have data — the PTY's
+    // commands run in real zsh, not through aishe's executor.
+    if let Some(parent) = history_log.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    cmd.env("AISHE_HISTFILE", history_log);
     if let Ok(cwd) = std::env::current_dir() {
         cmd.cwd(cwd);
     }

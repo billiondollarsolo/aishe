@@ -452,7 +452,7 @@ fn run() -> Result<u8> {
             );
             return Ok(1);
         }
-        return aishe::pty::run_zsh(&config);
+        return aishe::pty::run_zsh(&config, &history_paths(&config).1);
     }
 
     let mut executor = Executor::new()?;

@@ -6,6 +6,20 @@ breaking changes can land in any release.
 
 ## [Unreleased]
 
+## [0.2.16] - 2026-06-13
+
+### Fixed
+- **Command history is now actually recorded**, so `aishe history` and semantic
+  history search (`aishe history index`/`search`, the `Ctrl-X Ctrl-R` recall key)
+  have real data. Previously aishe's timestamped history log was only ever read,
+  never written: the interactive PTY's commands run in real zsh (not through
+  aishe's executor), and the executor's `-c`/hook path never persisted either, so
+  the log stayed empty and indexing found nothing. Now the PTY records each command
+  via a `preexec` hook (`AISHE_HISTFILE`) and the executor persists `-c`/hook
+  commands, both in zsh `EXTENDED_HISTORY` format. History-management commands
+  (`history`/`fc`) are excluded, and the log is capped on shell exit. This makes
+  proposal N4 functional end-to-end.
+
 ## [0.2.15] - 2026-06-13
 
 ### Added

@@ -133,9 +133,18 @@ aishe_precmd() {
 }
 
 # Clean up this shell's per-shell temp files when the interactive shell exits, so
-# they don't accumulate in $TMPDIR. Registered as a zshexit hook below.
+# they don't accumulate in $TMPDIR. Registered as a zshexit hook below. Also caps
+# the aishe history log so it can't grow without bound across many sessions.
 aishe_zshexit() {
   command rm -f "$AISHE_PENDING_FILE" "$AISHE_FORCE_FILE" "$AISHE_SESSION_FILE"
+  if [[ -n "$AISHE_HISTFILE" && -f "$AISHE_HISTFILE" ]]; then
+    local _n
+    _n=$(command wc -l < "$AISHE_HISTFILE" 2>/dev/null) || _n=0
+    if (( _n > 20000 )); then
+      command tail -n 10000 "$AISHE_HISTFILE" > "$AISHE_HISTFILE.tmp" 2>/dev/null \
+        && command mv -f "$AISHE_HISTFILE.tmp" "$AISHE_HISTFILE" 2>/dev/null
+    fi
+  fi
 }
 
 # Force-NL key: send the current line to the AI even if it starts with a real
@@ -154,7 +163,20 @@ aishe-nl-widget() {
 # moved to the FRONT of precmd_functions (below) so it sees $? before a prompt
 # theme resets it; _aishe_capture_cmd records the command via preexec.
 _aishe_capture_exit() { AISHE_LAST_EXIT=$?; }
-_aishe_capture_cmd() { AISHE_LAST_CMD="$1"; }
+_aishe_capture_cmd() {
+  AISHE_LAST_CMD="$1"
+  # Persist each interactive command to aishe's timestamped history log (zsh
+  # EXTENDED_HISTORY format) so `aishe history` and semantic search have data;
+  # the PTY's commands run in real zsh, not through aishe's executor. Newlines
+  # are flattened so each entry stays on one line. Best-effort.
+  if [[ -n "$AISHE_HISTFILE" ]]; then
+    # Don't record history-management commands (they only read the log).
+    case "${1%%[ 	]*}" in
+      history|fc) ;;
+      *) print -r -- ": ${EPOCHSECONDS:-0}:0;${1//$'\n'/ }" >> "$AISHE_HISTFILE" 2>/dev/null ;;
+    esac
+  fi
+}
 
 # Fix-the-last-command (default Ctrl-X Ctrl-F; override AISHE_FIX_KEY). When the
 # previous command failed, ask the model for a corrected command and pre-fill it
@@ -238,6 +260,7 @@ aishe-cycle-mode() {
 }
 if [[ -o interactive ]]; then
   autoload -Uz add-zsh-hook
+  zmodload zsh/datetime 2>/dev/null   # $EPOCHSECONDS for history timestamps
   add-zsh-hook precmd aishe_precmd
   add-zsh-hook zshexit aishe_zshexit   # remove per-shell temp files on exit
   # Last-command capture for the fix-it key. The exit capture must run before any
@@ -491,7 +514,10 @@ mod tests {
         // Capture the last command + exit status, with the exit capture pulled to
         // the front of precmd_functions (so a prompt theme can't reset $? first).
         assert!(s.contains("_aishe_capture_exit() { AISHE_LAST_EXIT=$?; }"));
-        assert!(s.contains("_aishe_capture_cmd() { AISHE_LAST_CMD=\"$1\"; }"));
+        assert!(s.contains("_aishe_capture_cmd()"));
+        assert!(s.contains("AISHE_LAST_CMD=\"$1\""));
+        // It also persists each command to the aishe history log when set.
+        assert!(s.contains("AISHE_HISTFILE"));
         assert!(s.contains(
             "precmd_functions=(_aishe_capture_exit ${precmd_functions:#_aishe_capture_exit})"
         ));

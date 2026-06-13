@@ -130,10 +130,14 @@ In the zsh-PTY shell and the native hook, history, `Ctrl-R` search, history
 expansion (`!!`, `!$`, ...), and tab completion are all your real shell's own —
 unmodified, with every plugin.
 
-Separately, aishe keeps a timestamped history file at
-`~/.local/share/aishe/history` (zsh `EXTENDED_HISTORY` format) that backs its
-own `history` builtin in the `-c` and hook paths. `share_history` (default on)
-shares it across sessions; turn it off for per-session (pid-suffixed) files.
+Separately, aishe keeps its own timestamped history log at
+`~/.local/share/aishe/history.ext` (zsh `EXTENDED_HISTORY` format). The
+interactive zsh front-end records each command there via a `preexec` hook, and
+the `-c`/hook paths record through aishe's executor, so `aishe history` and
+semantic search have real data (history-management commands like `history`/`fc`
+are not recorded). The log is capped on exit so it can't grow without bound.
+`share_history` (default on) shares it across sessions; turn it off for
+per-session (pid-suffixed) files.
 
 ### Semantic history search (opt-in)
 
