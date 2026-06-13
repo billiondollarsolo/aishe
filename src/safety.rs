@@ -499,18 +499,21 @@ fn normalize(command: &str) -> String {
     out.trim().to_string()
 }
 
-/// Extract the bodies of every command substitution in `command`: `$(...)`
-/// (nesting-aware via paren depth) and backtick `` `...` `` (flat — POSIX
-/// backticks do not nest). Each extracted body is itself a command line meant
-/// to be fed back through [`assess`], so a dangerous command hidden inside a
-/// substitution (`echo $(rm -rf /)`) is still caught.
+/// Extract the bodies of every command/process substitution in `command`:
+/// `$(...)` (nesting-aware via paren depth), process substitution `<(...)` /
+/// `>(...)`, and backtick `` `...` `` (flat — POSIX backticks do not nest). Each
+/// extracted body is itself a command line meant to be fed back through
+/// [`assess`], so a dangerous command hidden inside a substitution (`echo $(rm
+/// -rf /)`, `cat <(rm -rf /)`) is still caught.
 fn command_substitution_bodies(command: &str) -> Vec<String> {
     let mut bodies = Vec::new();
     let bytes = command.as_bytes();
     let mut i = 0;
     while i < bytes.len() {
         match bytes[i] {
-            b'$' if bytes.get(i + 1) == Some(&b'(') => {
+            // `$(...)`, and process substitution `<(...)` / `>(...)`: all run their
+            // body as a command, so scan to the matching paren and recurse into it.
+            b'$' | b'<' | b'>' if bytes.get(i + 1) == Some(&b'(') => {
                 // Scan to the matching close paren, tracking nested `$(...)`/`(...)`.
                 let start = i + 2;
                 let mut depth = 1;
@@ -749,6 +752,19 @@ mod tests {
         safe("echo \"$(ls -la)\"");
         safe("for f in $(ls); do echo $f; done");
         safe("echo `pwd`");
+    }
+
+    #[test]
+    fn process_substitution_body_is_assessed() {
+        // A dangerous command hidden in `<(...)` / `>(...)` must be caught — the
+        // benign `cat`/`tee`/`diff` head would otherwise mask it.
+        dangerous("cat <(rm -rf /)");
+        dangerous("tee >(rm -rf /)");
+        dangerous("diff <(ls) <(rm -rf ~)");
+        dangerous("comm <(sort a) >(sudo rm -rf /etc)");
+        // Benign process substitutions stay safe.
+        safe("diff <(sort a.txt) <(sort b.txt)");
+        safe("cat <(echo hi)");
     }
 
     #[test]

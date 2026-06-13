@@ -138,10 +138,14 @@ This is the reversible-preview building block the agentic loop will grow into
 ## Defense-in-depth, not a sandbox
 
 The destructive-command gate is conservative pattern plus path-aware matching. It
-is a **backstop against mistakes**, not a security boundary. It can be evaded:
-a dangerous command hidden inside command substitution (`$(…)` or backticks), an
-unusual interpreter, or sufficient obfuscation can slip past patterns that look
-for the obvious shapes. Treat it as defense-in-depth, not a sandbox.
+is a **backstop against mistakes**, not a security boundary. The segmentation is
+quote- and nesting-aware and recurses into substitutions — command substitution
+(`$(…)`, backticks), subshells, and process substitution (`<(…)`, `>(…)`) all
+have their inner commands assessed, so a dangerous command hidden inside one
+(`cat <(rm -rf /)`) is still caught. But it can still be evaded: an unusual
+interpreter, here-document data fed to a shell, or sufficient obfuscation can slip
+past patterns that look for the obvious shapes. Treat it as defense-in-depth, not
+a sandbox.
 
 This matters most in `auto` and `yolo`, where commands can run without a
 per-command confirmation. In `suggest` mode nothing runs until you explicitly

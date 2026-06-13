@@ -6,6 +6,17 @@ breaking changes can land in any release.
 
 ## [Unreleased]
 
+## [0.2.22] - 2026-06-13
+
+### Fixed
+- **Safety gate now sees inside process substitution.** A dangerous command
+  hidden in `<(…)` / `>(…)` — e.g. `cat <(rm -rf /)`, `tee >(rm -rf /)` — was
+  classified safe because the benign `cat`/`tee`/`diff` head masked it. The gate
+  now recursively assesses process-substitution bodies (alongside the existing
+  `$(…)`/backtick command-substitution recursion), closing the evasion. Benign
+  process substitutions (`diff <(sort a) <(sort b)`) stay safe; corpus regression
+  tests added. Part of proposal R3.
+
 ## [0.2.21] - 2026-06-13
 
 ### Added

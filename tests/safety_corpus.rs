@@ -110,6 +110,10 @@ const DANGEROUS: &[&str] = &[
     "cd /tmp && rm -rf /",
     "ls; sudo rm -rf /etc",
     "make build || rm -rf /",
+    // --- hidden inside process substitution (the `cat`/`diff`/`tee` head is benign) ---
+    "cat <(rm -rf /)",
+    "tee >(rm -rf /)",
+    "diff <(ls) <(rm -rf ~)",
 ];
 
 /// Commands that must be classified Safe (benign look-alikes).
@@ -128,6 +132,9 @@ const SAFE: &[&str] = &[
     "rm -rf .next",
     "rm -rf \"build\"",
     "rm -rf coverage/",
+    // --- benign process substitution (only the body matters) ---
+    "diff <(sort a.txt) <(sort b.txt)",
+    "cat <(echo hi)",
     // --- words/args that merely resemble dangerous ones ---
     "grep -rf patterns .",
     "grep -Rf foo .",

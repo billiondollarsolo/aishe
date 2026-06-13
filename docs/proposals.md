@@ -171,7 +171,7 @@ network prompts unless tier allows it.
 
 ## R3 — Parse-based safety gate
 
-**Track:** Robustness · **Priority:** P2 · **Effort:** L · **Risk:** Med · **Depends on:** — · **Status: Shipped (v1)** — `split_segments` is now a quote/escape/paren/backtick-aware tokenizer (no more naive char-split), subshells are unwrapped (`unwrap_subshell`), and the existing path-aware predicates + substitution recursion run on the structurally-extracted commands (`src/safety.rs`). Fixes quoted-operator false positives and subshell evasions with zero corpus regression. A full shell-grammar AST (handling here-docs, process substitution `<()`) remains a future refinement.
+**Track:** Robustness · **Priority:** P2 · **Effort:** L · **Risk:** Med · **Depends on:** — · **Status: Shipped (v1)** — `split_segments` is now a quote/escape/paren/backtick-aware tokenizer (no more naive char-split), subshells are unwrapped (`unwrap_subshell`), and the existing path-aware predicates + substitution recursion run on the structurally-extracted commands (`src/safety.rs`). Fixes quoted-operator false positives and subshell evasions with zero corpus regression. 0.2.22 extended the substitution recursion to **process substitution** `<(…)`/`>(…)` (`cat <(rm -rf /)` is now caught; corpus cases added). A full shell-grammar AST (handling here-documents — data fed to a shell that looks like commands) remains a future refinement.
 
 ### Problem
 `src/safety.rs` is regex + path-aware matching over segments split only on
