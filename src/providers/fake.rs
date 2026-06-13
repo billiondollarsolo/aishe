@@ -23,6 +23,10 @@ pub const ENV_FILE: &str = "AISHE_FAKE_LLM_FILE";
 /// every call, so usage/cost/session-summary paths are testable without a real
 /// provider. Unset (the default) records nothing, preserving prior behavior.
 pub const ENV_USAGE: &str = "AISHE_FAKE_USAGE";
+/// Optional shell command the fake emits as a single `run_command` tool call on
+/// the first agentic turn (then finishes with text), so the yolo loop — and its
+/// dry-run overlay — is testable without a real model. Unset = no tool calls.
+pub const ENV_TOOL: &str = "AISHE_FAKE_TOOL";
 
 pub struct FakeProvider {
     response: String,
@@ -76,10 +80,26 @@ impl Provider for FakeProvider {
     fn complete_with_tools(
         &self,
         _system: &str,
-        _messages: &[Msg],
+        messages: &[Msg],
         _tools: &[ToolDef],
     ) -> Result<Completion, ProviderError> {
         self.meter_fake_usage();
+        // Test hook: on the first turn (before any tool result is in the
+        // conversation) emit one `run_command` tool call from AISHE_FAKE_TOOL, so
+        // the yolo loop actually executes something; later turns finish with text.
+        if let Ok(cmd) = std::env::var(ENV_TOOL) {
+            let already_ran = messages.iter().any(|m| matches!(m, Msg::ToolResult { .. }));
+            if !cmd.is_empty() && !already_ran {
+                return Ok(Completion {
+                    text: None,
+                    tool_calls: vec![super::ToolCall {
+                        id: "fake-tool-1".to_string(),
+                        name: "run_command".to_string(),
+                        arguments: serde_json::json!({"command": cmd, "reason": "fake"}),
+                    }],
+                });
+            }
+        }
         // No tool calls: the yolo loop just surfaces the text and finishes.
         Ok(Completion {
             text: Some(self.body()),

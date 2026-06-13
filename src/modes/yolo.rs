@@ -30,11 +30,17 @@ pub fn run(
     mcp: &McpRegistry,
     session: &mut Session,
 ) -> Result<()> {
+    // Optional reversible session: run the whole loop against a throwaway copy of
+    // the working tree, then preview + confirm/apply at the end.
+    let dry = DryRun::setup(executor, config);
     let history = session.history();
     let outcome = run_loop(
         input, provider, executor, config, interrupt, skills, mcp, history,
     );
     super::report_usage(provider, config);
+    if let Some(d) = dry {
+        d.finish(executor);
+    }
     let final_text = outcome?;
     session.record_user(input);
     session.record_assistant(
@@ -43,6 +49,114 @@ pub fn run(
             .unwrap_or("(yolo task ended without a final summary)"),
     );
     Ok(())
+}
+
+/// A reversible yolo session: the loop runs against `staging` (a copy of the
+/// working tree, bind-mounted at the real cwd under bubblewrap with a read-only
+/// root and no network), and the changes are previewed + applied/discarded at the
+/// end. Created by [`DryRun::setup`] when `yolo_dry_run` is on and bwrap is present.
+struct DryRun {
+    real_cwd: std::path::PathBuf,
+    staging: std::path::PathBuf,
+}
+
+impl DryRun {
+    /// Set up the staging copy and point the executor at it, or `None` (run
+    /// normally) when the feature is off or bubblewrap is unavailable.
+    fn setup(executor: &mut Executor, config: &Config) -> Option<DryRun> {
+        if !config.aishe.yolo_dry_run {
+            return None;
+        }
+        if !crate::overlay::available() {
+            eprintln!(
+                "{}",
+                "aishe: yolo_dry_run is on but bubblewrap isn't installed — running \
+                 normally (changes are applied directly, not previewed)."
+                    .yellow()
+            );
+            return None;
+        }
+        let real_cwd = executor.cwd().clone();
+        let staging = std::env::temp_dir().join(format!("aishe-yolo-dry-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&staging);
+        if let Err(e) = crate::overlay::copy_tree(&real_cwd, &staging) {
+            eprintln!(
+                "{}",
+                format!("aishe: yolo_dry_run setup failed: {e} — running normally.").yellow()
+            );
+            let _ = std::fs::remove_dir_all(&staging);
+            return None;
+        }
+        executor.redirect_cwd(staging.clone());
+        executor.set_sandbox_wrap(crate::overlay::dry_run_argv(&staging, &staging));
+        println!(
+            "{}",
+            "dry-run: this session runs in an isolated copy; changes are previewed at the end."
+                .dim()
+        );
+        Some(DryRun { real_cwd, staging })
+    }
+
+    /// Restore the executor, then preview the session's file changes and
+    /// apply (interactive: prompt; non-interactive: auto-apply, journaled) or
+    /// discard them. Always cleans up the staging copy.
+    fn finish(self, executor: &mut Executor) {
+        executor.set_sandbox_wrap(Vec::new());
+        executor.redirect_cwd(self.real_cwd.clone());
+
+        let changes = crate::overlay::changes(&self.real_cwd, &self.staging);
+        if changes.is_empty() {
+            println!("{} no file changes this session.", "dry-run:".bold());
+            let _ = std::fs::remove_dir_all(&self.staging);
+            return;
+        }
+        println!(
+            "\n{} {} file change(s) from this session:",
+            "dry-run:".bold(),
+            changes.len()
+        );
+        crate::overlay::print_changes(&changes);
+
+        let apply = if std::io::stdin().is_terminal() {
+            print!(
+                "\napply these {} change(s) to the working tree? [Y/n]: ",
+                changes.len()
+            );
+            let _ = std::io::stdout().flush();
+            let mut line = String::new();
+            std::io::stdin().read_line(&mut line).is_ok()
+                && !matches!(line.trim().to_ascii_lowercase().as_str(), "n" | "no")
+        } else {
+            true // non-interactive (-c): auto-apply (journaled, so `aishe undo` reverts)
+        };
+
+        if apply {
+            let failed = crate::overlay::apply_journaled(
+                &self.real_cwd,
+                &self.staging,
+                &changes,
+                "yolo_dry_run",
+            );
+            if failed.is_empty() {
+                println!(
+                    "{} applied {} change(s) ({} to revert).",
+                    "✓".green(),
+                    changes.len(),
+                    "aishe undo".bold()
+                );
+            } else {
+                println!(
+                    "{} applied with {} failure(s): {}",
+                    "!".yellow(),
+                    failed.len(),
+                    failed.join(", ")
+                );
+            }
+        } else {
+            println!("{} changes discarded.", "✗".red());
+        }
+        let _ = std::fs::remove_dir_all(&self.staging);
+    }
 }
 
 /// The agentic loop itself. Returns the model's final answer text (when it

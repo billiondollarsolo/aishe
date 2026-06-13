@@ -162,6 +162,58 @@ pub fn changes(original: &Path, staging: &Path) -> Vec<Change> {
     out
 }
 
+/// Apply the previewed changes and journal each file's pre-image first, so the
+/// whole batch is reversible with `aishe undo`. Binary content can't be stored in
+/// the text journal, so those changes apply but aren't undoable (mirrors the file
+/// tools). `tool` labels the journal entries. Returns the paths it failed to apply.
+pub fn apply_journaled(
+    original: &Path,
+    staging: &Path,
+    changes: &[Change],
+    tool: &str,
+) -> Vec<String> {
+    for c in changes {
+        let dest = original.join(&c.rel);
+        let summary = format!("dry-run apply: {}", c.rel);
+        match c.kind {
+            ChangeKind::Added => crate::undo::record(&dest, false, None, tool, &summary),
+            ChangeKind::Modified | ChangeKind::Deleted => {
+                if let Ok(before) = std::fs::read_to_string(&dest) {
+                    crate::undo::record(&dest, true, Some(before), tool, &summary);
+                }
+            }
+        }
+    }
+    apply(original, staging, changes)
+}
+
+/// Print a previewed change set: a header per file plus colorized unified diffs.
+pub fn print_changes(changes: &[Change]) {
+    use crossterm::style::Stylize;
+    for c in changes {
+        let (tag, painted) = match c.kind {
+            ChangeKind::Added => ("added", c.rel.as_str().green().to_string()),
+            ChangeKind::Modified => ("modified", c.rel.as_str().yellow().to_string()),
+            ChangeKind::Deleted => ("deleted", c.rel.as_str().red().to_string()),
+        };
+        println!("  {} {painted}", format!("{tag:>8}").dim());
+        if let Some(diff) = &c.diff {
+            for line in diff.lines() {
+                let colored = if line.starts_with('-') {
+                    line.red().to_string()
+                } else if line.starts_with('+') {
+                    line.green().to_string()
+                } else {
+                    line.dim().to_string()
+                };
+                println!("    {colored}");
+            }
+        } else if c.kind != ChangeKind::Deleted {
+            println!("    {}", "(binary)".dim());
+        }
+    }
+}
+
 /// Apply the previewed changes from `staging` onto the real `original` tree:
 /// added/modified files are copied over, deleted files removed. Best-effort per
 /// file; returns the list of paths it failed to apply.

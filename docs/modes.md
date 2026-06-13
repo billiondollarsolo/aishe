@@ -96,6 +96,13 @@ and decides what to do next, repeating until the task is done or it hits
   it can adapt), rather than executed. It is best-effort, not a kernel sandbox;
   see [Safety](safety.md#sandbox-policy-based-best-effort). Toggle live with
   `aishe sandbox on`.
+- **Reversible session** (`yolo_dry_run = true`, off by default): run the *whole*
+  session against a throwaway copy of the working tree (under bubblewrap — a
+  read-only root with the network disabled), then show the cumulative file diff
+  and apply or discard it at the end. Interactive runs prompt; non-interactive
+  (`-c`) runs auto-apply, journaled so `aishe undo` reverts the batch. Needs
+  bubblewrap (Linux); degrades to a normal run when absent. This makes an entire
+  autonomous session reversible, not just the built-in file tools.
 - If skills are present, the model can pull a skill's instructions into context
   on demand. See [Custom commands and skills](custom-commands-and-skills.md).
 - Every tool call is recorded in the [audit log](logging.md) (`run_command` as an

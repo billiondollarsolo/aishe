@@ -1467,29 +1467,9 @@ fn dry_run_command(command: &str, apply: bool) -> Result<u8> {
         "dry-run:".bold(),
         changes.len()
     );
-    for c in &changes {
-        print_change(c);
-    }
+    aishe::overlay::print_changes(&changes);
     if apply {
-        // Journal each file's pre-image before applying, so the whole batch is
-        // reversible with `aishe undo`. Binary content can't be stored in the
-        // text journal, so those changes apply but aren't undoable (mirrors the
-        // file tools).
-        for c in &changes {
-            let dest = cwd.join(&c.rel);
-            let summary = format!("dry-run apply: {}", c.rel);
-            match c.kind {
-                aishe::overlay::ChangeKind::Added => {
-                    aishe::undo::record(&dest, false, None, "dry_run", &summary)
-                }
-                aishe::overlay::ChangeKind::Modified | aishe::overlay::ChangeKind::Deleted => {
-                    if let Ok(before) = std::fs::read_to_string(&dest) {
-                        aishe::undo::record(&dest, true, Some(before), "dry_run", &summary);
-                    }
-                }
-            }
-        }
-        let failed = aishe::overlay::apply(&cwd, &staging, &changes);
+        let failed = aishe::overlay::apply_journaled(&cwd, &staging, &changes, "dry_run");
         if failed.is_empty() {
             println!(
                 "\n{} applied {} change(s) to the working tree ({} to revert).",
@@ -1513,31 +1493,6 @@ fn dry_run_command(command: &str, apply: bool) -> Result<u8> {
         );
     }
     Ok(code as u8)
-}
-
-/// Print one previewed change: a header line plus a colorized diff when available.
-fn print_change(c: &aishe::overlay::Change) {
-    use aishe::overlay::ChangeKind::{Added, Deleted, Modified};
-    let (tag, painted) = match c.kind {
-        Added => ("added", c.rel.as_str().green().to_string()),
-        Modified => ("modified", c.rel.as_str().yellow().to_string()),
-        Deleted => ("deleted", c.rel.as_str().red().to_string()),
-    };
-    println!("  {} {painted}", format!("{tag:>8}").dim());
-    if let Some(diff) = &c.diff {
-        for line in diff.lines() {
-            let colored = if line.starts_with('-') {
-                line.red().to_string()
-            } else if line.starts_with('+') {
-                line.green().to_string()
-            } else {
-                line.dim().to_string()
-            };
-            println!("    {colored}");
-        }
-    } else if c.kind != Deleted {
-        println!("    {}", "(binary)".dim());
-    }
 }
 
 /// Removes a directory tree on drop (best-effort), for the dry-run staging copy.

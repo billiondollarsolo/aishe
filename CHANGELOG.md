@@ -6,6 +6,18 @@ breaking changes can land in any release.
 
 ## [Unreleased]
 
+## [0.2.21] - 2026-06-13
+
+### Added
+- **Reversible yolo session (`yolo_dry_run`).** With this on, a whole yolo session
+  runs against a throwaway copy of the working tree (under bubblewrap — read-only
+  root, no network), and the cumulative file diff is shown at the end to apply or
+  discard. Interactive runs prompt; non-interactive (`-c`) runs auto-apply,
+  journaled so `aishe undo` reverts the entire batch. So an entire autonomous
+  session — not just the built-in file tools — is reversible. Off by default; needs
+  bubblewrap (degrades to a normal run when absent). This is proposal N2's overlay
+  preview wired into the loop, building on the `aishe dry-run` primitive.
+
 ## [0.2.20] - 2026-06-13
 
 ### Added

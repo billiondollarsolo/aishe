@@ -95,6 +95,71 @@ fn dry_run_apply_writes_the_changes() {
 }
 
 #[test]
+fn yolo_dry_run_session_previews_applies_and_is_undoable() {
+    if !bwrap_available() {
+        eprintln!("SKIP: bubblewrap not installed");
+        return;
+    }
+    let root = std::env::temp_dir().join(format!("aishe-yolodry-{}", std::process::id()));
+    let cfg = root.join("cfg").join("aishe");
+    let work = root.join("work");
+    std::fs::create_dir_all(&cfg).unwrap();
+    std::fs::create_dir_all(&work).unwrap();
+    std::fs::write(
+        cfg.join("config.toml"),
+        "[aishe]\nmode = \"yolo\"\nprovider = \"anthropic\"\nyolo_dry_run = true\nyolo_confirm = \"never\"\n\n[providers.anthropic]\nbase_url = \"https://api.anthropic.com\"\napi_key_env = \"ANTHROPIC_API_KEY\"\nmodel = \"claude-x\"\n",
+    )
+    .unwrap();
+    std::fs::write(work.join("data.txt"), "v1\n").unwrap();
+
+    let cfg_home = root.join("cfg");
+    let data_home = cfg_home.join("data");
+    let run = |args: &[&str]| {
+        Command::cargo_bin("aishe")
+            .unwrap()
+            .env("XDG_CONFIG_HOME", &cfg_home)
+            .env("XDG_DATA_HOME", &data_home)
+            .env("ANTHROPIC_API_KEY", "sk-test")
+            .env("AISHE_FAKE_LLM", "done")
+            .env(
+                "AISHE_FAKE_TOOL",
+                "echo v2 > data.txt; echo new > created.txt",
+            )
+            .current_dir(&work)
+            .args(args)
+            .assert()
+            .success()
+    };
+    // A non-interactive (-c) yolo session runs in the staging copy, previews the
+    // changes, and auto-applies them (journaled).
+    run(&["-c", "update the data file"]).stdout(contains("dry-run").and(contains("applied")));
+    assert_eq!(
+        std::fs::read_to_string(work.join("data.txt")).unwrap(),
+        "v2\n"
+    );
+    assert!(work.join("created.txt").exists());
+
+    // The whole batch is reversible.
+    Command::cargo_bin("aishe")
+        .unwrap()
+        .env("XDG_CONFIG_HOME", &cfg_home)
+        .env("XDG_DATA_HOME", &data_home)
+        .current_dir(&work)
+        .arg("undo")
+        .assert()
+        .success();
+    assert_eq!(
+        std::fs::read_to_string(work.join("data.txt")).unwrap(),
+        "v1\n"
+    );
+    assert!(
+        !work.join("created.txt").exists(),
+        "undo removes the added file"
+    );
+    std::fs::remove_dir_all(&root).ok();
+}
+
+#[test]
 fn dry_run_apply_is_undoable() {
     if !bwrap_available() {
         eprintln!("SKIP: bubblewrap not installed");

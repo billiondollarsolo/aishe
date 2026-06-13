@@ -125,6 +125,14 @@ pub struct AisheConfig {
     /// Off by default.
     #[serde(default)]
     pub yolo_plan: bool,
+    /// Reversible yolo session: run the whole agentic loop against a throwaway
+    /// copy of the working tree (under bubblewrap — read-only root, no network),
+    /// then show the cumulative file diff and confirm apply-or-discard at the end.
+    /// Interactive runs prompt; non-interactive (`-c`) runs auto-apply (journaled,
+    /// so `aishe undo` reverts). Off by default; needs bubblewrap (degrades to a
+    /// normal run when absent). Toggle with `aishe config` / the `[aishe]` block.
+    #[serde(default)]
+    pub yolo_dry_run: bool,
     /// Preview-first file edits: when the yolo loop calls a built-in `write_file`
     /// or `edit_file`, show the diff and ask before applying it (interactive only;
     /// scripted `-c` runs proceed). Off by default. Set `yolo_preview = true` in
@@ -321,6 +329,7 @@ impl Default for AisheConfig {
             sandbox_backend: default_sandbox_backend(),
             max_yolo_iterations: default_max_iters(),
             yolo_plan: false,
+            yolo_dry_run: false,
             yolo_preview: false,
             yolo_verbose: false,
             project_context: true,

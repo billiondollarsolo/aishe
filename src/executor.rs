@@ -602,6 +602,12 @@ impl Executor {
         is_bare_name(arg) && !self.cwd.join(arg).is_dir()
     }
 
+    /// Redirect the working directory (and `$PWD`), e.g. to run a yolo session
+    /// against a staging copy for a reversible dry-run. Same effect as a `cd`.
+    pub fn redirect_cwd(&mut self, new: PathBuf) {
+        self.set_cwd(new);
+    }
+
     /// Move to `new`, recording the previous dir and updating `$PWD`.
     fn set_cwd(&mut self, new: PathBuf) {
         self.env
