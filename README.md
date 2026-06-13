@@ -28,18 +28,30 @@ autonomously** until the task is done.
 - 🎚️ **Three modes.** `suggest` (propose, you confirm), `auto` (run safe commands,
   confirm risky ones), and `yolo` (an agentic loop that runs, reads output, and
   iterates). Cycle them live with Shift-Tab.
-- 🛡️ **A safety gate you control.** A deterministic, path-aware screen flags
-  destructive commands (`rm -rf /`, recursive `chmod`/`chown` on system paths, …)
-  before they can run — the model never gets to decide what executes.
-- 🔌 **Any provider.** Anthropic and any OpenAI-compatible endpoint — OpenAI, Groq,
-  Ollama (local), OpenRouter, Together — selected by `base_url`.
+- 🛡️ **A safety gate you control.** A deterministic, quote/subshell/substitution-aware,
+  path-aware screen flags destructive commands (`rm -rf /`, recursive `chmod`/`chown`
+  on system paths, danger hidden in `$(…)` or `<(…)`, …) before they can run — the
+  model never gets to decide what executes.
+- ↩️ **Reversible.** Built-in file edits are journaled (`aishe undo`), and you can
+  preview a command or a whole agentic session against a throwaway copy under
+  bubblewrap — `aishe dry-run "<cmd>"` and `yolo_dry_run` — to see the exact diff,
+  then apply or discard.
+- 🔎 **Semantic history.** Recall past commands by meaning, not substring:
+  `aishe history search "the docker run with the prometheus volume"` (or **Ctrl-X
+  Ctrl-R** in the shell). Works offline with a local embedder.
+- 🩹 **Fix-the-last-command.** When a command fails, **Ctrl-X Ctrl-F** asks the
+  model for a correction (optionally re-running the failed read-only command to
+  read its real error) and pre-fills it for review.
+- 🔌 **Any provider, resilient.** Anthropic and any OpenAI-compatible endpoint —
+  OpenAI, Groq, Ollama (local), OpenRouter, Together — with an optional fallback
+  chain; `aishe doctor --probe` checks each is reachable.
 - 🧰 **Agentic tools.** In yolo, the model edits files precisely, fetches web pages,
   and calls your [MCP servers](docs/mcp.md) and [skills](docs/custom-commands-and-skills.md).
-- 💸 **Cost-aware.** Per-session token and cost metering with an optional hard
-  budget cap, so there are no surprise bills.
+- 💸 **Cost-aware.** Per-call and whole-session token/cost metering with an optional
+  hard budget cap, so there are no surprise bills.
 - 🔒 **Private by default.** API keys are read from the environment (never written
   to disk), secrets are redacted from the model context, and there's an optional
-  local audit log.
+  local audit log (`aishe log` / `aishe usage`).
 - ⚡ **Works anywhere.** `aishe -c '<line>'`, piped stdin, and a bash hook
   (`aishe init bash`) all work without launching the interactive shell.
 
@@ -176,10 +188,16 @@ aishe                  launch the interactive zsh-PTY shell
 aishe zsh              the same, explicitly
 aishe -c '<line>'      run one line non-interactively and exit
 aishe init zsh|bash    print the shell-hook snippet (for ~/.zshrc / ~/.bashrc)
-aishe doctor           check shell, config, provider, and API key
+aishe doctor [--probe] check shell/config/provider/API key (--probe: reachability)
 aishe completions ...  print a shell completion script for aishe itself
 aishe trust [--list]   trust this repo's .aishe/config.toml (and list trusted)
 aishe untrust [--all]  drop trust for this repo (or all repos)
+
+aishe dry-run '<cmd>' [--apply]     preview a command's file changes, then keep/discard
+aishe undo [--list]                 revert the last AI/dry-run file change set
+aishe history search '<q>'|index    semantic recall over your shell history
+aishe log | usage                   read the audit log / summarize token cost
+aishe runbook | context             export a session as a runbook / preview context
 
 aishe mode|model|provider [VALUE]   show or set (and persist) a setting
 aishe config|mcp|commands|skills    print the active config / registries
@@ -249,15 +267,19 @@ More in [docs/usage-and-cost.md](docs/usage-and-cost.md).
 ## Safety gate
 
 Before running an LLM-proposed command (in suggest and auto, and for yolo tool
-calls when `yolo_confirm_dangerous = true`), aishe screens for irreversible
-operations: `rm -rf`, `dd of=/dev/...`, `mkfs`, fork bombs, `curl ... | sh`,
-`git push --force` to main, `shutdown` and `reboot`, and more. Dangerous commands
-print a red panel and require you to type the full word `yes`.
+calls per the `yolo_confirm` tier), aishe screens for irreversible operations:
+`rm -rf`, `dd of=/dev/...`, `mkfs`, fork bombs, `curl ... | sh`, `git push --force`
+to main, `shutdown` and `reboot`, and more. Dangerous commands print a red panel
+and require you to type the full word `yes`.
 
-The gate is path-aware for `rm -rf`: an in-tree relative path like
-`rm -rf node_modules` runs without fuss, while absolute, home, variable, glob, or
-escaping targets are flagged. The gate does not apply to commands you type
-yourself or to `!`-forced lines. Details in [docs/safety.md](docs/safety.md).
+The screen is quote-, subshell-, and substitution-aware (danger hidden in `$(…)`,
+backticks, or `<(…)` is still caught) and path-aware for `rm -rf`: an in-tree
+relative path like `rm -rf node_modules` runs without fuss, while absolute, home,
+variable, glob, or escaping targets are flagged. For real OS isolation in yolo, set
+`sandbox_backend = "bwrap"`; for reversibility, `aishe dry-run` / `yolo_dry_run`
+preview changes you can apply or discard, and `aishe undo` reverts any AI edit. The
+gate does not apply to commands you type yourself or to `!`-forced lines. Details in
+[docs/safety.md](docs/safety.md).
 
 ## Logging and privacy
 
