@@ -214,6 +214,15 @@ enum Cmd {
         #[command(subcommand)]
         cmd: HistoryCmd,
     },
+    /// Preview a command's file changes against a throwaway copy of the working
+    /// tree (read-only system, no network via bubblewrap), then keep or discard.
+    DryRun {
+        /// The shell command to preview.
+        command: String,
+        /// Apply the previewed changes to the real working tree (default: discard).
+        #[arg(long)]
+        apply: bool,
+    },
     /// Print the environment context block aishe sends to the model (redacted).
     Context,
     /// Generate a runnable script + markdown runbook from a recorded session.
@@ -408,6 +417,9 @@ fn run() -> Result<u8> {
         }
         Some(Cmd::History { cmd }) => {
             return history_command(&config, cmd);
+        }
+        Some(Cmd::DryRun { command, apply }) => {
+            return dry_run_command(command, *apply);
         }
         _ => {}
     }
@@ -714,6 +726,12 @@ fn doctor(probe: bool) -> u8 {
         } else {
             println!("{ok} yolo sandbox: policy (best-effort gate)");
         }
+    }
+    // Reversible command preview (`aishe dry-run`), which needs bubblewrap.
+    if aishe::overlay::available() {
+        println!("{ok} dry-run: available (bubblewrap)");
+    } else {
+        println!("{warn} dry-run: needs bubblewrap (install it to use `aishe dry-run`)");
     }
     let key_set = std::env::var(key_env)
         .map(|v| !v.trim().is_empty())
@@ -1392,6 +1410,123 @@ fn history_paths(config: &Config) -> (std::path::PathBuf, std::path::PathBuf) {
 /// The on-disk semantic-history vector store.
 fn semhist_path() -> std::path::PathBuf {
     data_dir().join("history.vec")
+}
+
+/// `aishe dry-run "<cmd>"`: run the command against a throwaway copy of the
+/// working tree under bubblewrap (read-only root, no network), show the file
+/// changes it would make, then keep them (`--apply`) or discard them.
+fn dry_run_command(command: &str, apply: bool) -> Result<u8> {
+    if !aishe::overlay::available() {
+        eprintln!(
+            "aishe: dry-run needs bubblewrap (bwrap) for safe isolation — install it \
+             (apt install bubblewrap | dnf install bubblewrap | brew install bubblewrap)."
+        );
+        return Ok(1);
+    }
+    let cwd = std::env::current_dir()?;
+    let staging = std::env::temp_dir().join(format!("aishe-dryrun-{}", std::process::id()));
+    std::fs::remove_dir_all(&staging).ok();
+    let _guard = TempDirGuard(staging.clone());
+
+    if let Err(e) = aishe::overlay::copy_tree(&cwd, &staging) {
+        eprintln!("aishe: {e}");
+        return Ok(1);
+    }
+
+    // Run the command in the sandbox: <bwrap-argv…> -- <shell> -c <command>.
+    let shell = Executor::new()
+        .ok()
+        .map(|e| e.shell().to_path_buf())
+        .unwrap_or_else(|| std::path::PathBuf::from("/bin/sh"));
+    let argv = aishe::overlay::dry_run_argv(&cwd, &staging);
+    let status = std::process::Command::new(&argv[0])
+        .args(&argv[1..])
+        .arg(&shell)
+        .arg("-c")
+        .arg(command)
+        .status();
+    let code = match status {
+        Ok(s) => s.code().unwrap_or(1),
+        Err(e) => {
+            eprintln!("aishe: failed to launch sandbox: {e}");
+            return Ok(1);
+        }
+    };
+
+    let changes = aishe::overlay::changes(&cwd, &staging);
+    println!();
+    if changes.is_empty() {
+        println!(
+            "{} no file changes (command exit {code}).",
+            "dry-run:".bold()
+        );
+        return Ok(code as u8);
+    }
+    println!(
+        "{} {} file change(s) (command exit {code}):",
+        "dry-run:".bold(),
+        changes.len()
+    );
+    for c in &changes {
+        print_change(c);
+    }
+    if apply {
+        let failed = aishe::overlay::apply(&cwd, &staging, &changes);
+        if failed.is_empty() {
+            println!(
+                "\n{} applied {} change(s) to the working tree.",
+                "✓".green(),
+                changes.len()
+            );
+        } else {
+            println!(
+                "\n{} applied with {} failure(s): {}",
+                "!".yellow(),
+                failed.len(),
+                failed.join(", ")
+            );
+        }
+    } else {
+        println!(
+            "\n{} re-run with {} to keep these changes.",
+            "discarded —".dim(),
+            "--apply".bold()
+        );
+    }
+    Ok(code as u8)
+}
+
+/// Print one previewed change: a header line plus a colorized diff when available.
+fn print_change(c: &aishe::overlay::Change) {
+    use aishe::overlay::ChangeKind::{Added, Deleted, Modified};
+    let (tag, painted) = match c.kind {
+        Added => ("added", c.rel.as_str().green().to_string()),
+        Modified => ("modified", c.rel.as_str().yellow().to_string()),
+        Deleted => ("deleted", c.rel.as_str().red().to_string()),
+    };
+    println!("  {} {painted}", format!("{tag:>8}").dim());
+    if let Some(diff) = &c.diff {
+        for line in diff.lines() {
+            let colored = if line.starts_with('-') {
+                line.red().to_string()
+            } else if line.starts_with('+') {
+                line.green().to_string()
+            } else {
+                line.dim().to_string()
+            };
+            println!("    {colored}");
+        }
+    } else if c.kind != Deleted {
+        println!("    {}", "(binary)".dim());
+    }
+}
+
+/// Removes a directory tree on drop (best-effort), for the dry-run staging copy.
+struct TempDirGuard(std::path::PathBuf);
+impl Drop for TempDirGuard {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
 }
 
 /// Dispatch `aishe history <search|index>`.

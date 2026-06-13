@@ -16,6 +16,7 @@ pub mod index;
 pub mod integration;
 pub mod mcp;
 pub mod modes;
+pub mod overlay;
 pub mod providers;
 pub mod pty;
 pub mod redact;

@@ -106,7 +106,7 @@ sandbox.
 
 ## R2 — Real sandbox backend for yolo
 
-**Track:** Robustness · **Priority:** P1 · **Effort:** XL · **Risk:** Med · **Depends on:** R1 (diff UX) · **Status: Shipped (v1 — bwrap)** — `sandbox_backend = "bwrap"` runs each yolo `run_command` under bubblewrap with a read-only root + writable working tree (`sandbox::bwrap_wrap_argv`, an executor wrapper-argv prefix; `src/sandbox.rs`, `src/executor.rs`, `src/modes/yolo.rs`). Degrades to policy when bwrap is absent; `doctor` reports it. The **overlay/copy-on-write backend** (dry-run → diff → apply, which N2 builds on) and per-step network approval remain follow-ups.
+**Track:** Robustness · **Priority:** P1 · **Effort:** XL · **Risk:** Med · **Depends on:** R1 (diff UX) · **Status: Shipped (v1 — bwrap)** — `sandbox_backend = "bwrap"` runs each yolo `run_command` under bubblewrap with a read-only root + writable working tree (`sandbox::bwrap_wrap_argv`, an executor wrapper-argv prefix; `src/sandbox.rs`, `src/executor.rs`, `src/modes/yolo.rs`). Degrades to policy when bwrap is absent; `doctor` reports it. 0.2.19 added the **overlay/dry-run backend** as a standalone `aishe dry-run "<cmd>"`: the command runs against a throwaway copy of the working tree under bubblewrap (read-only root, `--unshare-net`), aishe diffs the copy and shows added/modified/deleted files, then discards (default) or `--apply`s them (`src/overlay.rs`). Because bwrap 0.9 here lacks kernel-overlay options it copies the tree (size-capped). **Wiring it into the yolo loop** (per-step preview) and **per-step network approval** remain follow-ups — that wiring is N2.
 
 ### Problem
 `yolo_sandbox` today is *best-effort policy* (`src/sandbox.rs`): the gate refuses

@@ -1,0 +1,95 @@
+//! End-to-end test for `aishe dry-run` (proposal R2 overlay preview). Skips when
+//! bubblewrap isn't installed, since the safe isolation depends on it.
+
+use std::io::Write;
+
+use assert_cmd::Command;
+use predicates::prelude::PredicateBooleanExt;
+use predicates::str::contains;
+
+fn bwrap_available() -> bool {
+    std::process::Command::new("bwrap")
+        .arg("--version")
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
+}
+
+/// A temp working tree with a couple of files, plus a config home so the wizard
+/// never runs.
+fn setup(label: &str) -> (std::path::PathBuf, std::path::PathBuf) {
+    let root = std::env::temp_dir().join(format!("aishe-dryrun-it-{label}-{}", std::process::id()));
+    let cfg = root.join("cfg").join("aishe");
+    let work = root.join("work");
+    std::fs::create_dir_all(&cfg).unwrap();
+    std::fs::create_dir_all(&work).unwrap();
+    let mut f = std::fs::File::create(cfg.join("config.toml")).unwrap();
+    writeln!(
+        f,
+        "[aishe]\nmode = \"suggest\"\nprovider = \"anthropic\"\n\n[providers.anthropic]\nbase_url = \"https://api.anthropic.com\"\napi_key_env = \"ANTHROPIC_API_KEY\"\nmodel = \"claude-x\""
+    )
+    .unwrap();
+    std::fs::write(work.join("config.ini"), "v1\n").unwrap();
+    (root.join("cfg"), work)
+}
+
+#[test]
+fn dry_run_previews_then_discards_by_default() {
+    if !bwrap_available() {
+        eprintln!("SKIP: bubblewrap not installed");
+        return;
+    }
+    let (cfg, work) = setup("discard");
+    Command::cargo_bin("aishe")
+        .unwrap()
+        .env("XDG_CONFIG_HOME", &cfg)
+        .env("XDG_DATA_HOME", cfg.join("data"))
+        .current_dir(&work)
+        .args(["dry-run", "echo v2 > config.ini; echo hi > new.txt"])
+        .assert()
+        .success()
+        .stdout(contains("added").and(contains("new.txt")))
+        .stdout(contains("modified").and(contains("config.ini")))
+        .stdout(contains("discarded"));
+    // Discard is the default: the real tree is untouched.
+    assert_eq!(
+        std::fs::read_to_string(work.join("config.ini")).unwrap(),
+        "v1\n"
+    );
+    assert!(
+        !work.join("new.txt").exists(),
+        "discard must not create files"
+    );
+    std::fs::remove_dir_all(cfg.parent().unwrap()).ok();
+}
+
+#[test]
+fn dry_run_apply_writes_the_changes() {
+    if !bwrap_available() {
+        eprintln!("SKIP: bubblewrap not installed");
+        return;
+    }
+    let (cfg, work) = setup("apply");
+    Command::cargo_bin("aishe")
+        .unwrap()
+        .env("XDG_CONFIG_HOME", &cfg)
+        .env("XDG_DATA_HOME", cfg.join("data"))
+        .current_dir(&work)
+        .args([
+            "dry-run",
+            "--apply",
+            "echo v2 > config.ini; echo hi > new.txt",
+        ])
+        .assert()
+        .success()
+        .stdout(contains("applied"));
+    assert_eq!(
+        std::fs::read_to_string(work.join("config.ini")).unwrap(),
+        "v2\n"
+    );
+    assert_eq!(
+        std::fs::read_to_string(work.join("new.txt")).unwrap(),
+        "hi\n"
+    );
+    std::fs::remove_dir_all(cfg.parent().unwrap()).ok();
+}

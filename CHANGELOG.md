@@ -6,6 +6,20 @@ breaking changes can land in any release.
 
 ## [Unreleased]
 
+## [0.2.19] - 2026-06-13
+
+### Added
+- **Reversible command preview (`aishe dry-run "<cmd>"`).** Runs a command against
+  a throwaway copy of the working tree under bubblewrap — a read-only root with
+  the network disabled — so the command really executes but its writes are
+  confined to the copy and it has no external side effects. aishe then diffs the
+  copy against the real tree and shows the added/modified/deleted files with
+  unified diffs; the changes are discarded by default, or kept with `--apply`.
+  Needs `bubblewrap` (Linux; `aishe doctor` reports availability) and refuses very
+  large trees (it copies, since there's no kernel overlay). This is the first
+  slice of proposal R2's overlay backend and the building block N2 (plan → preview
+  → apply/undo) grows into.
+
 ## [0.2.18] - 2026-06-13
 
 ### Added

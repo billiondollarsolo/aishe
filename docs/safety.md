@@ -112,6 +112,29 @@ use the policy backend. (Because the root is read-only, commands that install
 system packages will fail inside it — that's the point; run those outside the
 sandbox or with the policy backend.)
 
+## Reversible preview: `aishe dry-run`
+
+To see *exactly* what a command would change before letting it touch anything:
+
+```sh
+aishe dry-run "make build && ./configure"     # preview file changes, discard them
+aishe dry-run --apply "sed -i s/foo/bar/ *.c"  # preview, then keep the changes
+```
+
+`dry-run` copies the working tree to a throwaway staging dir and runs the command
+there under bubblewrap — a **read-only root with the network disabled** — so the
+command really executes but its writes are confined to the copy and it has no
+external side effects. aishe then diffs the copy against the real tree and prints
+the added / modified / deleted files with unified diffs. By default the changes
+are **discarded** (nothing was touched); pass `--apply` to copy them onto the real
+tree.
+
+Notes: it needs `bubblewrap` (`aishe doctor` shows availability) and is Linux-only.
+Because there's no kernel overlay it copies the tree, so a very large tree (or a
+huge `.git`) is refused — run it in a smaller subdirectory. Symlinks aren't copied.
+This is the reversible-preview building block the agentic loop will grow into
+(plan → preview → apply/undo).
+
 ## Defense-in-depth, not a sandbox
 
 The destructive-command gate is conservative pattern plus path-aware matching. It
