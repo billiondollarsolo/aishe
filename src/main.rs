@@ -124,7 +124,12 @@ enum Cmd {
     /// Launch your real interactive zsh (with all native plugins) under aishe.
     Zsh,
     /// Check your environment: shell, config, front-end, provider, API key.
-    Doctor,
+    Doctor {
+        /// Also probe each provider in the chain for reachability (a short
+        /// network request per endpoint; costs no tokens).
+        #[arg(long)]
+        probe: bool,
+    },
     /// Print a shell completion script for `aishe` itself (bash/zsh/fish/...).
     Completions {
         /// Shell to generate completions for.
@@ -258,8 +263,8 @@ fn run() -> Result<u8> {
     let args = Args::parse();
 
     // `doctor` inspects the environment without loading/initializing config.
-    if matches!(args.cmd, Some(Cmd::Doctor)) {
-        return Ok(doctor());
+    if let Some(Cmd::Doctor { probe }) = args.cmd {
+        return Ok(doctor(probe));
     }
 
     // `completions <shell>` prints a completion script and exits.
@@ -557,7 +562,7 @@ fn run() -> Result<u8> {
 /// Environment check (`aishe doctor`): report shell, config, front-end,
 /// provider, and API-key status. Returns 1 if a *critical* check fails (no
 /// backing shell, or a malformed config); a missing API key is a warning only.
-fn doctor() -> u8 {
+fn doctor(probe: bool) -> u8 {
     let ok = "✓".green();
     let bad = "✗".red();
     let warn = "!".yellow();
@@ -662,6 +667,28 @@ fn doctor() -> u8 {
             provider,
             cfg.aishe.provider_fallback.join(" → ")
         );
+    }
+    // Reachability probe (opt-in `--probe`): one short, read-only request per chain
+    // member, so "offline-capable" / fallback claims are verifiable. Unreachable or
+    // key-rejected members are warnings, not critical: a fallback may legitimately
+    // be down, and `doctor` should still pass offline.
+    if probe {
+        println!("  {}", "reachability probe:".bold());
+        for name in providers::chain_names(&cfg) {
+            let pr = providers::probe(&cfg, &name);
+            match pr.reach {
+                providers::Reach::Up(s) => {
+                    println!("  {ok} {name}: reachable [HTTP {s}] ({})", pr.endpoint)
+                }
+                providers::Reach::Unauthorized(s) => println!(
+                    "  {warn} {name}: reachable but key rejected [HTTP {s}] ({})",
+                    pr.endpoint
+                ),
+                providers::Reach::Down(e) => {
+                    println!("  {warn} {name}: unreachable ({}) — {e}", pr.endpoint)
+                }
+            }
+        }
     }
     // Yolo sandbox backend.
     if cfg.aishe.yolo_sandbox {

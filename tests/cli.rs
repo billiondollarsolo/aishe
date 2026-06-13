@@ -135,6 +135,41 @@ fn doctor_reports_environment() {
 }
 
 #[test]
+fn doctor_probe_runs_reachability_section() {
+    // `--probe` adds the reachability section. Point the provider at a dead local
+    // port so the probe deterministically reports unreachable without real
+    // network, and doctor still exits 0 (a down endpoint is a warning, not
+    // critical).
+    let dir = std::env::temp_dir().join(format!("aishe-probe-{}", std::process::id()));
+    let cfg_dir = dir.join("aishe");
+    std::fs::create_dir_all(&cfg_dir).unwrap();
+    std::fs::write(
+        cfg_dir.join("config.toml"),
+        r#"[aishe]
+mode = "suggest"
+provider = "anthropic"
+
+[providers.anthropic]
+base_url = "http://127.0.0.1:1"
+api_key_env = "ANTHROPIC_API_KEY"
+model = "claude-x"
+"#,
+    )
+    .unwrap();
+    Command::cargo_bin("aishe")
+        .unwrap()
+        .env("XDG_CONFIG_HOME", &dir)
+        .env("XDG_DATA_HOME", dir.join("data"))
+        .arg("doctor")
+        .arg("--probe")
+        .assert()
+        .success()
+        .stdout(contains("reachability probe:"))
+        .stdout(contains("anthropic: unreachable"));
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
 fn init_unsupported_shell_fails() {
     Command::cargo_bin("aishe")
         .unwrap()

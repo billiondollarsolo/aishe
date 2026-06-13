@@ -224,7 +224,7 @@ reactive.
 
 ## R4 — Provider fallback chain + offline
 
-**Track:** Robustness · **Priority:** P2 · **Effort:** M · **Risk:** Low · **Depends on:** — · **Status: Shipped (v1)** — `provider_fallback` builds a `FallbackProvider` (`src/providers/fallback.rs`) that advances on terminal error, folds usage into one meter, and announces once; `doctor` shows the chain. Live-streaming across the chain and a reachability probe are follow-ups.
+**Track:** Robustness · **Priority:** P2 · **Effort:** M · **Risk:** Low · **Depends on:** — · **Status: Shipped (v1)** — `provider_fallback` builds a `FallbackProvider` (`src/providers/fallback.rs`) that advances on terminal error, folds usage into one meter, and announces once; `doctor` shows the chain. The **reachability probe** shipped in 0.2.14: `aishe doctor --probe` sends a short read-only `GET /v1/models` to each chain member and reports reachable / key-rejected / unreachable (`providers::probe`), making the offline/fallback story verifiable. **Live-streaming across the chain** remains a follow-up.
 
 ### Problem
 `providers::make(&config)` returns a single provider. A dead endpoint, a 5xx

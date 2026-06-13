@@ -132,6 +132,19 @@ chain serves answers non-streamed (resilience over live token streaming); a
 single provider streams as usual. The setting is treated as sensitive, so a
 project overlay needs `aishe trust` to apply it.
 
+To verify the chain is actually reachable — especially the "offline-capable"
+claim for a local Ollama — run:
+
+```sh
+aishe doctor --probe
+```
+
+It sends one short, read-only `GET /v1/models` to each chain member (no
+completion, so it costs no tokens) and reports each as **reachable**, **reachable
+but key rejected** (a 401/403 — the endpoint is up but the key is wrong), or
+**unreachable** (connection refused / timeout). An unreachable member is a
+warning, not a failure, so `doctor` still passes offline.
+
 ## Cost and trust storage
 
 aishe honors the system trust store, so it works behind corporate or

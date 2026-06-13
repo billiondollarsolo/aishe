@@ -361,6 +361,99 @@ fn fake_from_env() -> Option<std::sync::Arc<dyn Provider>> {
     Some(std::sync::Arc::new(fake::FakeProvider::new(resp)))
 }
 
+/// Outcome of a provider reachability probe ([`probe`]).
+#[derive(Debug)]
+pub enum Reach {
+    /// The endpoint responded with an HTTP status. Even a 4xx means it's up.
+    Up(u16),
+    /// Reachable, but the API key was rejected (401/403).
+    Unauthorized(u16),
+    /// No HTTP response at all — connection refused, DNS failure, or timeout.
+    Down(String),
+}
+
+/// A reachability probe result for one chain member.
+#[derive(Debug)]
+pub struct Probe {
+    /// The provider block name (e.g. `anthropic`, `openai`).
+    pub name: String,
+    /// The base URL probed (for display).
+    pub endpoint: String,
+    pub reach: Reach,
+}
+
+/// Probe a configured provider block by `name`: a short-timeout `GET
+/// {base_url}/v1/models` with the block's auth header. Cheap and read-only — it
+/// never sends a completion, so it costs no tokens. *Any* HTTP response (even a
+/// 4xx) means the endpoint is up; only a transport error means unreachable. A
+/// 401/403 is surfaced distinctly so "reachable but key rejected" reads clearly.
+/// This makes the offline/fallback story (e.g. a local Ollama) actually testable
+/// from `aishe doctor --probe`.
+pub fn probe(config: &Config, name: &str) -> Probe {
+    let is_openai = name == "openai";
+    let (base_url, auth_header) = if is_openai {
+        let p = &config.providers.openai;
+        let key = std::env::var(&p.api_key_env)
+            .ok()
+            .filter(|s| !s.trim().is_empty());
+        (
+            p.base_url.clone(),
+            key.map(|k| ("Authorization".to_string(), format!("Bearer {k}"))),
+        )
+    } else {
+        let p = &config.providers.anthropic;
+        let key = std::env::var(&p.api_key_env)
+            .ok()
+            .filter(|s| !s.trim().is_empty());
+        (
+            p.base_url.clone(),
+            key.map(|k| ("x-api-key".to_string(), k)),
+        )
+    };
+    let base = base_url.trim_end_matches('/').to_string();
+    let url = format!("{base}/v1/models");
+    let agent = ureq::AgentBuilder::new()
+        .timeout_connect(Duration::from_secs(3))
+        .timeout(Duration::from_secs(6))
+        .build();
+    let mut req = agent.get(&url);
+    if let Some((k, v)) = &auth_header {
+        req = req.set(k, v);
+    }
+    if !is_openai {
+        req = req.set("anthropic-version", "2023-06-01");
+    }
+    let reach = match req.call() {
+        Ok(resp) => Reach::Up(resp.status()),
+        Err(ureq::Error::Status(code, _)) => {
+            if code == 401 || code == 403 {
+                Reach::Unauthorized(code)
+            } else {
+                // Any other status still proves the endpoint answered.
+                Reach::Up(code)
+            }
+        }
+        Err(ureq::Error::Transport(t)) => Reach::Down(t.to_string()),
+    };
+    Probe {
+        name: name.to_string(),
+        endpoint: base,
+        reach,
+    }
+}
+
+/// The ordered, de-duplicated provider chain: the active provider followed by any
+/// configured fallbacks. Used by the reachability probe and the fallback build.
+pub fn chain_names(config: &Config) -> Vec<String> {
+    let mut chain = vec![config.aishe.provider.clone()];
+    for n in &config.aishe.provider_fallback {
+        if !chain.contains(n) {
+            chain.push(n.clone());
+        }
+    }
+    chain
+}
+
 /// Build a provider to serve embeddings for semantic history search: the block
 /// named by `embedding_provider`, or the active `provider` when that is empty.
 /// Honors the fake-provider test hook. Errors if the block is unknown or its API

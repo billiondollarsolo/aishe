@@ -6,6 +6,17 @@ breaking changes can land in any release.
 
 ## [Unreleased]
 
+## [0.2.14] - 2026-06-13
+
+### Added
+- **Provider reachability probe (`aishe doctor --probe`).** Actively checks each
+  member of the provider chain with one short, read-only `GET /v1/models` (no
+  completion, so it costs no tokens) and reports **reachable**, **reachable but
+  key rejected** (401/403), or **unreachable** (connection refused / timeout) —
+  making the offline/fallback story (e.g. a local Ollama) verifiable. An
+  unreachable member is a warning, not a failure, so `doctor` still passes
+  offline. This is the reachability-probe follow-up to proposal R4.
+
 ## [0.2.13] - 2026-06-13
 
 ### Added

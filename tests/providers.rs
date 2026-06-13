@@ -386,3 +386,63 @@ fn openai_tool_result_uses_tool_role() {
     assert_eq!(out.text.as_deref(), Some("done"));
     m.assert();
 }
+
+// ---- Reachability probe (aishe doctor --probe) ----
+
+/// A Config whose `openai` block points at `base_url` with no API key env set.
+fn probe_config(base_url: &str) -> aishe::config::Config {
+    let mut cfg = aishe::config::Config::default();
+    cfg.aishe.provider = "openai".into();
+    cfg.providers.openai.base_url = base_url.to_string();
+    // A var name that is (almost certainly) unset, so the probe sends no auth.
+    cfg.providers.openai.api_key_env = "AISHE_PROBE_NO_SUCH_KEY".into();
+    cfg
+}
+
+#[test]
+fn probe_reports_reachable_on_2xx() {
+    let mut server = mockito::Server::new();
+    let m = server
+        .mock("GET", "/v1/models")
+        .with_status(200)
+        .with_body(r#"{"data":[]}"#)
+        .create();
+    let cfg = probe_config(&server.url());
+    let pr = aishe::providers::probe(&cfg, "openai");
+    assert!(
+        matches!(pr.reach, aishe::providers::Reach::Up(200)),
+        "got: {:?}",
+        pr.reach
+    );
+    m.assert();
+}
+
+#[test]
+fn probe_reports_unauthorized_on_401() {
+    let mut server = mockito::Server::new();
+    let _m = server
+        .mock("GET", "/v1/models")
+        .with_status(401)
+        .with_body(r#"{"error":{"message":"bad key"}}"#)
+        .create();
+    let cfg = probe_config(&server.url());
+    let pr = aishe::providers::probe(&cfg, "openai");
+    assert!(
+        matches!(pr.reach, aishe::providers::Reach::Unauthorized(401)),
+        "got: {:?}",
+        pr.reach
+    );
+}
+
+#[test]
+fn probe_reports_down_when_unreachable() {
+    // A port nothing is listening on → transport error → Down. Port 1 is
+    // privileged and unbound in test sandboxes.
+    let cfg = probe_config("http://127.0.0.1:1");
+    let pr = aishe::providers::probe(&cfg, "openai");
+    assert!(
+        matches!(pr.reach, aishe::providers::Reach::Down(_)),
+        "got: {:?}",
+        pr.reach
+    );
+}
