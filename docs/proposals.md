@@ -350,7 +350,7 @@ first-class, one-keystroke flow.
 
 ## N2 — Preview-first agentic runs (plan + diff + apply/undo)
 
-**Track:** Noteworthy · **Priority:** P1 · **Effort:** L · **Risk:** Med · **Depends on:** R1, R2
+**Track:** Noteworthy · **Priority:** P1 · **Effort:** L · **Risk:** Med · **Depends on:** R1, R2 · **Status: Shipped (v1 — preview-first file edits)** — `yolo_preview = true` makes the built-in `write_file`/`edit_file` tools show the unified diff and ask `apply this write/edit to <path>? [y/N]` *before* touching the file (`confirm_apply` in `src/tools.rs`; threaded from `src/modes/yolo.rs`), composing R1's `unified_diff`. Declining leaves the file untouched; applied changes are journaled for `aishe undo`. Non-interactive `-c` runs apply automatically, consistent with the rest of the confirm UX. The **editable plan checklist** and **overlay dry-run preview of arbitrary `run_command` steps** (which builds on R2's overlay/copy-on-write backend) remain follow-ups.
 
 ### Problem
 The headline demo: type a goal → see the **exact commands and predicted file

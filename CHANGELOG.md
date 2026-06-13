@@ -6,6 +6,18 @@ breaking changes can land in any release.
 
 ## [Unreleased]
 
+## [0.2.10] - 2026-06-13
+
+### Added
+- **Preview-first file edits for yolo (`yolo_preview = true`).** When the yolo
+  loop uses a built-in `write_file` or `edit_file`, show the unified diff and ask
+  `apply this write/edit to <path>? [y/N]` *before* touching the file, instead of
+  writing first and showing the diff after the fact. Declining leaves the file
+  untouched; applied changes are still journaled for `aishe undo`. Off by default;
+  applies to the file tools only and only interactively (a piped/`-c` run applies
+  automatically, like the rest of the confirm UX). This is the first slice of
+  proposal N2 from [docs/proposals.md](docs/proposals.md).
+
 ## [0.2.9] - 2026-06-13
 
 ### Added

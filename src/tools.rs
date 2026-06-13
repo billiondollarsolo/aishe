@@ -62,12 +62,18 @@ pub fn is_builtin_tool(name: &str) -> bool {
 
 /// Execute a built-in tool. Returns `(short label for the audit log, result
 /// content fed back to the model)`. `confirm_writes` gates writes outside the
-/// work tree.
-pub fn execute(name: &str, args: &Value, cwd: &Path, confirm_writes: bool) -> (String, String) {
+/// work tree; `preview` shows a diff and asks before applying a file edit.
+pub fn execute(
+    name: &str,
+    args: &Value,
+    cwd: &Path,
+    confirm_writes: bool,
+    preview: bool,
+) -> (String, String) {
     match name {
         "read_file" => read_file(args, cwd),
-        "write_file" => write_file(args, cwd, confirm_writes),
-        "edit_file" => edit_file(args, cwd, confirm_writes),
+        "write_file" => write_file(args, cwd, confirm_writes, preview),
+        "edit_file" => edit_file(args, cwd, confirm_writes, preview),
         "list_dir" => list_dir(args, cwd),
         "fetch_url" => fetch_url(args),
         other => (other.to_string(), format!("Error: unknown tool '{other}'.")),
@@ -217,14 +223,11 @@ fn read_file(args: &Value, cwd: &Path) -> (String, String) {
     }
 }
 
-fn write_file(args: &Value, cwd: &Path, confirm_writes: bool) -> (String, String) {
+fn write_file(args: &Value, cwd: &Path, confirm_writes: bool, preview: bool) -> (String, String) {
     let path = arg(args, "path");
     let content = arg(args, "content");
     if path.is_empty() {
         return ("write_file".into(), "Error: no path given.".into());
-    }
-    if confirm_writes && outside_tree(path) && !confirm("write", path) {
-        return (format!("write {path}"), "User declined the write.".into());
     }
     println!("  {} {}", "✏️".yellow(), format!("write {path}").dim());
     let resolved = resolve(cwd, path);
@@ -235,6 +238,16 @@ fn write_file(args: &Value, cwd: &Path, confirm_writes: bool) -> (String, String
     } else {
         None
     };
+    let diff = crate::undo::unified_diff(before.as_deref().unwrap_or(""), content);
+    // Preview-first: show the diff and confirm before applying. Otherwise keep the
+    // out-of-tree write confirmation, and show the diff after the fact.
+    if preview {
+        if !confirm_apply("write", path, &diff) {
+            return (format!("write {path}"), "User declined the change.".into());
+        }
+    } else if confirm_writes && outside_tree(path) && !confirm("write", path) {
+        return (format!("write {path}"), "User declined the write.".into());
+    }
     match std::fs::write(&resolved, content) {
         Ok(_) => {
             // Journal for `aishe undo`. Skip when an existing file wasn't valid
@@ -248,8 +261,8 @@ fn write_file(args: &Value, cwd: &Path, confirm_writes: bool) -> (String, String
                     &format!("write {path}"),
                 );
             }
-            if let Some(b) = &before {
-                print_diff(&crate::undo::unified_diff(b, content));
+            if !preview && existed {
+                print_diff(&diff); // preview already showed it
             }
             (
                 format!("write {path}"),
@@ -261,6 +274,28 @@ fn write_file(args: &Value, cwd: &Path, confirm_writes: bool) -> (String, String
             format!("Error writing '{path}': {e}"),
         ),
     }
+}
+
+/// Preview-first confirmation: show the diff, then (on a terminal) ask whether to
+/// apply. Without a terminal — scripted `-c` yolo — proceed, consistent with
+/// [`confirm`]. An empty diff (no content change) still proceeds.
+fn confirm_apply(action: &str, path: &str, diff: &str) -> bool {
+    use std::io::IsTerminal;
+    print_diff(diff);
+    if !std::io::stdin().is_terminal() {
+        return true;
+    }
+    print!(
+        "  {} apply this {action} to {}? [y/N]: ",
+        "?".yellow().bold(),
+        path.white()
+    );
+    let _ = std::io::stdout().flush();
+    let mut line = String::new();
+    if std::io::stdin().read_line(&mut line).is_err() {
+        return false;
+    }
+    matches!(line.trim().to_ascii_lowercase().as_str(), "y" | "yes")
 }
 
 /// Print a (already `-`/`+`/` `-prefixed) diff under a tool step, colorized.
@@ -280,7 +315,7 @@ fn print_diff(diff: &str) {
     }
 }
 
-fn edit_file(args: &Value, cwd: &Path, confirm_writes: bool) -> (String, String) {
+fn edit_file(args: &Value, cwd: &Path, confirm_writes: bool, preview: bool) -> (String, String) {
     let path = arg(args, "path");
     let find = arg(args, "find");
     let replace = arg(args, "replace");
@@ -290,9 +325,6 @@ fn edit_file(args: &Value, cwd: &Path, confirm_writes: bool) -> (String, String)
             "edit_file".into(),
             "Error: 'path' and 'find' are required.".into(),
         );
-    }
-    if confirm_writes && outside_tree(path) && !confirm("edit", path) {
-        return (format!("edit {path}"), "User declined the edit.".into());
     }
     let resolved = resolve(cwd, path);
     let original = match std::fs::read_to_string(&resolved) {
@@ -317,6 +349,16 @@ fn edit_file(args: &Value, cwd: &Path, confirm_writes: bool) -> (String, String)
         original.replacen(find, replace, 1)
     };
     let replaced = if all { count } else { 1 };
+    let diff = crate::undo::unified_diff(&original, &new);
+    // Preview-first: show the diff and confirm before applying. Otherwise keep the
+    // out-of-tree edit confirmation, and show the diff after the fact.
+    if preview {
+        if !confirm_apply("edit", path, &diff) {
+            return (format!("edit {path}"), "User declined the change.".into());
+        }
+    } else if confirm_writes && outside_tree(path) && !confirm("edit", path) {
+        return (format!("edit {path}"), "User declined the edit.".into());
+    }
     println!("  {} {}", "✏️".yellow(), format!("edit {path}").dim());
     match std::fs::write(&resolved, &new) {
         Ok(_) => {
@@ -327,7 +369,9 @@ fn edit_file(args: &Value, cwd: &Path, confirm_writes: bool) -> (String, String)
                 "edit_file",
                 &format!("edit {path}"),
             );
-            print_diff(&crate::undo::unified_diff(&original, &new));
+            if !preview {
+                print_diff(&diff); // preview already showed it
+            }
             (
                 format!("edit {path}"),
                 format!("Replaced {replaced} occurrence(s) in '{path}'."),
@@ -564,6 +608,7 @@ mod tests {
             &json!({"path": "note.txt", "content": "hello\nworld"}),
             &dir,
             false,
+            false,
         );
         assert!(msg.contains("Wrote"));
         let (_, content) = read_file(&json!({"path": "note.txt"}), &dir);
@@ -576,11 +621,17 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("aishe-tools-e-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         crate::undo::set_test_journal(Some(dir.join("undo.jsonl")));
-        write_file(&json!({"path": "f.txt", "content": "a b a b"}), &dir, false);
+        write_file(
+            &json!({"path": "f.txt", "content": "a b a b"}),
+            &dir,
+            false,
+            false,
+        );
         // first only
         let (_, m1) = edit_file(
             &json!({"path": "f.txt", "find": "a", "replace": "X"}),
             &dir,
+            false,
             false,
         );
         assert!(m1.contains("Replaced 1"));
@@ -590,12 +641,14 @@ mod tests {
             &json!({"path": "f.txt", "find": "b", "replace": "Y", "all": true}),
             &dir,
             false,
+            false,
         );
         assert_eq!(read_file(&json!({"path": "f.txt"}), &dir).1, "X Y a Y");
         // missing find string is an error
         let (_, m3) = edit_file(
             &json!({"path": "f.txt", "find": "zzz", "replace": "q"}),
             &dir,
+            false,
             false,
         );
         assert!(m3.contains("not found"));
@@ -613,10 +666,12 @@ mod tests {
             &json!({"path": "c.txt", "content": "one\ntwo"}),
             &dir,
             false,
+            false,
         );
         edit_file(
             &json!({"path": "c.txt", "find": "two", "replace": "TWO"}),
             &dir,
+            false,
             false,
         );
         assert_eq!(
@@ -633,6 +688,33 @@ mod tests {
             "created-then-edited file should be removed on undo"
         );
 
+        crate::undo::set_test_journal(None);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn preview_writes_apply_when_non_interactive() {
+        // With preview on but no terminal (the test harness), confirm_apply
+        // proceeds — consistent with `confirm` — so the write/edit still lands.
+        let dir = std::env::temp_dir().join(format!("aishe-tools-p-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        crate::undo::set_test_journal(Some(dir.join("undo.jsonl")));
+        let (_, msg) = write_file(
+            &json!({"path": "p.txt", "content": "alpha"}),
+            &dir,
+            false,
+            true,
+        );
+        assert!(msg.contains("Wrote"), "got: {msg}");
+        assert_eq!(read_file(&json!({"path": "p.txt"}), &dir).1, "alpha");
+        let (_, em) = edit_file(
+            &json!({"path": "p.txt", "find": "alpha", "replace": "beta"}),
+            &dir,
+            false,
+            true,
+        );
+        assert!(em.contains("Replaced 1"), "got: {em}");
+        assert_eq!(read_file(&json!({"path": "p.txt"}), &dir).1, "beta");
         crate::undo::set_test_journal(None);
         std::fs::remove_dir_all(&dir).ok();
     }

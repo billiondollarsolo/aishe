@@ -69,6 +69,13 @@ and decides what to do next, repeating until the task is done or it hits
   (`Proceed with this plan? [Y/n]`). Costs one extra planning call and applies
   only interactively (a piped/`-c` run has no one to approve, so it proceeds).
   Toggle live with `aishe plan on`.
+- **Preview-first file edits** (`yolo_preview = true`, off by default): when the
+  loop uses a built-in `write_file` or `edit_file`, show the diff and ask
+  `apply this write/edit to <path>? [y/N]` before touching the file, instead of
+  writing first and showing the diff after. Applies to the file tools only (use
+  `yolo_confirm` / `yolo_sandbox` for arbitrary `run_command` side effects). As
+  elsewhere, a piped/`-c` run has no one to answer, so it applies automatically.
+  Every applied change is still journaled for `aishe undo`.
 - **Confirmation tiers** (`yolo_confirm`): control when the loop pauses to
   confirm a `run_command` call:
   - `"never"` runs everything without asking.

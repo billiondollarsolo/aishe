@@ -244,6 +244,7 @@ fn run_loop(
                     &call.arguments,
                     executor.cwd(),
                     confirm_writes,
+                    config.aishe.yolo_preview,
                 );
                 crate::audit::action(&format!("yolo:{}", call.name), &label, None);
                 messages.push(Msg::ToolResult {

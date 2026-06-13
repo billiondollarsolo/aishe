@@ -125,6 +125,12 @@ pub struct AisheConfig {
     /// Off by default.
     #[serde(default)]
     pub yolo_plan: bool,
+    /// Preview-first file edits: when the yolo loop calls a built-in `write_file`
+    /// or `edit_file`, show the diff and ask before applying it (interactive only;
+    /// scripted `-c` runs proceed). Off by default. Set `yolo_preview = true` in
+    /// the `[aishe]` block of your config to enable.
+    #[serde(default)]
+    pub yolo_preview: bool,
     /// Stream every yolo command's full output to the terminal. Off by default:
     /// yolo shows a compact per-step result (the command, then its exit code and
     /// line count, plus a short tail on failure) while the full output still goes
@@ -281,6 +287,7 @@ impl Default for AisheConfig {
             sandbox_backend: default_sandbox_backend(),
             max_yolo_iterations: default_max_iters(),
             yolo_plan: false,
+            yolo_preview: false,
             yolo_verbose: false,
             project_context: true,
             project_tasks: true,

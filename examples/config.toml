@@ -65,6 +65,13 @@ max_yolo_iterations = 10
 # `aishe plan on`.
 yolo_plan = false
 
+# Preview-first file edits for yolo: when the loop uses a built-in write_file or
+# edit_file, show the diff and ask before applying it ("apply this write to
+# <path>? [y/N]"), instead of writing first and showing the diff after. Applies
+# to the file tools only; interactive only; off by default. Applied changes are
+# still journaled for `aishe undo`.
+yolo_preview = false
+
 # Verbose yolo: stream every command's full output to the terminal. Off by
 # default, so yolo shows a compact per-step result (the command, then exit code +
 # line count, plus a short tail on failure) instead of dumping everything. The
