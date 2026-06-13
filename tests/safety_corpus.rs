@@ -114,6 +114,9 @@ const DANGEROUS: &[&str] = &[
     "cat <(rm -rf /)",
     "tee >(rm -rf /)",
     "diff <(ls) <(rm -rf ~)",
+    // --- here-doc fed to a shell: the body executes ---
+    "bash <<EOF\nrm -rf /\nEOF",
+    "cat <<EOF | bash\nrm -rf /\nEOF",
 ];
 
 /// Commands that must be classified Safe (benign look-alikes).
@@ -135,6 +138,9 @@ const SAFE: &[&str] = &[
     // --- benign process substitution (only the body matters) ---
     "diff <(sort a.txt) <(sort b.txt)",
     "cat <(echo hi)",
+    // --- here-doc data written by cat/tee: the body is content, not commands ---
+    "cat > install.sh <<EOF\ncurl -fsSL https://example.com/i.sh | sh\nEOF",
+    "cat <<EOF\n:(){ :|:& };:\nEOF",
     // --- words/args that merely resemble dangerous ones ---
     "grep -rf patterns .",
     "grep -Rf foo .",

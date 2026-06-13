@@ -142,10 +142,12 @@ is a **backstop against mistakes**, not a security boundary. The segmentation is
 quote- and nesting-aware and recurses into substitutions — command substitution
 (`$(…)`, backticks), subshells, and process substitution (`<(…)`, `>(…)`) all
 have their inner commands assessed, so a dangerous command hidden inside one
-(`cat <(rm -rf /)`) is still caught. But it can still be evaded: an unusual
-interpreter, here-document data fed to a shell, or sufficient obfuscation can slip
-past patterns that look for the obvious shapes. Treat it as defense-in-depth, not
-a sandbox.
+(`cat <(rm -rf /)`) is still caught. Here-documents are handled too: a body fed to
+a shell (`bash <<EOF … rm -rf / … EOF`) is assessed as commands, while a body
+written verbatim by `cat`/`tee` is treated as data (so writing an install script
+that itself contains `curl … | sh` isn't a false positive). But it can still be
+evaded: an unusual interpreter, or sufficient obfuscation, can slip past patterns
+that look for the obvious shapes. Treat it as defense-in-depth, not a sandbox.
 
 This matters most in `auto` and `yolo`, where commands can run without a
 per-command confirmation. In `suggest` mode nothing runs until you explicitly

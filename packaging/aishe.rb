@@ -7,7 +7,7 @@
 class Aishe < Formula
   desc "Natural-language-aware shell: zsh for commands, an LLM for everything else"
   homepage "https://github.com/billiondollarsolo/aishe"
-  version "0.2.22"
+  version "0.2.23"
   license "MIT"
 
   on_macos do

@@ -6,6 +6,19 @@ breaking changes can land in any release.
 
 ## [Unreleased]
 
+## [0.2.23] - 2026-06-13
+
+### Fixed
+- **Safety gate now handles here-documents.** A here-doc body fed to a shell
+  (`bash <<EOF … rm -rf / … EOF`, `cat <<EOF | bash`, `ssh host <<EOF`) is assessed
+  as commands — closing an evasion where the dangerous body slipped past the
+  head-anchored checks. A body written verbatim by `cat`/`tee` is treated as data,
+  so writing a script/config whose *content* resembles a dangerous command (an
+  install script containing `curl … | sh`, a fork-bomb string) no longer trips a
+  false positive. Safe-by-construction: a body is only treated as data for a simple
+  `cat`/`tee` line with no operator that could route it to an interpreter. Completes
+  proposal R3.
+
 ## [0.2.22] - 2026-06-13
 
 ### Fixed

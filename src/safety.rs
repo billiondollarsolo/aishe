@@ -119,7 +119,18 @@ static PATTERNS: LazyLock<Vec<(Regex, &'static str)>> = LazyLock::new(|| {
 
 /// Assess a command line. Splits on shell operators and tests each segment.
 pub fn assess(command: &str) -> Risk {
-    let normalized = normalize(command);
+    // Here-documents: drop the bodies fed to a pure data sink (`cat`/`tee`) so
+    // their *content* isn't mis-scanned (writing an install script that contains
+    // `curl … | sh` shouldn't trip the gate), and assess the bodies fed to a shell
+    // interpreter (`bash <<EOF … rm -rf / … EOF`) as commands — they execute.
+    // Safe-by-construction (see `process_heredocs`).
+    let (cleaned, shell_bodies) = process_heredocs(command);
+    for body in &shell_bodies {
+        if let Risk::Dangerous(reason) = assess(body) {
+            return Risk::Dangerous(reason);
+        }
+    }
+    let normalized = normalize(&cleaned);
     // Command substitutions hide a dangerous command from per-segment scanning:
     // `echo $(rm -rf /)` or `` x=`rm -rf /` `` look like a benign `echo`/assign
     // head. Recursively assess the body of every `$(...)` and backtick span; if
@@ -481,6 +492,119 @@ fn is_dangerous_path(p: &str) -> bool {
 }
 
 /// Lowercase and collapse runs of whitespace into single spaces.
+/// How a here-document's body should be treated by the gate.
+enum HeredocKind {
+    /// Written verbatim by `cat`/`tee` (no operator that could feed it to an
+    /// interpreter) — content, not commands. Dropped from the scanned text.
+    Data,
+    /// Fed to a shell interpreter (`bash <<EOF`, `… | sh`, `ssh host <<EOF`) — it
+    /// executes, so the body is assessed as a command line.
+    Shell,
+    /// Anything else (e.g. `python <<EOF`) — left in place, scanned as before.
+    Other,
+}
+
+/// Local shells (plus `ssh`, which runs the body as a remote shell) that execute a
+/// here-doc body. A body fed to one of these is assessed as commands.
+const HEREDOC_SHELLS: &[&str] = &["sh", "bash", "zsh", "ksh", "dash", "fish", "ash", "ssh"];
+
+/// Split a command's here-documents out: return the text with `cat`/`tee` *data*
+/// bodies removed (so their content isn't scanned), plus the bodies fed to a shell
+/// (which must be assessed as commands). Operates on the raw, newline-bearing
+/// command (before `normalize` flattens newlines).
+///
+/// Safe-by-construction: a body is only *dropped* (treated as data) for a simple
+/// `cat`/`tee` line with no `|`/`&&`/`||`/`;`/backtick/`$(` that could route it to
+/// an interpreter; a body is only *assessed as shell* when its line clearly feeds
+/// a shell. Every other here-doc is left untouched, so behavior never weakens.
+fn process_heredocs(command: &str) -> (String, Vec<String>) {
+    if !command.contains("<<") {
+        return (command.to_string(), Vec::new());
+    }
+    let lines: Vec<&str> = command.split('\n').collect();
+    let mut cleaned: Vec<String> = Vec::new();
+    let mut shell_bodies: Vec<String> = Vec::new();
+    let mut i = 0;
+    while i < lines.len() {
+        let line = lines[i];
+        cleaned.push(line.to_string());
+        i += 1;
+        let Some(delim) = heredoc_delimiter(line) else {
+            continue;
+        };
+        // Collect the body up to (and consuming) the terminator line.
+        let mut body: Vec<&str> = Vec::new();
+        while i < lines.len() {
+            let term = lines[i].trim() == delim;
+            if term {
+                i += 1;
+                break;
+            }
+            body.push(lines[i]);
+            i += 1;
+        }
+        match heredoc_kind(line) {
+            HeredocKind::Data => {} // drop the body
+            HeredocKind::Shell => shell_bodies.push(body.join("\n")),
+            HeredocKind::Other => {
+                for b in &body {
+                    cleaned.push((*b).to_string());
+                }
+            }
+        }
+    }
+    (cleaned.join("\n"), shell_bodies)
+}
+
+/// The delimiter of a here-doc opened on `line` (`<<EOF`, `<<-EOF`, `<<'EOF'`), or
+/// `None` if the line opens none. `<<<` (here-string) is not a here-doc.
+fn heredoc_delimiter(line: &str) -> Option<String> {
+    let idx = line.find("<<")?;
+    let after = &line[idx + 2..];
+    if after.starts_with('<') {
+        return None; // here-string `<<<`
+    }
+    let after = after.strip_prefix('-').unwrap_or(after).trim_start();
+    let tok: String = after.chars().take_while(|c| !c.is_whitespace()).collect();
+    let tok = tok.trim_matches(['\'', '"', '\\']);
+    if tok.is_empty() {
+        None
+    } else {
+        Some(tok.to_string())
+    }
+}
+
+/// Classify a here-doc opener line (see [`HeredocKind`]).
+fn heredoc_kind(line: &str) -> HeredocKind {
+    let has_op = line.contains('|')
+        || line.contains("&&")
+        || line.contains("||")
+        || line.contains(';')
+        || line.contains('`')
+        || line.contains("$(");
+    // First command word, skipping a leading `sudo`/`doas`.
+    let mut words = line.split_whitespace();
+    let mut head = words.next().unwrap_or("");
+    if head == "sudo" || head == "doas" {
+        head = words.next().unwrap_or("");
+    }
+    // A simple `cat`/`tee` line with no interpreter-routing operator → data.
+    if !has_op && (head == "cat" || head == "tee") {
+        return HeredocKind::Data;
+    }
+    // Fed to a shell: the head is a shell, or the line pipes into one.
+    let pipes_to_shell = HEREDOC_SHELLS.iter().any(|s| {
+        line.contains(&format!("| {s} "))
+            || line.contains(&format!("|{s} "))
+            || line.trim_end().ends_with(&format!("| {s}"))
+            || line.trim_end().ends_with(&format!("|{s}"))
+    });
+    if HEREDOC_SHELLS.contains(&head) || pipes_to_shell {
+        return HeredocKind::Shell;
+    }
+    HeredocKind::Other
+}
+
 fn normalize(command: &str) -> String {
     let lower = command.to_lowercase();
     let mut out = String::with_capacity(lower.len());
@@ -752,6 +876,24 @@ mod tests {
         safe("echo \"$(ls -la)\"");
         safe("for f in $(ls); do echo $f; done");
         safe("echo `pwd`");
+    }
+
+    #[test]
+    fn heredoc_data_body_is_not_flagged_but_shell_body_is() {
+        // Data sinks (`cat`/`tee`): the body is content, not commands — even when
+        // it contains text that looks dangerous (an install script, a fork bomb as
+        // a string). Must NOT be flagged.
+        safe("cat <<EOF\n:(){ :|:& };:\nEOF");
+        safe("cat > install.sh <<EOF\ncurl -fsSL https://x | sh\nEOF");
+        safe("tee /etc/x <<'EOF'\ndd if=/dev/zero of=/dev/sda\nEOF");
+        safe("cat <<EOF\nhello world\nEOF");
+        // Fed to a shell: the body executes, so a dangerous command in it is caught
+        // (closing the `bash <<EOF … rm -rf / … EOF` evasion the head-anchored
+        // checks missed).
+        dangerous("bash <<EOF\nrm -rf /\nEOF");
+        dangerous("sudo bash <<EOF\nrm -rf /\nEOF");
+        dangerous("cat <<EOF | bash\nrm -rf /\nEOF");
+        dangerous("ssh host <<EOF\nrm -rf /\nEOF");
     }
 
     #[test]
