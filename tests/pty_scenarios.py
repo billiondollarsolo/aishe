@@ -252,16 +252,18 @@ def main():
 
         # 10. Per-session usage summary: with token recording on (AISHE_FAKE_USAGE),
         #     an NL call tallies its tokens, and the PTY prints a one-line cost
-        #     summary to its own stderr when zsh exits.
+        #     summary to its own stderr when zsh exits. Use auto mode so the call
+        #     *executes* (no line-editor pre-fill to clean up before exit).
         sh.send("")  # land on a clean prompt
         sh.settle(0.3)
-        sh.send("export AISHE_MODE=suggest")   # deterministic: route via --suggest-line
+        sh.send("export AISHE_MODE=auto")
         sh.send("export AISHE_FAKE_USAGE='123,45'")
         sh.settle(0.3)
         set_fake(sh, command("echo USAGE_SCEN_42", "marker"))
-        sh.send("please print the usage marker")  # NL -> suggest child records usage
-        check(sh, "usage-scenario NL call suggested", sh.expect("echo USAGE_SCEN_42"))
-        sh.raw(b"\x03")  # clear the pre-filled line without running it
+        sh.send("? give me the usage marker")  # `?` forces NL; auto runs + records usage
+        check(sh, "usage-scenario NL call ran", sh.expect("USAGE_SCEN_42"))
+        sh.send("export AISHE_FAKE_LLM=")  # stop faking so `exit` can't route to NL
+        sh.settle(0.3)
 
         # Global invariant: no parse/glob/eval errors anywhere in the session.
         leaked = [s for s in FORBIDDEN if s in sh.transcript]
@@ -270,8 +272,11 @@ def main():
             sys.stderr.write("leaked: %r\n" % leaked)
 
         sh.send("exit")
-        sh.settle(1.2)  # let the parent print the post-session summary after zsh exits
-        check(sh, "session usage summary printed on exit", "aishe session:" in sh.transcript)
+        # The parent prints the post-session summary to its own stderr after zsh
+        # exits; wait for it (draining) rather than a fixed settle, which can miss
+        # it under load.
+        check(sh, "session usage summary printed on exit",
+              sh.expect("aishe session:", timeout=8))
         sys.stdout.write("\nAll %d scenarios passed.\n" % len(PASSED))
     finally:
         sh.close()

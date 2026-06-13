@@ -6,6 +6,17 @@ breaking changes can land in any release.
 
 ## [Unreleased]
 
+## [0.2.17] - 2026-06-13
+
+### Added
+- **Automatic semantic-index refresh (`semantic_history_autoindex`).** When on,
+  the interactive shell re-runs the incremental `history index` on exit, so newly
+  run commands are searchable next session without a manual `aishe history index`.
+  Off by default (it embeds new commands on the provider — free with a local
+  Ollama, metered on a paid API); requires `semantic_history`. This completes
+  proposal N4. The indexing core was extracted into a shared, tested module
+  (`src/index.rs`) used by both the CLI command and the auto-index.
+
 ## [0.2.16] - 2026-06-13
 
 ### Fixed

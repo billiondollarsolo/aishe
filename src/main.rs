@@ -1368,60 +1368,27 @@ fn history_index(config: &Config, rebuild: bool) -> Result<u8> {
     }
     let store = semhist_path();
     let hist = history_paths(config).1;
-    let candidates = aishe::semhist::candidates(&aishe::histlog::read(&hist));
-    if candidates.is_empty() {
-        println!("no history to index yet (run some commands first).");
-        return Ok(0);
-    }
-
-    // Incremental by default: skip commands already embedded. `--rebuild` starts
-    // the store fresh.
-    let mut existing: Vec<aishe::semhist::Entry> = if rebuild {
-        Vec::new()
-    } else {
-        aishe::semhist::load(&store)
-    };
-    let already: std::collections::HashSet<String> =
-        existing.iter().map(|e| e.cmd.clone()).collect();
-    let todo: Vec<String> = candidates
-        .into_iter()
-        .filter(|c| !already.contains(c))
-        .collect();
-    if todo.is_empty() {
-        println!(
-            "semantic index is up to date ({} commands).",
-            existing.len()
-        );
-        return Ok(0);
-    }
-
-    let provider = providers::embedder(config)?;
-    let model = &config.aishe.embedding_model;
-    // Embed in batches so one request doesn't carry the whole history.
-    let mut added = 0usize;
-    for chunk in todo.chunks(128) {
-        let batch: Vec<String> = chunk.to_vec();
-        let vecs = match provider.embed(&batch, model) {
-            Ok(v) => v,
-            Err(e) => {
-                eprintln!("aishe: embedding failed: {e}");
-                // Persist what we managed before the failure so progress isn't lost.
-                if added > 0 {
-                    let _ = aishe::semhist::save(&store, &existing);
-                }
-                return Ok(1);
-            }
-        };
-        for (cmd, vec) in batch.into_iter().zip(vecs) {
-            existing.push(aishe::semhist::Entry { cmd, vec });
-            added += 1;
+    match aishe::index::reindex(config, &store, &hist, rebuild) {
+        Ok(Ok(ix)) => {
+            println!(
+                "indexed {} command(s) ({} in the store).",
+                ix.added, ix.total
+            );
+            Ok(0)
+        }
+        Ok(Err(aishe::index::Skip::NoHistory)) => {
+            println!("no history to index yet (run some commands first).");
+            Ok(0)
+        }
+        Ok(Err(aishe::index::Skip::UpToDate(n))) => {
+            println!("semantic index is up to date ({n} commands).");
+            Ok(0)
+        }
+        Err(e) => {
+            eprintln!("aishe: {e}");
+            Ok(1)
         }
     }
-    aishe::semhist::save(&store, &existing)
-        .map_err(|e| anyhow::anyhow!("writing {}: {e}", store.display()))?;
-    let total = existing.len().min(aishe::semhist::STORE_CAP);
-    println!("indexed {added} command(s) ({total} in the store).");
-    Ok(0)
 }
 
 /// Embed the query and print the closest past commands by meaning. In `bare`

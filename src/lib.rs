@@ -11,6 +11,7 @@ pub mod dispatcher;
 pub mod executor;
 pub mod fuzzy;
 pub mod histlog;
+pub mod index;
 pub mod integration;
 pub mod mcp;
 pub mod modes;

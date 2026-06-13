@@ -97,6 +97,12 @@ embedding_provider = ""
 # Embedding model, served over an OpenAI-compatible /v1/embeddings endpoint:
 # text-embedding-3-small (OpenAI) or e.g. nomic-embed-text (local Ollama).
 embedding_model = "text-embedding-3-small"
+# Keep the index fresh automatically: re-run the incremental `history index` when
+# the interactive shell exits, so new commands are searchable without a manual
+# `aishe history index`. Off by default (it embeds new commands on the embedding
+# provider — free with a local Ollama, metered on a paid API). Needs
+# semantic_history.
+semantic_history_autoindex = false
 
 # zsh AUTO_PUSHD for aishe's in-process `cd` (the `-c` and shell-hook paths):
 # every `cd` pushes the previous directory onto the stack. Navigate with

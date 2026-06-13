@@ -172,3 +172,9 @@ Ollama embedder the whole feature stays offline — your history never leaves th
 machine. `search` prints the closest past commands with a similarity score; for
 live recall while typing, the [semantic-recall keybinding](#semantic-recall-keybinding)
 (**Ctrl-X Ctrl-R**) pre-fills the best match onto the line.
+
+To skip the manual `index` step, set `semantic_history_autoindex = true`: the
+interactive shell then re-runs the incremental index automatically when you exit,
+so newly run commands are searchable next session. It's off by default because it
+embeds new commands on the provider (free with a local Ollama, metered on a paid
+API).

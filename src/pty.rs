@@ -212,6 +212,25 @@ pub fn run_zsh(config: &Config, history_log: &std::path::Path) -> Result<u8> {
         }
     }
 
+    // Opt-in: keep the semantic index fresh by incrementally embedding the
+    // session's new commands on exit. Best-effort and quiet — a missing key or
+    // offline embedder just leaves the index as-is.
+    if config.aishe.semantic_history && config.aishe.semantic_history_autoindex {
+        let store = history_log.with_file_name("history.vec");
+        if let Ok(Ok(ix)) = crate::index::reindex(config, &store, history_log, false) {
+            if ix.added > 0 {
+                eprintln!(
+                    "{}",
+                    format!(
+                        "aishe: indexed {} new command(s) for semantic search",
+                        ix.added
+                    )
+                    .dim()
+                );
+            }
+        }
+    }
+
     Ok((status.exit_code() & 0xff) as u8)
 }
 

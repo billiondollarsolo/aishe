@@ -143,6 +143,34 @@ fn search_before_indexing_prompts_to_index() {
 }
 
 #[test]
+fn index_is_incremental_and_reports_up_to_date() {
+    let (dir, data) = setup("incr", true);
+    seed_history(&data, &["git status", "docker ps"]);
+    // First index embeds both.
+    run(&dir)
+        .args(["history", "index"])
+        .assert()
+        .success()
+        .stdout(contains("indexed 2 command"));
+    // Re-running with no new commands reports up-to-date (nothing re-embedded).
+    run(&dir)
+        .args(["history", "index"])
+        .assert()
+        .success()
+        .stdout(contains("up to date").and(contains("2 commands")));
+}
+
+#[test]
+fn index_with_no_history_says_so() {
+    let (dir, _data) = setup("nohist", true);
+    run(&dir)
+        .args(["history", "index"])
+        .assert()
+        .success()
+        .stdout(contains("no history to index"));
+}
+
+#[test]
 fn bare_search_prints_only_the_command_for_the_recall_widget() {
     let (dir, data) = setup("bare", true);
     seed_history(

@@ -185,6 +185,13 @@ pub struct AisheConfig {
     /// Empty = use the active `provider`.
     #[serde(default)]
     pub embedding_provider: String,
+    /// Keep the semantic index fresh automatically: when on, the interactive shell
+    /// re-runs the incremental `history index` on exit so new commands are
+    /// searchable without a manual `aishe history index`. Off by default because
+    /// it sends new commands to the embedding provider (free with a local Ollama;
+    /// metered on a paid API). Requires `semantic_history`.
+    #[serde(default)]
+    pub semantic_history_autoindex: bool,
     /// In the zsh-PTY front-end, override the prompt with aishe's branded prompt
     /// (`<cwd> <glyph>`, glyph per mode) so it's obvious you're in aishe. On by
     /// default; set false to keep your real zsh prompt untouched.
@@ -319,6 +326,7 @@ impl Default for AisheConfig {
             semantic_history: false,
             embedding_model: default_embedding_model(),
             embedding_provider: String::new(),
+            semantic_history_autoindex: false,
             pty_prompt: true,
             auto_pushd: false,
             cdpath: Vec::new(),
