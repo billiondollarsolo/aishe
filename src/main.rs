@@ -230,6 +230,11 @@ enum HistoryCmd {
         /// How many results to show.
         #[arg(short = 'n', long, default_value_t = 5)]
         limit: usize,
+        /// Print only the matching command(s), no score column — for the recall
+        /// key binding to pre-fill the line. Notices go to stderr; stdout stays
+        /// empty when there's no match (or the feature is off).
+        #[arg(long)]
+        bare: bool,
     },
     /// (Re)build the semantic index from your shell-history log.
     Index {
@@ -1271,8 +1276,20 @@ fn semhist_path() -> std::path::PathBuf {
 fn history_command(config: &Config, cmd: &HistoryCmd) -> Result<u8> {
     match cmd {
         HistoryCmd::Index { rebuild } => history_index(config, *rebuild),
-        HistoryCmd::Search { query, limit } => history_search(config, &query.join(" "), *limit),
+        HistoryCmd::Search { query, limit, bare } => {
+            history_search(config, &query.join(" "), *limit, *bare)
+        }
     }
+}
+
+/// Notice + early return when the feature is off, with how to turn it on. In
+/// `bare` mode the notice goes to stderr so stdout stays clean for the widget.
+fn semantic_history_off_notice_bare(bare: bool) -> u8 {
+    if bare {
+        eprintln!("aishe: semantic history is off (set semantic_history = true).");
+        return 0;
+    }
+    semantic_history_off_notice()
 }
 
 /// Notice + early return when the feature is off, with how to turn it on.
@@ -1352,10 +1369,12 @@ fn history_index(config: &Config, rebuild: bool) -> Result<u8> {
     Ok(0)
 }
 
-/// Embed the query and print the closest past commands by meaning.
-fn history_search(config: &Config, query: &str, limit: usize) -> Result<u8> {
+/// Embed the query and print the closest past commands by meaning. In `bare`
+/// mode only the command text is printed (no score column) and every notice goes
+/// to stderr, so the recall key binding can assign stdout straight to the line.
+fn history_search(config: &Config, query: &str, limit: usize, bare: bool) -> Result<u8> {
     if !config.aishe.semantic_history {
-        return Ok(semantic_history_off_notice());
+        return Ok(semantic_history_off_notice_bare(bare));
     }
     if query.trim().is_empty() {
         eprintln!(
@@ -1366,7 +1385,12 @@ fn history_search(config: &Config, query: &str, limit: usize) -> Result<u8> {
     let store = semhist_path();
     let entries = aishe::semhist::load(&store);
     if entries.is_empty() {
-        println!("the semantic index is empty — run `aishe history index` first.");
+        let msg = "the semantic index is empty — run `aishe history index` first.";
+        if bare {
+            eprintln!("aishe: {msg}");
+        } else {
+            println!("{msg}");
+        }
         return Ok(0);
     }
     let provider = providers::embedder(config)?;
@@ -1377,11 +1401,19 @@ fn history_search(config: &Config, query: &str, limit: usize) -> Result<u8> {
     };
     let hits = aishe::semhist::top_k(&entries, &qvec, limit.max(1));
     if hits.is_empty() {
-        println!("no matches.");
+        if bare {
+            eprintln!("aishe: no match.");
+        } else {
+            println!("no matches.");
+        }
         return Ok(0);
     }
     for (score, cmd) in hits {
-        println!("{}  {cmd}", format!("{score:.2}").dim());
+        if bare {
+            println!("{cmd}");
+        } else {
+            println!("{}  {cmd}", format!("{score:.2}").dim());
+        }
     }
     Ok(0)
 }

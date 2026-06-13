@@ -61,6 +61,29 @@ export AISHE_MODE_KEY='^[[Z'   # zsh bindkey sequence (default Shift-Tab)
 
 (bash binds the same to `\e[Z`; re-bind with `bind -x` if you need a different key.)
 
+### fix-the-last-command keybinding
+
+When a command fails, press **Ctrl-X Ctrl-F** to ask the model for a corrected
+command; it's pre-filled on the line for review and never auto-runs. Override the
+key with `AISHE_FIX_KEY` (a zsh `bindkey` sequence). Set `AISHE_AUTODIAGNOSE=1` to
+have the prompt hint at it after a non-zero exit.
+
+### semantic-recall keybinding
+
+With [semantic history search](#semantic-history-search-opt-in) enabled, type a
+few words describing a past command ("the docker run with the prometheus volume")
+and press **Ctrl-X Ctrl-R** to replace the line with the closest past command by
+*meaning* — pre-filled for review, never auto-run. It needs `semantic_history =
+true` and a built index (`aishe history index`); with the feature off or no match
+it leaves the line untouched and shows a brief message. Override the key:
+
+```sh
+export AISHE_RECALL_KEY='^X^R'   # zsh bindkey sequence (default Ctrl-X Ctrl-R)
+```
+
+(In bash, suggest mode can't pre-fill the line, so `Ctrl-X Ctrl-R` there recalls
+the last printed AI suggestion instead — same "recall" mnemonic, per shell.)
+
 ### How it works
 
 Shells run the not-found handler in a subshell, so it cannot touch the line editor
@@ -142,5 +165,6 @@ aishe history search "docker volume mount" -n 10
 The vectors live in a local, capped, rebuildable store at
 `~/.local/share/aishe/history.vec` (the newest ~5000 commands). With a local
 Ollama embedder the whole feature stays offline — your history never leaves the
-machine. `search` prints the closest past commands with a similarity score; an
-interactive key binding that pre-fills the chosen command is a planned follow-up.
+machine. `search` prints the closest past commands with a similarity score; for
+live recall while typing, the [semantic-recall keybinding](#semantic-recall-keybinding)
+(**Ctrl-X Ctrl-R**) pre-fills the best match onto the line.

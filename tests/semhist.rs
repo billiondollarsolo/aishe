@@ -141,3 +141,63 @@ fn search_before_indexing_prompts_to_index() {
         .success()
         .stdout(contains("run `aishe history index`"));
 }
+
+#[test]
+fn bare_search_prints_only_the_command_for_the_recall_widget() {
+    let (dir, data) = setup("bare", true);
+    seed_history(
+        &data,
+        &[
+            "git status",
+            "docker run -v /data/prometheus:/prom prom/prometheus",
+        ],
+    );
+    run(&dir).args(["history", "index"]).assert().success();
+
+    let out = run(&dir)
+        .args([
+            "history",
+            "search",
+            "docker prometheus volume",
+            "-n",
+            "1",
+            "--bare",
+        ])
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    // Exactly the command, no score column, nothing else.
+    assert_eq!(
+        stdout.trim(),
+        "docker run -v /data/prometheus:/prom prom/prometheus",
+        "bare output must be just the command, got: {stdout:?}"
+    );
+}
+
+#[test]
+fn bare_search_keeps_stdout_clean_when_off() {
+    // The recall widget shoves stdout into the line buffer, so when the feature
+    // is off (or empty) bare mode must print nothing to stdout — notices go to
+    // stderr instead.
+    let (dir, data) = setup("bareoff", false);
+    seed_history(&data, &["git status"]);
+    let out = run(&dir)
+        .args(["history", "search", "git", "--bare"])
+        .output()
+        .unwrap();
+    assert!(
+        String::from_utf8_lossy(&out.stdout).trim().is_empty(),
+        "bare stdout should be empty when the feature is off"
+    );
+}
+
+#[test]
+fn init_zsh_wires_the_recall_widget() {
+    Command::cargo_bin("aishe")
+        .unwrap()
+        .args(["init", "zsh"])
+        .assert()
+        .success()
+        .stdout(contains("aishe-recall"))
+        .stdout(contains("AISHE_RECALL_KEY"));
+}

@@ -177,6 +177,14 @@ def main():
         if not sh.expect("aishe-nl-widget"):
             fail("force-NL key not bound", sh)
 
+        # 4b) the semantic-recall widget is defined and bound to Ctrl-X Ctrl-R.
+        sh.send("print -r -- RECALL=${widgets[aishe-recall]}")
+        if not sh.expect("user:aishe-recall"):
+            fail("semantic-recall ZLE widget not defined", sh)
+        sh.send("bindkey '^X^R'")
+        if not sh.expect("aishe-recall"):
+            fail("semantic-recall key not bound", sh)
+
         # 5) clean exit: zsh should terminate on its own after `exit`.
         sh.send("exit")
         code = sh.wait_exit(timeout=10)

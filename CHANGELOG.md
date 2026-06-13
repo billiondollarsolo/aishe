@@ -6,6 +6,19 @@ breaking changes can land in any release.
 
 ## [Unreleased]
 
+## [0.2.12] - 2026-06-13
+
+### Added
+- **Semantic-recall keybinding (Ctrl-X Ctrl-R).** With `semantic_history`
+  enabled, type a few words describing a past command and press **Ctrl-X Ctrl-R**
+  in the zsh front-end to replace the line with the closest past command by
+  meaning — pre-filled for review, never auto-run. Override with
+  `AISHE_RECALL_KEY`. Backed by a new `aishe history search --bare` mode (prints
+  only the command, notices to stderr, empty stdout on no match) so the widget can
+  assign the result straight to the line. This completes the interactive half of
+  proposal N4 (the CLI shipped in 0.2.11); idle-time background indexing remains a
+  follow-up.
+
 ## [0.2.11] - 2026-06-13
 
 ### Added

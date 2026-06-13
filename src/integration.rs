@@ -25,6 +25,11 @@
 //! - **force-NL keybinding.** A ZLE widget (default Alt-Enter, override with
 //!   `AISHE_NL_KEY`) runs in a real widget (so `BUFFER` works) and replaces the
 //!   line with an LLM suggestion. bash binds the same to `Ctrl-G`.
+//!
+//! - **semantic-recall keybinding.** A ZLE widget (default `Ctrl-X Ctrl-R`,
+//!   override with `AISHE_RECALL_KEY`) takes the current line as a
+//!   natural-language query and pre-fills the closest past command by meaning
+//!   (opt-in `semantic_history`; never auto-runs).
 
 use std::borrow::Cow;
 
@@ -172,6 +177,30 @@ aishe-fix-command() {
   fi
 }
 
+# Semantic history recall (default Ctrl-X Ctrl-R; override AISHE_RECALL_KEY).
+# Takes the current line as a natural-language query ("the docker run with the
+# prometheus volume"), asks aishe for the closest past command by meaning, and
+# pre-fills it on the line for review — it never auto-runs. Needs
+# `semantic_history = true` and a built index (`aishe history index`); with the
+# feature off or no match it just shows a message and leaves the line untouched.
+# Bounded by aishe's hook timeout, so it can't hang the editor.
+aishe-recall() {
+  emulate -L zsh
+  if [[ -z "$BUFFER" ]]; then
+    zle -M "aishe: type a few words first, then press recall"
+    return
+  fi
+  zle -M "aishe: recalling…"
+  local hit
+  hit="$(command aishe history search "$BUFFER" -n 1 --bare 2>/dev/null)"
+  if [[ -n "$hit" ]]; then
+    BUFFER="$hit"
+    CURSOR=${#BUFFER}
+  else
+    zle -M "aishe: no recall match"
+  fi
+}
+
 # accept-line wrapper: a line starting with `?` or `#` is natural language. Strip
 # the sigil here (before zsh parses it, so the shell's comment/glob rules never
 # apply) and force it to the AI; otherwise behave as before, chaining whatever
@@ -222,6 +251,8 @@ if [[ -o interactive ]]; then
   bindkey "${AISHE_MODE_KEY:-^[[Z}" aishe-cycle-mode
   zle -N aishe-fix-command
   bindkey "${AISHE_FIX_KEY:-^X^F}" aishe-fix-command
+  zle -N aishe-recall
+  bindkey "${AISHE_RECALL_KEY:-^X^R}" aishe-recall
   # Wrap accept-line once, chaining any existing widget (plugin-friendly).
   if [[ "${widgets[accept-line]}" != "user:aishe-accept-line" ]]; then
     case "${widgets[accept-line]}" in
