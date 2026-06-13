@@ -151,12 +151,14 @@ project_context = true
 
 # Include this repo's task surface (justfile/Makefile targets, package.json &
 # composer scripts, compose services, Cargo/Python markers, CI) in the context, so
-# "run the tests" maps to the project's real command. Cheap (cached file reads).
+# "run the tests" maps to the project's real command. Walks up to the repo root,
+# so it still resolves from a subdirectory. Cheap (cached file reads).
 project_tasks = true
 
 # Include a one-line list of tools installed on $PATH (package manager, container
-# runtime, kubectl, ...) so the model proposes commands that exist on this host.
-# Cheap (cached `which` lookups). See `aishe context` to preview the whole block.
+# runtime, kubectl, ...) plus operational host facts (init system; the active
+# Kubernetes context) so the model proposes commands that fit this host. Cheap
+# (cached `which` + local config reads). See `aishe context` to preview the block.
 host_profile = true
 
 # A repo can also ship a project-local config overlay at .aishe/config.toml

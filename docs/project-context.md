@@ -52,15 +52,21 @@ Beyond `.aishe/context.md`, aishe automatically adds two compact, derived blocks
 so suggestions fit *this* repo and *this* machine — no setup required:
 
 - **Project tasks** (`project_tasks = true`, default on): aishe reads the build
-  files in the working directory and lists their entry points — `justfile` /
-  `Makefile` targets, `package.json` and `composer.json` scripts, `compose`
-  services, and Cargo/Python/CI markers. So "run the tests" resolves to the
-  project's real command (`just test`, `npm test`, `cargo test`, …) instead of a
-  guess.
-- **Installed tools** (`host_profile = true`, default on): a one-line list of the
-  tools present on `$PATH` (package manager, `docker`/`podman`, `kubectl`, …), so
-  the model proposes commands that exist here — `apt install` on Debian, `dnf` on
-  Fedora, `brew` on macOS.
+  files and lists their entry points — `justfile` / `Makefile` targets,
+  `package.json` and `composer.json` scripts, `compose` services, and
+  Cargo/Python/CI markers. So "run the tests" resolves to the project's real
+  command (`just test`, `npm test`, `cargo test`, …) instead of a guess. It walks
+  up to the repo root (nearest `.git`), so it still works from a subdirectory; a
+  subdirectory with its own task surface takes precedence, and the resolved root
+  is noted when it differs from your cwd.
+- **Installed tools + host facts** (`host_profile = true`, default on): a one-line
+  list of the tools present on `$PATH` (package manager, `docker`/`podman`,
+  `kubectl`, …) so the model proposes commands that exist here — `apt install` on
+  Debian, `dnf` on Fedora, `brew` on macOS — plus operational facts that change
+  which command is correct: the **init system** (`systemd` vs `openrc` vs
+  `launchd`, so service control is right) and the **active Kubernetes context**
+  (so cluster ops target the intended place). The kube context reads only local
+  kubeconfig (no cluster contact).
 
 Both are cheap (cached file reads / `which` lookups), capped, and contain only
 names — no file contents, no secrets. Disable either with

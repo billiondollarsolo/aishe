@@ -6,6 +6,20 @@ breaking changes can land in any release.
 
 ## [Unreleased]
 
+## [0.2.15] - 2026-06-13
+
+### Added
+- **Project-root-aware task discovery + richer host facts** (context block). The
+  project-tasks block now walks up from your cwd to the repo root (nearest
+  `.git`), so "run the tests" still resolves to the project's real command when
+  you're in a subdirectory — and a subdirectory with its own task surface takes
+  precedence (the resolved root is noted when it differs from your cwd). The
+  host-profile block adds a `Host facts:` line with the **init system**
+  (`systemd`/`openrc`/`launchd`/`sysvinit`, so service control is right) and the
+  **active Kubernetes context** (local kubeconfig only, no cluster contact). Both
+  under the existing `project_tasks` / `host_profile` toggles. Follow-up to
+  proposal N3.
+
 ## [0.2.14] - 2026-06-13
 
 ### Added

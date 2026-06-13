@@ -52,12 +52,26 @@ pub fn build(executor: &Executor, config: &crate::config::Config) -> String {
         if !tools.is_empty() {
             out.push_str(&format!("Installed tools: {tools}\n"));
         }
+        // Operational facts that change which command is correct (init system for
+        // service control; the active kube context so cluster ops target the right
+        // place). Cached; only non-empty parts are shown.
+        let facts = host_facts();
+        if !facts.is_empty() {
+            out.push_str(&format!("Host facts: {facts}\n"));
+        }
     }
 
     // This repo's task surface (justfile/Makefile/package.json/...), so "run the
-    // tests" resolves to *this* project's actual command.
+    // tests" resolves to *this* project's actual command. Walks up to the project
+    // root so it still works from a subdirectory.
     if config.aishe.project_tasks {
-        if let Some(tasks) = project_tasks_block(executor.cwd()) {
+        if let Some((dir, tasks)) = project_tasks_rooted(executor.cwd()) {
+            if dir != *executor.cwd() {
+                out.push_str(&format!(
+                    "Project root: {} (you are in a subdirectory)\n",
+                    dir.display()
+                ));
+            }
             out.push_str("Project tasks (prefer these for repo actions):\n  ");
             out.push_str(&tasks);
             out.push('\n');
@@ -242,6 +256,100 @@ fn project_tasks_block(cwd: &std::path::Path) -> Option<String> {
         None
     } else {
         Some(lines.join("\n  "))
+    }
+}
+
+/// The nearest ancestor of `cwd` (inclusive) that looks like a project root — the
+/// first directory containing a `.git` (a dir for a normal repo, a file for a
+/// worktree/submodule). `None` when there's no repo above the cwd.
+fn find_project_root(cwd: &std::path::Path) -> Option<std::path::PathBuf> {
+    let mut dir = Some(cwd);
+    while let Some(d) = dir {
+        if d.join(".git").exists() {
+            return Some(d.to_path_buf());
+        }
+        dir = d.parent();
+    }
+    None
+}
+
+/// Find the task surface, walking up from `cwd` to the repo root so it still
+/// resolves from a subdirectory. Returns `(dir, tasks)` for the *nearest*
+/// directory (cwd first) that has a recognizable task surface. Without a repo
+/// root above the cwd, only the cwd is inspected (the pre-N3 behavior).
+fn project_tasks_rooted(cwd: &std::path::Path) -> Option<(std::path::PathBuf, String)> {
+    let root = find_project_root(cwd);
+    let mut dir = Some(cwd);
+    while let Some(d) = dir {
+        if let Some(tasks) = project_tasks_block(d) {
+            return Some((d.to_path_buf(), tasks));
+        }
+        // Stop at the repo root; without a repo, inspect only the cwd.
+        match &root {
+            Some(r) if d == r.as_path() => break,
+            Some(_) => dir = d.parent(),
+            None => break,
+        }
+    }
+    None
+}
+
+/// Operational host facts that change which command is correct: the init system
+/// (so `systemctl` vs `service` vs `rc-service`) and the active Kubernetes
+/// context (so cluster ops target the intended place). Cached for the process;
+/// only detectable parts are included, joined with `; `.
+fn host_facts() -> String {
+    static CACHE: OnceLock<String> = OnceLock::new();
+    CACHE
+        .get_or_init(|| {
+            let mut parts: Vec<String> = Vec::new();
+            if let Some(init) = init_system() {
+                parts.push(format!("init: {init}"));
+            }
+            if let Some(ctx) = kube_context() {
+                parts.push(format!("k8s context: {ctx}"));
+            }
+            parts.join("; ")
+        })
+        .clone()
+}
+
+/// Best-effort init-system detection from well-known runtime markers (no
+/// subprocess). `None` when nothing recognizable is present.
+fn init_system() -> Option<&'static str> {
+    use std::path::Path;
+    if std::env::consts::OS == "macos" {
+        return Some("launchd");
+    }
+    if Path::new("/run/systemd/system").is_dir() {
+        return Some("systemd");
+    }
+    if Path::new("/run/openrc").exists() || Path::new("/sbin/openrc").exists() {
+        return Some("openrc");
+    }
+    if Path::new("/etc/init.d").is_dir() {
+        return Some("sysvinit");
+    }
+    None
+}
+
+/// The active Kubernetes context (`kubectl config current-context`), if kubectl is
+/// installed and a context is set. This reads only local kubeconfig (fast, no
+/// cluster contact). `None` otherwise.
+fn kube_context() -> Option<String> {
+    crate::executor::which("kubectl")?;
+    let out = Command::new("kubectl")
+        .args(["config", "current-context"])
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let name = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    if name.is_empty() {
+        None
+    } else {
+        Some(name)
     }
 }
 
@@ -587,5 +695,63 @@ mod tests {
         let a = host_capabilities();
         let b = host_capabilities();
         assert_eq!(a, b);
+    }
+
+    #[test]
+    fn project_root_found_from_a_subdirectory() {
+        let base = std::env::temp_dir().join(format!("aishe-root-{}", std::process::id()));
+        let sub = base.join("crates").join("inner");
+        std::fs::create_dir_all(&sub).unwrap();
+        std::fs::create_dir_all(base.join(".git")).unwrap();
+        // From a nested dir, the root is the ancestor holding `.git`.
+        assert_eq!(find_project_root(&sub).as_deref(), Some(base.as_path()));
+        // Outside any repo → None.
+        let orphan = std::env::temp_dir().join(format!("aishe-root-none-{}", std::process::id()));
+        std::fs::create_dir_all(&orphan).unwrap();
+        assert!(find_project_root(&orphan).is_none());
+        std::fs::remove_dir_all(&base).ok();
+        std::fs::remove_dir_all(&orphan).ok();
+    }
+
+    #[test]
+    fn tasks_resolve_from_a_subdirectory_up_to_the_root() {
+        let base = std::env::temp_dir().join(format!("aishe-rtasks-{}", std::process::id()));
+        let sub = base.join("services").join("api");
+        std::fs::create_dir_all(&sub).unwrap();
+        std::fs::create_dir_all(base.join(".git")).unwrap();
+        std::fs::write(base.join("justfile"), "build:\n\tcargo build\n").unwrap();
+
+        // From the subdir (no tasks of its own), we climb to the root's justfile.
+        let (dir, tasks) = project_tasks_rooted(&sub).expect("tasks found at root");
+        assert_eq!(dir, base);
+        assert!(tasks.contains("just: build"), "{tasks}");
+
+        // A subdir with its *own* task surface wins over the root (nearest first).
+        std::fs::write(sub.join("package.json"), r#"{"scripts":{"dev":"vite"}}"#).unwrap();
+        let (dir2, tasks2) = project_tasks_rooted(&sub).unwrap();
+        assert_eq!(dir2, sub);
+        assert!(tasks2.contains("npm run: dev"), "{tasks2}");
+
+        std::fs::remove_dir_all(&base).ok();
+    }
+
+    #[test]
+    fn no_repo_inspects_only_the_cwd() {
+        // Without a `.git` above it, an empty dir yields no tasks even if an
+        // ancestor (e.g. the temp root) happened to contain task files.
+        let dir = std::env::temp_dir().join(format!("aishe-norepo-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        assert!(project_tasks_rooted(&dir).is_none());
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn host_facts_is_cached_and_safe() {
+        // Must not panic; init detection + optional kube context, cached.
+        let a = host_facts();
+        let b = host_facts();
+        assert_eq!(a, b);
+        // init_system returns a known label or None; never panics.
+        let _ = init_system();
     }
 }
