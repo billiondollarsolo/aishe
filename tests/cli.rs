@@ -35,6 +35,54 @@ model = "gpt-x"
 }
 
 #[test]
+fn suggest_hook_appends_to_the_session_usage_tally() {
+    // Under the interactive PTY, each NL child appends its metered usage to the
+    // shared tally named by AISHE_USAGE_FILE; the PTY prints a one-line summary on
+    // exit. Drive one suggest-hook invocation directly (the fake records the
+    // AISHE_FAKE_USAGE tokens) and assert the tally line was written.
+    let home = temp_config_home();
+    let tally = home.join("usage.tally");
+    std::fs::remove_file(&tally).ok();
+    Command::cargo_bin("aishe")
+        .unwrap()
+        .env("XDG_CONFIG_HOME", &home)
+        .env("XDG_DATA_HOME", home.join("data"))
+        .env("ANTHROPIC_API_KEY", "sk-test")
+        .env("AISHE_FAKE_LLM", "ls -la")
+        .env("AISHE_FAKE_USAGE", "120,30")
+        .env("AISHE_USAGE_FILE", &tally)
+        .args(["--suggest-line", "list files in long form"])
+        .assert()
+        .success();
+    let contents = std::fs::read_to_string(&tally).unwrap_or_default();
+    // One tab-separated tally line: "<input>\t<output>\t<model>".
+    assert!(
+        contents.contains("120\t30\t"),
+        "expected a usage tally line, got: {contents:?}"
+    );
+    std::fs::remove_file(&tally).ok();
+}
+
+#[test]
+fn no_usage_file_means_no_tally_written() {
+    // Without AISHE_USAGE_FILE (i.e. not under a PTY session), nothing is tallied.
+    let home = temp_config_home();
+    Command::cargo_bin("aishe")
+        .unwrap()
+        .env("XDG_CONFIG_HOME", &home)
+        .env("XDG_DATA_HOME", home.join("data"))
+        .env("ANTHROPIC_API_KEY", "sk-test")
+        .env("AISHE_FAKE_LLM", "ls -la")
+        .env("AISHE_FAKE_USAGE", "10,5")
+        .env_remove("AISHE_USAGE_FILE")
+        .args(["--suggest-line", "list files"])
+        .assert()
+        .success();
+    // Nothing to assert beyond a clean run: the absence of a tally file is the
+    // point (no env var, no path to write to).
+}
+
+#[test]
 fn dash_c_runs_forced_shell_command() {
     let home = temp_config_home();
     Command::cargo_bin("aishe")

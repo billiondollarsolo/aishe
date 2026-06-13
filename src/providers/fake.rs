@@ -19,6 +19,10 @@ pub const ENV: &str = "AISHE_FAKE_LLM";
 /// Lets a test vary the response with arbitrary bytes (quotes, backticks) without
 /// shell-quoting issues. Takes precedence over [`ENV`] when both are set.
 pub const ENV_FILE: &str = "AISHE_FAKE_LLM_FILE";
+/// Optional `"<input>,<output>"` token counts the fake records into its meter on
+/// every call, so usage/cost/session-summary paths are testable without a real
+/// provider. Unset (the default) records nothing, preserving prior behavior.
+pub const ENV_USAGE: &str = "AISHE_FAKE_USAGE";
 
 pub struct FakeProvider {
     response: String,
@@ -43,6 +47,19 @@ impl FakeProvider {
         }
         self.response.clone()
     }
+
+    /// Record the `AISHE_FAKE_USAGE="in,out"` token counts (if set) so usage,
+    /// cost, and the session summary can be exercised deterministically. No-op
+    /// when the var is unset or malformed.
+    fn meter_fake_usage(&self) {
+        if let Ok(spec) = std::env::var(ENV_USAGE) {
+            if let Some((i, o)) = spec.split_once(',') {
+                if let (Ok(i), Ok(o)) = (i.trim().parse::<u64>(), o.trim().parse::<u64>()) {
+                    self.meter.record(i, o);
+                }
+            }
+        }
+    }
 }
 
 impl Provider for FakeProvider {
@@ -52,6 +69,7 @@ impl Provider for FakeProvider {
         _messages: &[Msg],
         _format: &ResponseFormat,
     ) -> Result<String, ProviderError> {
+        self.meter_fake_usage();
         Ok(self.body())
     }
 
@@ -61,6 +79,7 @@ impl Provider for FakeProvider {
         _messages: &[Msg],
         _tools: &[ToolDef],
     ) -> Result<Completion, ProviderError> {
+        self.meter_fake_usage();
         // No tool calls: the yolo loop just surfaces the text and finishes.
         Ok(Completion {
             text: Some(self.body()),

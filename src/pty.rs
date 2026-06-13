@@ -14,6 +14,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{anyhow, Context, Result};
+use crossterm::style::Stylize;
 use portable_pty::{native_pty_system, CommandBuilder, PtySize};
 
 use crate::config::Config;
@@ -72,6 +73,13 @@ pub fn run_zsh(config: &Config) -> Result<u8> {
         "AISHE_PTY_PROMPT",
         if config.aishe.pty_prompt { "1" } else { "0" },
     );
+    // Shared per-session usage tally: each NL child process appends its metered
+    // usage here so we can print a one-line session summary on exit. Removed on
+    // every return path by the guard below.
+    let usage_file = std::env::temp_dir().join(format!("aishe-usage-{}", std::process::id()));
+    std::fs::remove_file(&usage_file).ok();
+    cmd.env("AISHE_USAGE_FILE", &usage_file);
+    let _usage_guard = FileGuard(usage_file.clone());
     if let Ok(cwd) = std::env::current_dir() {
         cmd.cwd(cwd);
     }
@@ -183,7 +191,30 @@ pub fn run_zsh(config: &Config) -> Result<u8> {
         let _ = child.kill();
     }
     let status = child.wait().map_err(|e| anyhow!("waiting for zsh: {e}"))?;
+
+    // Restore cooked mode before printing so the summary's newline isn't
+    // staircased (the RawGuard would also do this on drop; doing it twice is
+    // harmless). zsh has fully exited by now.
+    let _ = crossterm::terminal::disable_raw_mode();
+
+    // One-line "what did this session cost" summary, if any AI calls were made
+    // and usage display is on. To stderr so it never pollutes piped stdout.
+    if config.aishe.show_usage {
+        if let Some(line) = crate::usagelog::summarize(&usage_file, &config.pricing) {
+            eprintln!("{}", line.dim());
+        }
+    }
+
     Ok((status.exit_code() & 0xff) as u8)
+}
+
+/// Removes a file on drop (best-effort), so the per-session usage tally is
+/// cleaned up on every return path including panic-unwind.
+struct FileGuard(std::path::PathBuf);
+impl Drop for FileGuard {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
+    }
 }
 
 /// Create a temp ZDOTDIR containing `.zshenv` and `.zshrc` that load the user's

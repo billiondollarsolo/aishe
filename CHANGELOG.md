@@ -6,6 +6,18 @@ breaking changes can land in any release.
 
 ## [Unreleased]
 
+## [0.2.13] - 2026-06-13
+
+### Added
+- **Whole-session usage summary.** The interactive zsh front-end runs each
+  natural-language line as its own process, so on exit aishe now prints one dim
+  line totalling the session — `aishe session: 18,204 in · 5,130 out · 9 reqs ·
+  ~$0.0731` — alongside the existing per-call lines. Children append their metered
+  usage to a shared per-session tally (`AISHE_USAGE_FILE`); the parent aggregates
+  cost per model (unpriced models disclosed as `(+N unpriced)`) and prints it.
+  Gated on `show_usage`; shown only when at least one model call was made. This is
+  the post-session summary follow-up to proposal R5.
+
 ## [0.2.12] - 2026-06-13
 
 ### Added

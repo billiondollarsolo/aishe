@@ -208,7 +208,8 @@ pub fn summary(usage: Usage, model: &str, overrides: &BTreeMap<String, Price>) -
 }
 
 /// Group a number with thousands separators: `1234567` → `1,234,567`.
-fn group(n: u64) -> String {
+/// Group an integer with thousands separators (e.g. `12345` → `12,345`).
+pub fn group(n: u64) -> String {
     let s = n.to_string();
     let bytes = s.as_bytes();
     let mut out = String::with_capacity(s.len() + s.len() / 3);

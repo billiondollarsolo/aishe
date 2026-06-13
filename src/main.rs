@@ -477,22 +477,31 @@ fn run() -> Result<u8> {
     // MCP servers (extra yolo tools). Empty/instant unless `[mcp_servers]` is set.
     let mcp = aishe::mcp::McpRegistry::connect(&config.mcp_servers);
 
-    // Shell-hook helpers (called by `aishe init` integration).
+    // Shell-hook helpers (called by `aishe init` integration). Each is its own
+    // process under the interactive PTY, so after it runs we append its metered
+    // usage to the shared session tally (a no-op outside a PTY session) for the
+    // one-line summary the PTY prints on exit.
     if let Some(line) = args.suggest_line {
-        return suggest_line(&line, &mut executor, provider.as_deref(), &config);
+        let code = suggest_line(&line, &mut executor, provider.as_deref(), &config)?;
+        record_session_usage(provider.as_deref(), &config);
+        return Ok(code);
     }
     if let Some(line) = args.yolo_line {
-        return yolo_line(
+        let code = yolo_line(
             &line,
             &mut executor,
             provider.as_deref(),
             &config,
             &skills,
             &mcp,
-        );
+        )?;
+        record_session_usage(provider.as_deref(), &config);
+        return Ok(code);
     }
     if let Some(line) = args.auto_line {
-        return auto_line(&line, &mut executor, provider.as_deref(), &config);
+        let code = auto_line(&line, &mut executor, provider.as_deref(), &config)?;
+        record_session_usage(provider.as_deref(), &config);
+        return Ok(code);
     }
 
     // Non-interactive single-shot mode (-c).
@@ -1188,6 +1197,25 @@ fn print_mcp_listing(mcp: &aishe::mcp::McpRegistry) {
 }
 
 /// Print the session token/cost summary (`aishe usage` / `/usage`).
+/// Append this process's metered usage to the shared per-session tally named by
+/// `AISHE_USAGE_FILE`, so the interactive PTY can print a one-line session-cost
+/// summary on exit. No-op when the env var is unset (i.e. not under a PTY
+/// session) or no model calls were made.
+fn record_session_usage(provider: Option<&dyn Provider>, config: &Config) {
+    let Ok(path) = std::env::var("AISHE_USAGE_FILE") else {
+        return;
+    };
+    if path.is_empty() {
+        return;
+    }
+    let Some(p) = provider else { return };
+    let snap = p.meter().snapshot();
+    if snap.is_empty() {
+        return;
+    }
+    aishe::usagelog::append(std::path::Path::new(&path), snap, config.active_model());
+}
+
 fn print_usage_summary(provider: Option<&dyn Provider>, config: &Config) {
     match provider {
         Some(p) => {

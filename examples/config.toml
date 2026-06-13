@@ -121,7 +121,9 @@ structured = "schema"
 # Stream answers token-by-token (suggest and auto).
 stream = false
 
-# Print a dim per-session token and cost line after each model interaction.
+# Print a dim per-call token+cost line after each model interaction, and a
+# one-line "aishe session: … reqs · ~$…" summary across the whole interactive
+# session when you exit the zsh front-end.
 show_usage = true
 
 # Stop calling the model once the estimated session cost reaches this many USD.

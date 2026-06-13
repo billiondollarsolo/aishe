@@ -10,13 +10,28 @@ After each model interaction, aishe prints a dim line like:
   436 in · 119 out · 1 req · ~$0.0001
 ```
 
-This is the running session total: input tokens, output tokens, number of
-requests, and the estimated cost. Turn it off with:
+This is that call's input tokens, output tokens, number of requests, and the
+estimated cost. Turn it off with:
 
 ```toml
 [aishe]
 show_usage = false
 ```
+
+### Whole-session summary
+
+The interactive zsh front-end runs each natural-language line as its own process,
+so when you exit the shell aishe prints a single dim line totalling the whole
+session across every call:
+
+```
+aishe session: 18,204 in · 5,130 out · 9 reqs · ~$0.0731
+```
+
+Cost is summed per call using each command's own model price (so a session that
+spans models stays accurate; any models without a known price are disclosed as
+`(+N unpriced)`). It's gated on the same `show_usage` toggle and appears only when
+at least one model call was made.
 
 You can also ask for the total at any time:
 
