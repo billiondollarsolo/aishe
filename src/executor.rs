@@ -313,7 +313,10 @@ impl Executor {
         // re-parented) descendant.
         join_drainers_bounded(drainers, Duration::from_secs(2));
 
-        let mut output = collected.lock().unwrap().join("\n");
+        let mut output = collected
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .join("\n");
         if timed_out {
             let note = format!(
                 "\n[aishe: command timed out after {}s and was killed]",
@@ -912,7 +915,10 @@ fn spawn_drainer<R: std::io::Read + Send + 'static>(
                     let _ = writeln!(o, "{line}");
                 }
             }
-            collected.lock().unwrap().push(line);
+            collected
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .push(line);
         }
     })
 }

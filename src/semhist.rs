@@ -123,7 +123,7 @@ pub fn candidates(history: &[(u64, String)]) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
     for (_, cmd) in history {
         let trimmed = cmd.trim();
-        if trimmed.is_empty() || is_history_mgmt(trimmed) {
+        if trimmed.is_empty() || is_history_mgmt(trimmed) || is_trivial(trimmed) {
             continue;
         }
         // Keep the most recent occurrence: record in order, dedup later from the
@@ -146,6 +146,24 @@ pub fn candidates(history: &[(u64, String)]) -> Vec<String> {
 fn is_history_mgmt(cmd: &str) -> bool {
     let c = cmd.trim_start();
     c.starts_with("aishe history") || c == "aishe history"
+}
+
+/// Trivial no-recall-value commands worth excluding from the semantic index so
+/// they don't dilute results or spend embedding tokens: bare navigation/noise
+/// commands (`exit`, `clear`, `pwd`, a bare `cd`/`ls`, …). Commands with arguments
+/// (`cd ~/projects/x`, `ls -la /var/log`) are kept — those carry recall value.
+fn is_trivial(cmd: &str) -> bool {
+    let c = cmd.trim();
+    // Always-noise commands regardless of arguments.
+    let head = c.split_whitespace().next().unwrap_or("");
+    if matches!(head, "exit" | "logout" | "clear" | "reset" | "cls") {
+        return true;
+    }
+    // Bare navigation/inspection commands (no meaningful argument).
+    matches!(
+        c,
+        "cd" | "ls" | "ll" | "la" | "pwd" | "cd -" | "cd ~" | "cd .."
+    )
 }
 
 #[cfg(test)]
@@ -230,5 +248,27 @@ mod tests {
         ];
         let c = candidates(&hist);
         assert_eq!(c, vec!["docker ps".to_string(), "git status".to_string()]);
+    }
+
+    #[test]
+    fn candidates_drop_trivial_commands() {
+        let hist = vec![
+            (1, "exit".to_string()),              // dropped (noise)
+            (2, "clear".to_string()),             // dropped
+            (3, "cd".to_string()),                // dropped (bare)
+            (4, "ls".to_string()),                // dropped (bare)
+            (5, "cd ~/projects/app".to_string()), // kept (has a real target)
+            (6, "ls -la /var/log".to_string()),   // kept (has args)
+            (7, "docker compose up".to_string()), // kept
+        ];
+        let c = candidates(&hist);
+        assert_eq!(
+            c,
+            vec![
+                "cd ~/projects/app".to_string(),
+                "ls -la /var/log".to_string(),
+                "docker compose up".to_string(),
+            ]
+        );
     }
 }

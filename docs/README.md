@@ -27,7 +27,7 @@ If you are new, start with [Installation](installation.md) and then
 - [Troubleshooting](troubleshooting.md) - common issues and `aishe doctor`
 - [Development](development.md) - building, testing, and the validation harness
 - [Roadmap](ROADMAP.md) - the tracked checklist of where aishe is headed
-- [Master plan](PLAN.md) - the long-form plan: reasoning, sequencing, and acceptance criteria
+- [Master plan](design/PLAN.md) - the long-form plan: reasoning, sequencing, and acceptance criteria
 - [Feature proposals](proposals.md) - detailed specs for the next wave (robustness + differentiators)
 
 ## Reference files in the repo

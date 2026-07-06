@@ -10,6 +10,13 @@ use std::io::Write;
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+/// Byte size past which [`append`] trims the log (cheap `stat` gate so we don't
+/// re-read on every append). The interactive PTY also caps the log on exit; this
+/// keeps it bounded under sustained `-c`/hook usage between interactive sessions.
+const MAX_BYTES: u64 = 4 * 1024 * 1024;
+/// Entries kept when the log is trimmed (most recent).
+const KEEP_LINES: usize = 10_000;
+
 /// Seconds since the Unix epoch (0 if the clock is before 1970).
 fn now() -> u64 {
     SystemTime::now()
@@ -19,7 +26,9 @@ fn now() -> u64 {
 }
 
 /// Append one command to the log in `EXTENDED_HISTORY` format. Newlines in the
-/// command are flattened so each entry stays on one line. Best-effort.
+/// command are flattened so each entry stays on one line. Best-effort; the log is
+/// trimmed to [`KEEP_LINES`] once it grows past [`MAX_BYTES`], so it can't grow
+/// without bound.
 pub fn append(path: &Path, command: &str) {
     let flat = command.replace('\n', " ");
     // Ensure the data dir exists; a fresh install may not have created it yet.
@@ -33,6 +42,31 @@ pub fn append(path: &Path, command: &str) {
     {
         let _ = writeln!(f, ": {}:0;{}", now(), flat);
     }
+    maybe_trim(path);
+}
+
+/// Trim the log to the most recent [`KEEP_LINES`] entries when it exceeds
+/// [`MAX_BYTES`]. Gated on a cheap size check so the O(n) rewrite happens rarely
+/// (only when over the cap). Best-effort and atomic; a lost concurrent append is
+/// acceptable for a history log.
+fn maybe_trim(path: &Path) {
+    let over = std::fs::metadata(path)
+        .map(|m| m.len() > MAX_BYTES)
+        .unwrap_or(false);
+    if !over {
+        return;
+    }
+    let Ok(text) = std::fs::read_to_string(path) else {
+        return;
+    };
+    let lines: Vec<&str> = text.lines().collect();
+    if lines.len() <= KEEP_LINES {
+        return; // huge lines, not many — leave it
+    }
+    let start = lines.len() - KEEP_LINES;
+    let mut buf = lines[start..].join("\n");
+    buf.push('\n');
+    let _ = crate::config::write_atomic(path, buf.as_bytes());
 }
 
 /// Parse the log into `(epoch, command)` entries, oldest first. Lines without the
@@ -113,6 +147,26 @@ fn civil_from_days(z: i64) -> (i64, u32, u32) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn append_trims_when_over_the_byte_cap() {
+        let path =
+            std::env::temp_dir().join(format!("aishe-histlog-trim-{}.ext", std::process::id()));
+        // Seed a log already past MAX_BYTES with more than KEEP_LINES entries.
+        let pad = "x".repeat(400);
+        let mut seed = String::new();
+        for i in 0..(KEEP_LINES + 1500) {
+            seed.push_str(&format!(": 1700000000:0;cmd{i} {pad}\n"));
+        }
+        std::fs::write(&path, &seed).unwrap();
+        assert!(std::fs::metadata(&path).unwrap().len() > MAX_BYTES);
+        // One append triggers the trim down to KEEP_LINES (+ the appended line).
+        append(&path, "final marker");
+        let entries = read(&path);
+        assert!(entries.len() <= KEEP_LINES + 1, "got {}", entries.len());
+        assert_eq!(entries.last().unwrap().1, "final marker");
+        std::fs::remove_file(&path).ok();
+    }
 
     #[test]
     fn append_and_read_roundtrip() {

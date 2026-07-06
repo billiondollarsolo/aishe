@@ -49,7 +49,7 @@ impl FallbackProvider {
     /// Fold any new usage recorded by chain member `i` into the unified meter.
     fn sync_usage(&self, i: usize) {
         let snap = self.chain[i].1.meter().snapshot();
-        let mut seen = self.seen.lock().unwrap();
+        let mut seen = self.seen.lock().unwrap_or_else(|e| e.into_inner());
         let prev = seen[i];
         let din = snap.input.saturating_sub(prev.input);
         let dout = snap.output.saturating_sub(prev.output);
@@ -65,7 +65,12 @@ impl FallbackProvider {
     /// next one.
     fn announce(&self, from: usize, reason: &str) {
         let next = from + 1;
-        if self.announced.lock().unwrap().insert(next) {
+        if self
+            .announced
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(next)
+        {
             eprintln!(
                 "{}",
                 format!(
@@ -85,17 +90,25 @@ impl Provider for FallbackProvider {
         messages: &[Msg],
         format: &ResponseFormat,
     ) -> Result<String, ProviderError> {
-        let last = self.chain.len() - 1;
-        for i in 0..self.chain.len() {
+        let n = self.chain.len();
+        let mut last_err: Option<ProviderError> = None;
+        for i in 0..n {
             let result = self.chain[i].1.complete(system, messages, format);
             self.sync_usage(i);
             match result {
                 Ok(out) => return Ok(out),
-                Err(e) if i == last => return Err(e),
-                Err(e) => self.announce(i, &e.to_string()),
+                Err(e) if i + 1 == n => return Err(e),
+                Err(e) => {
+                    self.announce(i, &e.to_string());
+                    last_err = Some(e);
+                }
             }
         }
-        unreachable!("chain is non-empty")
+        // Only reachable with an empty chain (the constructor guarantees ≥1); return
+        // a clean error rather than panicking.
+        Err(last_err.unwrap_or_else(|| {
+            ProviderError::Http("no providers configured in the fallback chain".into())
+        }))
     }
 
     fn complete_with_tools(
@@ -104,17 +117,23 @@ impl Provider for FallbackProvider {
         messages: &[Msg],
         tools: &[ToolDef],
     ) -> Result<Completion, ProviderError> {
-        let last = self.chain.len() - 1;
-        for i in 0..self.chain.len() {
+        let n = self.chain.len();
+        let mut last_err: Option<ProviderError> = None;
+        for i in 0..n {
             let result = self.chain[i].1.complete_with_tools(system, messages, tools);
             self.sync_usage(i);
             match result {
                 Ok(out) => return Ok(out),
-                Err(e) if i == last => return Err(e),
-                Err(e) => self.announce(i, &e.to_string()),
+                Err(e) if i + 1 == n => return Err(e),
+                Err(e) => {
+                    self.announce(i, &e.to_string());
+                    last_err = Some(e);
+                }
             }
         }
-        unreachable!("chain is non-empty")
+        Err(last_err.unwrap_or_else(|| {
+            ProviderError::Http("no providers configured in the fallback chain".into())
+        }))
     }
 
     fn meter(&self) -> Arc<UsageMeter> {

@@ -18,6 +18,26 @@ autonomously** until the task is done.
 ~/projects/app ❯ whats eating my disk  # LLM suggests: du -sh * | sort -rh | head
 ```
 
+## Get productive in 60 seconds
+
+```sh
+# 1. Install (Linux/macOS; downloads the right prebuilt binary + verifies it)
+curl -fsSL https://raw.githubusercontent.com/billiondollarsolo/aishe/main/install.sh | sh
+
+# 2. Point it at a provider (any OpenAI-compatible endpoint or Anthropic)
+export ANTHROPIC_API_KEY=sk-...            # or OPENAI_API_KEY / a local Ollama
+
+# 3. Use it right away, no shell hook needed
+aishe -c "compress the logs directory into a tarball"   # prints a command to run
+aishe suggest --json "list files by size" | jq -r .command   # scriptable output
+aishe doctor                                # verify shell, provider, and key
+
+# 4. (Optional) make every new terminal AI-aware
+echo 'eval "$(aishe init zsh)"' >> ~/.zshrc   # or: aishe init bash  >> ~/.bashrc
+```
+
+`aishe --help` lists every subcommand; `man aishe` has the full reference.
+
 ## Features
 
 - 🐚 **Your real zsh, untouched.** aishe wraps your actual interactive zsh, so
@@ -32,10 +52,11 @@ autonomously** until the task is done.
   path-aware screen flags destructive commands (`rm -rf /`, recursive `chmod`/`chown`
   on system paths, danger hidden in `$(…)` or `<(…)`, …) before they can run — the
   model never gets to decide what executes.
-- ↩️ **Reversible.** Built-in file edits are journaled (`aishe undo`), and you can
-  preview a command or a whole agentic session against a throwaway copy under
-  bubblewrap — `aishe dry-run "<cmd>"` and `yolo_dry_run` — to see the exact diff,
-  then apply or discard.
+- ↩️ **Reversible.** Built-in file edits are journaled (`aishe undo`), and — on
+  **Linux with bubblewrap** — you can preview a command or a whole agentic session
+  against a throwaway copy (`aishe dry-run "<cmd>"`, `yolo_dry_run`) to see the exact
+  diff, then apply or discard. On macOS the sandbox/overlay isn't available, so yolo
+  falls back to the best-effort policy gate (`aishe doctor` shows what's active).
 - 🔎 **Semantic history.** Recall past commands by meaning, not substring:
   `aishe history search "the docker run with the prometheus volume"` (or **Ctrl-X
   Ctrl-R** in the shell). Works offline with a local embedder.

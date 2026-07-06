@@ -6,6 +6,35 @@ breaking changes can land in any release.
 
 ## [Unreleased]
 
+## [0.2.24] - 2026-06-13
+
+### Added
+- **`aishe suggest "<request>" [--json]`** — a documented, stable scripting
+  interface: turns a natural-language request into a shell command on stdout, with
+  an exit-code contract (0 = safe command / answer, 20 = flagged dangerous but
+  still printed, 1 = no provider / empty). `--json` emits
+  `{kind, command, explanation, risk, reason}` for `jq` pipelines.
+- **`aishe man`** — emits a native roff man page (clap_mangen). Installed by
+  `install.sh` (best-effort), the `.deb`/`.rpm`, and the Homebrew formula.
+- **Quickstart** in the README ("Get productive in 60 seconds").
+- `CONTRIBUTING.md`, and a `docs/design/` home for the PRD/PLAN design docs.
+
+### Changed
+- **Hardening:** lock-poison recovery in the command dispatcher, executor
+  output-capture, and the provider fallback chain (a panicked worker thread can no
+  longer cascade into a shell crash); the fallback chain's `unreachable!` is now a
+  graceful error. `history.ext` is trimmed once it passes 4 MB, so it can't grow
+  unbounded outside the interactive-exit cap. Trivial commands (`exit`, bare
+  `cd`/`ls`, …) are excluded from semantic-history indexing.
+- `aishe doctor --probe` now also probes the embedding endpoint when
+  `semantic_history` is enabled.
+- The macOS parity of the reversibility/sandbox features (`dry-run`,
+  `yolo_dry_run`; Linux + bubblewrap only) is now called out explicitly in the docs.
+- **CI:** a dedicated MSRV (1.80) build job, and the opt-in `real_fuzz.py`
+  real-model robustness fuzz is wired in. `test-results/` run artifacts are no
+  longer committed (gitignored). crates.io metadata (`homepage`/`documentation`)
+  added; the crate verifies publishable via `cargo publish --dry-run`.
+
 ## [0.2.23] - 2026-06-13
 
 ### Fixed

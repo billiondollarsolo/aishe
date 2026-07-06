@@ -166,16 +166,12 @@ jobs:
           chmod +x dist/amd64/aishe dist/arm64/aishe
           mkdir -p dist/completions dist/man
           # Completions and the man page are arch-independent, so generate them
-          # once from the (native) amd64 binary.
+          # once from the (native) amd64 binary. The man page is emitted natively
+          # by `aishe man` (clap_mangen) — no help2man dependency.
           dist/amd64/aishe completions bash > dist/completions/aishe.bash
           dist/amd64/aishe completions zsh  > dist/completions/_aishe
           dist/amd64/aishe completions fish > dist/completions/aishe.fish
-          sudo apt-get update && sudo apt-get install -y help2man
-          version="${{ needs.create_release.outputs.version }}"
-          help2man --no-info --no-discard-stderr \
-            --name "natural-language-aware shell" \
-            --version-string "aishe $version" \
-            dist/amd64/aishe > dist/man/aishe.1
+          dist/amd64/aishe man > dist/man/aishe.1
           gzip -9 -n -f dist/man/aishe.1
 
       - name: Install nfpm

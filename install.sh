@@ -182,6 +182,17 @@ case ":$PATH:" in
   *) printf 'aishe-install: note: %s is not on your PATH\n' "$bindir" >&2 ;;
 esac
 
+# Best-effort man page: `aishe man` emits a roff page; install it if a standard
+# man dir is writable (system, then the per-user fallback). Never fatal.
+for mandir in /usr/local/share/man/man1 /usr/share/man/man1 "$HOME/.local/share/man/man1"; do
+  if mkdir -p "$mandir" 2>/dev/null && [ -w "$mandir" ]; then
+    if "$bindir/aishe" man > "$mandir/aishe.1" 2>/dev/null; then
+      printf 'aishe-install: installed man page to %s/aishe.1\n' "$mandir" >&2
+    fi
+    break
+  fi
+done
+
 # Ensure zsh for the robust front-end (best effort; opt out with AISHE_SKIP_ZSH=1).
 ensure_zsh
 

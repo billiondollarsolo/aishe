@@ -139,6 +139,8 @@ enum Cmd {
         /// Shell to generate completions for.
         shell: clap_complete::Shell,
     },
+    /// Print a roff man page for `aishe` (e.g. `aishe man > /usr/share/man/man1/aishe.1`).
+    Man,
     /// Trust the current project's `.aishe/config.toml` so its sensitive keys
     /// (provider/endpoint, MCP servers, audit logging, safety toggles, `yolo`)
     /// apply. Safe cosmetic keys apply without trust.
@@ -208,6 +210,16 @@ enum Cmd {
         /// Only entries newer than this, e.g. 30m, 2h, 3d, 1w.
         #[arg(long)]
         since: Option<String>,
+    },
+    /// Turn a natural-language request into a shell command (for scripting).
+    /// Prints the command to stdout; exit 0 = safe/answer, 20 = flagged dangerous
+    /// (command still printed for review). Use `--json` for structured output.
+    Suggest {
+        /// The natural-language request (any number of words).
+        query: Vec<String>,
+        /// Emit `{"kind","command","explanation","risk","reason"}` instead of text.
+        #[arg(long)]
+        json: bool,
     },
     /// Semantic search over your shell history (opt-in; needs an embedder).
     History {
@@ -284,6 +296,17 @@ fn run() -> Result<u8> {
     if let Some(Cmd::Completions { shell }) = args.cmd {
         use clap::CommandFactory;
         clap_complete::generate(shell, &mut Args::command(), "aishe", &mut std::io::stdout());
+        return Ok(0);
+    }
+
+    // `man` prints a roff man page generated from the clap command tree.
+    if matches!(args.cmd, Some(Cmd::Man)) {
+        use clap::CommandFactory;
+        let man = clap_mangen::Man::new(Args::command());
+        let mut out = Vec::new();
+        man.render(&mut out).ok();
+        use std::io::Write;
+        let _ = std::io::stdout().write_all(&out);
         return Ok(0);
     }
 
@@ -445,7 +468,8 @@ fn run() -> Result<u8> {
         || args.suggest_line.is_some()
         || args.yolo_line.is_some()
         || args.auto_line.is_some()
-        || args.fix_line.is_some();
+        || args.fix_line.is_some()
+        || matches!(args.cmd, Some(Cmd::Suggest { .. }));
 
     // The interactive shell is the zsh-PTY front-end: it drives the user's real
     // zsh, with the AI injected via a command_not_found hook, so zsh is required.
@@ -499,6 +523,14 @@ fn run() -> Result<u8> {
     let skills = aishe::skills::SkillRegistry::load();
     // MCP servers (extra yolo tools). Empty/instant unless `[mcp_servers]` is set.
     let mcp = aishe::mcp::McpRegistry::connect(&config.mcp_servers);
+
+    // Public scripting interface: `aishe suggest "<nl>" [--json]`.
+    if let Some(Cmd::Suggest { query, json }) = &args.cmd {
+        let q = query.join(" ");
+        let code = suggest_command(&q, *json, &mut executor, provider.as_deref(), &config)?;
+        record_session_usage(provider.as_deref(), &config);
+        return Ok(code);
+    }
 
     // Shell-hook helpers (called by `aishe init` integration). Each is its own
     // process under the interactive PTY, so after it runs we append its metered
@@ -697,20 +729,32 @@ fn doctor(probe: bool) -> u8 {
     // be down, and `doctor` should still pass offline.
     if probe {
         println!("  {}", "reachability probe:".bold());
+        let print_probe = |label: &str, pr: providers::Probe| match pr.reach {
+            providers::Reach::Up(s) => {
+                println!("  {ok} {label}: reachable [HTTP {s}] ({})", pr.endpoint)
+            }
+            providers::Reach::Unauthorized(s) => println!(
+                "  {warn} {label}: reachable but key rejected [HTTP {s}] ({})",
+                pr.endpoint
+            ),
+            providers::Reach::Down(e) => {
+                println!("  {warn} {label}: unreachable ({}) — {e}", pr.endpoint)
+            }
+        };
         for name in providers::chain_names(&cfg) {
             let pr = providers::probe(&cfg, &name);
-            match pr.reach {
-                providers::Reach::Up(s) => {
-                    println!("  {ok} {name}: reachable [HTTP {s}] ({})", pr.endpoint)
-                }
-                providers::Reach::Unauthorized(s) => println!(
-                    "  {warn} {name}: reachable but key rejected [HTTP {s}] ({})",
-                    pr.endpoint
-                ),
-                providers::Reach::Down(e) => {
-                    println!("  {warn} {name}: unreachable ({}) — {e}", pr.endpoint)
-                }
-            }
+            print_probe(&name, pr);
+        }
+        // When semantic history is on, also probe the embedding endpoint, which
+        // may be a different provider block than the chat chain.
+        if cfg.aishe.semantic_history {
+            let emb = if cfg.aishe.embedding_provider.trim().is_empty() {
+                cfg.aishe.provider.clone()
+            } else {
+                cfg.aishe.embedding_provider.clone()
+            };
+            let pr = providers::probe(&cfg, &emb);
+            print_probe(&format!("embedding ({emb})"), pr);
         }
     }
     // Yolo sandbox backend.
@@ -1073,6 +1117,97 @@ fn auto_line(
         session.record_user(line);
         session.record_assistant(&reply);
         session.save_persisted(path);
+    }
+    Ok(code)
+}
+
+/// Public scripting interface (`aishe suggest`). Turns a natural-language request
+/// into a shell command and prints it (text or `--json`). Exit-code contract,
+/// stable across minor versions:
+///
+/// - `0` — a safe command (printed to stdout) or a prose answer (to stderr),
+/// - `20` — a command the safety gate flags (still printed, for review),
+/// - `1` — no provider / no query.
+///
+/// In JSON mode a single object is printed to stdout with fields
+/// `{kind, command, explanation, risk, reason}`.
+fn suggest_command(
+    query: &str,
+    json: bool,
+    executor: &mut Executor,
+    provider: Option<&dyn Provider>,
+    config: &Config,
+) -> Result<u8> {
+    if query.trim().is_empty() {
+        eprintln!("aishe: suggest needs a request, e.g. aishe suggest \"list files by size\"");
+        return Ok(1);
+    }
+    let Some(p) = provider else {
+        eprintln!("aishe: LLM not configured");
+        return Ok(1);
+    };
+    arm_hook_budget();
+    let suggestion = modes::suggest::request(query, p, executor, config, Vec::new())?;
+    cancel_hook_budget();
+
+    // Classify into (kind, command, explanation, risk, reason, exit).
+    let (kind, command, explanation, risk, reason, code) = match suggestion {
+        modes::suggest::Suggestion::Command {
+            command,
+            explanation,
+        } if shell_syntax_ok(executor, &command) => match safety::assess(&command) {
+            Risk::Safe => ("command", command, explanation, "safe", String::new(), 0),
+            Risk::Dangerous(r) => (
+                "command",
+                command,
+                explanation,
+                "dangerous",
+                r.to_string(),
+                EXIT_AUTO_DANGEROUS,
+            ),
+        },
+        // A "command" that isn't valid shell is really a prose answer.
+        modes::suggest::Suggestion::Command {
+            command,
+            explanation,
+        } => {
+            let answer = if explanation.is_empty() {
+                command
+            } else {
+                explanation
+            };
+            ("answer", String::new(), answer, "n/a", String::new(), 0)
+        }
+        modes::suggest::Suggestion::Answer { explanation } => (
+            "answer",
+            String::new(),
+            explanation,
+            "n/a",
+            String::new(),
+            0,
+        ),
+    };
+
+    if json {
+        let obj = serde_json::json!({
+            "kind": kind,
+            "command": command,
+            "explanation": explanation,
+            "risk": risk,
+            "reason": reason,
+        });
+        println!("{obj}");
+    } else if kind == "command" {
+        if !explanation.is_empty() {
+            eprintln!("{}", explanation.as_str().dim());
+        }
+        if risk == "dangerous" {
+            eprintln!("{}", format!("⚠ {reason}").yellow());
+        }
+        println!("{command}");
+    } else if !explanation.is_empty() {
+        // An answer: to stderr so stdout stays empty (no command to run).
+        eprintln!("{explanation}");
     }
     Ok(code)
 }

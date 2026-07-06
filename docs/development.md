@@ -22,8 +22,16 @@ cargo fmt --check
     Ctrl-C / Ctrl-Z / window resize / multi-line continuation; the fuzz and
     feature suites write Markdown reports under `test-results/`.
   - `tests/pty_smoke.py`: PTY smoke test for the zsh-PTY front-end.
-  - `tests/real_model.py`: opt-in classification corpus against a live endpoint
-    (`AISHE_REALTEST_KEY`).
+  - `tests/real_model.py`: opt-in command-vs-answer classification corpus against a
+    live model. **Skips** unless `AISHE_REALTEST_KEY` is set (default endpoint: Groq
+    `openai/gpt-oss-120b`; override with `AISHE_REALTEST_BASE_URL`/`_MODEL`).
+  - `tests/real_fuzz.py`: opt-in **real-model robustness fuzz** — generated inputs
+    (questions, tasks, prompt-injection, metacharacter lines) through
+    `aishe --auto-line` against the live model, checking response-independent
+    invariants (no crash/parse-leak, valid command syntax, dangerous suggestions
+    never greenlit). Same `AISHE_REALTEST_KEY` gate; scale with a multiplier arg
+    (`real_fuzz.py <bin> 2`). Real API calls cost money and hit rate limits — keep
+    the scale modest.
   - `tests/admin_validation.py`: the end-to-end validation harness.
 
 ## Validation harness

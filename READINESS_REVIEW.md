@@ -3,9 +3,37 @@
 **Reviewer:** Fable 5 · **Date:** 2026-06-13 · **Commit:** `62654ef` (v0.2.23)
 **Lens:** "Can any engineer easily install `aishe` and leverage it as a command-line shell tool?"
 
-This document is a **task list for later implementation (with Opus)**. Each task is
-self-contained: problem, evidence, proposed fix, files, and acceptance criteria.
-Nothing here has been changed yet.
+This document is a **task list**. Each task is self-contained: problem, evidence,
+proposed fix, files, and acceptance criteria.
+
+---
+
+## Implementation status (updated 2026-06-13)
+
+**All 14 tasks implemented and validated**, except two that require maintainer
+credentials/infra (noted below).
+
+| Task | Status |
+|---|---|
+| T-01 stop committing `test-results/` | ✅ done (`.gitignore` + `git rm --cached`) |
+| T-02 enforce MSRV 1.80 in CI | ✅ done (new `msrv` job) |
+| T-03 wire `real_fuzz.py` into CI + docs | ✅ done (CI step + `development.md`) |
+| T-04 man page | ✅ done (`aishe man` via clap_mangen; wired into install.sh, release, nfpm, brew) |
+| T-05 automation interface | ✅ done (`aishe suggest [--json]`, stable exit-code contract, tests) |
+| T-06 macOS parity explicit | ✅ done (README/safety/modes qualifiers; runtime notices already present) |
+| T-07 crates.io / Homebrew | ⚙️ partial — metadata added, `cargo publish --dry-run` passes, formula installs the man page; **actual `cargo publish` + creating the `homebrew-tap` repo require maintainer credentials** |
+| T-08 README quickstart | ✅ done ("Get productive in 60 seconds") |
+| T-09 panic/`unwrap` audit | ✅ done (dispatcher/executor/fallback lock-poison recovery; fallback `unreachable!` → graceful error) |
+| T-10 bound `history.ext` growth | ✅ done (trim-on-append past 4 MB) |
+| T-11 probe embedding endpoint | ✅ done (`doctor --probe` shows `embedding (...)`) |
+| T-12 filter trivial commands from index | ✅ done (`is_trivial`) |
+| T-13 `CONTRIBUTING.md` | ✅ done |
+| T-14 tidy planning docs | ✅ done (PRD/PLAN → `docs/design/`) |
+
+**Remaining maintainer actions (T-07):** run `cargo publish` with a crates.io
+token, and create a `billiondollarsolo/homebrew-tap` repo (then optionally automate
+the formula push in `release.yml`). The crate is verified publishable
+(`cargo publish --dry-run` succeeds) and the formula is ready to drop into a tap.
 
 ---
 

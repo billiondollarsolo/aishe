@@ -35,6 +35,54 @@ model = "gpt-x"
 }
 
 #[test]
+fn man_emits_a_roff_page() {
+    Command::cargo_bin("aishe")
+        .unwrap()
+        .arg("man")
+        .assert()
+        .success()
+        .stdout(contains(".TH aishe 1").and(contains("natural")));
+}
+
+#[test]
+fn suggest_subcommand_scripting_contract() {
+    let home = temp_config_home();
+    let base = || {
+        let mut c = Command::cargo_bin("aishe").unwrap();
+        c.env("XDG_CONFIG_HOME", &home)
+            .env("XDG_DATA_HOME", home.join("data"))
+            .env("ANTHROPIC_API_KEY", "sk-test");
+        c
+    };
+    // Safe command in JSON: stdout is one object, exit 0.
+    base()
+        .env(
+            "AISHE_FAKE_LLM",
+            r#"{"type":"command","command":"ls -la","explanation":"lists"}"#,
+        )
+        .args(["suggest", "--json", "list", "files"])
+        .assert()
+        .success()
+        .stdout(contains("\"command\":\"ls -la\"").and(contains("\"risk\":\"safe\"")));
+    // Dangerous command → exit 20 (still printed for review).
+    base()
+        .env(
+            "AISHE_FAKE_LLM",
+            r#"{"type":"command","command":"rm -rf /","explanation":"boom"}"#,
+        )
+        .args(["suggest", "--json", "wipe", "everything"])
+        .assert()
+        .code(20)
+        .stdout(contains("\"risk\":\"dangerous\""));
+    // Empty query → exit 1 with guidance.
+    base()
+        .arg("suggest")
+        .assert()
+        .code(1)
+        .stderr(contains("suggest needs a request"));
+}
+
+#[test]
 fn suggest_hook_appends_to_the_session_usage_tally() {
     // Under the interactive PTY, each NL child appends its metered usage to the
     // shared tally named by AISHE_USAGE_FILE; the PTY prints a one-line summary on

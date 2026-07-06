@@ -1,11 +1,13 @@
 [package]
 name = "aishe"
-version = "0.2.23"
+version = "0.2.24"
 edition = "2021"
 rust-version = "1.80"
 description = "A natural-language-aware shell that behaves like zsh for commands and delegates everything else to an LLM"
 license = "MIT"
 repository = "https://github.com/billiondollarsolo/aishe"
+homepage = "https://github.com/billiondollarsolo/aishe"
+documentation = "https://github.com/billiondollarsolo/aishe/tree/main/docs"
 readme = "README.md"
 keywords = ["shell", "llm", "ai", "repl", "cli"]
 categories = ["command-line-utilities"]
@@ -38,6 +40,7 @@ crossterm = "0.28"
 termimad = "0.31"
 clap = { version = "4", features = ["derive"] }
 clap_complete = "4"
+clap_mangen = "0.2"
 anyhow = "1"
 thiserror = "2"
 regex = "1"

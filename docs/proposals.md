@@ -1,7 +1,7 @@
 # aishe — Feature Proposals
 
 Detailed, self-contained engineering specs for the next wave of aishe features.
-This is the design companion to [PLAN.md](PLAN.md) (sequencing/reasoning) and
+This is the design companion to [PLAN.md](design/PLAN.md) (sequencing/reasoning) and
 [ROADMAP.md](ROADMAP.md) (the checklist): each proposal here is sized to be picked
 up and built independently, with concrete file targets, tests, and a definition of
 done.

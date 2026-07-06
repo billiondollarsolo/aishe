@@ -7,7 +7,7 @@
 class Aishe < Formula
   desc "Natural-language-aware shell: zsh for commands, an LLM for everything else"
   homepage "https://github.com/billiondollarsolo/aishe"
-  version "0.2.23"
+  version "0.2.24"
   license "MIT"
 
   on_macos do
@@ -36,10 +36,14 @@ class Aishe < Formula
     bin.install "aishe"
     # Generate and install shell completions from the binary itself.
     generate_completions_from_executable(bin/"aishe", "completions")
+    # Generate and install the man page (aishe emits a roff page itself).
+    (buildpath/"aishe.1").write Utils.safe_popen_read(bin/"aishe", "man")
+    man1.install "aishe.1"
   end
 
   test do
     assert_match "aishe", shell_output("#{bin}/aishe --version")
     assert_match "backing shell", shell_output("#{bin}/aishe doctor")
+    assert_match ".TH aishe 1", shell_output("#{bin}/aishe man")
   end
 end

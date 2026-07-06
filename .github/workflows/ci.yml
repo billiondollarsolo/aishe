@@ -45,6 +45,24 @@ jobs:
       - name: Test
         run: cargo test --verbose
 
+  msrv:
+    name: MSRV (1.80) build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust 1.80 (declared MSRV)
+        uses: dtolnay/rust-toolchain@1.80
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-msrv-cargo-${{ hashFiles('**/Cargo.toml') }}
+      - name: Build on 1.80
+        run: cargo build --verbose
+
   pty-smoke:
     name: PTY smoke tests (zsh-pty)
     runs-on: ubuntu-latest
@@ -88,5 +106,9 @@ jobs:
         env:
           AISHE_REALTEST_KEY: ${{ secrets.AISHE_REALTEST_KEY }}
         run: python3 tests/real_model.py target/release/aishe
+      - name: Real-model robustness fuzz (opt-in; skips without the secret)
+        env:
+          AISHE_REALTEST_KEY: ${{ secrets.AISHE_REALTEST_KEY }}
+        run: python3 tests/real_fuzz.py target/release/aishe
       - name: Admin validation (shell pass-through + file ops; NL skipped w/o key)
         run: python3 tests/admin_validation.py target/release/aishe

@@ -106,6 +106,18 @@ impl CommandCache {
         }
     }
 
+    /// Read/write the command set, recovering from a poisoned lock rather than
+    /// panicking. The set is shared with a background fetch thread; if that thread
+    /// ever panicked while holding the lock, a plain `.unwrap()` here would cascade
+    /// into a shell crash — recovering the guard keeps the shell alive (worst case
+    /// the set is momentarily incomplete, which only affects command routing).
+    fn read(&self) -> std::sync::RwLockReadGuard<'_, HashSet<String>> {
+        self.inner.read().unwrap_or_else(|e| e.into_inner())
+    }
+    fn write(&self) -> std::sync::RwLockWriteGuard<'_, HashSet<String>> {
+        self.inner.write().unwrap_or_else(|e| e.into_inner())
+    }
+
     /// Build the cache: scan `$PATH` synchronously (fast), then fetch zsh
     /// builtins/aliases/functions on a background thread so the first prompt
     /// is not blocked.
@@ -117,7 +129,7 @@ impl CommandCache {
         // misroute builtins to the LLM.
         let path_cmds = scan_path();
         {
-            let mut w = self.inner.write().unwrap();
+            let mut w = self.write();
             w.extend(path_cmds);
             w.extend(INTERCEPTED.iter().map(|s| s.to_string()));
             w.extend(FALLBACK_BUILTINS.iter().map(|s| s.to_string()));
@@ -130,7 +142,7 @@ impl CommandCache {
             let mut extra = fetch_builtins(&shell);
             extra.extend(fetch_aliases_and_functions(&shell));
             if !extra.is_empty() {
-                let mut w = inner.write().unwrap();
+                let mut w = inner.write().unwrap_or_else(|e| e.into_inner());
                 w.extend(extra);
             }
         });
@@ -142,21 +154,19 @@ impl CommandCache {
         fresh.extend(INTERCEPTED.iter().map(|s| s.to_string()));
         fresh.extend(fetch_builtins(shell));
         fresh.extend(fetch_aliases_and_functions(shell));
-        let mut w = self.inner.write().unwrap();
+        let mut w = self.write();
         *w = fresh;
     }
 
     pub fn contains(&self, token: &str) -> bool {
-        self.inner.read().unwrap().contains(token)
+        self.read().contains(token)
     }
 
     /// Command names beginning with `prefix`, case-insensitively (for tab
     /// completion). Unsorted.
     pub fn matching(&self, prefix: &str) -> Vec<String> {
         let lp = prefix.to_lowercase();
-        self.inner
-            .read()
-            .unwrap()
+        self.read()
             .iter()
             .filter(|n| n.to_lowercase().starts_with(&lp))
             .cloned()
@@ -166,7 +176,7 @@ impl CommandCache {
     /// Command names fuzzily matching `query` (subsequence), ranked best-first.
     /// Used as a fallback when there are no prefix matches.
     pub fn fuzzy(&self, query: &str) -> Vec<String> {
-        let all: Vec<String> = self.inner.read().unwrap().iter().cloned().collect();
+        let all: Vec<String> = self.read().iter().cloned().collect();
         crate::fuzzy::rank(all, query)
     }
 
@@ -174,13 +184,13 @@ impl CommandCache {
     /// "did you mean" spelling correction). `None` when `token` is already a known
     /// command or nothing is close enough.
     pub fn correction(&self, token: &str, max_dist: usize) -> Option<String> {
-        let guard = self.inner.read().unwrap();
+        let guard = self.read();
         crate::fuzzy::correction(token, guard.iter().map(String::as_str), max_dist)
     }
 
     /// Insert a set of command names (used by tests and seeding).
     pub fn insert_all(&self, items: &[&str]) {
-        let mut w = self.inner.write().unwrap();
+        let mut w = self.write();
         for i in items {
             w.insert((*i).to_string());
         }
@@ -188,7 +198,7 @@ impl CommandCache {
 
     #[allow(clippy::len_without_is_empty)]
     pub fn len(&self) -> usize {
-        self.inner.read().unwrap().len()
+        self.read().len()
     }
 }
 
