@@ -419,7 +419,10 @@ SMOKE_CASES = [
     "uptime",
     "env | wc -l",
     "ls -l /usr/bin | head -3",
-    "free -m 2>/dev/null | head -1 || echo nofree",
+    # `free` is Linux-only. Starting with the shell `if` keyword both makes this
+    # portable and keeps the intentionally missing command from being mistaken
+    # for a natural-language request on macOS.
+    "if command -v free >/dev/null 2>&1; then free -m | head -1; else echo nofree; fi",
     "sleep 0",
     "jobs",
     "echo $RANDOM >/dev/null",
@@ -474,7 +477,9 @@ DISPATCH_SHELL = [
     "sed -n '1p' a.txt",
 ]
 DISPATCH_NL = [
-    "what is the capital of france",
+    # macOS ships `/usr/bin/what`, so force the documented NL route rather than
+    # making this expectation depend on the host's installed commands.
+    "?what is the capital of france",
     "how do I list files by size",
     "please summarize this directory",
     "explain the difference between tcp and udp",
@@ -492,7 +497,9 @@ def file_ops_script(d):
         (f"mkdir -p {d}/proj/src", lambda: os.path.isdir(f"{d}/proj/src")),
         (f"echo 'line1' > {d}/proj/f.txt", lambda: open(f"{d}/proj/f.txt").read() == "line1\n"),
         (f"echo 'line2' >> {d}/proj/f.txt", lambda: open(f"{d}/proj/f.txt").read() == "line1\nline2\n"),
-        (f"sed -i 's/line1/LINE1/' {d}/proj/f.txt", lambda: open(f"{d}/proj/f.txt").read().startswith("LINE1")),
+        # Portable across GNU and BSD sed (`sed -i` has incompatible syntax).
+        (f"sed 's/line1/LINE1/' {d}/proj/f.txt > {d}/proj/f.tmp && mv {d}/proj/f.tmp {d}/proj/f.txt",
+         lambda: open(f"{d}/proj/f.txt").read().startswith("LINE1")),
         (f"cp {d}/proj/f.txt {d}/proj/src/g.txt", lambda: os.path.exists(f"{d}/proj/src/g.txt")),
         (f"mv {d}/proj/src/g.txt {d}/proj/src/h.txt", lambda: os.path.exists(f"{d}/proj/src/h.txt") and not os.path.exists(f"{d}/proj/src/g.txt")),
         (f"ln -s {d}/proj/f.txt {d}/proj/link.txt", lambda: os.path.islink(f"{d}/proj/link.txt")),
@@ -1324,7 +1331,8 @@ def main():
 
     # ---- write report ----
     close_last_suite()
-    ts = datetime.datetime.utcnow().strftime("%Y%m%dT%H%M%SZ")
+    now_utc = datetime.datetime.now(datetime.timezone.utc)
+    ts = now_utc.strftime("%Y%m%dT%H%M%SZ")
     total_ok = sum(v[0] for v in counts.values())
     total = sum(v[1] for v in counts.values())
     elapsed = time.monotonic() - run_t0
@@ -1354,7 +1362,7 @@ def main():
     md.append(f"| **Raw shell** | `{RAW_SHELL}` ({raw_ver}) |")
     md.append(f"| **Host** | {platform.platform()} · python {platform.python_version()} |")
     md.append(f"| **Model suite** | {'enabled (Groq gpt-oss-120b)' if key() else 'skipped (no API key)'} |")
-    md.append(f"| **Date (UTC)** | {datetime.datetime.utcnow().isoformat(timespec='seconds')}Z |")
+    md.append(f"| **Date (UTC)** | {now_utc.strftime('%Y-%m-%dT%H:%M:%SZ')} |")
     md.append("")
 
     # Per-suite results table (sorted 1-7).

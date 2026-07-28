@@ -127,7 +127,7 @@ def main():
     status = "PASS" if passed == total else "PARTIAL" if passed else "FAIL"
 
     os.makedirs(REPORT_DIR, exist_ok=True)
-    ts = datetime.datetime.utcnow().strftime("%Y%m%dT%H%M%SZ")
+    ts = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     path = os.path.join(REPORT_DIR, "real-model-%s.md" % ts)
     lines = ["# aishe real-model classification report", "",
              "- Date: %s" % ts, "- Model: `%s` via `%s`" % (MODEL, BASE_URL),

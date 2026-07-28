@@ -4,7 +4,7 @@ Thanks for helping build aishe. This is the fast path from clone to a green loca
 gate, plus the conventions the project follows.
 
 ## Prerequisites
-- **Rust** ≥ 1.80 (the declared MSRV — CI builds on both 1.80 and stable).
+- **Rust** ≥ 1.88 (the declared MSRV — CI builds on both 1.88 and stable).
 - **zsh** on `$PATH` (the interactive front-end drives your real zsh; the PTY test
   harnesses need it).
 - **Python 3** (the PTY/real-model test harnesses are Python scripts).
@@ -48,7 +48,7 @@ These make real API calls (cost + rate limits) — keep the scale modest.
 
 ## Conventions
 - **Formatting/lints:** `cargo fmt`; clippy must be clean under `-D warnings`.
-- **MSRV:** don't use APIs newer than Rust 1.80 (CI's 1.80 job will catch it).
+- **MSRV:** don't use APIs newer than Rust 1.88 (CI's 1.88 job will catch it).
 - **No panics on runtime data:** avoid `unwrap()/expect()` on env/IO/parsing/model
   output in runtime paths; recover or propagate. `expect()` on compile-time
   constants (e.g. a static regex) is fine.

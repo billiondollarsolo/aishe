@@ -6,6 +6,21 @@ breaking changes can land in any release.
 
 ## [Unreleased]
 
+## [0.2.27] - 2026-07-28
+
+### Fixed
+- Incremental builds now refresh `aishe --version` when the current Git branch
+  advances. The build script watches the symbolic branch ref and `packed-refs`
+  in addition to `.git/HEAD`, including in linked worktrees.
+- The admin validation harness is portable across Linux and macOS: its optional
+  `free` check uses shell feature detection, its in-place edit avoids incompatible
+  GNU/BSD `sed -i` syntax, and its `what` question explicitly forces the
+  natural-language route on hosts that ship `/usr/bin/what`.
+
+### Internal
+- Contributor documentation now matches the declared Rust 1.88 MSRV, and Python
+  test-report timestamps no longer use the deprecated naive `utcnow()` API.
+
 ## [0.2.26] - 2026-07-28
 
 ### Fixed

@@ -199,7 +199,7 @@ def make_env(binary):
 def write_report(status, total):
     import datetime
     os.makedirs(REPORT_DIR, exist_ok=True)
-    ts = datetime.datetime.utcnow().strftime("%Y%m%dT%H%M%SZ")
+    ts = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     path = os.path.join(REPORT_DIR, "fuzz-%s.md" % ts)
     dur = time.monotonic() - RUN["start"] if RUN["start"] else 0.0
     kind_desc = {

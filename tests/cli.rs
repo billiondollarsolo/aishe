@@ -338,14 +338,37 @@ fn piped_stdin_runs_each_line() {
 
 #[test]
 fn version_includes_build_metadata() {
-    Command::cargo_bin("aishe")
+    let output = Command::cargo_bin("aishe")
         .unwrap()
         .arg("--version")
-        .assert()
-        .success()
-        .stdout(contains("aishe "))
-        // build.rs appends "(<sha>, <date>)".
-        .stdout(contains("("));
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let version = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        version.starts_with("aishe ") && version.contains('('),
+        "missing build metadata: {version:?}"
+    );
+
+    // In a Git checkout the embedded revision must identify this exact source
+    // state. This catches build.rs watching `.git/HEAD` but not the branch ref,
+    // which otherwise leaves incremental builds reporting an older commit.
+    let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    if repo.join(".git").exists() {
+        let git = std::process::Command::new("git")
+            .args(["rev-parse", "--short", "HEAD"])
+            .current_dir(repo)
+            .output()
+            .unwrap();
+        if git.status.success() {
+            let expected = String::from_utf8_lossy(&git.stdout);
+            let expected = expected.trim();
+            assert!(
+                version.contains(expected),
+                "version {version:?} does not contain current Git revision {expected:?}"
+            );
+        }
+    }
 }
 
 #[test]

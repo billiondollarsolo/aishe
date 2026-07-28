@@ -249,7 +249,7 @@ def run():
 
 def write_report(dur):
     os.makedirs(REPORT_DIR, exist_ok=True)
-    ts = datetime.datetime.utcnow().strftime("%Y%m%dT%H%M%SZ")
+    ts = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     path = os.path.join(REPORT_DIR, "zsh-features-%s.md" % ts)
     total = len(PASSED) + len(FAILED)
     status = "PASS" if not FAILED else "FAIL"
