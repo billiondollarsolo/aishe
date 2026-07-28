@@ -6,6 +6,28 @@ breaking changes can land in any release.
 
 ## [Unreleased]
 
+## [0.2.26] - 2026-07-28
+
+### Fixed
+- **The untrusted-project-skill warning no longer prints on every command.**
+  0.2.25 emitted it from the shared startup path, so any repository containing
+  a `.aishe/skills/` file wrote `aishe: ignoring untrusted project skill …` to
+  stderr even for plain shell pass-through (`aishe -c 'free -m'`), which never
+  consults a skill. The warning is now raised where skills are actually
+  relevant: `aishe skills`, and `aishe doctor`, which lists gated project
+  skills as part of its status readout. The gate itself is unchanged — a
+  project skill still requires `aishe trust <file>`.
+
+### Internal
+- CI is green again for the first time since 2026-06-13. It had four
+  independent causes, none of which affected the shipped binary: the `test` job
+  installed no zsh on ubuntu (so `aishe doctor` correctly exited non-zero); the
+  PTY suites typed before zsh's line editor was ready, so input arrived mangled
+  on a slow runner; the runner image leaves the zsh completion directories
+  group-writable, so `compinit` stopped on an interactive prompt that consumed a
+  keystroke and desynchronised every later expectation; and a `clippy` lint that
+  only fires on newer toolchains than the one used locally.
+
 ## [0.2.25] - 2026-07-27
 
 ### Added
