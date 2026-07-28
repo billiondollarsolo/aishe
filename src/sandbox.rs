@@ -412,10 +412,7 @@ fn segment_out_of_tree_write(segment: &str) -> Option<String> {
 
     // Out-of-tree write commands: inspect their path arguments.
     let words: Vec<&str> = segment.split_whitespace().collect();
-    let head = match words.first() {
-        Some(h) => strip_path(h),
-        None => return None,
-    };
+    let head = strip_path(words.first()?);
     let is_write_head = matches!(
         head,
         "cp" | "mv"
