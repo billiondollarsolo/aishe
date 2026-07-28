@@ -142,6 +142,10 @@ def make_env():
             "AISHE_DATA_DIR": os.path.join(home, ".local", "share"),
             "XDG_DATA_HOME": os.path.join(home, ".local", "share"),
             "ZDOTDIR": home,  # no real .zshrc here -> clean wrapper
+            # GitHub runners ship group-writable zsh completion dirs, so compinit
+            # stops with an interactive "insecure directories" prompt that swallows
+            # a keystroke and desynchronises every later expect().
+            "ZSH_DISABLE_COMPFIX": "true",
             "TERM": "xterm-256color",
             # Make sure no stray key is picked up; the hook must not need one.
             "ANTHROPIC_API_KEY": "",

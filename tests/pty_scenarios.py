@@ -152,6 +152,10 @@ def make_env(binary):
         "AISHE_DATA_DIR": os.path.join(home, ".local", "share"),
         "XDG_DATA_HOME": os.path.join(home, ".local", "share"),
         "ZDOTDIR": home,
+        # GitHub runners ship group-writable zsh completion dirs, so compinit
+        # stops with an interactive "insecure directories" prompt that swallows
+        # a keystroke and desynchronises every later expect().
+        "ZSH_DISABLE_COMPFIX": "true",
         "TERM": "xterm-256color",
         "PATH": bindir + ":" + os.environ.get("PATH", ""),
         "ANTHROPIC_API_KEY": "",
