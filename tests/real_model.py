@@ -75,6 +75,9 @@ def run_one(home, prompt):
     env = dict(os.environ)
     env.update({
         "HOME": home, "XDG_CONFIG_HOME": os.path.join(home, ".config"),
+ # macOS ignores XDG_*; these are honored on every platform.
+ "AISHE_CONFIG_DIR": os.path.join(home, ".config"),
+ "AISHE_DATA_DIR": os.path.join(home, ".local", "share"),
         "XDG_DATA_HOME": os.path.join(home, ".local", "share"),
         "AISHE_REALTEST_KEY": KEY,
     })

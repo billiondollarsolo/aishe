@@ -765,6 +765,9 @@ def base_env(cfgroot, with_key=False):
     env = dict(os.environ)
     env["XDG_CONFIG_HOME"] = cfgroot
     env["XDG_DATA_HOME"] = os.path.join(cfgroot, "data")
+    # macOS ignores XDG_*; these are honored on every platform.
+    env["AISHE_CONFIG_DIR"] = cfgroot
+    env["AISHE_DATA_DIR"] = os.path.join(cfgroot, "data")
     env["HOME"] = cfgroot  # avoid sourcing a real ~/.aishrc
     env["GROQ_API_KEY"] = key() if with_key else ""
     return env
