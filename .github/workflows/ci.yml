@@ -80,7 +80,16 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
 
       - name: Install zsh
-        run: sudo apt-get update && sudo apt-get install -y zsh
+        run: |
+          sudo apt-get update && sudo apt-get install -y zsh
+          # GitHub images leave the zsh completion directories group-writable,
+          # so compinit stops with an interactive "insecure directories …
+          # continue [y] or abort [n]?" prompt. Inside a PTY test that prompt
+          # eats a keystroke and every later expect() reads a line behind.
+          # ZSH_DISABLE_COMPFIX does not help — it is an oh-my-zsh variable,
+          # not something native compinit consults.
+          sudo chmod -R go-w /usr/share/zsh /usr/local/share/zsh 2>/dev/null || true
+          zsh -f -c 'autoload -Uz compaudit && compaudit' || echo "compaudit clean"
 
       - name: Cache cargo
         uses: actions/cache@v4
