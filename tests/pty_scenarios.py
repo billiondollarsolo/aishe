@@ -177,9 +177,17 @@ def check(sh, name, ok):
 def set_fake(sh, payload):
     # Export the canned model response into the wrapped zsh; the per-call
     # `aishe --auto-line` inherits it. Single-quote-safe payloads only.
+    #
+    # A fixed sleep here races a slow runner: if the export has not been
+    # processed when the buffer is cleared, the stale echo leaks into the next
+    # expect() and the following scenario fails for no visible reason. Confirm
+    # the assignment landed with a round trip instead of guessing at a delay.
     sh.send("export AISHE_FAKE_LLM='%s'" % payload)
-    sh.settle(0.4)
-    sh.buf = ""  # drop the command echo so the next expect() is clean
+    marker = "FAKE_SET_MARKER"
+    sh.send("print -r -- %s" % marker)
+    sh.expect(marker)  # the echo of the print line
+    sh.expect(marker)  # its output — the export is now definitely in effect
+    sh.buf = ""  # drop anything trailing so the next expect() is clean
 
 
 def answer(text):
