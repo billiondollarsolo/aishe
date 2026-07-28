@@ -51,6 +51,8 @@ fn suggest_subcommand_scripting_contract() {
         let mut c = Command::cargo_bin("aishe").unwrap();
         c.env("XDG_CONFIG_HOME", &home)
             .env("XDG_DATA_HOME", home.join("data"))
+            .env("AISHE_CONFIG_DIR", &home)
+            .env("AISHE_DATA_DIR", home.join("data"))
             .env("ANTHROPIC_API_KEY", "sk-test");
         c
     };
@@ -95,6 +97,8 @@ fn suggest_hook_appends_to_the_session_usage_tally() {
         .unwrap()
         .env("XDG_CONFIG_HOME", &home)
         .env("XDG_DATA_HOME", home.join("data"))
+        .env("AISHE_CONFIG_DIR", &home)
+        .env("AISHE_DATA_DIR", home.join("data"))
         .env("ANTHROPIC_API_KEY", "sk-test")
         .env("AISHE_FAKE_LLM", "ls -la")
         .env("AISHE_FAKE_USAGE", "120,30")
@@ -119,6 +123,8 @@ fn no_usage_file_means_no_tally_written() {
         .unwrap()
         .env("XDG_CONFIG_HOME", &home)
         .env("XDG_DATA_HOME", home.join("data"))
+        .env("AISHE_CONFIG_DIR", &home)
+        .env("AISHE_DATA_DIR", home.join("data"))
         .env("ANTHROPIC_API_KEY", "sk-test")
         .env("AISHE_FAKE_LLM", "ls -la")
         .env("AISHE_FAKE_USAGE", "10,5")
@@ -141,6 +147,8 @@ fn dash_c_commands_are_recorded_in_history() {
             .unwrap()
             .env("XDG_CONFIG_HOME", &home)
             .env("XDG_DATA_HOME", &data)
+            .env("AISHE_CONFIG_DIR", &home)
+            .env("AISHE_DATA_DIR", &data)
             .arg("-c")
             .arg(c)
             .assert()
@@ -150,6 +158,8 @@ fn dash_c_commands_are_recorded_in_history() {
         .unwrap()
         .env("XDG_CONFIG_HOME", &home)
         .env("XDG_DATA_HOME", &data)
+        .env("AISHE_CONFIG_DIR", &home)
+        .env("AISHE_DATA_DIR", &data)
         .arg("-c")
         .arg("history")
         .assert()
@@ -167,6 +177,8 @@ fn fix_line_prints_a_corrected_command() {
         .unwrap()
         .env("XDG_CONFIG_HOME", &home)
         .env("XDG_DATA_HOME", home.join("data"))
+        .env("AISHE_CONFIG_DIR", &home)
+        .env("AISHE_DATA_DIR", home.join("data"))
         .env("ANTHROPIC_API_KEY", "sk-test")
         .env("AISHE_LAST_EXIT", "2")
         .env(
@@ -186,6 +198,8 @@ fn dash_c_runs_forced_shell_command() {
         .unwrap()
         .env("XDG_CONFIG_HOME", &home)
         .env("XDG_DATA_HOME", home.join("data"))
+        .env("AISHE_CONFIG_DIR", &home)
+        .env("AISHE_DATA_DIR", home.join("data"))
         .arg("-c")
         .arg("!echo hi-from-aishe")
         .assert()
@@ -221,6 +235,8 @@ fn doctor_reports_environment() {
         .unwrap()
         .env("XDG_CONFIG_HOME", &home)
         .env("XDG_DATA_HOME", home.join("data"))
+        .env("AISHE_CONFIG_DIR", &home)
+        .env("AISHE_DATA_DIR", home.join("data"))
         .env("ANTHROPIC_API_KEY", "sk-test")
         .arg("doctor")
         .assert()
@@ -257,6 +273,8 @@ model = "claude-x"
         .unwrap()
         .env("XDG_CONFIG_HOME", &dir)
         .env("XDG_DATA_HOME", dir.join("data"))
+        .env("AISHE_CONFIG_DIR", &dir)
+        .env("AISHE_DATA_DIR", dir.join("data"))
         .arg("doctor")
         .arg("--probe")
         .assert()
@@ -283,6 +301,8 @@ fn dash_c_propagates_exit_codes() {
             .unwrap()
             .env("XDG_CONFIG_HOME", &home)
             .env("XDG_DATA_HOME", home.join("data"))
+            .env("AISHE_CONFIG_DIR", &home)
+            .env("AISHE_DATA_DIR", home.join("data"))
             .arg("-c")
             .arg(arg)
             .assert()
@@ -307,6 +327,8 @@ fn piped_stdin_runs_each_line() {
         .unwrap()
         .env("XDG_CONFIG_HOME", &home)
         .env("XDG_DATA_HOME", home.join("data"))
+        .env("AISHE_CONFIG_DIR", &home)
+        .env("AISHE_DATA_DIR", home.join("data"))
         .write_stdin("!echo piped-a\n!echo piped-b\n")
         .assert()
         .success()
@@ -336,6 +358,8 @@ fn cli_flags_are_accepted_over_config() {
         .unwrap()
         .env("XDG_CONFIG_HOME", &home)
         .env("XDG_DATA_HOME", home.join("data"))
+        .env("AISHE_CONFIG_DIR", &home)
+        .env("AISHE_DATA_DIR", home.join("data"))
         .args([
             "--provider",
             "openai",
@@ -376,6 +400,8 @@ model = "llama3"
         .unwrap()
         .env("XDG_CONFIG_HOME", &dir)
         .env("XDG_DATA_HOME", dir.join("data"))
+        .env("AISHE_CONFIG_DIR", &dir)
+        .env("AISHE_DATA_DIR", dir.join("data"))
         .arg("-c")
         .arg("!echo migrated-run")
         .assert()
@@ -430,6 +456,8 @@ model = "user-openai"
         let mut c = Command::cargo_bin("aishe").unwrap();
         c.env("XDG_CONFIG_HOME", &dir)
             .env("XDG_DATA_HOME", &data)
+            .env("AISHE_CONFIG_DIR", &dir)
+            .env("AISHE_DATA_DIR", &data)
             .current_dir(&proj)
             .args(args);
         c
@@ -512,6 +540,8 @@ model = "gpt-x"
         let mut c = Command::cargo_bin("aishe").unwrap();
         c.env("XDG_CONFIG_HOME", &dir)
             .env("XDG_DATA_HOME", dir.join("data"))
+            .env("AISHE_CONFIG_DIR", &dir)
+            .env("AISHE_DATA_DIR", dir.join("data"))
             .args(args);
         c
     };

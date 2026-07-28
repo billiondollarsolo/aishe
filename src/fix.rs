@@ -94,6 +94,12 @@ mod tests {
         assert!(!safe_to_rerun("curl http://example.com"));
         // Dangerous → never re-run even though the head looks read-only.
         assert!(!safe_to_rerun("cat /etc/passwd > /dev/sda"));
+        // Unresolvable head → never re-run either. `matches!(…, Risk::Safe)`
+        // fails closed on `Risk::Unknown` by construction; this pins it, since
+        // "re-run it to see what went wrong" is the worst possible response to
+        // "I cannot tell what this command is".
+        assert!(!safe_to_rerun("2>/dev/null cat /etc/hosts"));
+        assert!(!safe_to_rerun("$(which cat) /etc/hosts"));
     }
 
     #[test]

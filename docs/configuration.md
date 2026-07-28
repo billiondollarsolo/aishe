@@ -136,7 +136,14 @@ server launched from `command`. List connected tools with `aishe mcp`. See
   sequence, for example `^o`).
 - `AISHE_MODE_KEY`: override the mode-cycle keybinding for the zsh hook (a
   `bindkey` sequence; default `^[[Z`, Shift-Tab).
-- `XDG_CONFIG_HOME`, `XDG_DATA_HOME`: respected for config and history locations.
+- `XDG_CONFIG_HOME`, `XDG_DATA_HOME`: respected for config and history locations
+  **on Linux**. macOS follows the platform convention
+  (`~/Library/Application Support`) and ignores them — use the two variables
+  below if you need to relocate those directories there.
+- `AISHE_CONFIG_DIR`: base directory for the config, overriding the platform
+  default on every OS. `aishe` reads `$AISHE_CONFIG_DIR/aishe/config.toml`.
+- `AISHE_DATA_DIR`: base directory for state — history, audit log, trust store,
+  and the undo journal — overriding the platform default on every OS.
 
 ## Command-line flags
 

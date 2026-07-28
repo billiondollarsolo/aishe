@@ -663,6 +663,15 @@ fn fetch_aliases_and_functions(shell: &Path) -> HashSet<String> {
     }
 }
 
+/// Ceiling on how much probe stdout we keep. The builtin/alias listings are a
+/// few KiB; anything past this is drained and discarded so the child still
+/// reaches EOF instead of blocking on a full pipe.
+const PROBE_MAX_OUTPUT_BYTES: u64 = 1024 * 1024;
+
+/// How long we wait for the drainer thread after the shell itself has exited.
+/// A forked grandchild can hold the write end open; startup must not hang on it.
+const PROBE_DRAIN_GRACE: Duration = Duration::from_secs(1);
+
 /// Run a shell command with a timeout; kill on expiry. Returns captured
 /// stdout, or None on timeout/failure. stderr is always discarded.
 fn run_with_timeout(shell: &Path, args: &[&str], timeout: Duration) -> Option<String> {
@@ -674,13 +683,38 @@ fn run_with_timeout(shell: &Path, args: &[&str], timeout: Duration) -> Option<St
         .spawn()
         .ok()?;
 
+    // Drain stdout concurrently. Polling `try_wait()` and only calling
+    // `wait_with_output()` after exit deadlocks: the OS pipe buffer is ~64 KiB,
+    // so a plugin-heavy `.zshrc` that prints more than that blocks in write(2)
+    // forever, the child never exits, and the timeout kills a probe that was
+    // working fine (leaving the shell with no aliases/builtins).
+    let stdout = match child.stdout.take() {
+        Some(s) => s,
+        // Can't happen with `Stdio::piped()`, but never leak the child if it does.
+        None => {
+            let _ = child.kill();
+            let _ = child.wait();
+            return None;
+        }
+    };
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        use std::io::Read;
+        let mut stdout = stdout;
+        let mut buf = Vec::new();
+        let _ = (&mut stdout)
+            .take(PROBE_MAX_OUTPUT_BYTES)
+            .read_to_end(&mut buf);
+        // Keep draining past the cap (discarding) so the child still sees its
+        // writes accepted and can exit.
+        let _ = std::io::copy(&mut stdout, &mut std::io::sink());
+        let _ = tx.send(String::from_utf8_lossy(&buf).into_owned());
+    });
+
     let start = std::time::Instant::now();
     loop {
         match child.try_wait() {
-            Ok(Some(_)) => {
-                let out = child.wait_with_output().ok()?;
-                return Some(String::from_utf8_lossy(&out.stdout).to_string());
-            }
+            Ok(Some(_)) => return rx.recv_timeout(PROBE_DRAIN_GRACE).ok(),
             Ok(None) => {
                 if start.elapsed() >= timeout {
                     let _ = child.kill();
@@ -697,6 +731,37 @@ fn run_with_timeout(shell: &Path, args: &[&str], timeout: Duration) -> Option<St
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn run_with_timeout_drains_large_output() {
+        // ~164 KiB: more than an OS pipe buffer holds. Without a concurrent
+        // drainer the child blocks in write(2), `try_wait()` never reports exit,
+        // and the timeout kills a probe that had already produced its answer.
+        let script = "i=0; while [ $i -lt 4000 ]; do \
+                      echo 0123456789012345678901234567890123456789; i=$((i+1)); done";
+        let out = run_with_timeout(
+            Path::new("/bin/sh"),
+            &["-c", script],
+            Duration::from_secs(20),
+        )
+        .expect("large output must not be mistaken for a hang");
+        assert_eq!(out.lines().count(), 4000);
+        assert!(out.len() > 160_000, "got {} bytes", out.len());
+    }
+
+    #[test]
+    fn run_with_timeout_still_kills_a_hang() {
+        // The drainer must not defeat the timeout: a sleeping child is still
+        // killed and reported as a failure.
+        let start = std::time::Instant::now();
+        let out = run_with_timeout(
+            Path::new("/bin/sh"),
+            &["-c", "sleep 30"],
+            Duration::from_millis(200),
+        );
+        assert!(out.is_none());
+        assert!(start.elapsed() < Duration::from_secs(5));
+    }
 
     fn cache_with(items: &[&str]) -> CommandCache {
         let cache = CommandCache::new();

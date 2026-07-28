@@ -364,10 +364,35 @@ impl Default for ProviderConfig {
     }
 }
 
+/// Base directory for aishe's configuration, honoring `$AISHE_CONFIG_DIR`.
+///
+/// The `dirs` crate resolves the platform convention (`~/.config` on Linux,
+/// `~/Library/Application Support` on macOS) and deliberately ignores
+/// `XDG_CONFIG_HOME` on macOS. That makes an integration test unable to isolate
+/// itself there — it would read the developer's real config and fail on whatever
+/// provider they happen to use — so the override is what keeps the suite
+/// hermetic on every platform. It is equally useful for relocating the config.
+pub fn config_root() -> Option<PathBuf> {
+    match std::env::var_os("AISHE_CONFIG_DIR") {
+        Some(v) if !v.is_empty() => Some(PathBuf::from(v)),
+        _ => dirs::config_dir(),
+    }
+}
+
+/// Base directory for aishe's state (history, audit log, trust store, undo
+/// journal), honoring `$AISHE_DATA_DIR`. See [`config_root`] for why the
+/// override exists.
+pub fn data_root() -> Option<PathBuf> {
+    match std::env::var_os("AISHE_DATA_DIR") {
+        Some(v) if !v.is_empty() => Some(PathBuf::from(v)),
+        _ => dirs::data_dir(),
+    }
+}
+
 impl Config {
     /// Path to the config file (`~/.config/aishe/config.toml`).
     pub fn path() -> PathBuf {
-        dirs::config_dir()
+        config_root()
             .unwrap_or_else(|| PathBuf::from("."))
             .join("aishe")
             .join("config.toml")
@@ -375,7 +400,7 @@ impl Config {
 
     /// Legacy config path from before the rename (`~/.config/llmsh/config.toml`).
     fn legacy_path() -> PathBuf {
-        dirs::config_dir()
+        config_root()
             .unwrap_or_else(|| PathBuf::from("."))
             .join("llmsh")
             .join("config.toml")

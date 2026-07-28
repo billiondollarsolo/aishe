@@ -942,7 +942,7 @@ def main():
     rc, out, err = run([BIN, "-c", "/nonexistent-cmd-xyz"], env_local, cwd=fixture)
     add("plugin: unknown /command handled", rc is not None)
 
-    report.append("\n**Discovery & project-override precedence:**\n")
+    report.append("\n**Discovery & name-collision precedence:**\n")
     # No-frontmatter command is discovered.
     rc, out, err = run([BIN, "-c", "/commands"], env_local, cwd=fixture)
     add("plugin: no-frontmatter command discovered", "plain" in out)
@@ -950,9 +950,9 @@ def main():
     add("plugin: project-only command discovered", "projcmd" in out)
     rc, sout, _ = run([BIN, "-c", "/skills"], env_local, cwd=fixture)
     add("plugin: project-only skill discovered", "proj-skill" in sout)
-    # Project command overrides a same-named user command.
+    # A same-named project command must NOT shadow the user's own command.
     rc, out, err = run([BIN, "-c", "/dup"], env_local, cwd=fixture)
-    add("plugin: project overrides user (/dup)", "PROJECT-DUP" in out and "USER-DUP" not in out,
+    add("plugin: user command wins over project (/dup)", "USER-DUP" in out and "PROJECT-DUP" not in out,
         f"→ `{out.strip()}`")
 
     # ---- Suite 5: dispatch classification (no key; routing only) ----

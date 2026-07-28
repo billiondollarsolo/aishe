@@ -42,6 +42,55 @@ const HTTP_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 /// wait on an SSE stream for the matching response).
 const HTTP_READ_TIMEOUT: Duration = Duration::from_secs(30);
 
+/// Ceiling on a single newline-delimited JSON-RPC message from a stdio server.
+/// Bounds the reader thread's memory against a server that never emits a
+/// newline; see [`drain_jsonrpc`] for what happens to a message this large.
+const MAX_RPC_LINE_BYTES: u64 = 8 * 1024 * 1024;
+
+/// Drain a stdio server's stdout, forwarding every parseable JSON-RPC message to
+/// `tx`. Returns on EOF, on a real IO error, or once the receiver is gone.
+///
+/// Reads raw bytes and decodes lossily instead of using `BufRead::lines()`:
+/// `lines()` is UTF-8-only and yields `Err(InvalidData)` for a single stray byte
+/// anywhere in the stream (a latin-1 filename echoed into a server's log line is
+/// enough). The old `let Ok(line) = line else { break }` turned that into reader
+/// thread death, which drops `ChildStdout`; the server then takes SIGPIPE on its
+/// next write and — because nothing marks the transport dead — every later
+/// `request()` merely waits out [`RPC_TIMEOUT`]. Undecodable bytes now become
+/// U+FFFD inside one message, which at worst fails that one message's JSON parse
+/// while the connection keeps working.
+///
+/// ponytail: a message longer than [`MAX_RPC_LINE_BYTES`] is split rather than
+/// buffered whole; the fragments fail to parse and are skipped, so an absurdly
+/// large response is lost and its caller times out instead of exhausting RAM.
+/// Upgrade path: a streaming JSON parser fed directly from the pipe.
+fn drain_jsonrpc<R: Read>(reader: R, tx: mpsc::Sender<Value>) {
+    let mut buf = BufReader::new(reader);
+    let mut raw = Vec::new();
+    loop {
+        raw.clear();
+        // The limit is re-armed each iteration, so `Ok(0)` still means genuine EOF.
+        match (&mut buf)
+            .take(MAX_RPC_LINE_BYTES)
+            .read_until(b'\n', &mut raw)
+        {
+            Ok(0) => return, // EOF: the server closed its stdout
+            Ok(_) => {}
+            Err(_) => return, // pipe closed / real IO error
+        }
+        let text = String::from_utf8_lossy(&raw);
+        let trimmed = text.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        if let Ok(v) = serde_json::from_str::<Value>(trimmed) {
+            if tx.send(v).is_err() {
+                return; // transport dropped
+            }
+        }
+    }
+}
+
 /// A tool advertised by an MCP server (its real name, as the server knows it).
 struct McpTool {
     name: String,
@@ -86,21 +135,7 @@ impl StdioTransport {
         let stdout = child.stdout.take().ok_or("no stdout")?;
 
         let (tx, rx) = mpsc::channel();
-        thread::spawn(move || {
-            let reader = BufReader::new(stdout);
-            for line in reader.lines() {
-                let Ok(line) = line else { break };
-                let trimmed = line.trim();
-                if trimmed.is_empty() {
-                    continue;
-                }
-                if let Ok(v) = serde_json::from_str::<Value>(trimmed) {
-                    if tx.send(v).is_err() {
-                        break;
-                    }
-                }
-            }
-        });
+        thread::spawn(move || drain_jsonrpc(stdout, tx));
 
         Ok(StdioTransport {
             child,
@@ -918,6 +953,30 @@ pub fn is_mcp_tool(name: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn jsonrpc_drain_survives_invalid_utf8() {
+        // A latin-1 byte between two JSON-RPC messages. The old `.lines()` reader
+        // died on it, dropping ChildStdout and wedging every later request();
+        // the byte drainer must deliver the message that follows.
+        let bytes: Vec<u8> = b"{\"id\":1}\n\xFF log line\n{\"id\":2}\n".to_vec();
+        let (tx, rx) = mpsc::channel();
+        drain_jsonrpc(std::io::Cursor::new(bytes), tx);
+        assert_eq!(rx.recv().unwrap()["id"], json!(1));
+        assert_eq!(rx.recv().unwrap()["id"], json!(2));
+        assert!(rx.recv().is_err(), "channel should close at EOF");
+    }
+
+    #[test]
+    fn jsonrpc_drain_bounds_a_newline_free_stream() {
+        // A server that never emits a newline must not be able to grow the reader
+        // thread's buffer without limit.
+        let bytes = vec![b'x'; MAX_RPC_LINE_BYTES as usize + 16];
+        let (tx, rx) = mpsc::channel();
+        drain_jsonrpc(std::io::Cursor::new(bytes), tx);
+        // Nothing parses, and the drain still terminates at EOF.
+        assert!(rx.recv().is_err());
+    }
 
     #[test]
     fn renders_text_content() {

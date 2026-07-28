@@ -47,7 +47,8 @@ suites:
    files, verifying on-disk state.
 3. Plugins, slash-commands, and skills (deterministic): meta listings, custom
    command discovery, `shell` and `$ARGUMENTS` templating, no-frontmatter
-   discovery, and project over user override precedence.
+   discovery, and name-collision precedence (a same-named project command does not
+   shadow the user's — the user's command wins).
 4. Dispatch classification: asserts each input routes to shell or natural language
    independent of output (including the `/usage`, `/reset`, `/ghost` meta slashes).
 5. Config and meta robustness: a config exercising every newer field round-trips

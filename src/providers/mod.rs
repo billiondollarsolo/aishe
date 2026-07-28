@@ -236,19 +236,52 @@ pub(crate) fn stream_post(
     }
 }
 
+/// Ceiling on a single SSE line. Real provider frames are a few KiB; this only
+/// bounds memory against a stream that never sends a newline. Oversized lines are
+/// split, so the tail of such a frame is not recognized as `data:` and is
+/// dropped — a lost token beats an unbounded allocation.
+const MAX_SSE_LINE_BYTES: u64 = 1024 * 1024;
+
 /// Read an SSE stream line by line, invoking `on_data` with the payload of each
 /// `data:` line (skipping blanks and the `[DONE]` sentinel).
 pub(crate) fn read_sse(
     resp: ureq::Response,
-    mut on_data: impl FnMut(&str),
+    on_data: impl FnMut(&str),
 ) -> Result<(), ProviderError> {
-    use std::io::BufRead;
-    let reader = std::io::BufReader::new(resp.into_reader());
-    for line in reader.lines() {
-        // A read error mid-stream (truncation/connection reset) ends the stream
-        // gracefully: any text delivered so far stands, rather than failing the
-        // whole turn. SSE has no guaranteed terminator, so EOF is normal.
-        let Ok(line) = line else { break };
+    read_sse_lines(resp.into_reader(), on_data);
+    Ok(())
+}
+
+/// The reader half of [`read_sse`], split out so it can be exercised against a
+/// plain byte stream instead of a live HTTP response.
+///
+/// Drains raw bytes and decodes each line lossily rather than using
+/// `BufRead::lines()`. `lines()` is UTF-8-only, and one invalid byte — a chunk
+/// boundary that splits a multi-byte character, a provider echoing latin-1 in an
+/// error frame — yields `Err(InvalidData)`, which the old `let Ok(line) = line
+/// else { break }` could not tell apart from end-of-stream: the model's answer
+/// was silently cut off mid-sentence with `Ok(())` returned. A decode error is no
+/// longer possible here; only a genuine IO error or EOF ends the loop.
+fn read_sse_lines<R: std::io::Read>(reader: R, mut on_data: impl FnMut(&str)) {
+    use std::io::{BufRead, Read};
+    let mut buf = std::io::BufReader::new(reader);
+    let mut raw = Vec::new();
+    loop {
+        raw.clear();
+        // The limit is re-armed each iteration, so `Ok(0)` still means genuine EOF.
+        match (&mut buf)
+            .take(MAX_SSE_LINE_BYTES)
+            .read_until(b'\n', &mut raw)
+        {
+            Ok(0) => return, // EOF: SSE has no guaranteed terminator, this is normal
+            Ok(_) => {}
+            // A real IO error mid-stream (truncation/connection reset) ends the
+            // stream gracefully: any text delivered so far stands, rather than
+            // failing the whole turn.
+            Err(_) => return,
+        }
+        let line = String::from_utf8_lossy(&raw);
+        // The trailing newline (and any CR) is removed by the payload `trim()`.
         if let Some(data) = line.strip_prefix("data:") {
             let data = data.trim();
             if data.is_empty() || data == "[DONE]" {
@@ -257,7 +290,6 @@ pub(crate) fn read_sse(
             on_data(data);
         }
     }
-    Ok(())
 }
 
 /// Retry attempts (beyond the first try) for transient HTTP failures.
@@ -515,6 +547,27 @@ pub(crate) const MAX_TOKENS: u32 = 4096;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sse_survives_invalid_utf8_mid_stream() {
+        // A stray byte between two frames. The old `.lines()` loop treated the
+        // decode error as end-of-stream and returned Ok(()), so the answer was
+        // truncated mid-sentence with nothing surfaced to the caller.
+        let bytes: Vec<u8> = b"data: one\n\xFF\ndata: two\ndata: [DONE]\n".to_vec();
+        let mut got = Vec::new();
+        read_sse_lines(std::io::Cursor::new(bytes), |d| got.push(d.to_string()));
+        assert_eq!(got, vec!["one".to_string(), "two".to_string()]);
+    }
+
+    #[test]
+    fn sse_handles_crlf_and_unterminated_final_frame() {
+        // CRLF framing, and a last frame with no trailing newline (a server that
+        // closes the connection right after the final token).
+        let bytes: Vec<u8> = b"data: a\r\n\r\ndata: b".to_vec();
+        let mut got = Vec::new();
+        read_sse_lines(std::io::Cursor::new(bytes), |d| got.push(d.to_string()));
+        assert_eq!(got, vec!["a".to_string(), "b".to_string()]);
+    }
 
     #[test]
     fn retryable_statuses() {

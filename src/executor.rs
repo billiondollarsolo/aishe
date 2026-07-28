@@ -3,7 +3,7 @@
 //! mutate persistent shell state (`cd`, `export`, …) are intercepted in-process.
 
 use std::collections::{HashMap, VecDeque};
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader, Read, Write};
 use std::os::unix::process::{CommandExt, ExitStatusExt};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
@@ -29,8 +29,90 @@ struct Job {
 
 /// Captured-output truncation limit handed to the LLM.
 const CAPTURE_TRUNCATE_CHARS: usize = 8_000;
+/// Live ceiling on how many bytes of a child's captured output we hold in RAM.
+///
+/// [`CAPTURE_TRUNCATE_CHARS`] is applied by `run_captured` only *after* the
+/// stream has ended, so without a bound enforced during the drain a command that
+/// spews (`cat /dev/urandom`, or `tar czf - /usr` with the `-f` slip) grows the
+/// buffer until the OOM killer arrives. 256 KiB is ~30x the post-truncation
+/// budget, so bounding here never changes what a sane command reports.
+const DRAIN_MAX_BYTES: usize = 256 * 1024;
+/// Ceiling on a single drained line. A stream that never emits a newline (binary
+/// output, `head -c 1G /dev/zero`) would otherwise make one `read_until` call
+/// grow a single buffer without limit. Oversized lines are split here, which can
+/// cut a UTF-8 sequence in half; the lossy decode turns the halves into U+FFFD,
+/// which is what binary output produces anyway.
+const DRAIN_MAX_LINE_BYTES: u64 = 64 * 1024;
+/// Ceiling on how many drained lines are held, independent of their bytes.
+///
+/// The byte budget alone does not bound memory: a stream of *blank* lines
+/// (`yes ""`, `awk 'BEGIN{for(i=0;i<5e6;i++) print ""}'`) costs one byte each in
+/// the accounting but a whole `String` (24 bytes of `VecDeque` slot, plus the
+/// deque's own growth) in RAM, so 256 KiB of accounted bytes could still hold a
+/// quarter-million allocations. This cap is far above what survives
+/// [`CAPTURE_TRUNCATE_CHARS`], so it never changes what a sane command reports.
+const DRAIN_MAX_LINES: usize = 20_000;
 /// Default timeout for captured (yolo) commands.
 pub const DEFAULT_CAPTURE_TIMEOUT: Duration = Duration::from_secs(120);
+
+/// Bounded, FIFO-evicting accumulator for one child's captured output.
+///
+/// Both drainer threads (stdout and stderr) push into a single instance behind a
+/// mutex. It keeps at most [`DRAIN_MAX_BYTES`] of the *tail* — the same end of
+/// the stream [`truncate_tail`] keeps — and remembers whether anything was
+/// evicted, so the joined text can say so rather than presenting a truncated
+/// stream to the model as if it were complete.
+#[derive(Default)]
+struct DrainBuffer {
+    lines: VecDeque<String>,
+    /// Bytes currently held in `lines`, counting one byte for the newline that
+    /// joins each line back together.
+    ///
+    /// The separator is charged deliberately: accounting only `line.len()` made a
+    /// blank line cost *zero*, so the eviction loop never fired for a stream of
+    /// empty lines and the deque grew without bound (~190 MB/s measured) until the
+    /// OOM killer arrived — the exact failure [`DRAIN_MAX_BYTES`] exists to stop.
+    bytes: usize,
+    /// Whether any line was evicted to stay under the cap.
+    dropped: bool,
+}
+
+impl DrainBuffer {
+    /// Append one line, evicting whole lines from the front until the buffer is
+    /// back under *both* [`DRAIN_MAX_BYTES`] and [`DRAIN_MAX_LINES`]. The last
+    /// line is never evicted (a single line over the cap is already bounded by
+    /// [`DRAIN_MAX_LINE_BYTES`]), so the buffer can't empty itself into nothing.
+    fn push(&mut self, line: String) {
+        // `+ 1` for the joining newline: without it a blank line is free and the
+        // eviction loop below never runs. See [`DrainBuffer::bytes`].
+        self.bytes = self.bytes.saturating_add(line.len().saturating_add(1));
+        self.lines.push_back(line);
+        while (self.bytes > DRAIN_MAX_BYTES || self.lines.len() > DRAIN_MAX_LINES)
+            && self.lines.len() > 1
+        {
+            if let Some(front) = self.lines.pop_front() {
+                self.bytes = self.bytes.saturating_sub(front.len().saturating_add(1));
+                self.dropped = true;
+            }
+        }
+    }
+
+    /// The captured text, newline-joined, prefixed with a marker when lines were
+    /// evicted so the model isn't misled about completeness.
+    fn join(&self) -> String {
+        let body = self
+            .lines
+            .iter()
+            .map(String::as_str)
+            .collect::<Vec<_>>()
+            .join("\n");
+        if self.dropped {
+            format!("[... output dropped: kept only the last {DRAIN_MAX_BYTES} bytes ...]\n{body}")
+        } else {
+            body
+        }
+    }
+}
 
 pub struct Executor {
     /// Backing shell: zsh if available, else bash.
@@ -275,7 +357,7 @@ impl Executor {
 
         // The shell's pid is also its process-group id (process_group(0)).
         let pgid = child.id() as i32;
-        let collected: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+        let collected: Arc<Mutex<DrainBuffer>> = Arc::new(Mutex::new(DrainBuffer::default()));
         let mut drainers = Vec::new();
 
         if let Some(out) = child.stdout.take() {
@@ -313,10 +395,7 @@ impl Executor {
         // re-parented) descendant.
         join_drainers_bounded(drainers, Duration::from_secs(2));
 
-        let mut output = collected
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .join("\n");
+        let mut output = collected.lock().unwrap_or_else(|e| e.into_inner()).join();
         if timed_out {
             let note = format!(
                 "\n[aishe: command timed out after {}s and was killed]",
@@ -899,13 +978,35 @@ fn join_drainers_bounded(drainers: Vec<std::thread::JoinHandle<()>>, grace: Dura
 /// (stderr lines to stderr) and collecting it for the LLM.
 fn spawn_drainer<R: std::io::Read + Send + 'static>(
     reader: R,
-    collected: Arc<Mutex<Vec<String>>>,
+    collected: Arc<Mutex<DrainBuffer>>,
     is_stderr: bool,
     tee: bool,
 ) -> std::thread::JoinHandle<()> {
     std::thread::spawn(move || {
-        let buf = BufReader::new(reader);
-        for line in buf.lines().map_while(Result::ok) {
+        // ponytail: byte drain + lossy per-line decode. `.lines()` is UTF-8-only
+        // and `map_while(Result::ok)` treats the first invalid-UTF-8 line as EOF,
+        // which stalls the pipe and fabricates a timeout. Draining raw bytes and
+        // decoding lossily preserves every line (invalid bytes → U+FFFD) and never
+        // ends the stream early. Ceiling: no encoding detection beyond lossy UTF-8.
+        let mut buf = BufReader::new(reader);
+        let mut raw = Vec::new();
+        loop {
+            raw.clear();
+            // Read at most one line *and* at most DRAIN_MAX_LINE_BYTES: the limit
+            // is re-armed every iteration, so `Ok(0)` still means genuine EOF and
+            // only a newline-free stream ever hits the split.
+            match (&mut buf)
+                .take(DRAIN_MAX_LINE_BYTES)
+                .read_until(b'\n', &mut raw)
+            {
+                Ok(0) => break, // EOF
+                Ok(_) => {}
+                Err(_) => break, // pipe closed / real IO error
+            }
+            while matches!(raw.last(), Some(b'\n' | b'\r')) {
+                raw.pop();
+            }
+            let line = String::from_utf8_lossy(&raw).into_owned();
             if tee {
                 if is_stderr {
                     let mut e = std::io::stderr();
@@ -915,6 +1016,8 @@ fn spawn_drainer<R: std::io::Read + Send + 'static>(
                     let _ = writeln!(o, "{line}");
                 }
             }
+            // Bounded push: eviction happens live, not after the whole stream is
+            // already resident in RAM.
             collected
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
@@ -973,7 +1076,7 @@ fn init_session_rc() -> std::io::Result<PathBuf> {
         let p = single_quote(&home.join(".aishrc"));
         content.push_str(&format!("[ -f {p} ] && source {p}\n"));
     }
-    if let Some(cfg) = dirs::config_dir() {
+    if let Some(cfg) = crate::config::config_root() {
         let p = single_quote(&cfg.join("aishe").join("aishrc"));
         content.push_str(&format!("[ -f {p} ] && source {p}\n"));
     }
@@ -1086,6 +1189,95 @@ mod tests {
         let (code2, out2) = e.run_captured("echo PLAIN_OK", Duration::from_secs(10), false);
         assert_eq!(code2, 0, "{out2}");
         assert!(out2.contains("PLAIN_OK"), "{out2}");
+    }
+
+    #[test]
+    fn drainer_survives_invalid_utf8() {
+        // A reader whose bytes include an invalid UTF-8 sequence between two valid
+        // lines. The old `.lines()/map_while` drainer terminated on the first decode
+        // error, dropping "more" and stalling the pipe. The byte drainer must land
+        // all three lines, with the invalid byte replaced by U+FFFD.
+        let bytes: Vec<u8> = b"ok\n\xFF\nmore\n".to_vec();
+        let reader = std::io::Cursor::new(bytes);
+        let collected: Arc<Mutex<DrainBuffer>> = Arc::new(Mutex::new(DrainBuffer::default()));
+        let handle = spawn_drainer(reader, Arc::clone(&collected), false, false);
+        handle.join().unwrap();
+        let out = collected.lock().unwrap();
+        let out: Vec<&str> = out.lines.iter().map(String::as_str).collect();
+        assert_eq!(out.len(), 3, "expected 3 lines, got {out:?}");
+        assert_eq!(out[0], "ok");
+        assert_eq!(out[1], "\u{FFFD}");
+        assert_eq!(out[2], "more");
+    }
+
+    #[test]
+    fn drainer_bounds_memory_and_keeps_tail() {
+        // A stream several times the live cap. The bound must be enforced *during*
+        // the drain: applying CAPTURE_TRUNCATE_CHARS only after the stream ends is
+        // what let `cat /dev/urandom` grow the process until the OOM killer hit.
+        let mut bytes = Vec::new();
+        for i in 0..60_000u32 {
+            bytes.extend_from_slice(format!("line {i}\n").as_bytes());
+        }
+        assert!(bytes.len() > DRAIN_MAX_BYTES * 2);
+        let collected: Arc<Mutex<DrainBuffer>> = Arc::new(Mutex::new(DrainBuffer::default()));
+        spawn_drainer(
+            std::io::Cursor::new(bytes),
+            Arc::clone(&collected),
+            false,
+            false,
+        )
+        .join()
+        .unwrap();
+        let out = collected.lock().unwrap();
+        assert!(out.bytes <= DRAIN_MAX_BYTES, "held {} bytes", out.bytes);
+        assert!(out.dropped, "eviction should have been recorded");
+        let joined = out.join();
+        // The tail survives, the head is gone, and the marker says so.
+        assert!(joined.starts_with("[... output dropped:"), "{joined:.80}");
+        assert!(joined.ends_with("line 59999"));
+        assert!(!joined.contains("line 0\n"));
+    }
+
+    #[test]
+    fn drainer_bounds_memory_on_blank_lines() {
+        // Regression: `push` accounted only `line.len()`, so a blank line cost
+        // ZERO and the eviction loop never fired. `yes ""` then grew the deque one
+        // String per line (~190 MB/s measured) until the OOM killer arrived, while
+        // the joined output stayed an innocuous 8 KB — invisible except as RSS.
+        let mut buf = DrainBuffer::default();
+        for _ in 0..500_000 {
+            buf.push(String::new());
+        }
+        assert!(buf.bytes <= DRAIN_MAX_BYTES, "held {} bytes", buf.bytes);
+        assert!(
+            buf.lines.len() <= DRAIN_MAX_LINES,
+            "held {} lines",
+            buf.lines.len()
+        );
+        assert!(buf.dropped, "eviction should have been recorded");
+    }
+
+    #[test]
+    fn drainer_splits_a_newline_free_stream() {
+        // `cat /dev/zero`-shaped input: no newline ever arrives, so an unbounded
+        // `read_until` would grow one line buffer without limit.
+        let limit = DRAIN_MAX_LINE_BYTES as usize;
+        let bytes = vec![b'x'; limit * 2 + 10];
+        let collected: Arc<Mutex<DrainBuffer>> = Arc::new(Mutex::new(DrainBuffer::default()));
+        spawn_drainer(
+            std::io::Cursor::new(bytes),
+            Arc::clone(&collected),
+            false,
+            false,
+        )
+        .join()
+        .unwrap();
+        let out = collected.lock().unwrap();
+        assert_eq!(out.lines.len(), 3);
+        assert!(out.lines.iter().all(|l| l.len() <= limit));
+        // Payload plus one accounted separator byte per line (see `DrainBuffer::bytes`).
+        assert_eq!(out.bytes, limit * 2 + 10 + out.lines.len());
     }
 
     #[test]

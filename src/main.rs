@@ -393,6 +393,7 @@ fn run() -> Result<u8> {
                     println!("\x20 {name}  —  {desc}");
                 }
             }
+            warn_untrusted_skills(&skills);
             return Ok(0);
         }
         Some(Cmd::Mode { value }) => return Ok(set_or_show("mode", value.as_deref(), &config)),
@@ -521,6 +522,7 @@ fn run() -> Result<u8> {
     // User-defined slash-commands and model-invoked skills (plugins).
     let commands = CommandRegistry::load();
     let skills = aishe::skills::SkillRegistry::load();
+    warn_untrusted_skills(&skills);
     // MCP servers (extra yolo tools). Empty/instant unless `[mcp_servers]` is set.
     let mcp = aishe::mcp::McpRegistry::connect(&config.mcp_servers);
 
@@ -1047,6 +1049,10 @@ fn yolo_line(
 /// - Safe command: command on stdout, exit 0 (hook runs it).
 /// - Dangerous command: command on stdout + reason on stderr, exit
 ///   `EXIT_AUTO_DANGEROUS` (hook pre-fills it instead).
+/// - Command whose head the gate could not resolve ([`Risk::Unknown`]): same as
+///   dangerous — command on stdout + reason on stderr, exit
+///   `EXIT_AUTO_DANGEROUS`. The code is deliberately not new, so hooks that
+///   switch on `0` vs `20` keep working and fail closed by default.
 fn auto_line(
     line: &str,
     executor: &mut Executor,
@@ -1080,6 +1086,17 @@ fn auto_line(
                 Risk::Safe => 0,
                 Risk::Dangerous(reason) => {
                     eprintln!("{}", format!("⚠ {reason} — pre-filled for review").yellow());
+                    EXIT_AUTO_DANGEROUS
+                }
+                // Same exit code on purpose: the contract's `20` means "do not
+                // auto-run this, pre-fill it for review", which is exactly the
+                // right handling for a command the gate could not resolve. A new
+                // code would break every hook that switches on 0 vs 20.
+                Risk::Unknown(reason) => {
+                    eprintln!(
+                        "{}",
+                        format!("⚠ could not verify ({reason}) — pre-filled for review").yellow()
+                    );
                     EXIT_AUTO_DANGEROUS
                 }
             };
@@ -1126,11 +1143,16 @@ fn auto_line(
 /// stable across minor versions:
 ///
 /// - `0` — a safe command (printed to stdout) or a prose answer (to stderr),
-/// - `20` — a command the safety gate flags (still printed, for review),
+/// - `20` — a command the safety gate flags (still printed, for review): either
+///   dangerous, or one whose head the gate could not resolve,
 /// - `1` — no provider / no query.
 ///
 /// In JSON mode a single object is printed to stdout with fields
-/// `{kind, command, explanation, risk, reason}`.
+/// `{kind, command, explanation, risk, reason}`. `risk` is `"safe"`,
+/// `"dangerous"`, `"unknown"` (the gate could not tell what the command runs —
+/// treat like `"dangerous"`), or `"n/a"` for an answer. The existing values and
+/// exit codes are unchanged; `"unknown"` is additive, so a consumer that only
+/// tests `risk == "safe"` still fails closed.
 fn suggest_command(
     query: &str,
     json: bool,
@@ -1162,6 +1184,14 @@ fn suggest_command(
                 command,
                 explanation,
                 "dangerous",
+                r.to_string(),
+                EXIT_AUTO_DANGEROUS,
+            ),
+            Risk::Unknown(r) => (
+                "command",
+                command,
+                explanation,
+                "unknown",
                 r.to_string(),
                 EXIT_AUTO_DANGEROUS,
             ),
@@ -1203,6 +1233,8 @@ fn suggest_command(
         }
         if risk == "dangerous" {
             eprintln!("{}", format!("⚠ {reason}").yellow());
+        } else if risk == "unknown" {
+            eprintln!("{}", format!("⚠ could not verify ({reason})").yellow());
         }
         println!("{command}");
     } else if !explanation.is_empty() {
@@ -1281,6 +1313,7 @@ fn one_shot(
                                 println!("\x20 {name}  —  {desc}");
                             }
                         }
+                        warn_untrusted_skills(skills);
                     }
                     Some("mcp") => print_mcp_listing(mcp),
                     Some("config") => {
@@ -1382,14 +1415,101 @@ fn try_custom_command(
         return Ok(true);
     }
     if ex.shell {
+        if !gate_custom_shell(cmd, &ex.text) {
+            return Ok(true);
+        }
         executor.run(&ex.text);
     } else {
-        let mode = ex.mode.as_deref().unwrap_or(config.aishe.mode.as_str());
+        // A repo-supplied `mode:` may not escalate past the user's configured
+        // mode unless the command file is trusted (audit finding #3): otherwise
+        // `mode: yolo` in a cloned repo silently dispatches the agentic loop.
+        let configured = config.aishe.mode.as_str();
+        let mode = cmd.effective_mode(configured, custom_cmd_trusted(cmd));
+        if let Some(want) = ex.mode.as_deref().filter(|w| *w != mode) {
+            eprintln!(
+                "{}",
+                format!(
+                    "aishe: ignoring untrusted project command mode '{want}' — running in '{mode}' (aishe trust {} to allow)",
+                    cmd.source.as_deref().unwrap_or(std::path::Path::new("")).display()
+                )
+                .yellow()
+            );
+        }
         run_nl(
             &ex.text, mode, provider, executor, config, skills, mcp, session,
         )?;
     }
     Ok(true)
+}
+
+/// Tell the user about *project* skills that `SkillRegistry::load` dropped as
+/// untrusted, and how to enable them.
+///
+/// A project skill's body is repo-supplied text handed to the model as
+/// instructions, and the model pulls it in mid-loop with no user in the loop —
+/// so unlike a `shell:true` project command there is no moment to confirm it at.
+/// It is excluded until `aishe trust <file>`; this is the only signal that it
+/// exists at all, so it must not be silent.
+fn warn_untrusted_skills(skills: &SkillRegistry) {
+    for path in skills.untrusted() {
+        // The path is repo-supplied: escape control characters so a crafted
+        // filename cannot repaint the line (same reason as `gate_custom_shell`).
+        let shown = aishe::commands::display_safe(&path.display().to_string());
+        eprintln!(
+            "{}",
+            format!("aishe: ignoring untrusted project skill — aishe trust {shown}").yellow()
+        );
+    }
+}
+
+/// Whether a custom command's source file is currently trusted. A user-origin
+/// command (`source == None`) is trusted by construction.
+fn custom_cmd_trusted(cmd: &aishe::commands::CustomCommand) -> bool {
+    match cmd.source.as_deref() {
+        None => true,
+        Some(src) => {
+            let contents = std::fs::read_to_string(src).unwrap_or_default();
+            aishe::trust::is_trusted(src, &contents)
+        }
+    }
+}
+
+/// Gate execution of a `shell:true` custom command. Returns whether to run it.
+///
+/// A **project**-origin command (from a cloned repo's `<cwd>/.aishe/commands`) must
+/// be trusted (`aishe trust <file>`) or explicitly confirmed — the resolved shell
+/// command is shown first — before it can run. **Both** origins additionally pass
+/// through the standard safety gate (`assess` + `confirm_dangerous`).
+fn gate_custom_shell(cmd: &aishe::commands::CustomCommand, resolved: &str) -> bool {
+    use std::io::Write;
+    // ponytail: prompt-per-run is the floor for an untrusted project command;
+    // `aishe trust <file>` upgrades it to trust-once. No sandbox beyond that.
+    if let Some(src) = cmd.source.as_deref() {
+        if cmd.needs_trust_confirm(custom_cmd_trusted(cmd)) {
+            println!();
+            println!("  {}", "untrusted project command".yellow().bold());
+            println!("  {} {}", "file:".dim(), src.display().to_string().dim());
+            // The body is repo-supplied: escape control characters so it cannot
+            // repaint this line and preview a command other than the one that runs.
+            println!(
+                "  {} {}",
+                "will run:".dim(),
+                aishe::commands::display_safe(resolved).white().bold()
+            );
+            print!("  Run this shell command? [y/N] ");
+            std::io::stdout().flush().ok();
+            let mut line = String::new();
+            if std::io::stdin().read_line(&mut line).is_err() {
+                return false;
+            }
+            if !matches!(line.trim(), "y" | "Y" | "yes" | "Yes") {
+                println!("  {}", "cancelled".dim());
+                return false;
+            }
+        }
+    }
+    // Both origins: assess + confirm the resolved body like any other command.
+    matches!(modes::safety_gate(resolved), modes::GateOutcome::Proceed)
 }
 
 /// Run a natural-language request in the given mode.
@@ -1522,7 +1642,7 @@ fn set_or_show(field: &str, value: Option<&str>, effective: &Config) -> u8 {
 }
 
 fn data_dir() -> std::path::PathBuf {
-    dirs::data_dir()
+    aishe::config::data_root()
         .unwrap_or_else(|| std::path::PathBuf::from("."))
         .join("aishe")
 }
@@ -2368,6 +2488,11 @@ fn replay_commands(commands: &[(String, Option<i64>)]) -> u8 {
             }
             Risk::Dangerous(reason) => {
                 eprintln!("{} skipped (dangerous: {reason}): {cmd}", "!".yellow());
+            }
+            // Replay is non-interactive by design, so an unresolvable command is
+            // skipped rather than guessed at.
+            Risk::Unknown(reason) => {
+                eprintln!("{} skipped (unverifiable: {reason}): {cmd}", "!".yellow());
             }
         }
     }

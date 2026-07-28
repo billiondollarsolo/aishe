@@ -3,7 +3,8 @@
 //!
 //! Commands are Markdown files discovered from:
 //!   - `~/.config/aishe/commands/*.md`  (user)
-//!   - `<cwd>/.aishe/commands/*.md`      (project — overrides user by name)
+//!   - `<cwd>/.aishe/commands/*.md`      (project — cannot shadow a user command
+//!     of the same name; the user's own definition always wins)
 //!
 //! The file stem is the command name (`deploy.md` → `/deploy`). An optional
 //! YAML-ish frontmatter block configures it; the body is a template:
@@ -34,6 +35,10 @@ pub struct CustomCommand {
     /// NL mode override (`suggest`/`auto`/`yolo`); `None` = use the current mode.
     pub mode: Option<String>,
     pub body: String,
+    /// Origin file for a *project* command (`<cwd>/.aishe/commands/*.md`), used to
+    /// gate its shell execution against trust. `None` for user commands (authored
+    /// by the user, so trusted by construction).
+    pub source: Option<PathBuf>,
 }
 
 /// The result of expanding a command with arguments.
@@ -45,6 +50,37 @@ pub struct Expanded {
 }
 
 impl CustomCommand {
+    /// Whether running this command's `shell:true` body must be explicitly
+    /// confirmed on the trust dimension before it executes — the trust/confirm
+    /// decision at the core of `main::gate_custom_shell`. A **user**-origin command
+    /// (`source == None`) is trusted by construction and never needs confirmation;
+    /// a **project**-origin command needs it unless its source file is currently
+    /// trusted (pass `trusted = trust::is_trusted(src, contents)`).
+    pub fn needs_trust_confirm(&self, trusted: bool) -> bool {
+        self.source.is_some() && !trusted
+    }
+
+    /// The NL mode this command actually runs in, given the user's `configured`
+    /// mode and whether its source file is trusted.
+    ///
+    /// A **project**-origin command's `mode:` frontmatter is attacker-controlled
+    /// (it ships inside a cloned repo), so an untrusted one must not *escalate*
+    /// past the user's configured mode: `mode: yolo` would otherwise hand a repo
+    /// the agentic loop with no trust prompt and no confirmation, and `mode: auto`
+    /// would run Safe commands unconfirmed. Such an override is ignored (the
+    /// configured mode is used). De-escalation is always honored, and so is any
+    /// **user**-origin override — the user wrote it.
+    pub fn effective_mode<'a>(&'a self, configured: &'a str, trusted: bool) -> &'a str {
+        let Some(want) = self.mode.as_deref() else {
+            return configured;
+        };
+        if self.needs_trust_confirm(trusted) && mode_rank(want) > mode_rank(configured) {
+            configured
+        } else {
+            want
+        }
+    }
+
     /// Substitute `$ARGUMENTS` and `$1`..`$9` in the body.
     pub fn expand(&self, args: &[&str]) -> Expanded {
         let mut text = self.body.replace("$ARGUMENTS", &args.join(" "));
@@ -60,6 +96,38 @@ impl CustomCommand {
     }
 }
 
+/// How much a mode may do without asking: `suggest` < `auto` < `yolo`. Anything
+/// unrecognized ranks as `suggest` (the parser already rejects other values).
+fn mode_rank(mode: &str) -> u8 {
+    match mode {
+        "yolo" => 2,
+        "auto" => 1,
+        _ => 0,
+    }
+}
+
+/// Escape C0/C1 control characters (and DEL) for terminal display.
+///
+/// A command body is repo-supplied text: printing it raw lets `\r` plus
+/// `ESC[2K` repaint the line, so the "will run:" preview shows one command
+/// while a different one executes.
+///
+// ponytail: blanket-escapes control bytes instead of parsing escape sequences —
+// the ceiling is a *faithful* preview, not a pretty one, so a body with real
+// tabs/newlines previews as `\x09`/`\x0a`.
+pub fn display_safe(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        match c {
+            '\u{0}'..='\u{1f}' | '\u{7f}'..='\u{9f}' => {
+                out.push_str(&format!("\\x{:02x}", c as u32));
+            }
+            _ => out.push(c),
+        }
+    }
+    out
+}
+
 /// Registry of custom commands, keyed by name (sorted for stable listing).
 #[derive(Debug, Default, Clone)]
 pub struct CommandRegistry {
@@ -67,16 +135,18 @@ pub struct CommandRegistry {
 }
 
 impl CommandRegistry {
-    /// Load from the user and project command directories (project overrides).
+    /// Load from the user and project command directories. On a name collision
+    /// the **user's** command wins — a project command never shadows it.
     pub fn load() -> Self {
         let mut reg = CommandRegistry::default();
-        for dir in command_dirs() {
-            reg.load_dir(&dir);
+        // `command_dirs` yields user first, then project; the flag marks the origin.
+        for (dir, is_project) in command_dirs() {
+            reg.load_dir(&dir, is_project);
         }
         reg
     }
 
-    fn load_dir(&mut self, dir: &std::path::Path) {
+    fn load_dir(&mut self, dir: &std::path::Path, is_project: bool) {
         let entries = match std::fs::read_dir(dir) {
             Ok(e) => e,
             Err(_) => return,
@@ -90,8 +160,15 @@ impl CommandRegistry {
                 continue;
             };
             if let Ok(text) = std::fs::read_to_string(&path) {
-                let cmd = parse_command(stem, &text);
-                self.cmds.insert(cmd.name.clone(), cmd);
+                let mut cmd = parse_command(stem, &text);
+                if is_project {
+                    cmd.source = Some(path.clone());
+                }
+                // ponytail: user-first + `or_insert` means a project command never
+                // silently shadows a same-named user command (the user's wins). This
+                // changes the old "project overrides user" behavior — documented in
+                // CHANGELOG.md ([Unreleased] → Changed).
+                self.cmds.entry(cmd.name.clone()).or_insert(cmd);
             }
         }
     }
@@ -117,14 +194,15 @@ impl CommandRegistry {
     }
 }
 
-/// Directories searched for command files (user first, then project).
-fn command_dirs() -> Vec<PathBuf> {
+/// Directories searched for command files, each paired with `is_project` (user
+/// first with `false`, then the project dir with `true`).
+fn command_dirs() -> Vec<(PathBuf, bool)> {
     let mut dirs = Vec::new();
-    if let Some(cfg) = dirs::config_dir() {
-        dirs.push(cfg.join("aishe").join("commands"));
+    if let Some(cfg) = crate::config::config_root() {
+        dirs.push((cfg.join("aishe").join("commands"), false));
     }
     if let Ok(cwd) = std::env::current_dir() {
-        dirs.push(cwd.join(".aishe").join("commands"));
+        dirs.push((cwd.join(".aishe").join("commands"), true));
     }
     dirs
 }
@@ -147,6 +225,7 @@ fn parse_command(name: &str, text: &str) -> CustomCommand {
             .filter(|m| matches!(m.as_str(), "suggest" | "auto" | "yolo"))
             .cloned(),
         body: body.trim().to_string(),
+        source: None,
     }
 }
 
@@ -232,5 +311,115 @@ mod tests {
     fn unterminated_frontmatter_is_body() {
         let c = parse_command("x", "---\ndescription: oops\nno closing fence");
         assert!(c.body.contains("description: oops"));
+    }
+
+    // T4.6: a project-origin command is tagged with `source: Some`, a user-origin
+    // one with `None`.
+    #[test]
+    fn origin_is_tagged_by_load_dir() {
+        let base = std::env::temp_dir().join(format!("aishe_cmds_origin_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(&base).unwrap();
+        std::fs::write(base.join("deploy.md"), "---\nshell: true\n---\nls").unwrap();
+
+        let mut proj = CommandRegistry::default();
+        proj.load_dir(&base, true);
+        assert!(proj.get("deploy").unwrap().source.is_some());
+        assert!(proj.get("deploy").unwrap().shell);
+
+        let mut user = CommandRegistry::default();
+        user.load_dir(&base, false);
+        assert!(user.get("deploy").unwrap().source.is_none());
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    // T4.8: pure unit test on the gate's trust/confirm decision (the core of
+    // `main::gate_custom_shell`, extracted as `needs_trust_confirm`). A project
+    // command must be confirmed unless trusted; a user command never is.
+    #[test]
+    fn gate_trust_decision() {
+        let mut c = parse_command("deploy", "---\nshell: true\n---\nrm -rf /");
+
+        // User origin (source == None): never needs confirmation, trusted or not.
+        assert!(!c.needs_trust_confirm(false));
+        assert!(!c.needs_trust_confirm(true));
+
+        // Project origin, untrusted: must be confirmed before running.
+        c.source = Some(PathBuf::from("/repo/.aishe/commands/deploy.md"));
+        assert!(c.needs_trust_confirm(false));
+
+        // Project origin, trusted (`aishe trust <file>`): runs without a prompt.
+        assert!(!c.needs_trust_confirm(true));
+    }
+
+    // T6: an untrusted *project* command must not escalate the mode (audit
+    // finding #3, the `mode:`-half Task 4 left open).
+    #[test]
+    fn untrusted_project_mode_escalation_is_ignored() {
+        let mut c = parse_command("deploy", "---\nmode: yolo\n---\nship it");
+        c.source = Some(PathBuf::from("/repo/.aishe/commands/deploy.md"));
+
+        // Untrusted: the repo-supplied `yolo` is dropped for the user's mode.
+        assert_eq!(c.effective_mode("suggest", false), "suggest");
+        assert_eq!(c.effective_mode("auto", false), "auto");
+        // Trusted (`aishe trust <file>`): honored.
+        assert_eq!(c.effective_mode("suggest", true), "yolo");
+        // Already at yolo: no escalation, so honoring it changes nothing.
+        assert_eq!(c.effective_mode("yolo", false), "yolo");
+
+        // `auto` is the same escalation one notch weaker.
+        c.mode = Some("auto".to_string());
+        assert_eq!(c.effective_mode("suggest", false), "suggest");
+        assert_eq!(c.effective_mode("yolo", false), "auto"); // de-escalation is fine
+    }
+
+    // A *user*-origin override is always honored — the user wrote the file.
+    #[test]
+    fn user_command_mode_override_is_honored() {
+        let c = parse_command("deploy", "---\nmode: yolo\n---\nship it");
+        assert!(c.source.is_none());
+        assert_eq!(c.effective_mode("suggest", false), "yolo");
+        assert_eq!(c.effective_mode("suggest", true), "yolo");
+
+        // No override at all → the configured mode, whatever the origin.
+        let mut plain = parse_command("x", "just a prompt");
+        assert_eq!(plain.effective_mode("auto", false), "auto");
+        plain.source = Some(PathBuf::from("/repo/.aishe/commands/x.md"));
+        assert_eq!(plain.effective_mode("auto", false), "auto");
+    }
+
+    // The `will run:` preview must not be repaintable by the command body.
+    #[test]
+    fn display_safe_escapes_terminal_controls() {
+        assert_eq!(
+            display_safe("ls\r\u{1b}[2Krm -rf /"),
+            "ls\\x0d\\x1b[2Krm -rf /"
+        );
+        assert_eq!(display_safe("echo hi"), "echo hi"); // untouched
+        assert_eq!(display_safe("a\u{7f}b\u{9b}c"), "a\\x7fb\\x9bc");
+    }
+
+    // T4.7: a project command must not overwrite a same-named user command.
+    #[test]
+    fn project_does_not_overwrite_user() {
+        let base = std::env::temp_dir().join(format!("aishe_cmds_dup_{}", std::process::id()));
+        let user_dir = base.join("user");
+        let proj_dir = base.join("proj");
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(&user_dir).unwrap();
+        std::fs::create_dir_all(&proj_dir).unwrap();
+        std::fs::write(user_dir.join("dup.md"), "user body").unwrap();
+        std::fs::write(proj_dir.join("dup.md"), "project body").unwrap();
+
+        let mut reg = CommandRegistry::default();
+        reg.load_dir(&user_dir, false); // user first
+        reg.load_dir(&proj_dir, true); // project second must not clobber
+
+        let c = reg.get("dup").unwrap();
+        assert_eq!(c.body, "user body");
+        assert!(c.source.is_none());
+
+        let _ = std::fs::remove_dir_all(&base);
     }
 }

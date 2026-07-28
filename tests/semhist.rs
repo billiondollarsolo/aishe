@@ -47,6 +47,8 @@ fn run(dir: &std::path::Path) -> Command {
     let mut c = Command::cargo_bin("aishe").unwrap();
     c.env("XDG_CONFIG_HOME", dir)
         .env("XDG_DATA_HOME", dir.join("data"))
+        .env("AISHE_CONFIG_DIR", dir)
+        .env("AISHE_DATA_DIR", dir.join("data"))
         .env("AISHE_FAKE_LLM", "x") // swaps in the deterministic fake embedder
         .env("OPENAI_API_KEY", "sk-test");
     c

@@ -50,8 +50,10 @@ echo 'eval "$(aishe init zsh)"' >> ~/.zshrc   # or: aishe init bash  >> ~/.bashr
   iterates). Cycle them live with Shift-Tab.
 - 🛡️ **A safety gate you control.** A deterministic, quote/subshell/substitution-aware,
   path-aware screen flags destructive commands (`rm -rf /`, recursive `chmod`/`chown`
-  on system paths, danger hidden in `$(…)` or `<(…)`, …) before they can run — the
-  model never gets to decide what executes.
+  on system paths, danger hidden in `$(…)` or `<(…)`, …) and asks before running them —
+  and when it can't tell what a line would actually run, it asks instead of assuming.
+  It's a best-effort screen for mistakes, not a security boundary; the sandbox below
+  is the real isolation.
 - ↩️ **Reversible.** Built-in file edits are journaled (`aishe undo`), and — on
   **Linux with bubblewrap** — you can preview a command or a whole agentic session
   against a throwaway copy (`aishe dry-run "<cmd>"`, `yolo_dry_run`) to see the exact
@@ -241,8 +243,11 @@ disk), is capped in size, and is on by default. Turn it off with
 ## Custom commands and skills
 
 Drop Markdown files into `~/.config/aishe/commands/` (user) or
-`<project>/.aishe/commands/` (project, overrides user) to add your own
-`/commands`. The file name is the command (`bigfiles.md` becomes `/bigfiles`).
+`<project>/.aishe/commands/` (project) to add your own `/commands`. The file name
+is the command (`bigfiles.md` becomes `/bigfiles`). If both directories define the
+same name, your user command wins — a project you cloned cannot shadow it. Project
+commands that run shell are also gated the same way project config is by
+`aishe trust`: aishe shows the resolved command and asks before running it.
 
 ```md
 ---
@@ -293,13 +298,26 @@ calls per the `yolo_confirm` tier), aishe screens for irreversible operations:
 to main, `shutdown` and `reboot`, and more. Dangerous commands print a red panel
 and require you to type the full word `yes`.
 
-The screen is quote-, subshell-, and substitution-aware (danger hidden in `$(…)`,
-backticks, or `<(…)` is still caught) and path-aware for `rm -rf`: an in-tree
+The screen is quote-, subshell-, and substitution-aware (a destructive command written
+inside `$(…)`, backticks, or `<(…)` is still caught) and path-aware for `rm -rf`: an in-tree
 relative path like `rm -rf node_modules` runs without fuss, while absolute, home,
-variable, glob, or escaping targets are flagged. For real OS isolation in yolo, set
-`sandbox_backend = "bwrap"`; for reversibility, `aishe dry-run` / `yolo_dry_run`
-preview changes you can apply or discard, and `aishe undo` reverts any AI edit. The
-gate does not apply to commands you type yourself or to `!`-forced lines. Details in
+variable, glob, or escaping targets are flagged. When the gate cannot resolve what a
+command would actually run, it says so and asks instead of assuming safe (`aishe
+suggest --json` reports `"risk": "unknown"`; the exit code stays `20`).
+
+It is a pattern matcher, so `safe` means "nothing matched", not "this is safe". It
+can only judge text it can resolve, which leaves whole classes it does not see
+into: a wrapper or runner binary outside its built-in table, execution that happens
+on another machine, a payload handed to a non-shell interpreter, and content piped
+into a shell from a source it cannot read. Those classes, and why they are hard,
+are in [docs/safety.md](docs/safety.md#what-the-gate-does-not-catch).
+
+The real control for autonomous or untrusted work is isolation, not the gate: on
+Linux set `sandbox_backend = "bwrap"` for OS-enforced confinement, and use `aishe
+dry-run` / `yolo_dry_run` to preview changes you can apply or discard (`aishe undo`
+reverts any AI edit). macOS has no sandbox backend, so yolo there falls back to the
+gate alone — `aishe doctor` shows what is active. The gate does not apply to
+commands you type yourself or to `!`-forced lines. Details in
 [docs/safety.md](docs/safety.md).
 
 ## Logging and privacy

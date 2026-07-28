@@ -328,11 +328,16 @@ pub enum GateOutcome {
 
 /// Apply the safety gate to a command. Safe commands pass silently. Dangerous
 /// commands print a red panel and require the user to type the literal word
-/// `yes`. Returns whether to proceed.
+/// `yes`. A command the gate could not *resolve* (an unparseable head — see
+/// [`Risk::Unknown`]) fails closed too, but with a milder yellow panel and a
+/// plain `y/N`: it is a "I can't tell what this runs" warning, not an accusation,
+/// and making it as loud as a real `rm -rf /` would train users to confirm
+/// reflexively. Returns whether to proceed.
 pub fn safety_gate(command: &str) -> GateOutcome {
     match safety::assess(command) {
         Risk::Safe => GateOutcome::Proceed,
         Risk::Dangerous(reason) => confirm_dangerous(command, reason),
+        Risk::Unknown(reason) => confirm_unresolved(command, reason),
     }
 }
 
@@ -359,6 +364,37 @@ fn confirm_dangerous(command: &str, reason: &str) -> GateOutcome {
         return GateOutcome::Declined;
     }
     if line.trim() == "yes" {
+        GateOutcome::Proceed
+    } else {
+        println!("  {}", "cancelled".dim());
+        GateOutcome::Declined
+    }
+}
+
+fn confirm_unresolved(command: &str, reason: &str) -> GateOutcome {
+    println!();
+    println!(
+        "{}",
+        "  ┌─ COULD NOT VERIFY ──────────────────".yellow().bold()
+    );
+    println!("  {} {}", "│".yellow(), command.white().bold());
+    println!("  {} {}", "│".yellow(), reason.dim());
+    println!(
+        "  {} the safety gate could not tell what this runs",
+        "│".yellow()
+    );
+    println!(
+        "{}",
+        "  └─────────────────────────────────────".yellow().bold()
+    );
+    print!("  Run it anyway? [y/N]: ");
+    std::io::stdout().flush().ok();
+
+    let mut line = String::new();
+    if std::io::stdin().read_line(&mut line).is_err() {
+        return GateOutcome::Declined;
+    }
+    if matches!(line.trim().to_ascii_lowercase().as_str(), "y" | "yes") {
         GateOutcome::Proceed
     } else {
         println!("  {}", "cancelled".dim());

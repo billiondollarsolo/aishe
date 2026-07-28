@@ -76,7 +76,7 @@ pub fn log_path() -> Option<PathBuf> {
 
 /// Default log location: `$XDG_DATA_HOME/aishe/audit.jsonl`.
 pub fn default_path() -> PathBuf {
-    dirs::data_dir()
+    crate::config::data_root()
         .unwrap_or_else(|| PathBuf::from("."))
         .join("aishe")
         .join("audit.jsonl")

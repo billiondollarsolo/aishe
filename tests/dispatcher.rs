@@ -20,8 +20,13 @@ fn real_commands_route_to_shell() {
 #[test]
 fn natural_language_routes_to_nl() {
     let cache = seeded_cache();
+    // The leading word must not be a real binary on ANY supported platform, or
+    // this asserts the host's PATH rather than the dispatcher: `what` is a real
+    // command on macOS (/usr/bin/what, from SCCS) though not on most Linux
+    // distros, so the original phrasing routed to Shell there — correctly.
+    // `whats` (no apostrophe) is the README's own example and ships nowhere.
     assert!(matches!(
-        dispatch("what is eating my disk space", &cache),
+        dispatch("whats eating my disk space", &cache),
         Dispatch::NaturalLanguage(_)
     ));
 }

@@ -86,7 +86,7 @@ pub fn journal_path() -> Option<PathBuf> {
             return Some(PathBuf::from(p));
         }
     }
-    dirs::data_dir().map(|d| d.join("aishe").join("undo.jsonl"))
+    crate::config::data_root().map(|d| d.join("aishe").join("undo.jsonl"))
 }
 
 /// Record a file change made by a built-in tool. `before` is the prior contents

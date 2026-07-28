@@ -10,11 +10,15 @@ Code, so artifacts from that ecosystem drop in unchanged.
 
 ## Custom slash-commands
 
-Put Markdown files in either directory. Project files override user files of the
-same name.
+Put Markdown files in either directory. If both define the same name, the **user**
+file wins: a project file cannot shadow a command you wrote yourself.
 
 - User: `~/.config/aishe/commands/`
 - Project: `<current directory>/.aishe/commands/`
+
+A project command that runs shell (`shell: true`) is also gated, the same way a
+project `config.toml` is gated by `aishe trust`: aishe prints the resolved command
+and asks for a `y/N` before running it.
 
 The file stem is the command name: `bigfiles.md` becomes `/bigfiles`. Run
 `aishe commands` or `/commands` to list what is loaded; they tab-complete.
@@ -73,12 +77,23 @@ proceeds. Only the descriptions are always in context; bodies load on demand.
 Skills apply in yolo mode (where the model drives tools). Run `aishe skills` or
 `/skills` to list what is loaded.
 
-Locations (project overrides user):
+Locations (as with commands, a same-named project skill never replaces the
+user's — the user's wins):
 
 - User: `~/.config/aishe/skills/`
 - Project: `<current directory>/.aishe/skills/`
 
 Each skill is either `<name>/SKILL.md` or a flat `<name>.md`.
+
+### Project skills are trust-gated
+
+A skill body is instructions handed to the model, and the model loads it mid-loop
+where there is no moment left to confirm at. So a project skill from
+`.aishe/skills/` is only loaded once its file is trusted: until you run
+`aishe trust <file>`, it is dropped entirely — it does not appear in `aishe
+skills` and the model cannot `use_skill` it. `aishe skills` tells you which files
+are waiting on that. User skills in `~/.config/aishe/skills/` are yours by
+construction and are never gated. See [SECURITY.md](../SECURITY.md).
 
 ### Format
 

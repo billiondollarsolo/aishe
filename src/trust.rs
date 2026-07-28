@@ -20,7 +20,7 @@ use serde::{Deserialize, Serialize};
 
 /// Where the trust store lives: `$XDG_DATA_HOME/aishe/trusted-projects.json`.
 fn store_path() -> PathBuf {
-    dirs::data_dir()
+    crate::config::data_root()
         .unwrap_or_else(|| PathBuf::from("."))
         .join("aishe")
         .join("trusted-projects.json")
