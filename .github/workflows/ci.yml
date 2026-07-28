@@ -19,6 +19,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # aishe wraps a real zsh, so `aishe doctor` reports a failed check and
+      # exits non-zero without it. macOS runners ship zsh; ubuntu does not, so
+      # the cli tests that assert `doctor` succeeds failed only there.
+      - name: Install zsh (ubuntu)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y zsh
+
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:

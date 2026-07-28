@@ -78,6 +78,25 @@ class Pty:
     def send(self, line):
         os.write(self.master, (line + "\n").encode("utf-8"))
 
+    def wait_ready(self, timeout=TIMEOUT):
+        """Block until zsh's line editor is actually accepting input.
+
+        Typing immediately after spawn races ZLE startup: on a slow runner the
+        first characters are swallowed or doubled (`echo` arriving as `ccho`),
+        zsh then reports `command not found`, and the failure looks like a bug
+        in the shell wrapper rather than the harness. Send a marker through a
+        round trip and wait for its *output*, so the editor has demonstrably
+        processed a full line before the real assertions start.
+        """
+        marker = "PTY_READY_MARKER"
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            self.send("print -r -- %s" % marker)
+            # Consume the echo of the typed line, then look for the output.
+            if self.expect(marker, timeout=2) and self.expect(marker, timeout=2):
+                return True
+        return False
+
     def wait_exit(self, timeout=10):
         """Wait for the child to exit on its own, draining output. Returns the
         exit code, or None on timeout."""
@@ -150,6 +169,8 @@ def main():
     home, env = make_env()
     sh = Pty([os.path.abspath(BINARY), "zsh"], env)
     try:
+        if not sh.wait_ready():
+            fail("wrapped zsh never became ready for input", sh)
         # 1) native command runs through the wrapped zsh. The typed text contains
         #    the expression literally; only the *output* contains the sum, so we
         #    match the result to avoid matching zsh's input echo.
