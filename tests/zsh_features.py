@@ -74,6 +74,22 @@ class Pty:
     def send(self, line):
         os.write(self.master, (line + "\r").encode("utf-8"))
 
+    def wait_ready(self, timeout=20):
+        """Block until zsh's line editor is really accepting input.
+
+        The prompt appearing is not enough: ZLE enables bracketed paste after
+        printing it, and input typed in that window arrives mangled (`echo` as
+        `ccho`) on a slow runner, which then reads as a shell-wrapper bug. Send
+        a marker through a full round trip first.
+        """
+        marker = "PTY_READY_MARKER"
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            self.send("print -r -- %s" % marker)
+            if self.expect(marker, timeout=2) and self.expect(marker, timeout=2):
+                return True
+        return False
+
     def settle(self, secs=0.3):
         deadline = time.monotonic() + secs
         while time.monotonic() < deadline:
@@ -197,6 +213,7 @@ def run():
     started = time.monotonic()
     try:
         sh.expect("ZP> ", timeout=30)
+        sh.wait_ready()
         for name, lines, want in cases():
             sh.buf = ""
             before = len(sh.transcript)

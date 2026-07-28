@@ -104,6 +104,22 @@ class Pty:
     def send(self, line):
         os.write(self.master, (line + "\r").encode("utf-8"))
 
+    def wait_ready(self, timeout=20):
+        """Block until zsh's line editor is really accepting input.
+
+        The prompt appearing is not enough: ZLE enables bracketed paste after
+        printing it, and input typed in that window arrives mangled (`echo` as
+        `ccho`) on a slow runner, which then reads as a shell-wrapper bug. Send
+        a marker through a full round trip first.
+        """
+        marker = "PTY_READY_MARKER"
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            self.send("print -r -- %s" % marker)
+            if self.expect(marker, timeout=2) and self.expect(marker, timeout=2):
+                return True
+        return False
+
     def drain_until_quiet(self, quiet=0.3, maxwait=12):
         # Wait until no new output arrives for `quiet` seconds: aishe has finished
         # the turn (the async --auto-line subprocess returned) and the prompt is
@@ -365,6 +381,7 @@ def main():
             f.write(payload)
 
     sh = Pty([os.path.abspath(BINARY), "zsh"], env, cwd=home)
+    sh.wait_ready()
     n_cmd = 120 * SCALE
     n_nl = 200 * SCALE
     ran = 0
