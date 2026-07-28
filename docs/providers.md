@@ -90,6 +90,44 @@ Local models may not support strict JSON schema. aishe steps down automatically,
 but you can also set `structured = "prompt"` for the loosest behavior. See
 [Modes](modes.md).
 
+### Embeddings (fully offline semantic history)
+
+Ollama also serves embedding models on the same OpenAI-compatible route
+(`/v1/embeddings`), which is exactly what [semantic history](../README.md#features)
+calls — so pointing `embedding_provider` at Ollama keeps that feature entirely on
+your machine. Pull an embedding model first:
+
+```sh
+ollama pull nomic-embed-text     # 274 MB, 768 dimensions
+```
+
+```toml
+[aishe]
+provider = "openai"
+semantic_history = true
+embedding_provider = "openai"        # the provider block below, not the company
+embedding_model = "nomic-embed-text"
+
+[providers.openai]
+base_url = "http://localhost:11434"
+api_key_env = "OLLAMA_API_KEY"
+model = "llama3.1"
+```
+
+```sh
+aishe history index          # embeds your recorded history
+aishe history search "the docker run with the prometheus volume"
+```
+
+`aishe doctor --probe` reports the embedding endpoint it can reach.
+
+Two things worth knowing. The chat model and the embedding model are separate:
+`model` answers questions, `embedding_model` builds the index, and an embedding
+model cannot chat. And ranking quality is the embedding model's, not aishe's —
+short shell commands are hard to embed well, so expect the right command near
+the top rather than always first. Re-run `aishe history index` after switching
+models, since vectors from different models are not comparable.
+
 ## OpenRouter, Together, and others
 
 Any service that speaks the OpenAI Chat Completions format works. Set `base_url`

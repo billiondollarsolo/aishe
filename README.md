@@ -68,8 +68,10 @@ of a shell. Prefix it with `?` to force the natural-language route
 - 🔎 **Semantic history.** Recall past commands by meaning, not substring:
   `aishe history search "the docker run with the prometheus volume"` (or **Ctrl-X
   Ctrl-R** in the shell). Embeddings go to an OpenAI-compatible `/v1/embeddings`
-  endpoint, so pointing `embedding_provider` at a local Ollama keeps the whole
-  feature offline; the index itself is a local file.
+  endpoint, and Ollama serves embedding models on that same route — so
+  `ollama pull nomic-embed-text` plus `embedding_model = "nomic-embed-text"`
+  keeps the whole feature on your machine. The index is a local file either way.
+  See [docs/providers.md](docs/providers.md#embeddings-fully-offline-semantic-history).
 - 🩹 **Fix-the-last-command.** When a command fails, **Ctrl-X Ctrl-F** asks the
   model for a correction (optionally re-running the failed read-only command to
   read its real error) and pre-fills it for review.
