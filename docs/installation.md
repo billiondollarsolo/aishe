@@ -6,7 +6,7 @@ source with Cargo.
 
 ## Requirements
 
-- Rust 1.80 or newer (only to build from source; the prebuilt binaries need no
+- Rust 1.88 or newer (only to build from source; the prebuilt binaries need no
   toolchain). Install from [rustup.rs](https://rustup.rs).
 - **`zsh`** for the interactive shell: aishe drives your real zsh in a PTY. The
   installer ensures it; on a manual install add it with your package manager
@@ -178,14 +178,25 @@ sudo rm /usr/local/bin/aishe
 To remove configuration and data as well:
 
 ```sh
+# Linux
 rm -rf ~/.config/aishe        # config, custom commands, skills
-rm -rf ~/.local/share/aishe   # history
+rm -rf ~/.local/share/aishe   # history, audit log, undo journal, trust store
+
+# macOS (both live under one directory)
+rm -rf ~/"Library/Application Support/aishe"
 ```
+
+`aishe doctor` prints the resolved paths, so run it first if you are unsure.
 
 ## What gets created on first run
 
-- `~/.config/aishe/config.toml` is written by the first-run wizard.
-- `~/.local/share/aishe/history` stores command history for the `history` builtin.
+aishe uses each platform's own directories — `~/.config/aishe` and
+`~/.local/share/aishe` on Linux, `~/Library/Application Support/aishe` for both
+on macOS. See [File locations](configuration.md#file-locations) for the full
+table and the `AISHE_CONFIG_DIR` / `AISHE_DATA_DIR` overrides.
+
+- `config.toml` in the config directory is written by the first-run wizard.
+- `history` in the data directory stores command history for the `history` builtin.
 - Nothing else is created until you add custom commands or skills.
 
 Next: [Getting started](getting-started.md).

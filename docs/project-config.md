@@ -18,8 +18,13 @@ file at the repo root applies to the whole project.
 Precedence, lowest to highest:
 
 ```
-compiled defaults  <  ~/.config/aishe/config.toml  <  project .aishe/config.toml  <  CLI flags
+compiled defaults  <  user config.toml  <  project .aishe/config.toml  <  CLI flags
 ```
+
+The user config is `config.toml` in aishe's config directory —
+`~/.config/aishe/` on Linux, `~/Library/Application Support/aishe/` on macOS.
+`aishe doctor` prints both the resolved user config path and the project overlay
+it found; see [File locations](configuration.md#file-locations).
 
 The overlay is a partial merge: only the keys present in the project file change;
 everything else keeps your global value. (Unlike the user config, a project file
@@ -56,12 +61,34 @@ aishe: 2 sensitive key(s) in /repo/.aishe/config.toml need trust to apply
 
 ```sh
 aishe trust          # trust this repo's .aishe/config.toml
-aishe trust --list   # list every trusted project config
+aishe trust --list   # list every trusted file
 aishe untrust        # drop trust for this repo
-aishe untrust --all  # drop trust for all repos
+aishe untrust --all  # drop trust for every trusted file
 ```
 
 (Each also works as a slash-command in the REPL: `/trust`, `/untrust`.)
+
+### Trusting a single project file
+
+Both commands take an optional path, so trust is not all-or-nothing. This is how
+you enable a project **skill** (`.aishe/skills/<name>/SKILL.md`) or a project
+**command** (`.aishe/commands/<name>.md`) — neither is covered by the bare
+`aishe trust`, which only applies to `.aishe/config.toml`:
+
+```sh
+aishe trust .aishe/skills/deploy/SKILL.md   # load this project skill at all
+aishe trust .aishe/commands/gitsync.md      # stop prompting for this shell command
+aishe untrust .aishe/commands/gitsync.md
+```
+
+A project skill is *dropped entirely* until trusted (the model loads it mid-loop,
+so there is no moment to confirm at); a project `shell: true` command prompts on
+every run until trusted. Details in
+[Custom commands and skills](custom-commands-and-skills.md#trusting-an-individual-project-file).
+
+Trusting a command file waives the *trust* prompt and nothing else: the resolved
+body still passes through the [safety gate](safety.md), so a destructive command
+still stops and asks for confirmation.
 
 Trust is keyed by the file's absolute path **and** a hash of its contents. If the
 file changes later (you edit it, or a `git pull` updates it), trust is dropped

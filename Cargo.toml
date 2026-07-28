@@ -1,8 +1,8 @@
 [package]
 name = "aishe"
-version = "0.2.24"
+version = "0.2.25"
 edition = "2021"
-rust-version = "1.80"
+rust-version = "1.88"
 description = "A natural-language-aware shell that behaves like zsh for commands and delegates everything else to an LLM"
 license = "MIT"
 repository = "https://github.com/billiondollarsolo/aishe"

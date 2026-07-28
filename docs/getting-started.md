@@ -18,11 +18,19 @@ For Groq, Ollama, OpenRouter, and others, see [Providers](providers.md).
 ## 2. First run and the wizard
 
 The first time you start aishe with no config present, an interactive wizard
-writes `~/.config/aishe/config.toml`:
+writes `config.toml` into aishe's config directory:
 
 ```sh
 aishe
 ```
+
+That directory is `~/.config/aishe/` on Linux but
+`~/Library/Application Support/aishe/` on macOS — aishe follows each platform's
+own convention, and a file left in the wrong one is silently ignored. Run
+`aishe doctor` to see the path actually in use, or set `AISHE_CONFIG_DIR` (and
+`AISHE_DATA_DIR`) to pick your own. Full table:
+[File locations](configuration.md#file-locations). The docs write these paths in
+their Linux form for brevity.
 
 It asks for:
 
@@ -74,9 +82,15 @@ mode, the default.
 ## 5. Try the other modes
 
 ```sh
-aishe mode auto     # run safe commands immediately, confirm dangerous ones
+aishe mode auto     # run safe commands immediately, ask about the rest
 aishe mode yolo     # let the model run a multi-step task on its own
 ```
+
+In `auto`, the safety gate has three outcomes: a command it finds safe runs
+straight away, one it flags as dangerous stops and makes you type the full word
+`yes`, and one it *could not resolve* stops with a yellow "could not verify"
+panel and a plain `[y/N]`. Nothing unverified ever runs on its own. See
+[Safety gate](safety.md#three-outcomes).
 
 Or set the mode for a single session at launch:
 

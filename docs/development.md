@@ -2,6 +2,9 @@
 
 ## Build and check
 
+Building needs **Rust 1.88 or newer** (some normal dependencies pulled in via
+`syntect` require it); the prebuilt release binaries need no toolchain.
+
 ```sh
 cargo build
 cargo test            # unit and integration tests (integration tests spawn a real shell)

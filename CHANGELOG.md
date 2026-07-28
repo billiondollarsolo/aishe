@@ -6,7 +6,15 @@ breaking changes can land in any release.
 
 ## [Unreleased]
 
+## [0.2.25] - 2026-07-27
+
 ### Added
+- **`aishe trust <path>` and `aishe untrust <path>`** now take an optional file,
+  so a project skill (`.aishe/skills/<name>/SKILL.md`) or a project command
+  (`.aishe/commands/<name>.md`) can actually be enabled. Without it the new
+  trust gate printed a command that did not exist and project skills were
+  unusable. `aishe trust --list` shows every trusted file. Trusting a command
+  file skips the trust prompt only — the safety gate still applies to its body.
 - **`AISHE_CONFIG_DIR` and `AISHE_DATA_DIR`** override the config and state
   directories on every platform. The `dirs` crate follows the platform
   convention and deliberately ignores `XDG_CONFIG_HOME`/`XDG_DATA_HOME` on
@@ -95,7 +103,7 @@ breaking changes can land in any release.
     `git config core.pager 'rm -rf /'`, `ln -sf /bin/rm /tmp/safe && /tmp/safe -rf /`,
     `R=rm; $R -rf /` (`Unknown`).
   - **Destructive options of otherwise-benign tools** are not modelled:
-    `find . -delete`, `find . -name '*.txt' -exec rm -rf / {} +`, `git clean -xfd`,
+    `find . -delete`, `find . -name '*.txt' -exec rm -rf / {} +`,
     `shred -u ~/.ssh/id_rsa`, `install -m 4755 /bin/sh /tmp/rootsh`,
     `vim -c ':!rm -rf /'`, `rsync --rsh='sh -c "rm -rf /"' a b`,
     `tar --checkpoint-action=exec=…`, `docker run --rm -v /:/host alpine rm -rf /host`,

@@ -2271,7 +2271,7 @@ fn split_segments_inner(command: &str, bracket_ctx: bool) -> (Vec<String>, Vec<b
             '[' | ']' if bracket_ctx && depth == 0 && at_token_start(&current) => {
                 let doubled = cs.get(i) == Some(&c);
                 let after = cs.get(i + usize::from(doubled));
-                if after.map_or(true, |n| n.is_whitespace() || *n == ';') {
+                if after.is_none_or(|n| n.is_whitespace() || *n == ';') {
                     if c == '[' {
                         bracket += 1;
                         opened_bracket = true;
@@ -2312,7 +2312,7 @@ fn split_segments_inner(command: &str, bracket_ctx: bool) -> (Vec<String>, Vec<b
             // runs the right side — both execute, so it is a real boundary
             // (`true & rm -rf /`). A token-internal `&` (`2>&1`, `&>log`, `:|:&`)
             // is not, which is why the whole token shape is checked.
-            '&' if at_token_start(&current) && cs.get(i).map_or(true, |n| n.is_whitespace()) => {
+            '&' if at_token_start(&current) && cs.get(i).is_none_or(|n| n.is_whitespace()) => {
                 segments.push(std::mem::take(&mut current));
                 piped.push(false);
             }
@@ -2454,7 +2454,7 @@ fn pipe_into_shell_risk(command: &str) -> Option<Risk> {
 /// Is the splitter positioned at the start of a token (nothing buffered, or the
 /// last buffered char is whitespace)?
 fn at_token_start(current: &str) -> bool {
-    current.chars().last().map_or(true, char::is_whitespace)
+    current.chars().last().is_none_or(char::is_whitespace)
 }
 
 /// Strip a balanced outer subshell wrapper, so `(rm -rf /)` / `( sudo rm -rf / )`

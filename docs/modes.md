@@ -6,7 +6,7 @@ the same way regardless of mode.
 | Mode      | Glyph | Behavior                                                                    |
 |-----------|:-----:|-----------------------------------------------------------------------------|
 | `suggest` |  `❯`  | Default. The LLM proposes a command; you confirm with `[Enter] / [e]dit / [n]`. |
-| `auto`    |  `»`  | Commands the safety gate deems safe run immediately; dangerous ones still require typing `yes`. |
+| `auto`    |  `»`  | Commands the safety gate deems safe run immediately; anything it flags or cannot resolve stops and asks. |
 | `yolo`    |  `⚡`  | Agentic loop: the model runs commands, reads output, and iterates until done. |
 
 Switch at any time:
@@ -38,9 +38,17 @@ instead of proposing a command.
 ## auto
 
 Same proposal step, but a command the safety gate considers safe runs
-immediately. A command the gate flags as dangerous still stops and asks you to
-type the full word `yes`. This keeps the convenience of one-step execution while
-protecting against destructive operations.
+immediately. The gate has three outcomes, so two of them still stop:
+
+- **safe** — nothing matched and every segment resolved: runs straight away.
+- **could not verify** — the gate could not work out what a segment would run
+  (an unresolvable head such as `$(which rm)`): a yellow panel and a plain
+  `[y/N]`. It fails closed; nothing unverified auto-runs.
+- **dangerous** — a rule matched a destructive shape: a red panel, and you must
+  type the full word `yes`.
+
+This keeps the convenience of one-step execution while protecting against
+destructive operations. See [Safety gate](safety.md#three-outcomes).
 
 ## yolo
 
@@ -68,7 +76,8 @@ and decides what to do next, repeating until the task is done or it hits
   runs anything, the model lays out its intended steps and you approve them
   (`Proceed with this plan? [Y/n]`). Costs one extra planning call and applies
   only interactively (a piped/`-c` run has no one to approve, so it proceeds).
-  Toggle live with `aishe plan on`.
+  Toggle live by typing `plan on` at the aishe prompt (a
+  [prompt-only meta command](commands.md#prompt-only-meta-commands)).
 - **Preview-first file edits** (`yolo_preview = true`, off by default): when the
   loop uses a built-in `write_file` or `edit_file`, show the diff and ask
   `apply this write/edit to <path>? [y/N]` before touching the file, instead of
@@ -94,8 +103,9 @@ and decides what to do next, repeating until the task is done or it hits
   exec. When on, a `run_command` that reaches the network or writes outside the
   working tree is refused before it runs (the reason is fed back to the model so
   it can adapt), rather than executed. It is best-effort, not a kernel sandbox;
-  see [Safety](safety.md#sandbox-policy-based-best-effort). Toggle live with
-  `aishe sandbox on`.
+  see [Safety](safety.md#sandbox-policy-based-best-effort). Toggle live by typing
+  `sandbox on` at the aishe prompt (a
+  [prompt-only meta command](commands.md#prompt-only-meta-commands)).
 - **Reversible session** (`yolo_dry_run = true`, off by default): run the *whole*
   session against a throwaway copy of the working tree (under bubblewrap — a
   read-only root with the network disabled), then show the cumulative file diff
@@ -127,16 +137,21 @@ the previous run.
 
 This is a safety net, not a sandbox: it covers the built-in **file tools** only,
 not arbitrary `run_command` side effects (use `yolo_confirm` / `yolo_sandbox` for
-those — see [Safety gate](safety.md)). The journal is JSONL at
-`$XDG_DATA_HOME/aishe/undo.jsonl` (override with `$AISHE_UNDO_JOURNAL`); journaling
-is best-effort and never blocks or fails a write.
+those — see [Safety gate](safety.md)). The journal is JSONL at `undo.jsonl` in
+aishe's [data directory](configuration.md#file-locations) (override with
+`$AISHE_UNDO_JOURNAL`); journaling is best-effort and never blocks or fails a
+write.
 
 ## Streaming
 
 Enable token streaming so answers render live as they arrive:
 
-```sh
-aishe stream on        # or stream = true in config
+Type this at the aishe prompt (`stream` is a
+[prompt-only meta command](commands.md#prompt-only-meta-commands), not an `aishe`
+subcommand):
+
+```
+~/projects/app ❯ stream on        # or stream = true in config
 ```
 
 In suggest and auto mode, an answer streams to the screen as it is generated.
@@ -176,10 +191,13 @@ the schema, aishe automatically steps down to a plain JSON object, then to
 prompt-only, and always parses defensively so unrecognized output becomes a plain
 answer rather than a crash.
 
-```sh
-aishe structured schema     # strict schema (default)
-aishe structured json       # any JSON object
-aishe structured prompt     # unconstrained text
+Also a prompt-only meta command, so type it at the aishe prompt (or set
+`structured` in your config):
+
+```
+~/projects/app ❯ structured schema     # strict schema (default)
+~/projects/app ❯ structured json       # any JSON object
+~/projects/app ❯ structured prompt     # unconstrained text
 ```
 
 yolo mode uses tool calling for the same reliability. Regardless of what the
@@ -200,7 +218,10 @@ follow-up like "now do the same for beta.txt" knows that "the same" means
   written to disk.
 - It lives only for the interactive process. One-shot `-c` runs and the shell
   hook do not carry memory between invocations.
-- Clear it any time with `aishe reset` (or `/reset`).
+- Clear it any time by typing `reset` (or `/reset`) at the aishe prompt. It is a
+  [prompt-only meta command](commands.md#prompt-only-meta-commands), so
+  `aishe reset` in a terminal is not a thing — and would be pointless anyway,
+  since memory lives only inside the interactive process.
 - Turn it off with `memory = false` in config. Note that more history means more
   input tokens per request; see [Token usage and cost](usage-and-cost.md).
 

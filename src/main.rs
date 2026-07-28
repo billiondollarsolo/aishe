@@ -145,15 +145,24 @@ enum Cmd {
     /// (provider/endpoint, MCP servers, audit logging, safety toggles, `yolo`)
     /// apply. Safe cosmetic keys apply without trust.
     Trust {
-        /// List all trusted project configs instead of trusting this one.
+        /// List every trusted file instead of trusting one.
         #[arg(long)]
         list: bool,
+        /// A specific project file to trust — a skill
+        /// (`.aishe/skills/<name>/SKILL.md`) or a command
+        /// (`.aishe/commands/<name>.md`). Defaults to this project's
+        /// `.aishe/config.toml`.
+        path: Option<std::path::PathBuf>,
     },
-    /// Drop trust for the current project's `.aishe/config.toml`.
+    /// Drop trust for the current project's `.aishe/config.toml`, or for a
+    /// specific project file.
     Untrust {
-        /// Drop trust for every project config, not just this one.
+        /// Drop trust for every trusted file, not just this one.
         #[arg(long)]
         all: bool,
+        /// A specific project file to untrust. Defaults to this project's
+        /// `.aishe/config.toml`.
+        path: Option<std::path::PathBuf>,
     },
     /// Show or set the interaction mode (with a value, saves it to your config).
     Mode {
@@ -212,8 +221,10 @@ enum Cmd {
         since: Option<String>,
     },
     /// Turn a natural-language request into a shell command (for scripting).
-    /// Prints the command to stdout; exit 0 = safe/answer, 20 = flagged dangerous
-    /// (command still printed for review). Use `--json` for structured output.
+    /// Prints the command to stdout; exit 0 = safe/answer, 20 = flagged (either
+    /// `dangerous`, or `unknown` when the gate cannot tell what the command runs
+    /// — the command is still printed for review), 1 = no provider or no query.
+    /// Use `--json` for structured output.
     Suggest {
         /// The natural-language request (any number of words).
         query: Vec<String>,
@@ -311,11 +322,11 @@ fn run() -> Result<u8> {
     }
 
     // `trust` / `untrust` manage the project-config trust store; no config load.
-    if let Some(Cmd::Trust { list }) = &args.cmd {
-        return Ok(trust_command(*list));
+    if let Some(Cmd::Trust { list, path }) = &args.cmd {
+        return Ok(trust_command(*list, path.as_deref()));
     }
-    if let Some(Cmd::Untrust { all }) = &args.cmd {
-        return Ok(untrust_command(*all));
+    if let Some(Cmd::Untrust { all, path }) = &args.cmd {
+        return Ok(untrust_command(*all, path.as_deref()));
     }
 
     // `undo` reverts AI file changes from the journal; no config or provider.
@@ -374,7 +385,10 @@ fn run() -> Result<u8> {
         Some(Cmd::Commands) => {
             let commands = CommandRegistry::load();
             if commands.is_empty() {
-                println!("no custom commands (add *.md files to ~/.config/aishe/commands/)");
+                println!(
+                    "no custom commands (add *.md files to {})",
+                    aishe::commands::user_dir().unwrap_or_default().display()
+                );
             } else {
                 println!("custom slash-commands:");
                 for (name, desc) in commands.list() {
@@ -386,7 +400,10 @@ fn run() -> Result<u8> {
         Some(Cmd::Skills) => {
             let skills = SkillRegistry::load();
             if skills.is_empty() {
-                println!("no skills (add <name>/SKILL.md files to ~/.config/aishe/skills/)");
+                println!(
+                    "no skills (add <name>/SKILL.md files to {})",
+                    aishe::skills::user_dir().unwrap_or_default().display()
+                );
             } else {
                 println!("model-invoked skills (yolo mode):");
                 for (name, desc) in skills.list() {
@@ -1293,7 +1310,8 @@ fn one_shot(
                     Some("commands") => {
                         if commands.is_empty() {
                             println!(
-                                "no custom commands (add *.md files to ~/.config/aishe/commands/)"
+                                "no custom commands (add *.md files to {})",
+                                aishe::commands::user_dir().unwrap_or_default().display()
                             );
                         } else {
                             println!("custom slash-commands:");
@@ -1305,7 +1323,8 @@ fn one_shot(
                     Some("skills") => {
                         if skills.is_empty() {
                             println!(
-                                "no skills (add <name>/SKILL.md files to ~/.config/aishe/skills/)"
+                                "no skills (add <name>/SKILL.md files to {})",
+                                aishe::skills::user_dir().unwrap_or_default().display()
                             );
                         } else {
                             println!("model-invoked skills (yolo mode):");
@@ -1947,36 +1966,49 @@ fn current_project_config() -> Option<std::path::PathBuf> {
 }
 
 /// `aishe trust [--list]`: trust the current project's config, or list trusted.
-fn trust_command(list: bool) -> u8 {
+fn trust_command(list: bool, explicit: Option<&std::path::Path>) -> u8 {
     if list {
         let items = aishe::trust::list();
         if items.is_empty() {
-            println!("No trusted project configs.");
+            println!("No trusted project files.");
         } else {
-            println!("Trusted project configs:");
+            println!("Trusted project files:");
             for (path, _) in items {
                 println!("  {path}");
             }
         }
         return 0;
     }
-    let Some(path) = current_project_config() else {
-        return 1;
+    // With no argument this trusts the project config; with one it trusts that
+    // exact file, which is how a project skill or command is enabled (the gate
+    // that rejects them prints the very command to run).
+    let path = match explicit {
+        Some(p) => p.to_path_buf(),
+        None => match current_project_config() {
+            Some(p) => p,
+            None => return 1,
+        },
     };
     let text = match std::fs::read_to_string(&path) {
         Ok(t) => t,
         Err(e) => {
-            eprintln!("aishe: {e}");
+            eprintln!("aishe: {}: {e}", path.display());
             return 1;
         }
     };
-    // Report which sensitive keys trusting will unlock.
-    let deferred = match toml::from_str::<toml::Table>(&text) {
-        Ok(table) => Config::default().merge_project_table(&table, false).1,
-        Err(e) => {
-            eprintln!("aishe: malformed project config {}: {e}", path.display());
-            return 1;
+    // Only a `config.toml` has sensitive keys to report; a skill or command file
+    // is markdown, so parsing it as TOML would be meaningless.
+    let is_config = path.file_name().and_then(|n| n.to_str()) == Some("config.toml");
+    let deferred = if is_config {
+        match toml::from_str::<toml::Table>(&text) {
+            Ok(table) => Config::default().merge_project_table(&table, false).1,
+            Err(e) => {
+                eprintln!("aishe: malformed project config {}: {e}", path.display());
+                return 1;
+            }
         }
+    } else {
+        Vec::new()
     };
     match aishe::trust::trust(&path, &text) {
         Ok(_) => {
@@ -1994,11 +2026,11 @@ fn trust_command(list: bool) -> u8 {
 }
 
 /// `aishe untrust [--all]`: drop trust for the current project, or all of them.
-fn untrust_command(all: bool) -> u8 {
+fn untrust_command(all: bool, explicit: Option<&std::path::Path>) -> u8 {
     if all {
         return match aishe::trust::untrust_all() {
             Ok(n) => {
-                println!("Dropped trust for {n} project config(s).");
+                println!("Dropped trust for {n} project file(s).");
                 0
             }
             Err(e) => {
@@ -2007,8 +2039,12 @@ fn untrust_command(all: bool) -> u8 {
             }
         };
     }
-    let Some(path) = current_project_config() else {
-        return 1;
+    let path = match explicit {
+        Some(p) => p.to_path_buf(),
+        None => match current_project_config() {
+            Some(p) => p,
+            None => return 1,
+        },
     };
     match aishe::trust::untrust(&path) {
         Ok(true) => {

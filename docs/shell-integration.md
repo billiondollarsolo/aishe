@@ -105,9 +105,12 @@ use the zsh-PTY front-end instead (see [Front-ends](front-ends.md)).
 
 ## Startup file (.aishrc)
 
-aishe sources `~/.aishrc` and `~/.config/aishe/aishrc` (in that order) into every
-delegated command, so aliases, functions, and exports you define there are
-available to all commands and recognized at the prompt.
+aishe sources `~/.aishrc` and an `aishrc` in its config directory (in that order)
+into every delegated command, so aliases, functions, and exports you define there
+are available to all commands and recognized at the prompt. The config directory
+is `~/.config/aishe/` on Linux and `~/Library/Application Support/aishe/` on
+macOS (see [File locations](configuration.md#file-locations)), so `~/.aishrc` is
+the portable choice.
 
 ```sh
 # ~/.aishrc

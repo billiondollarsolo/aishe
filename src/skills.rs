@@ -178,13 +178,19 @@ impl SkillRegistry {
 /// first with `false`, then the project dir with `true`).
 fn skill_dirs() -> Vec<(PathBuf, bool)> {
     let mut dirs = Vec::new();
-    if let Some(cfg) = crate::config::config_root() {
-        dirs.push((cfg.join("aishe").join("skills"), false));
+    if let Some(dir) = user_dir() {
+        dirs.push((dir, false));
     }
     if let Ok(cwd) = std::env::current_dir() {
         dirs.push((cwd.join(".aishe").join("skills"), true));
     }
     dirs
+}
+
+/// The user's own skills directory, resolved for this platform. See
+/// [`crate::commands::user_dir`] for why the hint must not hardcode a path.
+pub fn user_dir() -> Option<PathBuf> {
+    crate::config::config_root().map(|c| c.join("aishe").join("skills"))
 }
 
 /// Parse a skill file. Requires a non-empty body; `name`/`description` come from

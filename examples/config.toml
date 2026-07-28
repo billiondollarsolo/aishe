@@ -1,9 +1,16 @@
 # Example aishe configuration.
 #
-# Copy this to ~/.config/aishe/config.toml (or $XDG_CONFIG_HOME/aishe/config.toml)
-# and edit to taste. Every field has a sensible default, so you can delete any
-# line you do not care about. API keys are NEVER stored here; they are read from
-# the environment variable named by `api_key_env`.
+# Copy this to `config.toml` in aishe's config directory and edit to taste:
+#   Linux:  ~/.config/aishe/config.toml  (or $XDG_CONFIG_HOME/aishe/config.toml)
+#   macOS:  ~/Library/Application Support/aishe/config.toml
+# aishe follows each platform's own convention, so a config left in ~/.config on
+# macOS is silently ignored. Run `aishe doctor` to print the path actually in use,
+# or set AISHE_CONFIG_DIR (and AISHE_DATA_DIR) to choose your own. See
+# docs/configuration.md#file-locations.
+#
+# Every field has a sensible default, so you can delete any line you do not care
+# about. API keys are NEVER stored here; they are read from the environment
+# variable named by `api_key_env`.
 
 [aishe]
 # Interaction mode for natural-language input.
@@ -43,7 +50,8 @@ yolo_confirm_dangerous = true
 #   all       = every command
 yolo_confirm = "dangerous"
 
-# Sandbox the yolo loop's commands. Toggle live with `aishe sandbox on`.
+# Sandbox the yolo loop's commands. Toggle live by typing `sandbox on` at the
+# aishe prompt (a prompt-only meta command, not an `aishe` subcommand).
 yolo_sandbox = false
 
 # How yolo_sandbox is enforced:
@@ -61,8 +69,8 @@ max_yolo_iterations = 10
 
 # Plan-first (dry run) for yolo: before running anything, the model lays out its
 # intended steps and you approve them ("Proceed with this plan? [Y/n]"). Adds one
-# planning call per request. Interactive only; off by default. Toggle live with
-# `aishe plan on`.
+# planning call per request. Interactive only; off by default. Toggle live by
+# typing `plan on` at the aishe prompt (a prompt-only meta command).
 yolo_plan = false
 
 # Reversible yolo session: run the whole agentic loop against a throwaway copy of
@@ -151,13 +159,15 @@ show_usage = true
 budget_usd = 0.0
 
 # Remember recent natural-language turns so follow-ups
-# ("now do the same for the other file") have context. Clear with `aishe reset`.
+# ("now do the same for the other file") have context. Clear by typing `reset` at
+# the aishe prompt (a prompt-only meta command).
 memory = true
 
 # Cache identical suggest-mode model responses for a short while so repeats are
 # instant and cost no tokens. The cache key includes the environment context
 # (cwd, recent commands), so running something between two requests misses it.
-# Toggle live with `aishe cache on`/`off`.
+# Toggle live by typing `cache on`/`off` at the aishe prompt (a prompt-only meta
+# command).
 cache = true
 cache_ttl_secs = 300
 
@@ -185,7 +195,9 @@ host_profile = true
 # (discovered like .aishe/context.md) that is merged over this file. Safe keys
 # (model, mode, budget, cosmetics) apply automatically; sensitive keys (provider/
 # endpoint, [mcp_servers], logging, safety toggles, mode = "yolo") apply only
-# after you run `aishe trust` in that repo. See docs/project-config.md.
+# after you run `aishe trust` in that repo. A project skill or `shell: true`
+# command is trusted per file: `aishe trust .aishe/skills/<name>/SKILL.md`.
+# See docs/project-config.md.
 
 # ---------------------------------------------------------------------------
 # Optional: audit logging of AI calls, responses, and AI-initiated actions.
@@ -195,7 +207,9 @@ host_profile = true
 
 # [logging]
 # enabled = true
-# file = "/custom/path/audit.jsonl"   # default: $XDG_DATA_HOME/aishe/audit.jsonl
+# file = "/custom/path/audit.jsonl"   # default: audit.jsonl in aishe's data dir
+#                                     # (~/.local/share/aishe on Linux,
+#                                     #  ~/Library/Application Support/aishe on macOS)
 # redact = true                       # scrub secrets from logged text
 
 # ---------------------------------------------------------------------------

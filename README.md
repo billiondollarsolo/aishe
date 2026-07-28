@@ -28,7 +28,7 @@ curl -fsSL https://raw.githubusercontent.com/billiondollarsolo/aishe/main/instal
 export ANTHROPIC_API_KEY=sk-...            # or OPENAI_API_KEY / a local Ollama
 
 # 3. Use it right away, no shell hook needed
-aishe -c "compress the logs directory into a tarball"   # prints a command to run
+aishe -c "turn the logs directory into a tarball"   # prints a command to run
 aishe suggest --json "list files by size" | jq -r .command   # scriptable output
 aishe doctor                                # verify shell, provider, and key
 
@@ -37,6 +37,12 @@ echo 'eval "$(aishe init zsh)"' >> ~/.zshrc   # or: aishe init bash  >> ~/.bashr
 ```
 
 `aishe --help` lists every subcommand; `man aishe` has the full reference.
+
+A request whose first word happens to be a real binary (`compress …`, `find …`,
+`make …`) runs as that command instead of going to the model — that is the point
+of a shell. Prefix it with `?` to force the natural-language route
+(`aishe -c "?compress the logs into a tarball"`). See
+[docs/getting-started.md](docs/getting-started.md#6-force-a-route-when-needed).
 
 ## Features
 
@@ -61,7 +67,9 @@ echo 'eval "$(aishe init zsh)"' >> ~/.zshrc   # or: aishe init bash  >> ~/.bashr
   falls back to the best-effort policy gate (`aishe doctor` shows what's active).
 - 🔎 **Semantic history.** Recall past commands by meaning, not substring:
   `aishe history search "the docker run with the prometheus volume"` (or **Ctrl-X
-  Ctrl-R** in the shell). Works offline with a local embedder.
+  Ctrl-R** in the shell). Embeddings go to an OpenAI-compatible `/v1/embeddings`
+  endpoint, so pointing `embedding_provider` at a local Ollama keeps the whole
+  feature offline; the index itself is a local file.
 - 🩹 **Fix-the-last-command.** When a command fails, **Ctrl-X Ctrl-F** asks the
   model for a correction (optionally re-running the failed read-only command to
   read its real error) and pre-fills it for review.
@@ -95,7 +103,7 @@ cargo binstall aishe                       # prebuilt binary via cargo-binstall
 sudo apt install ./aishe_<ver>_amd64.deb   # Debian/Ubuntu (.deb from the release)
 sudo dnf install ./aishe-<ver>.x86_64.rpm  # Fedora/RHEL  (.rpm from the release)
 brew install --formula ./packaging/aishe.rb
-cargo install --path .                     # from a checkout (needs Rust 1.80+)
+cargo install --path .                     # from a checkout (needs Rust 1.88+)
 ```
 
 Every tagged release attaches per-platform tarballs (`aishe-<target>.tar.gz` +
@@ -114,12 +122,26 @@ needed.
 
 ```sh
 export ANTHROPIC_API_KEY=sk-ant-...   # or OPENAI_API_KEY=...  (never written to disk)
-aishe                                 # first run writes ~/.config/aishe/config.toml
+aishe                                 # first run writes config.toml (see below)
 ```
 
 Then type real commands as usual, or type a request in plain English. Not sure
 your setup is right? Run `aishe doctor`. A full walkthrough is in
 [docs/getting-started.md](docs/getting-started.md).
+
+**Where aishe keeps its files.** It follows each platform's convention, so the
+config directory is **not** `~/.config/aishe` on macOS:
+
+| | Linux | macOS |
+|---|---|---|
+| Config, commands, skills | `~/.config/aishe/` | `~/Library/Application Support/aishe/` |
+| History, logs, undo journal | `~/.local/share/aishe/` | `~/Library/Application Support/aishe/` |
+
+A file put in the wrong directory is silently ignored, so **`aishe doctor` prints
+the paths actually in use** — check it rather than guessing. `AISHE_CONFIG_DIR`
+and `AISHE_DATA_DIR` override the base directory on every platform. Full table:
+[docs/configuration.md](docs/configuration.md#file-locations). The rest of this
+README writes these paths in their Linux form.
 
 ## Contents
 
@@ -140,8 +162,14 @@ your setup is right? Run `aishe doctor`. A full walkthrough is in
 | Mode      | Glyph | Behavior                                                                    |
 |-----------|:-----:|-----------------------------------------------------------------------------|
 | `suggest` |  `❯`  | Default. The LLM proposes a command; you confirm with `[Enter] / [e]dit / [n]`. |
-| `auto`    |  `»`  | Commands the safety gate deems safe run immediately; dangerous ones still require typing `yes`. |
+| `auto`    |  `»`  | Commands the safety gate deems safe run immediately; anything it flags or cannot resolve stops and asks (see below). |
 | `yolo`    |  `⚡`  | Agentic loop: the model runs commands, reads output, and iterates until done. |
+
+The gate has **three** outcomes, not two. *Safe* (nothing matched) runs. *Could
+not verify* — the gate couldn't work out what a segment would actually run —
+fails closed with a yellow panel and a plain `[y/N]`. *Dangerous* prints a red
+panel and requires typing the full word `yes`. Details in
+[docs/safety.md](docs/safety.md#three-outcomes).
 
 In yolo, beyond running commands the model can call built-in tools to edit files
 precisely (`read_file`/`write_file`/`edit_file`/`list_dir`, `file_tools`) and read
@@ -213,8 +241,9 @@ aishe -c '<line>'      run one line non-interactively and exit
 aishe init zsh|bash    print the shell-hook snippet (for ~/.zshrc / ~/.bashrc)
 aishe doctor [--probe] check shell/config/provider/API key (--probe: reachability)
 aishe completions ...  print a shell completion script for aishe itself
-aishe trust [--list]   trust this repo's .aishe/config.toml (and list trusted)
-aishe untrust [--all]  drop trust for this repo (or all repos)
+aishe trust [PATH]     trust this repo's .aishe/config.toml, or one project file
+aishe trust --list     list every trusted file
+aishe untrust [PATH]   drop trust for this repo (or one file); --all for every one
 
 aishe dry-run '<cmd>' [--apply]     preview a command's file changes, then keep/discard
 aishe undo [--list]                 revert the last AI/dry-run file change set
@@ -232,6 +261,22 @@ per session with the `--mode`/`--model`/`--provider` flags or `$AISHE_MODE`, and
 in the interactive shell **Shift-Tab** cycles the mode. Full reference in
 [docs/commands.md](docs/commands.md).
 
+A few toggles are **meta commands that live only at the aishe prompt** —
+`rehash`, `sandbox`, `plan`, `cache`, `reset` (also spellable `/rehash`, …).
+They are not subcommands: `aishe rehash` in a terminal fails with
+`error: unrecognized subcommand`. See
+[docs/commands.md](docs/commands.md#prompt-only-meta-commands).
+
+Environment variables worth knowing: `$AISHE_MODE` sets the mode for the shell
+hook, and **`AISHE_CONFIG_DIR` / `AISHE_DATA_DIR`** relocate aishe's config and
+state directories on any platform (each takes a base directory; aishe appends
+`aishe/`). They are the quickest way to try a throwaway setup, or to sidestep the
+Linux/macOS path difference entirely:
+
+```sh
+AISHE_CONFIG_DIR=/tmp/try AISHE_DATA_DIR=/tmp/try aishe doctor
+```
+
 ## Conversation memory
 
 aishe remembers recent natural-language turns so follow-ups have context: after
@@ -242,8 +287,9 @@ disk), is capped in size, and is on by default. Turn it off with
 
 ## Custom commands and skills
 
-Drop Markdown files into `~/.config/aishe/commands/` (user) or
-`<project>/.aishe/commands/` (project) to add your own `/commands`. The file name
+Drop Markdown files into `~/.config/aishe/commands/` (user — on macOS that is
+`~/Library/Application Support/aishe/commands/`; `aishe doctor` prints the real
+path) or `<project>/.aishe/commands/` (project) to add your own `/commands`. The file name
 is the command (`bigfiles.md` becomes `/bigfiles`). If both directories define the
 same name, your user command wins — a project you cloned cannot shadow it. Project
 commands that run shell are also gated the same way project config is by
@@ -259,9 +305,11 @@ Show the 10 largest files under $ARGUMENTS, human-readable, largest first.
 ```
 
 **Skills** are the model-invoked counterpart. Put skill files in
-`~/.config/aishe/skills/` as `<name>/SKILL.md`. In yolo mode aishe advertises
-each skill's `name` and `description`; when your request matches, the model pulls
-the skill's full instructions into context on demand.
+`~/.config/aishe/skills/` (same macOS caveat) as `<name>/SKILL.md`. In yolo mode
+aishe advertises each skill's `name` and `description`; when your request matches,
+the model pulls the skill's full instructions into context on demand. A skill or
+`shell: true` command that comes from a *project* is trust-gated: enable it with
+`aishe trust <path-to-file>`.
 
 The formats match Claude Code, so real Agent Skills from
 [anthropics/skills](https://github.com/anthropics/skills) and slash commands from
@@ -298,8 +346,11 @@ calls per the `yolo_confirm` tier), aishe screens for irreversible operations:
 to main, `shutdown` and `reboot`, and more. Dangerous commands print a red panel
 and require you to type the full word `yes`.
 
-The screen is quote-, subshell-, and substitution-aware (a destructive command written
-inside `$(…)`, backticks, or `<(…)` is still caught) and path-aware for `rm -rf`: an in-tree
+The screen is quote-, subshell-, and substitution-aware: *literal* danger written
+inside `$(…)`, backticks, or `<(…)` is caught, so `cat <(rm -rf /etc)` is flagged.
+The caveat is that this only reaches text the gate can read — a shell fed a process
+substitution whose contents don't exist until run time (`bash <(curl -sL https://x.sh)`,
+`source <(…)`) is **not** caught. It is also path-aware for `rm -rf`: an in-tree
 relative path like `rm -rf node_modules` runs without fuss, while absolute, home,
 variable, glob, or escaping targets are flagged. When the gate cannot resolve what a
 command would actually run, it says so and asks instead of assuming safe (`aishe
@@ -334,9 +385,10 @@ See [docs/logging.md](docs/logging.md).
 
 ## Startup file (.aishrc)
 
-aishe sources `~/.aishrc` and `~/.config/aishe/aishrc` (in that order) into every
-delegated command, so aliases, functions, and exports you define there are
-available everywhere and recognized at the prompt.
+aishe sources `~/.aishrc` and an `aishrc` in its config directory (in that order)
+into every delegated command, so aliases, functions, and exports you define there
+are available everywhere and recognized at the prompt. `~/.aishrc` is the same on
+every platform, so it is the portable place to put these.
 
 ```sh
 # ~/.aishrc
@@ -350,9 +402,11 @@ A ready-to-copy example is at [examples/aishrc](examples/aishrc).
 
 ## Configuration
 
-The config file lives at `~/.config/aishe/config.toml`. A fully annotated example
-is at [examples/config.toml](examples/config.toml), and every field is documented
-in [docs/configuration.md](docs/configuration.md).
+The config file is `config.toml` in aishe's config directory
+(`~/.config/aishe/` on Linux, `~/Library/Application Support/aishe/` on macOS;
+`aishe doctor` prints the resolved path). A fully annotated example is at
+[examples/config.toml](examples/config.toml), and every field is documented in
+[docs/configuration.md](docs/configuration.md).
 
 ```toml
 [aishe]

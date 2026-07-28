@@ -108,7 +108,9 @@ The cache key includes the freshly-built environment context (cwd, recent
 commands, git state), so running anything between two otherwise-identical
 requests changes the key and misses the cache — you never get a stale suggestion
 after the situation has moved on. Streaming answers and the yolo tool loop are
-never cached. Toggle with `aishe cache on` / `aishe cache off`.
+never cached. Toggle by typing `cache on` / `cache off` at the aishe prompt — a
+[prompt-only meta command](commands.md#prompt-only-meta-commands), not an `aishe`
+subcommand — or set `cache` in your config.
 
 ## Notes on accuracy
 

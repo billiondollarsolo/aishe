@@ -198,13 +198,21 @@ impl CommandRegistry {
 /// first with `false`, then the project dir with `true`).
 fn command_dirs() -> Vec<(PathBuf, bool)> {
     let mut dirs = Vec::new();
-    if let Some(cfg) = crate::config::config_root() {
-        dirs.push((cfg.join("aishe").join("commands"), false));
+    if let Some(dir) = user_dir() {
+        dirs.push((dir, false));
     }
     if let Ok(cwd) = std::env::current_dir() {
         dirs.push((cwd.join(".aishe").join("commands"), true));
     }
     dirs
+}
+
+/// The user's own command directory, resolved for this platform. Exposed so the
+/// "no custom commands" hint can name the directory aishe actually reads —
+/// printing a hardcoded `~/.config/...` is wrong on macOS, where the real
+/// location is `~/Library/Application Support/aishe/commands`.
+pub fn user_dir() -> Option<PathBuf> {
+    crate::config::config_root().map(|c| c.join("aishe").join("commands"))
 }
 
 /// Parse a command file: optional `---`-fenced frontmatter, then the body.

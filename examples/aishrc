@@ -1,10 +1,14 @@
 # Example aishe startup file.
 #
-# Copy this to ~/.aishrc (or ~/.config/aishe/aishrc). aishe sources it into every
-# delegated command, so aliases, functions, and exports defined here are available
-# to all commands and recognized at the prompt. This file is shell-agnostic setup
-# that applies in both the reedline and zsh-PTY front-ends (the zsh-PTY front-end
-# also runs your real ~/.zshrc).
+# Copy this to ~/.aishrc, or to `aishrc` in aishe's config directory
+# (~/.config/aishe/ on Linux, ~/Library/Application Support/aishe/ on macOS —
+# `aishe doctor` prints the resolved path). ~/.aishrc is identical on every
+# platform, so it is the portable choice.
+#
+# aishe sources it into every delegated command, so aliases, functions, and
+# exports defined here are available to all commands and recognized at the prompt.
+# This file is shell-agnostic setup that applies in both the reedline and zsh-PTY
+# front-ends (the zsh-PTY front-end also runs your real ~/.zshrc).
 
 # --- environment ---
 export EDITOR=nvim

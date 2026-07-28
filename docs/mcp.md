@@ -8,8 +8,10 @@ loop.
 
 ## Configuring servers
 
-Add an `[mcp_servers]` table to `~/.config/aishe/config.toml`. Each entry is keyed
-by a short name that is used to namespace the server's tools:
+Add an `[mcp_servers]` table to your `config.toml` — `~/.config/aishe/` on Linux,
+`~/Library/Application Support/aishe/` on macOS; `aishe doctor` prints the
+resolved path (see [File locations](configuration.md#file-locations)). Each entry
+is keyed by a short name that is used to namespace the server's tools:
 
 ```toml
 [mcp_servers.filesystem]

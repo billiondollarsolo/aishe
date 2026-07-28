@@ -12,8 +12,9 @@ aishe -c '<line>'      run one line non-interactively and exit
 aishe init zsh|bash    print the shell-hook snippet (for ~/.zshrc / ~/.bashrc)
 aishe doctor           check shell, config, provider, and API key
 aishe completions ...  print a shell completion script for aishe itself
-aishe trust [--list]   trust this repo's .aishe/config.toml (and list trusted)
-aishe untrust [--all]  drop trust for this repo (or all repos)
+aishe trust [PATH]     trust this repo's .aishe/config.toml, or one project file
+aishe trust --list     list every trusted file
+aishe untrust [PATH]   drop trust for this repo (or one file); --all for every one
 
 aishe mode [suggest|auto|yolo]      show or set the interaction mode
 aishe model [NAME]                  show or set the model (for the active provider)
@@ -32,6 +33,26 @@ aishe runbook [--session ID|-o DIR|--replay]  export a session as a script + run
 These are real subcommands, so they work the same in the interactive zsh-PTY
 shell, a plain shell, or a script.
 
+## Prompt-only meta commands
+
+A few settings are toggled by **meta commands that exist only at the aishe
+prompt**. They are not `aishe` subcommands — `aishe rehash` in a terminal fails
+with `error: unrecognized subcommand`. Type them inside the interactive shell,
+bare or with a leading `/`:
+
+```
+~/projects/app ❯ rehash            # or /rehash — rebuild the command cache
+~/projects/app ❯ sandbox on        # yolo_sandbox
+~/projects/app ❯ plan on           # yolo_plan (plan-first dry run)
+~/projects/app ❯ cache off         # suggest-response cache
+~/projects/app ❯ reset             # clear conversation memory
+```
+
+Others in the same family: `editor`, `frontend`, `stream`, `structured`,
+`theme`, `ghost`, `help`. `mode`, `model`, `provider`, `config`, `mcp`,
+`commands`, `skills`, `usage`, `trust`, and `untrust` are *both* — real
+subcommands and meta commands — so those work in either place.
+
 ## Reversible AI file edits
 
 Every change the built-in file tools (`write_file` / `edit_file`) make in yolo is
@@ -44,14 +65,18 @@ aishe undo --list   # show recorded change sets and whether each is still active
 
 All edits made in one aishe run share a batch, so a single `aishe undo` reverts
 that run as a unit — a file the model created and then edited ends up removed, back
-to its original state. The journal lives at `$XDG_DATA_HOME/aishe/undo.jsonl`
-(override with `$AISHE_UNDO_JOURNAL`). Journaling is best-effort and never blocks a
-write. See [Reversible edits](modes.md#reversible-edits) for details.
+to its original state. The journal lives at `undo.jsonl` in aishe's
+[data directory](configuration.md#file-locations) (override with
+`$AISHE_UNDO_JOURNAL`). Journaling is best-effort and never blocks a write. See
+[Reversible edits](modes.md#reversible-edits) for details.
 
 ## Changing settings
 
 `aishe mode`, `aishe model`, and `aishe provider` show the current value with no
-argument, or save a new one to `~/.config/aishe/config.toml` with an argument:
+argument, or save a new one to your user config with an argument
+(`~/.config/aishe/config.toml` on Linux, `~/Library/Application
+Support/aishe/config.toml` on macOS — `aishe doctor` prints the resolved path;
+see [File locations](configuration.md#file-locations)):
 
 ```sh
 aishe mode auto         # persist the default mode

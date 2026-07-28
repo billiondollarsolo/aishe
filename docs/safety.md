@@ -22,7 +22,8 @@ you actually rely on for isolation is the
 
 - **suggest**: a dangerous proposed command is flagged before you confirm.
 - **auto**: safe commands run immediately; dangerous ones stop and require you to
-  type the full word `yes`.
+  type the full word `yes`, and unresolvable ones stop with the milder `[y/N]`
+  prompt (see [Three outcomes](#three-outcomes) — nothing unverified auto-runs).
 - **yolo**: the loop pauses for tool calls according to the `yolo_confirm` tier
   (`"never"` / `"dangerous"` / `"writes"` / `"all"`; default `"dangerous"`). The
   legacy `yolo_confirm_dangerous` boolean is still honored when `yolo_confirm` is
@@ -85,7 +86,8 @@ caller fails closed:
   the same `20` used for `dangerous`, so a script that only tests `risk == "safe"`
   or `exit == 0` already fails closed. Same for the `--auto-line` shell hook: `20`
   means "pre-fill for review, don't run".
-- **`aishe replay`**: non-interactive, so an unverifiable command is skipped.
+- **`aishe runbook --replay`**: non-interactive, so an unverifiable command is
+  skipped.
 
 This is *not* "the head isn't on a denylist" — `ls`, `git`, `uv`, `npm`, and every
 other well-formed command name are still `safe`. It only fires when the gate
@@ -175,7 +177,9 @@ model proposed.
 ## Sandbox (policy-based, best-effort)
 
 yolo mode has an optional sandbox (`yolo_sandbox = true`, off by default; toggle
-with `aishe sandbox on`). When on, before a `run_command` runs, aishe classifies
+by typing `sandbox on` at the aishe prompt — a
+[prompt-only meta command](commands.md#prompt-only-meta-commands), not an `aishe`
+subcommand). When on, before a `run_command` runs, aishe classifies
 the command and refuses it - feeding the reason back to the model as the tool
 result instead of executing - if it:
 
@@ -279,7 +283,7 @@ and/or turn on the sandbox:
   any state-modifying command) or `"all"` (confirm every command).
 - Enable [`yolo_sandbox`](configuration.md#aishe-section) (`= true`), the
   policy sandbox that refuses network access and out-of-tree writes (see the
-  previous section; toggle live with `aishe sandbox on`).
+  previous section; toggle live by typing `sandbox on` at the aishe prompt).
 
 The gate will keep improving — new shapes get rules and a corpus entry as they are
 found — but the guidance is evergreen: it is a backstop, and for autonomous or
