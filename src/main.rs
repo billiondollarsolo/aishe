@@ -539,7 +539,12 @@ fn run() -> Result<u8> {
     // User-defined slash-commands and model-invoked skills (plugins).
     let commands = CommandRegistry::load();
     let skills = aishe::skills::SkillRegistry::load();
-    warn_untrusted_skills(&skills);
+    // Deliberately NOT warning about untrusted project skills here: this runs
+    // for every invocation, so it printed on plain shell pass-through
+    // (`aishe -c 'free -m'`) in any repo carrying a skill file, polluting
+    // stderr for commands that never consult a skill. The warning belongs where
+    // skills are actually relevant — `aishe skills`, `aishe doctor`, and the
+    // yolo loop that can invoke them.
     // MCP servers (extra yolo tools). Empty/instant unless `[mcp_servers]` is set.
     let mcp = aishe::mcp::McpRegistry::connect(&config.mcp_servers);
 
@@ -831,6 +836,24 @@ fn doctor(probe: bool) -> u8 {
         );
     } else {
         println!("{warn} audit log: off (enable with [logging] enabled=true or AISHE_LOG=1)");
+    }
+
+    // Project skills that are present but gated. This is the status readout, so
+    // it is the right place to surface them — the startup path deliberately
+    // stays quiet so plain shell commands are not spammed.
+    let skill_reg = aishe::skills::SkillRegistry::load();
+    let untrusted_skills = skill_reg.untrusted();
+    if !untrusted_skills.is_empty() {
+        println!(
+            "{warn} project skills: {} ignored until trusted (`aishe trust <file>`)",
+            untrusted_skills.len()
+        );
+        for p in untrusted_skills {
+            println!(
+                "    {}",
+                aishe::commands::display_safe(&p.display().to_string()).dim()
+            );
+        }
     }
 
     // MCP servers and history.

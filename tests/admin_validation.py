@@ -951,8 +951,17 @@ def main():
     add("plugin: no-frontmatter command discovered", "plain" in out)
     # Project-only command + project skill are discovered (cwd = project root).
     add("plugin: project-only command discovered", "projcmd" in out)
+    # A project skill is repo-supplied text handed straight to the model, so it
+    # stays gated until explicitly trusted — absent first, present after.
     rc, sout, _ = run([BIN, "-c", "/skills"], env_local, cwd=fixture)
-    add("plugin: project-only skill discovered", "proj-skill" in sout)
+    add("plugin: project skill gated until trusted", "proj-skill" not in sout)
+    skill_file = os.path.join(fixture, ".aishe", "skills", "proj-skill", "SKILL.md")
+    if not os.path.exists(skill_file):
+        skill_file = os.path.join(fixture, ".aishe", "skills", "proj-skill.md")
+    run([BIN, "trust", skill_file], env_local, cwd=fixture)
+    rc, sout, _ = run([BIN, "-c", "/skills"], env_local, cwd=fixture)
+    add("plugin: project skill discovered once trusted", "proj-skill" in sout)
+    run([BIN, "untrust", skill_file], env_local, cwd=fixture)
     # A same-named project command must NOT shadow the user's own command.
     rc, out, err = run([BIN, "-c", "/dup"], env_local, cwd=fixture)
     add("plugin: user command wins over project (/dup)", "USER-DUP" in out and "PROJECT-DUP" not in out,
