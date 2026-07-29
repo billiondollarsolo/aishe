@@ -557,8 +557,10 @@ Initial upstream asset manifest:
 
 | Aishe platform | Upstream asset | Compressed size | SHA-256 |
 | --- | --- | ---: | --- |
-| Linux x86_64 | `opencode-linux-x64-baseline-musl.tar.gz` | 61,680,081 | `2420d3369aee94d2317ba07b6643786a0666ac9b3e8d4cd069913397f4d41697` |
-| Linux aarch64 | `opencode-linux-arm64-musl.tar.gz` | 61,250,947 | `8fe9da991068f9e1524c6cb34dad52806bf5927baaa4d583b6fd4ea7987210f4` |
+| Linux x86_64 glibc | `opencode-linux-x64-baseline.tar.gz` | 59,311,798 | `3eddbc5423264055f2527a0abd2d3a6fc6bbca3dced6bbd85d5d4cc27beacad2` |
+| Linux x86_64 musl | `opencode-linux-x64-baseline-musl.tar.gz` | 61,680,081 | `2420d3369aee94d2317ba07b6643786a0666ac9b3e8d4cd069913397f4d41697` |
+| Linux aarch64 glibc | `opencode-linux-arm64.tar.gz` | 59,122,119 | `b16bd7593ea960a25d9c6849b3023bcd9b9244a6f51675341fd2052043b0670f` |
+| Linux aarch64 musl | `opencode-linux-arm64-musl.tar.gz` | 61,250,947 | `8fe9da991068f9e1524c6cb34dad52806bf5927baaa4d583b6fd4ea7987210f4` |
 | macOS arm64 | `opencode-darwin-arm64.zip` | 44,954,303 | `6f998b7dabb9425bb348fd0d88afeb92a14422771231cec9b0f4374b947397e6` |
 | macOS x86_64 | `opencode-darwin-x64-baseline.zip` | 47,190,199 | `ee8ffb2971db99cc2d4638b9b26218e1e33484c616cc4ca9a41016f4c9424417` |
 
@@ -599,7 +601,9 @@ runtime root.
 
 ### Download and installation
 
-1. Resolve the platform only from OS/architecture and the embedded manifest.
+1. Resolve the platform only from OS/architecture, the host Linux libc loader,
+   and the embedded manifest. Prefer glibc on glibc hosts and musl on native
+   musl/Alpine hosts; never assume a musl-named archive is statically linked.
 2. Resolve source precedence:
    - Explicit `--from <local-file>`.
    - Organization policy/local mirror.

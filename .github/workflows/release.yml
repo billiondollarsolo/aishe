@@ -255,7 +255,7 @@ jobs:
           version="$(jq -r .version "$manifest")"
           test "$version" = "1.18.9"
           test "$(jq -r .runtime "$manifest")" = "opencode"
-          test "$(jq '.assets | length' "$manifest")" -eq 4
+          test "$(jq '.assets | length' "$manifest")" -eq 6
           curl --fail --location --retry 3 \
             "https://raw.githubusercontent.com/anomalyco/opencode/v${version}/LICENSE" \
             --output upstream-LICENSE

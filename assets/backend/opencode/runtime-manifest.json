@@ -5,14 +5,28 @@
   "release_url": "https://github.com/anomalyco/opencode/releases/download/v1.18.9",
   "assets": [
     {
-      "platform": "linux-x86_64",
+      "platform": "linux-x86_64-gnu",
+      "name": "opencode-linux-x64-baseline.tar.gz",
+      "format": "tar_gz",
+      "size": 59311798,
+      "sha256": "3eddbc5423264055f2527a0abd2d3a6fc6bbca3dced6bbd85d5d4cc27beacad2"
+    },
+    {
+      "platform": "linux-x86_64-musl",
       "name": "opencode-linux-x64-baseline-musl.tar.gz",
       "format": "tar_gz",
       "size": 61680081,
       "sha256": "2420d3369aee94d2317ba07b6643786a0666ac9b3e8d4cd069913397f4d41697"
     },
     {
-      "platform": "linux-aarch64",
+      "platform": "linux-aarch64-gnu",
+      "name": "opencode-linux-arm64.tar.gz",
+      "format": "tar_gz",
+      "size": 59122119,
+      "sha256": "b16bd7593ea960a25d9c6849b3023bcd9b9244a6f51675341fd2052043b0670f"
+    },
+    {
+      "platform": "linux-aarch64-musl",
       "name": "opencode-linux-arm64-musl.tar.gz",
       "format": "tar_gz",
       "size": 61250947,

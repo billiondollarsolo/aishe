@@ -411,7 +411,14 @@ impl RuntimeManager {
             .arg("--version")
             .stdin(Stdio::null())
             .output()
-            .with_context(|| format!("running {} --version", binary.display()))?;
+            .map_err(|error| {
+                let platform = RuntimeManifest::platform_key().unwrap_or("unknown");
+                anyhow::anyhow!(
+                    "cannot start {} --version for {platform}: {error}; \
+                     verify that this host's libc loader can execute the selected runtime",
+                    binary.display()
+                )
+            })?;
         if !output.status.success() {
             anyhow::bail!(
                 "OpenCode runtime version probe failed with {}",
