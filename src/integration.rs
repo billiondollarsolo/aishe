@@ -55,6 +55,13 @@ pub const ZSH_HOOK: &str = r#": ${AISHE_PENDING_FILE:=${TMPDIR:-/tmp}/aishe-pend
 # follow-ups keep context. Exported so `command aishe` inherits it.
 : ${AISHE_SESSION_FILE:=${TMPDIR:-/tmp}/aishe-session-mem-$$}
 export AISHE_SESSION_FILE
+# Stable only for this live shell. Hook subprocesses inherit it so backend
+# sessions and foreground tool leases cannot cross between terminals.
+if [[ -z "${AISHE_SHELL_ID:-}" ]]; then
+  AISHE_SHELL_ID="$(command od -An -N24 -tx1 /dev/urandom 2>/dev/null | command tr -d ' \n')"
+  [[ -n "$AISHE_SHELL_ID" ]] || AISHE_SHELL_ID="shell-${$}-${EPOCHREALTIME:-$RANDOM$RANDOM}"
+fi
+export AISHE_SHELL_ID
 
 # Route one natural-language line according to AISHE_MODE. suggest/auto stage a
 # command in AISHE_PENDING_FILE (acted on by aishe_precmd in the MAIN shell,
@@ -605,6 +612,11 @@ const BASH_SCRIPT: &str = r#"# aishe bash integration — add to ~/.bashrc:  eva
 # Conversation memory shared across the per-call NL invocations in this shell.
 : ${AISHE_SESSION_FILE:=${TMPDIR:-/tmp}/aishe-session-mem-$$}
 export AISHE_SESSION_FILE
+if [[ -z "${AISHE_SHELL_ID:-}" ]]; then
+  AISHE_SHELL_ID="$(command od -An -N24 -tx1 /dev/urandom 2>/dev/null | command tr -d ' \n')"
+  [[ -n "$AISHE_SHELL_ID" ]] || AISHE_SHELL_ID="shell-${$}-${RANDOM}${RANDOM}"
+fi
+export AISHE_SHELL_ID
 command_not_found_handle() {
   local line="$*"
   case "${AISHE_MODE:-suggest}" in
@@ -753,6 +765,8 @@ mod tests {
         assert!(s.contains("--suggest-line"));
         assert!(s.contains("--yolo-line"));
         assert!(s.contains("AISHE_MODE"));
+        assert!(s.contains("AISHE_SHELL_ID"));
+        assert!(s.contains("/dev/urandom"));
     }
 
     #[test]
@@ -795,6 +809,7 @@ mod tests {
     #[test]
     fn bash_script_has_fix_command_key() {
         let s = script("bash").unwrap();
+        assert!(s.contains("AISHE_SHELL_ID"));
         assert!(s.contains("AISHE_LAST_EXIT=$?"));
         assert!(s.contains("AISHE_LAST_CMD="));
         assert!(s.contains("__aishe_fix"));

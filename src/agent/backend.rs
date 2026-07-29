@@ -41,6 +41,9 @@ pub struct PromptRequest {
 pub struct PromptHandle {
     pub session_id: String,
     pub message_id: String,
+    pub workspace: PathBuf,
+    pub prompt_text: String,
+    pub resumed: bool,
     /// Once true, compatibility fallback is forbidden because retrying could
     /// duplicate provider cost or side effects.
     pub admitted: bool,

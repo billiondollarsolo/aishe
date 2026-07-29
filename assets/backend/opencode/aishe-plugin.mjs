@@ -14,7 +14,7 @@ async function invoke(tool, args, context) {
   if (!bridgeUrl || !bridgeToken) {
     throw new Error("Aishe foreground tool bridge is unavailable")
   }
-  const response = await fetch(`${bridgeUrl}/v1/tool`, {
+  const response = await fetch(`${bridgeUrl}/v1/plugin/tool`, {
     method: "POST",
     redirect: "error",
     headers: {
@@ -84,6 +84,11 @@ export const AisheBridge = async () => ({
         new: tool.schema.string().max(4194304),
       },
     ),
+    aishe_apply_patch: proxy(
+      "apply_patch",
+      "Apply a bounded validated patch transactionally through Aishe policy and undo journaling.",
+      { patch: tool.schema.string().min(1).max(4194304) },
+    ),
     aishe_list_dir: proxy(
       "list_dir",
       "List bounded directory metadata through Aishe workspace policy.",
@@ -102,6 +107,20 @@ export const AisheBridge = async () => ({
       "Fetch an approved HTTP(S) URL through Aishe network policy.",
       { url: tool.schema.string().min(1).max(8192) },
     ),
+    aishe_use_skill: proxy(
+      "use_skill",
+      "Load one Aishe-approved skill through the trusted progressive-disclosure registry.",
+      { name: tool.schema.string().min(1).max(256) },
+    ),
+    aishe_mcp_call: proxy(
+      "mcp_call",
+      "Call one user-configured and Aishe-approved MCP tool.",
+      {
+        server: tool.schema.string().min(1).max(256),
+        tool: tool.schema.string().min(1).max(256),
+        arguments: tool.schema.record(tool.schema.string(), tool.schema.unknown()),
+      },
+    ),
     aishe_ask_user: proxy(
       "ask_user",
       "Ask the foreground user a non-approval question needed to continue.",
@@ -117,7 +136,7 @@ export const AisheBridge = async () => ({
   },
   "chat.params": async (input, output) => {
     if (!bridgeUrl || !bridgeToken) throw new Error("Aishe budget bridge is unavailable")
-    const response = await fetch(`${bridgeUrl}/v1/provider-turn`, {
+    const response = await fetch(`${bridgeUrl}/v1/plugin/provider-turn`, {
       method: "POST",
       redirect: "error",
       headers: {

@@ -122,6 +122,9 @@ struct Args {
 
 #[derive(Subcommand, Debug)]
 enum Cmd {
+    /// Internal managed backend supervisor.
+    #[command(name = "__backend-supervisor", hide = true)]
+    BackendSupervisor,
     /// Configure and verify Aishe interactively, or provision it with flags.
     Setup {
         /// Resume the last interrupted setup draft.
@@ -660,6 +663,10 @@ fn backend_command(command: &BackendCmd) -> Result<u8> {
 fn run() -> Result<u8> {
     let args = Args::parse();
 
+    if matches!(args.cmd, Some(Cmd::BackendSupervisor)) {
+        return aishe::backend::supervisor::run_supervisor();
+    }
+
     // Setup is deliberately handled before ordinary config loading: its job is
     // to create, repair, or verify the config without invoking a legacy wizard.
     if let Some(Cmd::Setup {
@@ -1055,7 +1062,8 @@ fn run() -> Result<u8> {
             | Cmd::Log { .. }
             | Cmd::Usage { .. }
             | Cmd::Runbook { .. }
-            | Cmd::Backend { .. },
+            | Cmd::Backend { .. }
+            | Cmd::BackendSupervisor,
         ) => {
             unreachable!("handled before config load")
         }

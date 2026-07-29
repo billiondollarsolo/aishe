@@ -6,22 +6,33 @@
 //! configuration cannot actually start.
 
 use std::fs::{self, File, OpenOptions};
-use std::io::{BufRead, BufReader, Seek, SeekFrom};
+use std::io::{BufRead, BufReader, Read, Seek, SeekFrom, Write};
 use std::net::TcpListener;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
-use std::time::{Duration, Instant};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result};
 use base64::Engine;
+use fs2::FileExt;
 use rand::RngCore;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
+use super::control::{ServerContext, SupervisorState};
+use super::opencode::config::{ProviderLaunch, ProviderSpec, PROVIDER_KEY_ENV};
 use super::RuntimeManager;
 
 const PLUGIN: &[u8] = include_bytes!("../../assets/backend/opencode/aishe-plugin.mjs");
-const SUPERVISOR_PROTOCOL_VERSION: u32 = 1;
+const MAX_BOOTSTRAP_BYTES: u64 = 256 * 1024;
+const MAX_CONTROL_CONNECTIONS: usize = 64;
+static SUPERVISOR_TERMINATED: AtomicBool = AtomicBool::new(false);
+
+extern "C" fn handle_supervisor_term(_signal: libc::c_int) {
+    SUPERVISOR_TERMINATED.store(true, Ordering::SeqCst);
+}
 
 #[derive(Clone, Debug)]
 pub struct PreparedRuntime {
@@ -35,16 +46,12 @@ pub struct PreparedRuntime {
     pub config_json: String,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
-struct SupervisorState {
+#[derive(Serialize, Deserialize)]
+struct SupervisorBootstrap {
     schema_version: u32,
-    protocol_version: u32,
-    supervisor_pid: u32,
-    opencode_pid: u32,
-    opencode_url: String,
-    runtime_version: String,
-    startup_nonce: String,
-    started_at_ms: u128,
+    provider: ProviderSpec,
+    api_key: Option<String>,
+    idle_timeout_secs: u64,
 }
 
 pub fn backend_root() -> Result<PathBuf> {
@@ -90,7 +97,7 @@ pub fn prepare_layout() -> Result<PreparedRuntime> {
         anyhow::bail!("trusted OpenCode plugin checksum verification failed");
     }
 
-    let config = generated_base_config();
+    let config = super::opencode::config::generated_config(&plugin_path, None)?;
     Ok(PreparedRuntime {
         root,
         home,
@@ -103,25 +110,195 @@ pub fn prepare_layout() -> Result<PreparedRuntime> {
     })
 }
 
-fn generated_base_config() -> serde_json::Value {
-    serde_json::json!({
-        "$schema": "https://opencode.ai/config.json",
-        "share": "disabled",
-        "autoupdate": false,
-        "mcp": {},
-        "lsp": false,
-        "permission": {
-            "*": "deny",
-            "aishe_*": "allow",
-            "task": "allow",
-            "todowrite": "allow",
-            "todoread": "allow"
-        },
-        "compaction": {
-            "auto": true,
-            "prune": true
+/// Return a verified compatible supervisor, starting one without inheriting
+/// provider credentials in its environment when necessary.
+pub fn ensure_running(config: &crate::config::Config) -> Result<SupervisorState> {
+    let manager = RuntimeManager::new()?;
+    manager.verify()?;
+    let launch = ProviderLaunch::from_aishe(config)?;
+    if let Some(state) = super::control::verified_state()? {
+        if state.runtime_version == manager.manifest().version
+            && state.provider_id == launch.spec.provider_id
+            && state.model_id == launch.spec.model_id
+        {
+            return Ok(state);
         }
-    })
+        let _ = super::control::request_stop();
+        wait_for_state_removal(Duration::from_secs(5));
+    } else if let Some(state) = super::control::load_state()? {
+        if super::control::state_processes_exist(&state) {
+            anyhow::bail!(
+                "backend processes exist but failed authenticated health verification; \
+                 inspect `aishe backend logs` and retry (the private supervisor exits at its idle timeout)"
+            );
+        }
+        remove_stale_state()?;
+    }
+
+    let bootstrap = SupervisorBootstrap {
+        schema_version: 1,
+        provider: launch.spec,
+        api_key: launch.api_key,
+        idle_timeout_secs: config.backend.idle_timeout_secs.clamp(30, 86_400),
+    };
+    spawn_supervisor(&bootstrap)?;
+    let started = Instant::now();
+    loop {
+        if let Some(state) = super::control::verified_state()? {
+            if state.runtime_version != manager.manifest().version
+                || state.provider_id != bootstrap.provider.provider_id
+                || state.model_id != bootstrap.provider.model_id
+            {
+                anyhow::bail!("started backend identity does not match requested provider/model");
+            }
+            return Ok(state);
+        }
+        if started.elapsed() >= Duration::from_secs(25) {
+            anyhow::bail!("timed out starting the managed agent backend; run `aishe backend logs`");
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+}
+
+/// Internal hidden-command entrypoint. Bootstrap material arrives through a
+/// bounded pipe, never argv or the process environment.
+pub fn run_supervisor() -> Result<u8> {
+    SUPERVISOR_TERMINATED.store(false, Ordering::SeqCst);
+    #[cfg(unix)]
+    unsafe {
+        libc::signal(
+            libc::SIGTERM,
+            handle_supervisor_term as *const () as libc::sighandler_t,
+        );
+        libc::signal(
+            libc::SIGHUP,
+            handle_supervisor_term as *const () as libc::sighandler_t,
+        );
+        libc::signal(
+            libc::SIGINT,
+            handle_supervisor_term as *const () as libc::sighandler_t,
+        );
+    }
+
+    let root = backend_root()?;
+    fs::create_dir_all(&root)?;
+    crate::config::set_private_dir(&root);
+    let lock = private_lock(&root.join("supervisor.lock"))?;
+    match lock.try_lock_exclusive() {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => return Ok(0),
+        Err(error) => return Err(error).context("locking backend supervisor"),
+    }
+
+    let bootstrap = read_bootstrap()?;
+    let manager = RuntimeManager::new()?;
+    manager.verify()?;
+    let mut prepared = prepare_layout()?;
+    prepared.config_json = serde_json::to_string(&super::opencode::config::generated_config(
+        &prepared.plugin_path,
+        Some(&bootstrap.provider),
+    )?)?;
+
+    let control_listener =
+        TcpListener::bind(("127.0.0.1", 0)).context("binding private backend control listener")?;
+    control_listener.set_nonblocking(true)?;
+    let control_port = control_listener.local_addr()?.port();
+    let control_url = format!("http://127.0.0.1:{control_port}");
+    let control_token = random_hex(32);
+    let plugin_token = random_hex(32);
+    let opencode_password = random_hex(32);
+    let startup_nonce = random_hex(32);
+    let log_path = prepared.root.join("server.log");
+    rotate_log(&log_path, 4 * 1024 * 1024)?;
+    let log = private_log(&log_path)?;
+
+    let child = start_opencode_with_retries(
+        &manager,
+        &prepared,
+        &opencode_password,
+        &plugin_token,
+        &control_url,
+        bootstrap.api_key.as_deref(),
+        &log,
+    )?;
+    let opencode_port = child
+        .1
+        .strip_prefix("http://127.0.0.1:")
+        .and_then(|value| value.parse::<u16>().ok())
+        .context("managed OpenCode returned an invalid listener")?;
+    let mut opencode = child.0;
+    let opencode_url = format!("http://127.0.0.1:{opencode_port}");
+    let state = SupervisorState::new(
+        std::process::id(),
+        opencode.id(),
+        control_url,
+        opencode_url,
+        manager.manifest().version.clone(),
+        bootstrap.provider.provider_id,
+        bootstrap.provider.model_id,
+        startup_nonce,
+        now_ms(),
+        control_token.clone(),
+        opencode_password,
+    );
+    super::control::write_state(&state)?;
+    let shutdown = Arc::new(AtomicBool::new(false));
+    let last_activity = Arc::new(Mutex::new(Instant::now()));
+    let context = ServerContext {
+        state: state.clone(),
+        control_token,
+        plugin_token,
+        shutdown: Arc::clone(&shutdown),
+        last_activity: Arc::clone(&last_activity),
+    };
+    let active_connections = Arc::new(AtomicUsize::new(0));
+    let idle_timeout = Duration::from_secs(bootstrap.idle_timeout_secs);
+
+    let result = (|| -> Result<()> {
+        loop {
+            if SUPERVISOR_TERMINATED.load(Ordering::SeqCst) || shutdown.load(Ordering::SeqCst) {
+                break;
+            }
+            if let Some(status) = opencode.try_wait()? {
+                anyhow::bail!("managed OpenCode exited unexpectedly ({status})");
+            }
+            let idle = last_activity
+                .lock()
+                .map(|value| value.elapsed())
+                .unwrap_or(idle_timeout);
+            if idle >= idle_timeout && active_connections.load(Ordering::SeqCst) == 0 {
+                break;
+            }
+            match control_listener.accept() {
+                Ok((stream, peer)) => {
+                    if !peer.ip().is_loopback()
+                        || active_connections.load(Ordering::SeqCst) >= MAX_CONTROL_CONNECTIONS
+                    {
+                        drop(stream);
+                        continue;
+                    }
+                    active_connections.fetch_add(1, Ordering::SeqCst);
+                    let context = context.clone();
+                    let active = Arc::clone(&active_connections);
+                    std::thread::spawn(move || {
+                        let _ = super::control::serve_connection(stream, &context);
+                        active.fetch_sub(1, Ordering::SeqCst);
+                    });
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    std::thread::sleep(Duration::from_millis(25));
+                }
+                Err(error) => return Err(error).context("accepting backend control request"),
+            }
+        }
+        Ok(())
+    })();
+
+    terminate_process_group(&mut opencode);
+    let _ = super::control::remove_state_if_nonce(&state.startup_nonce);
+    FileExt::unlock(&lock).ok();
+    result?;
+    Ok(0)
 }
 
 pub fn smoke_test(manager: &RuntimeManager) -> Result<()> {
@@ -139,6 +316,7 @@ pub fn smoke_test(manager: &RuntimeManager) -> Result<()> {
         &password,
         &bridge_token,
         "http://127.0.0.1:1",
+        None,
         log.try_clone()?,
         log,
     )?;
@@ -161,6 +339,7 @@ pub fn spawn_opencode(
     password: &str,
     bridge_token: &str,
     bridge_url: &str,
+    provider_api_key: Option<&str>,
     stdout: File,
     stderr: File,
 ) -> Result<Child> {
@@ -173,7 +352,6 @@ pub fn spawn_opencode(
             "127.0.0.1",
             "--port",
             &port.to_string(),
-            "--mdns=false",
         ])
         .stdin(Stdio::null())
         .stdout(Stdio::from(stdout))
@@ -197,6 +375,9 @@ pub fn spawn_opencode(
         .env("AISHE_BRIDGE_URL", bridge_url)
         .env("AISHE_BRIDGE_TOKEN", bridge_token)
         .env("NO_COLOR", "1");
+    if let Some(api_key) = provider_api_key {
+        command.env(PROVIDER_KEY_ENV, api_key);
+    }
     copy_safe_environment(&mut command);
     #[cfg(unix)]
     unsafe {
@@ -276,6 +457,131 @@ fn reserve_port() -> Result<u16> {
     Ok(listener.local_addr()?.port())
 }
 
+fn start_opencode_with_retries(
+    manager: &RuntimeManager,
+    prepared: &PreparedRuntime,
+    password: &str,
+    plugin_token: &str,
+    control_url: &str,
+    provider_api_key: Option<&str>,
+    log: &File,
+) -> Result<(Child, String)> {
+    let mut last_error = None;
+    for _ in 0..3 {
+        let port = reserve_port()?;
+        let url = format!("http://127.0.0.1:{port}");
+        let mut child = spawn_opencode(
+            manager,
+            prepared,
+            port,
+            password,
+            plugin_token,
+            control_url,
+            provider_api_key,
+            log.try_clone()?,
+            log.try_clone()?,
+        )?;
+        match wait_for_health(
+            &mut child,
+            &url,
+            password,
+            manager.manifest().version.as_str(),
+        ) {
+            Ok(()) => return Ok((child, url)),
+            Err(error) => {
+                terminate_process_group(&mut child);
+                last_error = Some(error);
+            }
+        }
+    }
+    Err(last_error.unwrap_or_else(|| anyhow::anyhow!("failed to start managed OpenCode")))
+}
+
+fn spawn_supervisor(bootstrap: &SupervisorBootstrap) -> Result<()> {
+    let root = backend_root()?;
+    fs::create_dir_all(&root)?;
+    crate::config::set_private_dir(&root);
+    let log_path = root.join("supervisor.log");
+    rotate_log(&log_path, 4 * 1024 * 1024)?;
+    let log = private_log(&log_path)?;
+    let executable = std::env::current_exe().context("resolving the Aishe executable")?;
+    let mut command = Command::new(executable);
+    command
+        .arg("__backend-supervisor")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::from(log.try_clone()?))
+        .stderr(Stdio::from(log))
+        .env_clear();
+    copy_safe_environment(&mut command);
+    for name in ["AISHE_DATA_DIR"] {
+        if let Some(value) = std::env::var_os(name).filter(|value| !value.is_empty()) {
+            command.env(name, value);
+        }
+    }
+    #[cfg(unix)]
+    unsafe {
+        use std::os::unix::process::CommandExt;
+        command.pre_exec(|| {
+            if libc::setsid() == -1 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+    let mut child = command.spawn().context("starting backend supervisor")?;
+    let bytes = serde_json::to_vec(bootstrap)?;
+    if bytes.len() as u64 > MAX_BOOTSTRAP_BYTES {
+        let _ = child.kill();
+        anyhow::bail!("backend bootstrap exceeds the 256 KiB limit");
+    }
+    let result = child
+        .stdin
+        .take()
+        .context("backend supervisor bootstrap pipe is unavailable")?
+        .write_all(&bytes);
+    if let Err(error) = result {
+        let _ = child.kill();
+        return Err(error).context("sending private backend bootstrap");
+    }
+    // Do not wait: the detached supervisor owns the managed runtime.
+    Ok(())
+}
+
+fn read_bootstrap() -> Result<SupervisorBootstrap> {
+    let mut bytes = Vec::new();
+    std::io::stdin()
+        .take(MAX_BOOTSTRAP_BYTES + 1)
+        .read_to_end(&mut bytes)?;
+    if bytes.len() as u64 > MAX_BOOTSTRAP_BYTES {
+        anyhow::bail!("backend bootstrap exceeds the 256 KiB limit");
+    }
+    let bootstrap: SupervisorBootstrap =
+        serde_json::from_slice(&bytes).context("backend bootstrap is invalid")?;
+    if bootstrap.schema_version != 1 {
+        anyhow::bail!("backend bootstrap schema mismatch");
+    }
+    if bootstrap.provider.requires_auth && bootstrap.api_key.is_none() {
+        anyhow::bail!("backend bootstrap omitted the required provider credential");
+    }
+    if let Some(key) = bootstrap.api_key.as_deref() {
+        crate::credentials::validate_secret(key)?;
+    }
+    Ok(bootstrap)
+}
+
+fn private_lock(path: &Path) -> Result<File> {
+    let mut options = OpenOptions::new();
+    options.create(true).read(true).write(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    options
+        .open(path)
+        .with_context(|| format!("opening private backend lock {}", path.display()))
+}
+
 fn private_log(path: &Path) -> Result<File> {
     let mut options = OpenOptions::new();
     options.create(true).append(true);
@@ -287,31 +593,55 @@ fn private_log(path: &Path) -> Result<File> {
     Ok(options.open(path)?)
 }
 
+fn rotate_log(path: &Path, limit: u64) -> Result<()> {
+    let metadata = match fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error.into()),
+    };
+    if metadata.file_type().is_symlink() || !metadata.is_file() {
+        anyhow::bail!("backend log path {} is not a regular file", path.display());
+    }
+    if metadata.len() < limit {
+        return Ok(());
+    }
+    let prior = path.with_extension("log.1");
+    match fs::symlink_metadata(&prior) {
+        Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_file() => {
+            anyhow::bail!("backend prior log path {} is unsafe", prior.display())
+        }
+        Ok(_) => fs::remove_file(&prior)?,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error.into()),
+    }
+    fs::rename(path, prior)?;
+    Ok(())
+}
+
+fn remove_stale_state() -> Result<()> {
+    let path = super::control::state_path()?;
+    match fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error.into()),
+    }
+}
+
+fn wait_for_state_removal(timeout: Duration) {
+    let started = Instant::now();
+    while started.elapsed() < timeout {
+        if super::control::load_state().ok().flatten().is_none() {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
 pub fn request_stop() -> Result<u8> {
-    let state_path = backend_root()?.join("supervisor.json");
-    if !state_path.exists() {
+    if !super::control::request_stop()? {
         println!("agent backend is not running");
         return Ok(0);
     }
-    let state: SupervisorState = serde_json::from_slice(&fs::read(&state_path)?)
-        .context("backend supervisor state is invalid; run `aishe doctor --fix`")?;
-    if state.schema_version != 1 || state.protocol_version != SUPERVISOR_PROTOCOL_VERSION {
-        anyhow::bail!("backend supervisor protocol mismatch; run `aishe doctor --fix`");
-    }
-    // A control-channel shutdown replaces this signal path when the long-lived
-    // bridge is enabled. Until then, verify the PID belongs to an Aishe child by
-    // matching the private state and refuse broad/process-name killing.
-    #[cfg(unix)]
-    {
-        let result = unsafe { libc::kill(state.supervisor_pid as i32, libc::SIGTERM) };
-        if result == -1 {
-            let error = std::io::Error::last_os_error();
-            if error.raw_os_error() != Some(libc::ESRCH) {
-                return Err(error).context("stopping backend supervisor");
-            }
-        }
-    }
-    let _ = fs::remove_file(state_path);
     println!("agent backend stop requested");
     Ok(0)
 }
@@ -367,6 +697,13 @@ fn random_hex(bytes: usize) -> String {
     value.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
+fn now_ms() -> u128 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis()
+}
+
 fn sha256_bytes(bytes: &[u8]) -> String {
     format!("{:x}", Sha256::digest(bytes))
 }
@@ -377,7 +714,11 @@ mod tests {
 
     #[test]
     fn generated_config_denies_builtins_and_allows_only_bridge_control() {
-        let config = generated_base_config();
+        let config = super::super::opencode::config::generated_config(
+            Path::new("/private/aishe-plugin.mjs"),
+            None,
+        )
+        .unwrap();
         let permission = config.get("permission").unwrap();
         assert_eq!(permission.get("*").and_then(|v| v.as_str()), Some("deny"));
         assert_eq!(

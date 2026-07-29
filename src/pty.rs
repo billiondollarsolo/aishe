@@ -33,6 +33,13 @@ extern "C" fn handle_term(_sig: libc::c_int) {
     TERMINATED.store(true, Ordering::SeqCst);
 }
 
+fn random_shell_id() -> String {
+    use rand::RngCore;
+    let mut bytes = [0u8; 24];
+    rand::rng().fill_bytes(&mut bytes);
+    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
 /// Run the user's real zsh inside a PTY, returning its exit code.
 pub fn run_zsh(config: &Config, history_log: &std::path::Path) -> Result<u8> {
     let zsh = which("zsh").ok_or_else(|| {
@@ -67,6 +74,7 @@ pub fn run_zsh(config: &Config, history_log: &std::path::Path) -> Result<u8> {
     cmd.env("ZDOTDIR", &zdotdir);
     cmd.env("AISHE_OUR_ZDOTDIR", &zdotdir);
     cmd.env("AISHE_REAL_ZDOTDIR", &real_zdotdir);
+    cmd.env("AISHE_SHELL_ID", random_shell_id());
     cmd.env("AISHE_MODE", &config.aishe.mode);
     let display_model = crate::commands::display_safe(config.active_model());
     cmd.env("AISHE_MODEL", &display_model);

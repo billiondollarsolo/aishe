@@ -13,7 +13,7 @@ pub use backend::{
     SessionRequest, SessionSnapshot, SessionSummary,
 };
 pub use events::{
-    AgentEvent, ApprovalRequest, DiffView, OutputStream, ToolCallView, ToolResultView, UsageDelta,
-    UserFacingError, UserQuestion,
+    AgentEvent, ApprovalRequest, DiffView, OutputStream, TodoItem, ToolCallView, ToolResultView,
+    UsageDelta, UserFacingError, UserQuestion,
 };
 pub use policy::{ExecutionScope, Mode, NetworkPolicy};
