@@ -682,4 +682,97 @@ mod tests {
         assert!(copy_bounded(&mut retry, &target, 4).is_err());
         fs::remove_dir_all(root).unwrap();
     }
+
+    #[cfg(unix)]
+    fn synthetic_archive(root: &Path) -> PathBuf {
+        use flate2::write::GzEncoder;
+        use flate2::Compression;
+
+        fs::create_dir_all(root).unwrap();
+        let path = root.join("opencode-test.tar.gz");
+        let file = File::create(&path).unwrap();
+        let encoder = GzEncoder::new(file, Compression::default());
+        let mut archive = tar::Builder::new(encoder);
+        let script = b"#!/bin/sh\nprintf 'opencode 1.18.9\\n'\n";
+        let mut header = tar::Header::new_gnu();
+        header.set_size(script.len() as u64);
+        header.set_mode(0o755);
+        header.set_cksum();
+        archive
+            .append_data(&mut header, "package/opencode", &script[..])
+            .unwrap();
+        archive.into_inner().unwrap().finish().unwrap();
+        path
+    }
+
+    #[cfg(unix)]
+    fn manager_for_archive(runtime_root: PathBuf, archive: &Path) -> RuntimeManager {
+        let mut manager = RuntimeManager::with_root(runtime_root).unwrap();
+        manager.manifest.assets = vec![RuntimeAsset {
+            platform: RuntimeManifest::platform_key().unwrap().into(),
+            name: archive.file_name().unwrap().to_string_lossy().into_owned(),
+            format: "tar_gz".into(),
+            size: fs::metadata(archive).unwrap().len(),
+            sha256: sha256_file(archive).unwrap(),
+        }];
+        manager
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn failed_force_install_preserves_the_verified_active_runtime() {
+        let root = temp_root("transaction");
+        let source_root = root.join("source");
+        let archive = synthetic_archive(&source_root);
+        let manager = manager_for_archive(root.join("runtime"), &archive);
+        let status = manager
+            .install(InstallSource::Local(archive.clone()), false)
+            .unwrap();
+        assert!(matches!(status, RuntimeStatus::Ready { .. }));
+        let before = fs::read(manager.binary_path()).unwrap();
+
+        let corrupt = source_root.join("corrupt.tar.gz");
+        fs::write(&corrupt, b"truncated").unwrap();
+        let error = manager
+            .install(InstallSource::Local(corrupt), true)
+            .unwrap_err();
+        assert!(error.to_string().contains("size mismatch"));
+        assert_eq!(fs::read(manager.binary_path()).unwrap(), before);
+        assert!(matches!(
+            manager.verify().unwrap(),
+            RuntimeStatus::Ready { .. }
+        ));
+        assert!(fs::read_dir(manager.root()).unwrap().all(|entry| !entry
+            .unwrap()
+            .file_name()
+            .to_string_lossy()
+            .starts_with(".staging-")));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn runtime_gc_removes_only_abandoned_private_staging() {
+        let root = temp_root("gc");
+        let archive = synthetic_archive(&root.join("source"));
+        let manager = manager_for_archive(root.join("runtime"), &archive);
+        fs::create_dir_all(manager.root()).unwrap();
+        let staging = manager.root().join(".staging-deadbeef");
+        let version = manager.root().join("opencode").join("keep-version");
+        fs::create_dir_all(&staging).unwrap();
+        fs::create_dir_all(&version).unwrap();
+
+        assert_eq!(
+            manager.garbage_collect(true).unwrap(),
+            vec![staging.clone()]
+        );
+        assert!(staging.exists());
+        assert_eq!(
+            manager.garbage_collect(false).unwrap(),
+            vec![staging.clone()]
+        );
+        assert!(!staging.exists());
+        assert!(version.exists());
+        fs::remove_dir_all(root).unwrap();
+    }
 }

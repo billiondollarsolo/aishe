@@ -2212,18 +2212,36 @@ fn save_transactional(
 ) -> Result<Option<PathBuf>> {
     let config_path = Config::path();
     let credentials_path = crate::credentials::path();
-    let prior_config = snapshot_file(&config_path)?;
-    let prior_credentials = snapshot_file(&credentials_path)?;
-    let backup = save_with_pending(config, pending)?;
-    let health = if config.backend.engine == "opencode" {
-        crate::backend::supervisor::ensure_running(config).map(|_| ())
-    } else {
-        Ok(())
-    };
-    if let Err(error) = health {
-        let _ = crate::backend::supervisor::request_stop();
-        let config_rollback = restore_file(&config_path, prior_config);
-        let credential_rollback = restore_file(&credentials_path, prior_credentials);
+    let result = transaction_with_rollback(
+        &config_path,
+        &credentials_path,
+        || save_with_pending(config, pending),
+        || {
+            if config.backend.engine == "opencode" {
+                crate::backend::supervisor::ensure_running(config).map(|_| ())
+            } else {
+                Ok(())
+            }
+        },
+    );
+    if result.is_err() {
+        let _ = crate::backend::control::request_stop();
+    }
+    result
+}
+
+fn transaction_with_rollback<T>(
+    config_path: &Path,
+    credentials_path: &Path,
+    persist: impl FnOnce() -> Result<T>,
+    verify: impl FnOnce() -> Result<()>,
+) -> Result<T> {
+    let prior_config = snapshot_file(config_path)?;
+    let prior_credentials = snapshot_file(credentials_path)?;
+    let persisted = persist()?;
+    if let Err(error) = verify() {
+        let config_rollback = restore_file(config_path, prior_config);
+        let credential_rollback = restore_file(credentials_path, prior_credentials);
         match (config_rollback, credential_rollback) {
             (Ok(()), Ok(())) => return Err(error).context("persisted backend health check"),
             (config_result, credential_result) => {
@@ -2242,7 +2260,7 @@ fn save_transactional(
             }
         }
     }
-    Ok(backup)
+    Ok(persisted)
 }
 
 fn snapshot_file(path: &Path) -> Result<Option<Vec<u8>>> {
@@ -2470,5 +2488,61 @@ mod tests {
         assert!(encoded.contains("api_key_env"));
         assert!(!encoded.contains("sk-"));
         assert_eq!(draft.config.version, crate::config::CONFIG_SCHEMA_VERSION);
+    }
+
+    #[test]
+    fn failed_post_apply_verification_restores_exact_prior_files() {
+        let root = std::env::temp_dir().join(format!(
+            "aishe-setup-rollback-{}-{}",
+            std::process::id(),
+            rand::random::<u64>()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let config = root.join("config.toml");
+        let credentials = root.join("credentials.toml");
+        std::fs::write(&config, b"old-config\n").unwrap();
+        std::fs::write(&credentials, b"old-secret-store\n").unwrap();
+
+        let result = transaction_with_rollback(
+            &config,
+            &credentials,
+            || {
+                crate::config::write_atomic(&config, b"new-config\n")?;
+                crate::config::write_atomic(&credentials, b"new-secret-store\n")?;
+                Ok(())
+            },
+            || anyhow::bail!("injected backend health failure"),
+        );
+        assert!(result.unwrap_err().to_string().contains("health check"));
+        assert_eq!(std::fs::read(&config).unwrap(), b"old-config\n");
+        assert_eq!(std::fs::read(&credentials).unwrap(), b"old-secret-store\n");
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn failed_first_apply_removes_new_config_and_credentials() {
+        let root = std::env::temp_dir().join(format!(
+            "aishe-setup-first-rollback-{}-{}",
+            std::process::id(),
+            rand::random::<u64>()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let config = root.join("config.toml");
+        let credentials = root.join("credentials.toml");
+
+        let result = transaction_with_rollback(
+            &config,
+            &credentials,
+            || {
+                crate::config::write_atomic(&config, b"new-config\n")?;
+                crate::config::write_atomic(&credentials, b"new-secret-store\n")?;
+                Ok(())
+            },
+            || anyhow::bail!("injected backend health failure"),
+        );
+        assert!(result.is_err());
+        assert!(!config.exists());
+        assert!(!credentials.exists());
+        std::fs::remove_dir_all(root).unwrap();
     }
 }
