@@ -682,6 +682,33 @@ mod tests {
     }
 
     #[test]
+    fn pinned_openapi_fixture_contains_every_adapter_endpoint() {
+        let fixture: Value = serde_json::from_str(include_str!(
+            "../../../tests/fixtures/opencode/v1.18.9/openapi-contract.json"
+        ))
+        .unwrap();
+        assert_eq!(fixture["info"]["version"], "1.18.9");
+        let paths = fixture["paths"].as_object().unwrap();
+        for (path, method) in [
+            ("/global/health", "get"),
+            ("/global/event", "get"),
+            ("/session", "get"),
+            ("/session", "post"),
+            ("/session/status", "get"),
+            ("/session/{sessionID}", "get"),
+            ("/session/{sessionID}/message", "get"),
+            ("/session/{sessionID}/prompt_async", "post"),
+            ("/session/{sessionID}/abort", "post"),
+            ("/experimental/tool/ids", "get"),
+        ] {
+            assert!(
+                paths.get(path).and_then(|item| item.get(method)).is_some(),
+                "missing {method} {path}"
+            );
+        }
+    }
+
+    #[test]
     fn subscribes_before_prompt_and_maps_a_complete_contract_stream() {
         let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
         let port = listener.local_addr().unwrap().port();

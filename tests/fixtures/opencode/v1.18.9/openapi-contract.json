@@ -1,0 +1,209 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Aishe narrow OpenCode contract",
+    "version": "1.18.9",
+    "description": "Reviewed subset of anomalyco/opencode v1.18.9 used by Aishe. Unknown response fields remain additive."
+  },
+  "x-aishe-source": {
+    "tag": "v1.18.9",
+    "repository": "https://github.com/anomalyco/opencode",
+    "upstream_file": "packages/sdk/openapi.json"
+  },
+  "paths": {
+    "/global/health": {
+      "get": {
+        "operationId": "global.health",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": ["healthy", "version"],
+                  "properties": {
+                    "healthy": {"type": "boolean"},
+                    "version": {"type": "string"}
+                  },
+                  "additionalProperties": true
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/global/event": {
+      "get": {
+        "operationId": "global.event",
+        "responses": {
+          "200": {
+            "content": {
+              "text/event-stream": {
+                "schema": {
+                  "type": "string",
+                  "description": "SSE frames whose data field is a JSON global-event envelope."
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/session": {
+      "get": {
+        "operationId": "session.list",
+        "parameters": [{"$ref": "#/components/parameters/Directory"}],
+        "responses": {"200": {"$ref": "#/components/responses/Json"}}
+      },
+      "post": {
+        "operationId": "session.create",
+        "parameters": [{"$ref": "#/components/parameters/Directory"}],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "title": {"type": "string"},
+                  "agent": {"type": "string"},
+                  "model": {"$ref": "#/components/schemas/Model"}
+                },
+                "additionalProperties": true
+              }
+            }
+          }
+        },
+        "responses": {"200": {"$ref": "#/components/responses/Json"}}
+      }
+    },
+    "/session/status": {
+      "get": {
+        "operationId": "session.status",
+        "parameters": [{"$ref": "#/components/parameters/Directory"}],
+        "responses": {"200": {"$ref": "#/components/responses/Json"}}
+      }
+    },
+    "/session/{sessionID}": {
+      "get": {
+        "operationId": "session.get",
+        "parameters": [
+          {"$ref": "#/components/parameters/SessionID"},
+          {"$ref": "#/components/parameters/Directory"}
+        ],
+        "responses": {
+          "200": {"$ref": "#/components/responses/Json"},
+          "404": {"description": "Session not found"}
+        }
+      }
+    },
+    "/session/{sessionID}/message": {
+      "get": {
+        "operationId": "session.messages",
+        "parameters": [
+          {"$ref": "#/components/parameters/SessionID"},
+          {"$ref": "#/components/parameters/Directory"}
+        ],
+        "responses": {"200": {"$ref": "#/components/responses/Json"}}
+      }
+    },
+    "/session/{sessionID}/prompt_async": {
+      "post": {
+        "operationId": "session.prompt_async",
+        "parameters": [
+          {"$ref": "#/components/parameters/SessionID"},
+          {"$ref": "#/components/parameters/Directory"}
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["model", "agent", "parts"],
+                "properties": {
+                  "messageID": {
+                    "type": "string",
+                    "description": "Optional upstream field. Aishe deliberately omits it so OpenCode creates a monotonic ID."
+                  },
+                  "model": {"$ref": "#/components/schemas/Model"},
+                  "agent": {"type": "string"},
+                  "parts": {
+                    "type": "array",
+                    "minItems": 1,
+                    "items": {
+                      "type": "object",
+                      "required": ["type", "text"],
+                      "properties": {
+                        "type": {"const": "text"},
+                        "text": {"type": "string"}
+                      },
+                      "additionalProperties": true
+                    }
+                  }
+                },
+                "additionalProperties": true
+              }
+            }
+          }
+        },
+        "responses": {"204": {"description": "Prompt admitted"}}
+      }
+    },
+    "/session/{sessionID}/abort": {
+      "post": {
+        "operationId": "session.abort",
+        "parameters": [
+          {"$ref": "#/components/parameters/SessionID"},
+          {"$ref": "#/components/parameters/Directory"}
+        ],
+        "responses": {"204": {"description": "Abort requested"}}
+      }
+    },
+    "/experimental/tool/ids": {
+      "get": {
+        "operationId": "experimental.tool.ids",
+        "parameters": [{"$ref": "#/components/parameters/Directory"}],
+        "responses": {"200": {"$ref": "#/components/responses/Json"}}
+      }
+    }
+  },
+  "components": {
+    "parameters": {
+      "Directory": {
+        "name": "directory",
+        "in": "query",
+        "required": false,
+        "schema": {"type": "string"}
+      },
+      "SessionID": {
+        "name": "sessionID",
+        "in": "path",
+        "required": true,
+        "schema": {"type": "string", "pattern": "^ses_"}
+      }
+    },
+    "schemas": {
+      "Model": {
+        "type": "object",
+        "required": ["providerID", "modelID"],
+        "properties": {
+          "providerID": {"type": "string"},
+          "modelID": {"type": "string"}
+        },
+        "additionalProperties": true
+      }
+    },
+    "responses": {
+      "Json": {
+        "description": "Version-pinned JSON response; adapter validates the fields it consumes and ignores additive fields.",
+        "content": {
+          "application/json": {
+            "schema": {}
+          }
+        }
+      }
+    }
+  }
+}
