@@ -337,7 +337,22 @@ fn run_live_checks(config: &Config) -> (Check, Check, Check, Check) {
     let mut isolated = config.clone();
     isolated.aishe.provider_fallback.clear();
     isolated.aishe.cache = false;
-    let provider = match providers::make(&isolated) {
+    if isolated.backend.engine == "opencode" {
+        return match run_managed_live_checks(&isolated) {
+            Ok(checks) => checks,
+            Err(error) => {
+                let detail =
+                    crate::redact::redact(&format!("managed OpenCode validation failed: {error}"));
+                let failed = || Check::fail(detail.clone(), Some(ErrorKind::Unknown));
+                (failed(), failed(), failed(), failed())
+            }
+        };
+    }
+    run_native_live_checks(&isolated)
+}
+
+fn run_native_live_checks(config: &Config) -> (Check, Check, Check, Check) {
+    let provider = match providers::make(config) {
         Ok(provider) => provider,
         Err(error) => {
             let detail = crate::redact::redact(&error.to_string());
@@ -383,6 +398,216 @@ fn run_live_checks(config: &Config) -> (Check, Check, Check, Check) {
         &mut |delta| received.push_str(delta),
     ));
     (text, structured, tools, streaming)
+}
+
+fn run_managed_live_checks(config: &Config) -> Result<(Check, Check, Check, Check)> {
+    use std::sync::atomic::AtomicBool;
+    use std::sync::Arc;
+
+    use crate::agent::{
+        AgentEvent, BackendSession, ExecutionScope, Mode, NetworkPolicy, PromptRequest, ToolWorker,
+    };
+    use crate::backend::bridge::LeaseRegistration;
+    use crate::backend::control::SupervisorClient;
+    use crate::backend::opencode::OpenCodeClient;
+
+    struct ValidationGuard(PathBuf);
+    impl Drop for ValidationGuard {
+        fn drop(&mut self) {
+            let _ = crate::backend::control::request_stop();
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    let workspace = std::env::temp_dir().join(format!(
+        "aishe-managed-validation-{}-{:032x}",
+        std::process::id(),
+        rand::random::<u128>()
+    ));
+    std::fs::create_dir_all(&workspace)?;
+    crate::config::set_private_dir(&workspace);
+    let _guard = ValidationGuard(workspace.clone());
+
+    let state = crate::backend::supervisor::ensure_running(config)?;
+    let control = SupervisorClient::new(state)?;
+    let client = OpenCodeClient::new(
+        control.opencode_connection(),
+        control.provider_id(),
+        control.model_id(),
+    )?;
+    client.health().context("managed OpenCode health check")?;
+    let session = client.create_session(
+        &workspace,
+        "Aishe setup validation",
+        ExecutionScope::Workspace,
+        NetworkPolicy::Deny,
+    )?;
+    let price = crate::usage::budget_price_for(config.active_model(), &config.pricing);
+    let shell_id = format!("setup_{:032x}", rand::random::<u128>());
+    let resolved = crate::credentials::resolve(active_provider(config))?;
+    let secret = resolved.into_secret();
+
+    let run = |mode: Mode, prompt: &str| -> Result<Vec<AgentEvent>> {
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let worker = ToolWorker::start_silent(
+            control.clone(),
+            LeaseRegistration {
+                aishe_shell_id: shell_id.clone(),
+                backend_session_id: session.id.clone(),
+                workspace: workspace.clone(),
+                mode,
+                scope: ExecutionScope::Workspace,
+                network: NetworkPolicy::Deny,
+                interactive: false,
+                budget_usd: None,
+                price,
+                baseline_spent_usd: 0.0,
+            },
+            config.clone(),
+            cancelled,
+        )?;
+        let (handle, stream) = client.submit(&PromptRequest {
+            session: BackendSession {
+                id: session.id.clone(),
+                workspace: workspace.clone(),
+                backend: "opencode".into(),
+            },
+            text: prompt.into(),
+            mode,
+            max_output_tokens: Some(config.backend.max_output_tokens.clamp(32, 512)),
+        })?;
+        let events = client.read_events(&handle, stream);
+        worker.stop();
+        events
+    };
+
+    let suggest_events = run(
+        Mode::Suggest,
+        "This is setup validation. Answer with the single word setup-ok; do not propose a command.",
+    )
+    .context("managed text/structured/streaming turn")?;
+    ensure_managed_turn_completed(&suggest_events)?;
+    let answer = completed_text(&suggest_events);
+    let usage_present = suggest_events.iter().any(|event| {
+        matches!(
+            event,
+            AgentEvent::Usage { usage }
+                if usage.input_tokens > 0 || usage.output_tokens > 0
+        )
+    });
+    let text = if answer.trim().is_empty() || !usage_present {
+        Check::fail(
+            "managed turn omitted terminal text or authoritative usage",
+            Some(ErrorKind::MalformedResponse),
+        )
+    } else {
+        Check::pass("managed OpenCode text and authoritative usage accepted")
+    };
+    let structured = match crate::modes::extract_json(&answer)
+        .and_then(|json| serde_json::from_str::<Value>(&json).ok())
+    {
+        Some(value)
+            if matches!(
+                value.get("type").and_then(Value::as_str),
+                Some("answer" | "command")
+            ) && value.get("explanation").and_then(Value::as_str).is_some() =>
+        {
+            Check::pass("managed suggest contract returned valid structured output")
+        }
+        _ => Check::fail(
+            "managed suggest response did not satisfy Aishe's structured contract",
+            Some(ErrorKind::UnsupportedFormat),
+        ),
+    };
+    let streaming = if suggest_events
+        .iter()
+        .any(|event| matches!(event, AgentEvent::TextDelta { text } if !text.is_empty()))
+    {
+        Check::pass("managed OpenCode delivered incremental text events")
+    } else {
+        Check::fail(
+            "managed OpenCode completed without an incremental text event",
+            Some(ErrorKind::MalformedResponse),
+        )
+    };
+
+    let tool_events = run(
+        Mode::Auto,
+        "Use aishe_run_command exactly once to run `env`. Then reply setup-ok. Do not use any other tool.",
+    )
+    .context("managed foreground proxy-tool turn")?;
+    ensure_managed_turn_completed(&tool_events)?;
+    let completed_tools = tool_events
+        .iter()
+        .filter_map(|event| match event {
+            AgentEvent::ToolCompleted { result, .. } => Some(result),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    let leaked = secret.as_deref().is_some_and(|secret| {
+        !secret.is_empty()
+            && completed_tools
+                .iter()
+                .any(|result| result.output.contains(secret))
+    });
+    let tools = if leaked {
+        Check::fail(
+            "managed foreground tool environment exposed the provider credential",
+            Some(ErrorKind::Permission),
+        )
+    } else if completed_tools.is_empty() {
+        Check::fail(
+            "managed agent did not complete the requested Aishe proxy-tool round trip",
+            Some(ErrorKind::UnsupportedTools),
+        )
+    } else {
+        Check::pass("managed Aishe proxy tool completed with credential isolation")
+    };
+
+    Ok((text, structured, tools, streaming))
+}
+
+fn active_provider(config: &Config) -> &crate::config::ProviderConfig {
+    if config.aishe.provider == "openai" {
+        &config.providers.openai
+    } else {
+        &config.providers.anthropic
+    }
+}
+
+fn completed_text(events: &[crate::agent::AgentEvent]) -> String {
+    events
+        .iter()
+        .filter_map(|event| match event {
+            crate::agent::AgentEvent::TextCompleted { text } if !text.is_empty() => {
+                Some(text.as_str())
+            }
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn ensure_managed_turn_completed(events: &[crate::agent::AgentEvent]) -> Result<()> {
+    if let Some(error) = events.iter().find_map(|event| match event {
+        crate::agent::AgentEvent::Failed { error } => Some(error),
+        _ => None,
+    }) {
+        anyhow::bail!("{} ({})", error.message, error.code);
+    }
+    if events
+        .iter()
+        .any(|event| matches!(event, crate::agent::AgentEvent::Aborted))
+    {
+        anyhow::bail!("managed validation turn was aborted");
+    }
+    if !events
+        .iter()
+        .any(|event| matches!(event, crate::agent::AgentEvent::Completed { .. }))
+    {
+        anyhow::bail!("managed validation turn did not reach completion");
+    }
+    Ok(())
 }
 
 fn result_check<T>(result: Result<T, ProviderError>) -> Check {
@@ -621,5 +846,47 @@ mod tests {
             .reachability
             .detail
             .contains("credential profile 'test-missing-capability' is unavailable"));
+    }
+
+    #[test]
+    fn managed_validation_requires_an_explicit_terminal_completion() {
+        assert!(ensure_managed_turn_completed(&[
+            crate::agent::AgentEvent::Connected,
+            crate::agent::AgentEvent::Completed {
+                summary: String::new(),
+            },
+        ])
+        .is_ok());
+        assert!(ensure_managed_turn_completed(&[crate::agent::AgentEvent::Connected]).is_err());
+        assert!(
+            ensure_managed_turn_completed(&[crate::agent::AgentEvent::Failed {
+                error: crate::agent::UserFacingError {
+                    code: "invalid_model".into(),
+                    message: "model rejected".into(),
+                    retryable: false,
+                },
+            }])
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn managed_validation_collects_only_completed_text() {
+        let events = [
+            crate::agent::AgentEvent::TextDelta {
+                text: "partial".into(),
+            },
+            crate::agent::AgentEvent::TextCompleted {
+                text: "{\"type\":\"answer\",\"command\":\"\",\"explanation\":\"setup-ok\"}".into(),
+            },
+        ];
+        let text = completed_text(&events);
+        assert!(!text.contains("partial"));
+        assert_eq!(
+            crate::modes::extract_json(&text)
+                .and_then(|json| serde_json::from_str::<Value>(&json).ok())
+                .and_then(|value| value.get("explanation").cloned()),
+            Some(Value::String("setup-ok".into()))
+        );
     }
 }

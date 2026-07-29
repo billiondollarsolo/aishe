@@ -504,6 +504,48 @@ def assert_runtime_contract(binary, runtime_dir):
                         persisted += path.read_bytes()
             if CANARY.encode() in persisted:
                 raise AssertionError("provider credential leaked into persisted Aishe/OpenCode state")
+
+            validation = run(
+                binary,
+                env,
+                workspace,
+                "setup",
+                "--verify",
+                "--live",
+                "--json",
+                timeout=120,
+            )
+            validation_report = json.loads(validation.stdout)
+            provider_report = validation_report.get("provider", {})
+            for check in ("text", "structured", "tools", "streaming"):
+                state = provider_report.get(check, {}).get("state")
+                if state != "pass":
+                    raise AssertionError(
+                        f"managed setup validation {check} did not pass: "
+                        f"{json.dumps(validation_report, indent=2)}"
+                    )
+            if validation_report.get("backend") != "opencode":
+                raise AssertionError(
+                    f"setup certified the wrong backend: {validation_report}"
+                )
+            with STATE.lock:
+                validation_requests = list(STATE.requests[3:])
+            if len(validation_requests) != 3:
+                raise AssertionError(
+                    "managed setup validation did not use the expected "
+                    f"structured + proxy-tool loop: {len(validation_requests)} request(s)"
+                )
+            if tool_names(validation_requests[0]):
+                raise AssertionError("managed setup suggest validation exposed tools")
+            if "aishe_run_command" not in tool_names(validation_requests[1]):
+                raise AssertionError("managed setup tool validation omitted Aishe proxies")
+            validation_tool_results = json.dumps(
+                tool_result_messages(validation_requests[2])
+            )
+            if CANARY in validation_tool_results:
+                raise AssertionError(
+                    "managed setup validation leaked the provider credential"
+                )
         finally:
             subprocess.run(
                 [binary, "backend", "stop"],

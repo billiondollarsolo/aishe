@@ -35,6 +35,28 @@ impl ToolWorker {
         config: Config,
         cancel: Arc<AtomicBool>,
     ) -> Result<Self> {
+        Self::start_with_output(client, registration, config, cancel, true)
+    }
+
+    /// Start a validation worker without echoing model-requested commands or
+    /// their output to stdout. This keeps `setup --json` machine-readable while
+    /// retaining the same policy, sandbox, audit, and credential isolation.
+    pub fn start_silent(
+        client: SupervisorClient,
+        registration: LeaseRegistration,
+        config: Config,
+        cancel: Arc<AtomicBool>,
+    ) -> Result<Self> {
+        Self::start_with_output(client, registration, config, cancel, false)
+    }
+
+    fn start_with_output(
+        client: SupervisorClient,
+        registration: LeaseRegistration,
+        config: Config,
+        cancel: Arc<AtomicBool>,
+        stream_output: bool,
+    ) -> Result<Self> {
         let denied_environment = sensitive_environment_names(&config);
         let identity = client.register(&registration)?;
         let stop = Arc::new(AtomicBool::new(false));
@@ -66,6 +88,7 @@ impl ToolWorker {
                                 &mut approvals,
                                 &cancel,
                                 &denied_environment,
+                                stream_output,
                             );
                             let completion = ToolCompletion {
                                 lease_id: worker_identity.lease_id.clone(),
@@ -157,6 +180,7 @@ fn execute(
     approvals: &mut HashSet<String>,
     cancel: &Arc<AtomicBool>,
     denied_environment: &HashSet<String>,
+    stream_output: bool,
 ) -> ExecutionResult {
     if cancel.load(Ordering::SeqCst) {
         return failure("Agent tool execution was cancelled before it started.");
@@ -169,7 +193,7 @@ fn execute(
         return failure("Agent tool execution was cancelled before it started.");
     }
     let result = match work.tool.as_str() {
-        "run_command" => run_command(&work, cancel, denied_environment),
+        "run_command" => run_command(&work, cancel, denied_environment, stream_output),
         "read_file" | "write_file" | "edit_file" | "list_dir" => run_file_tool(&work),
         "search_files" => search_files(&work, denied_environment, cancel),
         "fetch_url" => fetch_url(&work, cancel),
@@ -385,6 +409,7 @@ fn run_command(
     work: &ToolWork,
     cancel: &Arc<AtomicBool>,
     denied_environment: &HashSet<String>,
+    stream_output: bool,
 ) -> ExecutionResult {
     let command = work
         .args
@@ -426,7 +451,9 @@ fn run_command(
         .and_then(Value::as_bool)
         .unwrap_or(false)
         || command_requires_interactive_terminal(command);
-    println!("  → {}", crate::commands::display_safe(command));
+    if stream_output {
+        println!("  → {}", crate::commands::display_safe(command));
+    }
     let (code, output) = if interactive {
         if !work.interactive || !std::io::stdin().is_terminal() || !std::io::stdout().is_terminal()
         {
@@ -434,10 +461,12 @@ fn run_command(
                 "This command requires a foreground terminal. Resume the session from an interactive Aishe shell and try again.",
             );
         }
-        println!("  ↳ attached interactive terminal (Ctrl-C interrupts the child)");
-        executor.run_interactive_captured(command, Duration::from_secs(timeout), true)
+        if stream_output {
+            println!("  ↳ attached interactive terminal (Ctrl-C interrupts the child)");
+        }
+        executor.run_interactive_captured(command, Duration::from_secs(timeout), stream_output)
     } else {
-        executor.run_captured(command, Duration::from_secs(timeout), true)
+        executor.run_captured(command, Duration::from_secs(timeout), stream_output)
     };
     ExecutionResult {
         success: code == 0,
@@ -1033,6 +1062,7 @@ mod tests {
             &mut approvals,
             &cancel,
             &HashSet::new(),
+            false,
         );
         assert!(!result.success);
         assert!(result.output.contains("cancelled"));
