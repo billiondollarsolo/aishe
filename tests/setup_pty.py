@@ -256,12 +256,16 @@ def settings_are_transactional(root, env, config):
         apply.expect("Choose a section")
         apply.menu(2)  # shell/history/status
         apply.expect("Shell, history & statusline")
-        apply.menu(4)  # placement
+        apply.menu(4)  # hook timeout
+        apply.expect("AI hook timeout seconds")
+        apply.line("75")
+        apply.expect("Shell, history & statusline")
+        apply.menu(5)  # placement
         apply.expect("Statusline placement")
         apply.menu(1)  # right
         apply.expect("preview (right)")
         apply.expect("Shell, history & statusline")
-        apply.menu(7)  # back
+        apply.menu(8)  # back
         apply.expect("Choose a section")
         apply.menu(8)  # review/apply
         apply.expect("Apply these settings")
@@ -274,6 +278,8 @@ def settings_are_transactional(root, env, config):
     text = open(config, encoding="utf-8").read()
     if 'status_line_position = "right"' not in text:
         raise AssertionError("settings did not apply selected placement")
+    if "hook_timeout_secs = 75" not in text:
+        raise AssertionError("settings did not apply selected hook timeout")
     print("  ok   settings provider cancel is transactional; reviewed apply works")
 
 
