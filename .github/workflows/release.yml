@@ -29,23 +29,52 @@ jobs:
       version: ${{ steps.ver.outputs.version }}
       tag: ${{ steps.ver.outputs.tag }}
     steps:
+      - uses: actions/checkout@v4
+
       - name: Determine version and tag
         id: ver
         shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          REF_NAME: ${{ github.ref_name }}
+          REQUESTED_VERSION: ${{ inputs.version }}
         run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            v="${{ inputs.version }}"
+          set -euo pipefail
+          if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+            v="$REQUESTED_VERSION"
           else
-            v="${GITHUB_REF_NAME#v}"
+            v="${REF_NAME#v}"
+          fi
+          manifest_version="$(
+            awk '
+              $0 == "[package]" { in_package=1; next }
+              in_package && /^\[/ { exit }
+              in_package && /^version[[:space:]]*=/ {
+                value=$0
+                sub(/^[^"]*"/, "", value)
+                sub(/".*$/, "", value)
+                print value
+                exit
+              }
+            ' Cargo.toml
+          )"
+          if [ -z "$v" ] || [ "$v" != "$manifest_version" ]; then
+            echo "release version '$v' does not match Cargo.toml '$manifest_version'" >&2
+            exit 1
+          fi
+          if ! grep -F "## [$v]" CHANGELOG.md >/dev/null; then
+            echo "CHANGELOG.md has no release heading for $v" >&2
+            exit 1
           fi
           echo "version=$v" >> "$GITHUB_OUTPUT"
           echo "tag=v$v" >> "$GITHUB_OUTPUT"
 
-      - name: Create the release and tag
+      - name: Create the draft release and tag
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.ver.outputs.tag }}
           name: ${{ steps.ver.outputs.tag }}
+          draft: true
           append_body: false
           body: |
             aishe ${{ steps.ver.outputs.tag }}
@@ -106,11 +135,11 @@ jobs:
 
       - name: Build release binary (zig cross)
         if: matrix.builder == 'zig'
-        run: cargo zigbuild --release --target ${{ matrix.target }}
+        run: cargo zigbuild --release --locked --target ${{ matrix.target }}
 
       - name: Build release binary (native)
         if: matrix.builder == 'native'
-        run: cargo build --release --target ${{ matrix.target }}
+        run: cargo build --release --locked --target ${{ matrix.target }}
 
       - name: Package tarball + checksum
         run: |
@@ -208,3 +237,14 @@ jobs:
             dist/*.rpm
             dist/*.deb.sha256
             dist/*.rpm.sha256
+
+  publish:
+    name: publish complete release
+    needs: [create_release, build, package]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Publish only after every artifact is uploaded
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.create_release.outputs.tag }}
+        run: gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --draft=false

@@ -18,6 +18,7 @@ Usage: real_model.py [path-to-aishe]
 
 import os
 import re
+import shutil
 import sys
 import time
 import datetime
@@ -146,6 +147,7 @@ def main():
         f.write("\n".join(lines) + "\n")
     sys.stdout.write("report: %s\n%d/%d classified as expected\n"
                      % (os.path.relpath(path, REPO_ROOT), passed, total))
+    shutil.rmtree(home, ignore_errors=True)
     # Hard-fail only on parse errors or a large miss; minor model misclassification
     # is informative, not a build breaker.
     sys.exit(0 if passed >= int(total * 0.8) else 1)

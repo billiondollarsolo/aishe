@@ -15,13 +15,12 @@ export OPENAI_API_KEY=sk-...             # OpenAI (or any OpenAI-compatible key)
 
 For Groq, Ollama, OpenRouter, and others, see [Providers](providers.md).
 
-## 2. First run and the wizard
+## 2. Run guided setup
 
-The first time you start aishe with no config present, an interactive wizard
-writes `config.toml` into aishe's config directory:
+Run the interactive, resumable setup before starting your first shell:
 
 ```sh
-aishe
+aishe setup
 ```
 
 That directory is `~/.config/aishe/` on Linux but
@@ -34,22 +33,35 @@ their Linux form for brevity.
 
 It asks for:
 
-- the provider (anthropic or openai-compatible),
+- the provider/service and safety profile,
 - for an OpenAI-compatible provider, the **service** (OpenAI, Groq, OpenRouter,
   Together, Ollama, or a custom endpoint) and the **API endpoint (base URL)**,
   pre-filled from the chosen service,
 - the environment variable that holds your API key,
-- the model,
-- the default mode.
+- the model and API transport,
+- per-million-token input/output prices when that exact model has no known price,
+- status-line position and contents, and
+- optional live verification and a configuration review before saving.
 
 The endpoint prompt is what lets you point at Groq, Ollama, or any other
 OpenAI-compatible service instead of OpenAI; pick the service and the base URL
-and model are filled in for you (editable). When aishe is not run from a
-terminal (a hook, a pipe, CI), the wizard is skipped and a default config is
-written instead, so it never blocks.
+and model are filled in for you (editable). Setup writes nothing until you apply
+the review. If interrupted, rerun `aishe setup --resume`; use `--restart` to
+discard only its draft. In a pipe or CI, setup exits instead of inventing
+defaults; use `aishe setup --non-interactive` with explicit flags.
 
-You can re-run any of these later with the meta commands, or edit the config file
-directly. A fully annotated example config is at
+Setup does not and cannot activate aishe in the parent shell that launched it.
+After setup, run:
+
+```sh
+aishe
+```
+
+That launches your real interactive zsh under aishe. Alternatively, install the
+native hook printed by `aishe init zsh`. You can revisit settings with `aishe
+settings`, rerun setup, or edit the config file directly. Existing configs,
+history, task records, and other state are preserved by binary upgrades. A fully
+annotated example config is at
 [examples/config.toml](../examples/config.toml).
 
 ## 3. Run real commands
@@ -108,17 +120,25 @@ Sometimes a request happens to start with a real command name (for example
 - `?<text>` forces natural-language: `?find all large files`
 - `!<cmd>` forces shell and skips the safety gate: `!rm -rf build`
 
+The built-in highlighter uses the same full-line routing grammar. Thus
+`what --version` stays green as a command, while `what is the capital of France?`
+changes to the natural-language color even if a binary named `what` exists.
+Ambiguous phrasing cannot be perfect, so `?` and `!` remain the explicit escape
+hatches.
+
 After a command fails, type `?` alone on the next line to ask the model to
 diagnose the error.
 
 ## 7. Check your setup any time
 
 ```sh
-aishe doctor
+aishe doctor --probe
 ```
 
 This reports your backing shell, config path, resolved front-end, provider, and
-whether the API key is set.
+whether the API key is set. Add `--live` for minimal text, structured-output,
+tool, and streaming calls; `--json` for automation; `--fix` for safe local
+repairs; or `--bundle PATH` for a redacted support bundle.
 
 ## Where to go next
 

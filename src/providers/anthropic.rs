@@ -23,7 +23,7 @@ pub struct AnthropicProvider {
 impl AnthropicProvider {
     pub fn new(base_url: String, api_key: String, model: String) -> Self {
         Self {
-            base_url: base_url.trim_end_matches('/').to_string(),
+            base_url: crate::provider_catalog::normalize_base_url(&base_url),
             api_key,
             model,
             meter: Arc::new(UsageMeter::default()),
@@ -474,5 +474,15 @@ mod tests {
         assert_eq!(c.text.as_deref(), Some("let me check"));
         assert_eq!(c.tool_calls.len(), 1);
         assert_eq!(c.tool_calls[0].name, "run_command");
+    }
+
+    #[test]
+    fn versioned_base_url_does_not_duplicate_the_api_prefix() {
+        let provider = AnthropicProvider::new(
+            "https://api.anthropic.com/v1/".into(),
+            "test".into(),
+            "claude-test".into(),
+        );
+        assert_eq!(provider.endpoint(), "https://api.anthropic.com/v1/messages");
     }
 }

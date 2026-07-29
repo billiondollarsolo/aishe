@@ -2,7 +2,7 @@
 //! delegated to `zsh -c` (fallback `bash -c`). A handful of builtins that must
 //! mutate persistent shell state (`cd`, `export`, …) are intercepted in-process.
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::io::{BufRead, BufReader, Read, Write};
 use std::os::unix::process::{CommandExt, ExitStatusExt};
 use std::path::{Path, PathBuf};
@@ -185,6 +185,36 @@ impl Executor {
     /// Point the `history` builtin at the timestamped history log.
     pub fn set_history_log(&mut self, path: PathBuf) {
         self.history_log = Some(path);
+    }
+
+    /// Newest command context across this process and the persistent Aishe log.
+    ///
+    /// PTY natural-language turns run in short-lived child processes, so their
+    /// in-memory queue is normally empty. Reading the same bounded history file
+    /// used by `history` lets context reflect commands from the parent zsh and
+    /// prior child processes. In-memory entries win and duplicates are removed.
+    pub fn context_history(&self, limit: usize) -> Vec<(String, Option<i32>)> {
+        let mut result = Vec::with_capacity(limit);
+        let mut seen = HashSet::new();
+        for (command, code) in self.history.iter().rev() {
+            if seen.insert(command.clone()) {
+                result.push((command.clone(), Some(*code)));
+                if result.len() == limit {
+                    return result;
+                }
+            }
+        }
+        if let Some(path) = &self.history_log {
+            for (_, command) in crate::histlog::read(path).into_iter().rev() {
+                if seen.insert(command.clone()) {
+                    result.push((command, None));
+                    if result.len() == limit {
+                        break;
+                    }
+                }
+            }
+        }
+        result
     }
 
     pub fn shell(&self) -> &PathBuf {
@@ -1453,6 +1483,35 @@ mod tests {
             "history log should contain the cd command, got: {entries:?}"
         );
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn context_history_merges_memory_and_persistent_entries_newest_first() {
+        let log = std::env::temp_dir().join(format!(
+            "aishe-context-history-{}-{:?}.ext",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        std::fs::write(
+            &log,
+            ": 1:0;echo oldest\n: 2:0;git status\n: 3:0;echo duplicate\n",
+        )
+        .unwrap();
+        let mut executor = Executor::new().unwrap();
+        executor.set_history_log(log.clone());
+        executor.history.push_back(("echo duplicate".into(), 7));
+        executor.history.push_back(("pwd".into(), 0));
+
+        assert_eq!(
+            executor.context_history(4),
+            vec![
+                ("pwd".into(), Some(0)),
+                ("echo duplicate".into(), Some(7)),
+                ("git status".into(), None),
+                ("echo oldest".into(), None),
+            ]
+        );
+        std::fs::remove_file(log).ok();
     }
 
     #[test]

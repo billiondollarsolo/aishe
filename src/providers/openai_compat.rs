@@ -26,6 +26,7 @@ pub struct OpenAiProvider {
     token_limit_known: AtomicU8,
     token_limit_cache: Option<PathBuf>,
     transport: ApiTransport,
+    reasoning_effort: String,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -36,8 +37,25 @@ enum ApiTransport {
 
 impl OpenAiProvider {
     pub fn new(base_url: String, api_key: String, model: String) -> Self {
+        Self::with_options(base_url, api_key, model, "auto", "auto")
+    }
+
+    /// Construct from user configuration. Keeping transport and reasoning here
+    /// makes runtime requests, setup validation, and Doctor share one policy.
+    pub fn with_options(
+        base_url: String,
+        api_key: String,
+        model: String,
+        transport: &str,
+        reasoning_effort: &str,
+    ) -> Self {
+        let base_url = crate::provider_catalog::normalize_base_url(&base_url);
         let token_limit_cache = token_limit_cache_path(&base_url, &model);
-        Self::with_token_limit_cache(base_url, api_key, model, token_limit_cache)
+        let mut provider =
+            Self::with_token_limit_cache(base_url, api_key, model, token_limit_cache);
+        provider.transport = ApiTransport::resolve(&provider.base_url, transport);
+        provider.reasoning_effort = normalize_reasoning_effort(reasoning_effort);
+        provider
     }
 
     fn with_token_limit_cache(
@@ -46,6 +64,7 @@ impl OpenAiProvider {
         model: String,
         token_limit_cache: Option<PathBuf>,
     ) -> Self {
+        let base_url = crate::provider_catalog::normalize_base_url(&base_url);
         let stored = token_limit_cache
             .as_deref()
             .and_then(load_token_limit_param);
@@ -64,6 +83,7 @@ impl OpenAiProvider {
             token_limit_known: AtomicU8::new(u8::from(stored.is_some())),
             token_limit_cache,
             transport,
+            reasoning_effort: "auto".to_string(),
         }
     }
 
@@ -146,6 +166,10 @@ impl OpenAiProvider {
             "messages": Self::build_messages(system, messages),
         });
         body[token_limit_param.name()] = json!(MAX_TOKENS);
+        let effort = self.effective_chat_reasoning(!tools.is_empty());
+        if effort != "auto" {
+            body["reasoning_effort"] = json!(effort);
+        }
         if !tools.is_empty() {
             let tool_defs: Vec<Value> = tools
                 .iter()
@@ -230,7 +254,11 @@ impl OpenAiProvider {
             "instructions": system,
             "input": Self::build_responses_input(messages),
             "max_output_tokens": MAX_TOKENS,
+            "store": false,
         });
+        if self.reasoning_effort != "auto" {
+            body["reasoning"] = json!({"effort": self.reasoning_effort});
+        }
         if !tools.is_empty() {
             body["tools"] = Value::Array(
                 tools
@@ -345,10 +373,10 @@ impl OpenAiProvider {
         sink: &mut dyn FnMut(&str),
     ) -> Result<Completion, ProviderError> {
         let auth = format!("Bearer {}", self.api_key);
-        let headers = [
-            ("Authorization", auth.as_str()),
-            ("content-type", "application/json"),
-        ];
+        let mut headers = vec![("content-type", "application/json")];
+        if !self.api_key.is_empty() {
+            headers.push(("Authorization", auth.as_str()));
+        }
         let mut current_format = format.clone();
         let response = loop {
             let mut body = self.build_responses_body(system, messages, tools, &current_format);
@@ -412,6 +440,34 @@ impl OpenAiProvider {
         TokenLimitParam::from_u8(self.token_limit_param.load(Ordering::Relaxed))
     }
 
+    /// Chat Completions cannot combine GPT-5.6 function tools with reasoning.
+    /// In auto mode the compatibility transport therefore resolves to `none`;
+    /// an explicit incompatible effort is rejected before a network request.
+    fn effective_chat_reasoning(&self, has_tools: bool) -> &str {
+        if has_tools && is_gpt_5_6(&self.model) && self.reasoning_effort == "auto" {
+            "none"
+        } else {
+            &self.reasoning_effort
+        }
+    }
+
+    fn validate_chat_tools(&self, tools: &[ToolDef]) -> Result<(), ProviderError> {
+        if !tools.is_empty()
+            && is_gpt_5_6(&self.model)
+            && !matches!(self.reasoning_effort.as_str(), "auto" | "none")
+        {
+            return Err(ProviderError::Api {
+                status: 0,
+                message: format!(
+                    "{} cannot use reasoning effort '{}' with function tools through \
+                     Chat Completions; choose transport='responses' or reasoning_effort='none'",
+                    self.model, self.reasoning_effort
+                ),
+            });
+        }
+        Ok(())
+    }
+
     /// Switch to the alternate token-limit spelling after the endpoint rejects
     /// the one used by this request. The choice is only persisted after a later
     /// request succeeds, so a transient or misleading error cannot poison the
@@ -447,6 +503,11 @@ impl OpenAiProvider {
         if let Some(parent) = path.parent() {
             if std::fs::create_dir_all(parent).is_err() {
                 return;
+            }
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let _ = std::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o700));
             }
         }
         let _ = crate::config::write_atomic(path, accepted.name().as_bytes());
@@ -586,6 +647,7 @@ impl Provider for OpenAiProvider {
             let response = self.post_responses(&body)?;
             return Self::parse_responses_completion(&response);
         }
+        self.validate_chat_tools(tools)?;
 
         let mut token_limit_switched = false;
         loop {
@@ -628,12 +690,13 @@ impl Provider for OpenAiProvider {
                 sink,
             );
         }
+        self.validate_chat_tools(tools)?;
 
         let auth = format!("Bearer {}", self.api_key);
-        let headers = [
-            ("Authorization", auth.as_str()),
-            ("content-type", "application/json"),
-        ];
+        let mut headers = vec![("content-type", "application/json")];
+        if !self.api_key.is_empty() {
+            headers.push(("Authorization", auth.as_str()));
+        }
         let mut token_limit_switched = false;
         let resp = loop {
             let (mut body, token_limit_param) =
@@ -749,10 +812,10 @@ impl Provider for OpenAiProvider {
         }
 
         let auth = format!("Bearer {}", self.api_key);
-        let headers = [
-            ("Authorization", auth.as_str()),
-            ("content-type", "application/json"),
-        ];
+        let mut headers = vec![("content-type", "application/json")];
+        if !self.api_key.is_empty() {
+            headers.push(("Authorization", auth.as_str()));
+        }
         let mut fmt = format.clone();
         let mut token_limit_switched = false;
         let resp = loop {
@@ -860,6 +923,28 @@ fn is_official_openai_base_url(base_url: &str) -> bool {
 enum TokenLimitParam {
     MaxTokens = 0,
     MaxCompletionTokens = 1,
+}
+
+impl ApiTransport {
+    fn resolve(base_url: &str, configured: &str) -> Self {
+        match configured.trim().to_ascii_lowercase().as_str() {
+            "responses" => Self::Responses,
+            "chat" | "chat_completions" | "chat-completions" => Self::ChatCompletions,
+            _ if is_official_openai_base_url(base_url) => Self::Responses,
+            _ => Self::ChatCompletions,
+        }
+    }
+}
+
+fn normalize_reasoning_effort(value: &str) -> String {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "none" | "low" | "medium" | "high" | "xhigh" | "max" => value.trim().to_ascii_lowercase(),
+        _ => "auto".to_string(),
+    }
+}
+
+fn is_gpt_5_6(model: &str) -> bool {
+    model.trim().to_ascii_lowercase().starts_with("gpt-5.6")
 }
 
 impl TokenLimitParam {
@@ -989,11 +1074,11 @@ fn post_with_retry(url: &str, api_key: &str, body: &Value) -> Result<Value, Prov
         let agent = ureq::AgentBuilder::new()
             .timeout(std::time::Duration::from_secs(HTTP_TIMEOUT_SECS))
             .build();
-        let result = agent
-            .post(url)
-            .set("Authorization", &format!("Bearer {api_key}"))
-            .set("content-type", "application/json")
-            .send_json(body.clone());
+        let mut request = agent.post(url).set("content-type", "application/json");
+        if !api_key.is_empty() {
+            request = request.set("Authorization", &format!("Bearer {api_key}"));
+        }
+        let result = request.send_json(body.clone());
 
         match result {
             Ok(resp) => {
@@ -1146,8 +1231,26 @@ mod tests {
         assert!(body.get("max_tokens").is_none());
         assert!(body.get("max_completion_tokens").is_none());
         assert!(body.get("reasoning_effort").is_none());
+        assert_eq!(body["store"], false);
         assert_eq!(body["instructions"], "SYS");
         assert_eq!(body["input"][0]["role"], "user");
+    }
+
+    #[test]
+    fn versioned_official_base_url_is_canonicalized_before_transport_resolution() {
+        let provider = OpenAiProvider::with_options(
+            "https://api.openai.com/v1/".into(),
+            "test".into(),
+            "gpt-5.6-luna".into(),
+            "auto",
+            "auto",
+        );
+        assert_eq!(provider.base_url, "https://api.openai.com");
+        assert_eq!(provider.transport, ApiTransport::Responses);
+        assert_eq!(
+            provider.responses_endpoint(),
+            "https://api.openai.com/v1/responses"
+        );
     }
 
     #[test]
@@ -1160,6 +1263,63 @@ mod tests {
         );
         assert_eq!(provider.transport, ApiTransport::ChatCompletions);
         assert!(provider.chat_endpoint().ends_with("/v1/chat/completions"));
+    }
+
+    #[test]
+    fn responses_reasoning_uses_nested_effort_and_never_chat_field() {
+        let provider = OpenAiProvider::with_options(
+            "https://api.openai.com".into(),
+            "k".into(),
+            "gpt-5.6-luna".into(),
+            "responses",
+            "high",
+        );
+        let body = provider.build_responses_body(
+            "SYS",
+            &[Msg::User("hi".into())],
+            &[],
+            &ResponseFormat::Text,
+        );
+        assert_eq!(body["reasoning"]["effort"], "high");
+        assert!(body.get("reasoning_effort").is_none());
+        assert!(body.get("max_tokens").is_none());
+        assert_eq!(body["store"], false);
+    }
+
+    #[test]
+    fn gpt_5_6_chat_tools_auto_uses_none_but_explicit_reasoning_fails_preflight() {
+        let tools = [ToolDef {
+            name: "run_command".into(),
+            description: "run".into(),
+            schema: json!({"type": "object"}),
+        }];
+        let auto = OpenAiProvider::with_options(
+            "https://compatible.example".into(),
+            "k".into(),
+            "gpt-5.6-luna".into(),
+            "chat",
+            "auto",
+        );
+        let (body, _) = auto.build_chat_body(
+            "SYS",
+            &[Msg::User("hi".into())],
+            &tools,
+            &ResponseFormat::Text,
+        );
+        assert_eq!(body["reasoning_effort"], "none");
+
+        let explicit = OpenAiProvider::with_options(
+            "https://compatible.example".into(),
+            "k".into(),
+            "gpt-5.6-luna".into(),
+            "chat",
+            "high",
+        );
+        let error = explicit
+            .complete_with_tools("SYS", &[Msg::User("hi".into())], &tools)
+            .unwrap_err();
+        assert_eq!(error.kind(), crate::providers::ErrorKind::UnsupportedTools);
+        assert!(error.to_string().contains("transport='responses'"));
     }
 
     #[test]

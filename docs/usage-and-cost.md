@@ -4,14 +4,27 @@ aishe meters every model call so you can see what a session costs and cap it.
 
 ## What you see
 
-After each model interaction, aishe prints a dim line like:
+The interactive shell keeps a live status display. By default it appears in the
+right prompt and shows the model, mode, session cost, and request count. You can
+place it under the prompt or turn it off, and choose its ordered fields during
+setup or in `aishe settings`.
 
 ```
   436 in · 119 out · 1 req · ~$0.0001
 ```
 
-This is that call's input tokens, output tokens, number of requests, and the
-estimated cost. Turn it off with:
+Available fields are `model`, `mode`, `last_tokens`, `last_cost`,
+`session_tokens`, `session_cost`, and `requests`. A detailed status can render:
+
+```
+gpt-5.6-luna · suggest · last 1,697/374 tok · last cost n/a ·
+session 3,400/712 tok · session cost n/a · 2 reqs
+```
+
+The display refreshes after each call. `right` preserves the compact shell-like
+layout; `below` is better for narrow terminals or detailed metrics; `off` hides
+it. `show_usage = false` disables usage output, while
+`status_line_position = "off"` hides only the live prompt line.
 
 ```toml
 [aishe]
@@ -52,7 +65,16 @@ only.
 
 Cost is derived from token counts and a price table in USD per 1M tokens. aishe
 ships a built-in table covering common Claude and GPT models plus a few others.
-You can override or add any model in `[pricing]`:
+Setup asks for input and output prices whenever the selected exact model has no
+known price. You can inspect and manage overrides later:
+
+```sh
+aishe price list
+aishe price set gpt-5.6-luna --input 1.25 --output 10.00
+aishe price remove gpt-5.6-luna
+```
+
+Or override/add a model directly in `[pricing]`:
 
 ```toml
 [pricing."openai/gpt-oss-120b"]
@@ -62,8 +84,8 @@ output = 0.60
 
 Lookup order for a model's price:
 
-1. an exact key match in `[pricing]`,
-2. a substring match in `[pricing]`,
+1. an exact key match in `[pricing]` (what `aishe price set` writes),
+2. a legacy substring match in `[pricing]`,
 3. the built-in table,
 4. otherwise unknown.
 

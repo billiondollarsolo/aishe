@@ -6,13 +6,12 @@ the front-end deterministically), this drives a *real* model with a generated,
 varied, adversarial set of natural-language **inputs** and checks the invariants
 that don't depend on the model's (non-deterministic) output:
 
-  * aishe never crashes or panics (rc is 0 or 1, never 101 / a signal),
+  * aishe never crashes or panics (rc follows the documented 0/20 contract),
   * no `parse error` / `(eval)` / Rust panic ever leaks,
-  * the suggested command on stdout is either empty (an answer) or *syntactically
-    valid* shell (`zsh -n`),
-  * `--auto-line` greenlights (exit 0 with a command on stdout) only commands the
-    safety gate would not flag — a model that returns something destructive must
-    be held back (non-zero, for review), even under prompt-injection inputs.
+  * every response is valid `aishe suggest --json` output,
+  * suggested commands are syntactically valid shell (`zsh -n`),
+  * the JSON risk and process exit code agree: safe/answer is 0 while dangerous
+    or unknown commands are held for review with 20.
 
 Real models bring rate limits and cost, so this runs a few dozen cases by default
 (scale it up with the multiplier arg), with a small inter-call delay and one
@@ -25,7 +24,9 @@ retry. Configured entirely via the environment; no key is written to the repo:
 Usage: real_fuzz.py [path-to-aishe] [scale]   Writes test-results/real-fuzz-<ts>.md
 """
 
+import json
 import os
+import shutil
 import sys
 import time
 import random
@@ -126,16 +127,38 @@ def run_one(home, prompt):
         "XDG_DATA_HOME": os.path.join(home, ".local", "share"),
         "AISHE_REALTEST_KEY": KEY,
     })
-    # One retry on transport hiccup / rate limit.
+    # One retry on a timeout, rate limit, or transient provider failure. Safety
+    # rejections and model classifications are never retried.
     for attempt in range(2):
         try:
-            p = subprocess.run([os.path.abspath(BINARY), "--auto-line", prompt],
+            p = subprocess.run([os.path.abspath(BINARY), "suggest", "--json", prompt],
                                env=env, capture_output=True, text=True, timeout=60)
-            return p.stdout.strip(), p.stderr.strip(), p.returncode
         except subprocess.TimeoutExpired:
+            if attempt == 0:
+                time.sleep(2.0)
+                continue
             return "", "TIMEOUT", -1
-        if attempt == 0:
+        combined = (p.stdout + "\n" + p.stderr).lower()
+        transient = (
+            p.returncode == 1
+            and any(
+                marker in combined
+                for marker in (
+                    "status 429",
+                    "status 500",
+                    "status 502",
+                    "status 503",
+                    "status 504",
+                    "rate limit",
+                    "timed out",
+                    "temporarily unavailable",
+                )
+            )
+        )
+        if transient and attempt == 0:
             time.sleep(2.0)
+            continue
+        return p.stdout.strip(), p.stderr.strip(), p.returncode
     return "", "RETRY_FAILED", -1
 
 
@@ -156,7 +179,6 @@ def main():
     for kind, prompt in cases:
         out, err, rc = run_one(home, prompt)
         combined = (out + "\n" + err)
-        # Invariants (response-independent).
         problems = []
         if rc == 101 or "panicked" in combined.lower():
             problems.append("panic")
@@ -164,20 +186,40 @@ def main():
             problems.append("crash/timeout")
         if "parse error" in combined or "(eval)" in combined:
             problems.append("parse/eval leak")
-        if not syntax_ok(out):
-            problems.append("invalid command syntax")
-        # Safety: a greenlit (rc==0) command must not be one the gate would flag.
-        # We can't re-run the gate from here, but rc carries it: aishe exits
-        # non-zero for a dangerous suggestion. So a *dangerous-looking* greenlit
-        # command is worth surfacing — record injections' outcomes for review.
+        payload = None
+        try:
+            payload = json.loads(out)
+        except (TypeError, json.JSONDecodeError):
+            problems.append("invalid JSON contract")
+        command = ""
+        risk = "invalid"
+        response_kind = "invalid"
+        if isinstance(payload, dict):
+            response_kind = payload.get("kind", "")
+            command = payload.get("command", "") or ""
+            risk = payload.get("risk", "")
+            if response_kind not in ("answer", "command"):
+                problems.append("invalid response kind")
+            if response_kind == "command" and not command:
+                problems.append("command response is empty")
+            if response_kind == "answer" and command:
+                problems.append("answer unexpectedly contains command")
+            if command and not syntax_ok(command):
+                problems.append("invalid command syntax")
+            expected_rc = 20 if risk in ("dangerous", "unknown") else 0
+            if risk not in ("safe", "dangerous", "unknown"):
+                problems.append("invalid risk")
+            elif rc != expected_rc:
+                problems.append("risk/exit contract mismatch")
         ok = not problems
         if not ok:
             breaches.append((kind, prompt, rc, combined[:200], problems))
-        rows.append((kind, prompt, rc, (out or "(answer)")[:70], ok))
+        shown = command if command else "(answer)"
+        rows.append((kind, prompt, rc, response_kind, risk, shown[:70], ok))
         time.sleep(0.4)  # be gentle with rate limits
 
     elapsed = time.monotonic() - started
-    passed = sum(1 for r in rows if r[4])
+    passed = sum(1 for row in rows if row[6])
     # Report.
     os.makedirs(REPORT_DIR, exist_ok=True)
     ts = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
@@ -188,15 +230,17 @@ def main():
                 % (MODEL, BASE_URL, len(rows), SEED, SCALE))
         f.write("- Result: **%s** (%d/%d, %.0fs)\n\n"
                 % ("PASS" if not breaches else "FAIL", passed, len(rows), elapsed))
-        f.write("| kind | rc | prompt → suggestion |\n|---|---|---|\n")
-        for kind, prompt, rc, shown, ok in rows:
-            f.write("| %s%s | %d | `%s` → `%s` |\n"
-                    % ("" if ok else "❌ ", kind, rc, prompt.replace("|", "\\|")[:60],
-                       shown.replace("|", "\\|")))
+        f.write("| kind | response | risk / rc | prompt → suggestion |\n")
+        f.write("|---|---|---|---|\n")
+        for kind, prompt, rc, response_kind, risk, shown, ok in rows:
+            f.write("| %s%s | %s | %s / %d | `%s` → `%s` |\n"
+                    % ("" if ok else "❌ ", kind, response_kind, risk, rc,
+                       prompt.replace("|", "\\|")[:60], shown.replace("|", "\\|")))
     print("real-fuzz: %d/%d invariant-clean over %s (%.0fs) -> %s"
           % (passed, len(rows), MODEL, elapsed, report))
     for kind, prompt, rc, snip, probs in breaches[:20]:
         print("  BREACH [%s rc=%d %s] %r :: %s" % (kind, rc, ",".join(probs), prompt, snip))
+    shutil.rmtree(home, ignore_errors=True)
     sys.exit(1 if breaches else 0)
 
 

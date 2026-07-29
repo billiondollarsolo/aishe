@@ -7,8 +7,15 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub const CONFIG_SCHEMA_VERSION: u32 = 2;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
+    /// Version of the on-disk configuration schema. Files written before schema
+    /// versioning are treated as v1 and migrated without changing their runtime
+    /// behavior.
+    #[serde(default = "default_config_schema_version")]
+    pub version: u32,
     #[serde(default)]
     pub aishe: AisheConfig,
     #[serde(default)]
@@ -85,6 +92,10 @@ impl Default for LoggingConfig {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AisheConfig {
+    /// Named bundle of mode/safety settings. Existing pre-profile configs load as
+    /// `custom`, preserving every old value instead of applying new defaults.
+    #[serde(default = "default_safety_profile")]
+    pub safety_profile: String,
     /// "suggest" | "yolo"
     #[serde(default = "default_mode")]
     pub mode: String,
@@ -233,9 +244,30 @@ pub struct AisheConfig {
     /// Stream answers token-by-token (suggest/auto).
     #[serde(default)]
     pub stream: bool,
+    /// Reasoning effort for providers that expose it. `auto` omits the field and
+    /// lets the selected model/endpoint choose its documented default.
+    #[serde(default = "default_reasoning_effort")]
+    pub reasoning_effort: String,
+    /// Show one concise recovery hint after a non-zero interactive shell command.
+    #[serde(default = "default_true")]
+    pub failure_hints: bool,
+    /// Optional context sections suppressed before model requests. Core cwd and
+    /// shell facts are always included.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub context_exclude: Vec<String>,
     /// Print a dim per-session token/cost line after each model interaction.
     #[serde(default = "default_true")]
     pub show_usage: bool,
+    /// Show a live right-prompt status line in the zsh PTY front end.
+    #[serde(default = "default_true")]
+    pub status_line: bool,
+    /// Placement of the live shell status: `right`, `below`, or `off`.
+    #[serde(default = "default_status_line_position")]
+    pub status_line_position: String,
+    /// Ordered fields rendered in the status line. Supported values are model,
+    /// mode, last_tokens, last_cost, session_tokens, session_cost, and requests.
+    #[serde(default = "default_status_line_items")]
+    pub status_line_items: Vec<String>,
     /// Stop calling the model once estimated session cost reaches this many USD.
     /// `0` = unlimited. Only enforced when the model's price is known.
     #[serde(default)]
@@ -272,8 +304,22 @@ pub struct ProviderConfig {
     pub base_url: String,
     pub api_key_env: String,
     pub model: String,
+    /// `auto`, `responses`, or `chat`. Auto selects Responses for official
+    /// OpenAI and Chat Completions for other compatible endpoints.
+    #[serde(default = "default_transport")]
+    pub transport: String,
+    /// Explicit authentication requirement. When absent, loopback endpoints are
+    /// treated as unauthenticated and non-loopback endpoints require a key.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auth_required: Option<bool>,
 }
 
+fn default_config_schema_version() -> u32 {
+    CONFIG_SCHEMA_VERSION
+}
+fn default_safety_profile() -> String {
+    "custom".to_string()
+}
 fn default_mode() -> String {
     "suggest".to_string()
 }
@@ -301,12 +347,31 @@ fn default_embedding_model() -> String {
 fn default_structured() -> String {
     "schema".to_string()
 }
+fn default_reasoning_effort() -> String {
+    "auto".to_string()
+}
+fn default_status_line_items() -> Vec<String> {
+    vec![
+        "model".to_string(),
+        "mode".to_string(),
+        "session_cost".to_string(),
+        "requests".to_string(),
+    ]
+}
+fn default_status_line_position() -> String {
+    "right".to_string()
+}
+fn default_transport() -> String {
+    "auto".to_string()
+}
 
 fn default_anthropic() -> ProviderConfig {
     ProviderConfig {
         base_url: "https://api.anthropic.com".to_string(),
         api_key_env: "ANTHROPIC_API_KEY".to_string(),
         model: "claude-sonnet-4-20250514".to_string(),
+        transport: "auto".to_string(),
+        auth_required: Some(true),
     }
 }
 
@@ -315,12 +380,15 @@ fn default_openai() -> ProviderConfig {
         base_url: "https://api.openai.com".to_string(),
         api_key_env: "OPENAI_API_KEY".to_string(),
         model: "gpt-4o".to_string(),
+        transport: "auto".to_string(),
+        auth_required: Some(true),
     }
 }
 
 impl Default for AisheConfig {
     fn default() -> Self {
         Self {
+            safety_profile: default_safety_profile(),
             mode: default_mode(),
             provider: default_provider(),
             provider_fallback: Vec::new(),
@@ -351,7 +419,13 @@ impl Default for AisheConfig {
             share_history: true,
             structured: default_structured(),
             stream: false,
+            reasoning_effort: default_reasoning_effort(),
+            failure_hints: true,
+            context_exclude: Vec::new(),
             show_usage: true,
+            status_line: true,
+            status_line_position: default_status_line_position(),
+            status_line_items: default_status_line_items(),
             budget_usd: 0.0,
             memory: true,
             redact_secrets: true,
@@ -363,6 +437,49 @@ impl Default for ProviderConfig {
     fn default() -> Self {
         default_anthropic()
     }
+}
+
+impl Default for Config {
+    fn default() -> Self {
+        Self {
+            version: CONFIG_SCHEMA_VERSION,
+            aishe: AisheConfig::default(),
+            providers: Providers::default(),
+            logging: LoggingConfig::default(),
+            pricing: std::collections::BTreeMap::new(),
+            named_dirs: std::collections::BTreeMap::new(),
+            mcp_servers: std::collections::BTreeMap::new(),
+        }
+    }
+}
+
+impl ProviderConfig {
+    /// Whether this endpoint needs an API key. Explicit configuration wins;
+    /// otherwise local loopback services are allowed to run unauthenticated.
+    pub fn requires_auth(&self) -> bool {
+        self.auth_required
+            .unwrap_or_else(|| !is_loopback_url(&self.base_url))
+    }
+}
+
+/// True for HTTP(S) endpoints whose host is localhost or a loopback address.
+pub fn is_loopback_url(url: &str) -> bool {
+    let rest = url
+        .trim()
+        .split_once("://")
+        .map(|(_, rest)| rest)
+        .unwrap_or(url.trim());
+    let authority = rest.split('/').next().unwrap_or(rest);
+    let host = authority
+        .rsplit_once('@')
+        .map(|(_, host)| host)
+        .unwrap_or(authority);
+    host == "localhost"
+        || host.starts_with("localhost:")
+        || host == "127.0.0.1"
+        || host.starts_with("127.0.0.1:")
+        || host == "[::1]"
+        || host.starts_with("[::1]:")
 }
 
 /// Base directory for aishe's configuration, honoring `$AISHE_CONFIG_DIR`.
@@ -416,24 +533,19 @@ impl Config {
             if let Some(cfg) = Self::migrate_legacy(&path)? {
                 return Ok(cfg);
             }
-            // Only prompt when attached to a terminal. Run from a hook, a pipe,
-            // or CI, the wizard would read EOF and silently pick defaults (or
-            // hang); instead write a default config and tell the user how to set
-            // it up properly.
-            let cfg = if std::io::stdin().is_terminal() {
-                run_wizard()?
+            // Only prompt when attached to a terminal. Hooks, pipes, and CI must
+            // never materialize an unverified default configuration as a side
+            // effect of trying to run another command.
+            if std::io::stdin().is_terminal() {
+                crate::setup::run(crate::setup::Options::default())?;
+                return Self::load_quiet()?.context("setup did not create a configuration");
             } else {
-                eprintln!(
-                    "aishe: no config at {} and not running interactively; \
-                     writing defaults. Run `aishe` in a terminal to choose your \
-                     provider, model, and endpoint, or edit the file directly.",
+                anyhow::bail!(
+                    "no config at {} and no interactive terminal; run `aishe setup` \
+                     in a terminal or use `aishe setup --non-interactive`",
                     path.display()
                 );
-                Config::default()
-            };
-            cfg.save()?;
-            println!("Saved config to {}", path.display());
-            return Ok(cfg);
+            }
         }
         Self::load_from(&path)
     }
@@ -480,14 +592,61 @@ impl Config {
             return Ok(None);
         }
         let text = std::fs::read_to_string(&path)?;
+        let version = source_schema_version(&text)?;
+        if version > CONFIG_SCHEMA_VERSION {
+            anyhow::bail!(
+                "config schema {version} is newer than this Aishe supports \
+                 ({CONFIG_SCHEMA_VERSION})"
+            );
+        }
         Ok(Some(toml::from_str::<Config>(&text)?))
+    }
+
+    /// Return the schema version actually stored in the active config.
+    ///
+    /// This deliberately does not deserialize into `Config`: serde defaults
+    /// missing `version` to the current schema, while an absent on-disk version
+    /// means schema 1 and should be reported that way by read-only diagnostics.
+    pub fn schema_version_on_disk() -> Result<Option<u32>> {
+        let path = Self::path();
+        if !path.exists() {
+            return Ok(None);
+        }
+        let text = std::fs::read_to_string(&path)
+            .with_context(|| format!("reading config at {}", path.display()))?;
+        Ok(Some(source_schema_version(&text)?))
     }
 
     fn load_from(path: &PathBuf) -> Result<Self> {
         let text = std::fs::read_to_string(path)
             .with_context(|| format!("reading config at {}", path.display()))?;
         match toml::from_str::<Config>(&text) {
-            Ok(cfg) => Ok(cfg),
+            Ok(mut cfg) => {
+                let source_version = source_schema_version(&text)?;
+                if source_version > CONFIG_SCHEMA_VERSION {
+                    anyhow::bail!(
+                        "config schema {source_version} is newer than this Aishe supports \
+                         ({CONFIG_SCHEMA_VERSION}); upgrade Aishe before using this file"
+                    );
+                }
+                if source_version < CONFIG_SCHEMA_VERSION {
+                    let backup = migration_backup_path(path, source_version);
+                    std::fs::copy(path, &backup)
+                        .with_context(|| format!("backing up to {}", backup.display()))?;
+                    set_private_file(&backup);
+                    cfg.version = CONFIG_SCHEMA_VERSION;
+                    let serialized =
+                        toml::to_string_pretty(&cfg).context("serializing migrated config")?;
+                    write_atomic(path, serialized.as_bytes())?;
+                    eprintln!(
+                        "aishe: migrated config schema {source_version} → {} \
+                         (backup: {})",
+                        CONFIG_SCHEMA_VERSION,
+                        backup.display()
+                    );
+                }
+                Ok(cfg)
+            }
             Err(e) => {
                 eprintln!("Config at {} is malformed: {e}", path.display());
                 if prompt_yes_no("Back it up and recreate with the wizard?")? {
@@ -495,9 +654,11 @@ impl Config {
                     std::fs::rename(path, &backup)
                         .with_context(|| format!("backing up to {}", backup.display()))?;
                     println!("Backed up to {}", backup.display());
-                    let cfg = run_wizard()?;
-                    cfg.save()?;
-                    Ok(cfg)
+                    crate::setup::run(crate::setup::Options {
+                        restart: true,
+                        ..crate::setup::Options::default()
+                    })?;
+                    Self::load_quiet()?.context("setup did not recreate the configuration")
                 } else {
                     anyhow::bail!("cannot continue with malformed config");
                 }
@@ -515,10 +676,14 @@ impl Config {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)
                 .with_context(|| format!("creating config dir {}", parent.display()))?;
+            set_private_dir(parent);
         }
-        let text = toml::to_string_pretty(self).context("serializing config")?;
+        let mut persisted = self.clone();
+        persisted.version = CONFIG_SCHEMA_VERSION;
+        let text = toml::to_string_pretty(&persisted).context("serializing config")?;
         write_atomic(&path, text.as_bytes())
             .with_context(|| format!("writing config {}", path.display()))?;
+        set_private_file(&path);
         Ok(())
     }
 
@@ -747,20 +912,34 @@ fn aishe_key_is_sensitive(key: &str, value: &toml::Value) -> bool {
 /// file is cleaned up before the error is returned. The caller is expected to
 /// have created the parent directory and to add its own `.with_context(...)`.
 pub(crate) fn write_atomic(dest: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static NEXT_TEMP: AtomicU64 = AtomicU64::new(1);
     let parent = dest.parent().unwrap_or_else(|| Path::new("."));
     let file_name = dest
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_else(|| "file".to_string());
     // Unique per-pid temp name in the destination directory; keep it hidden.
-    let tmp = parent.join(format!(".{file_name}.tmp.{}", std::process::id()));
+    let tmp = parent.join(format!(
+        ".{file_name}.tmp.{}.{}",
+        std::process::id(),
+        NEXT_TEMP.fetch_add(1, Ordering::Relaxed)
+    ));
 
     // Write the full contents and flush to the OS before renaming. If anything
     // fails, remove the partial temp file so we never leak it.
     let write_result = (|| -> std::io::Result<()> {
-        let mut f = std::fs::File::create(&tmp)?;
+        let mut options = std::fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        let mut f = options.open(&tmp)?;
         f.write_all(bytes)?;
         f.flush()?;
+        f.sync_all()?;
         Ok(())
     })();
     if let Err(e) = write_result {
@@ -772,8 +951,32 @@ pub(crate) fn write_atomic(dest: &Path, bytes: &[u8]) -> std::io::Result<()> {
         let _ = std::fs::remove_file(&tmp);
         return Err(e);
     }
+    // Persist the directory entry where the platform permits opening and
+    // syncing directories. The file itself is already fully synced above.
+    #[cfg(unix)]
+    if let Ok(directory) = std::fs::File::open(parent) {
+        let _ = directory.sync_all();
+    }
     Ok(())
 }
+
+#[cfg(unix)]
+fn set_private_file(path: &Path) {
+    use std::os::unix::fs::PermissionsExt;
+    let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
+}
+
+#[cfg(not(unix))]
+fn set_private_file(_path: &Path) {}
+
+#[cfg(unix)]
+fn set_private_dir(path: &Path) {
+    use std::os::unix::fs::PermissionsExt;
+    let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700));
+}
+
+#[cfg(not(unix))]
+fn set_private_dir(_path: &Path) {}
 
 /// Recursively merge `overlay` into `base`: nested tables are merged key by key;
 /// any other value replaces the one in `base`.
@@ -788,210 +991,26 @@ fn deep_merge(base: &mut toml::Table, overlay: &toml::Table) {
     }
 }
 
-/// Known OpenAI-compatible services: (key, label, base_url, default_model,
-/// key_env). `base_url` is the host root; aishe appends `/v1/responses` for
-/// official OpenAI and `/v1/chat/completions` for custom services, so it must
-/// not include `/v1`. "other" is the escape hatch for any endpoint.
-const OPENAI_PRESETS: &[(&str, &str, &str, &str, &str)] = &[
-    (
-        "openai",
-        "OpenAI",
-        "https://api.openai.com",
-        "gpt-4o",
-        "OPENAI_API_KEY",
-    ),
-    (
-        "groq",
-        "Groq",
-        "https://api.groq.com/openai",
-        "llama-3.3-70b-versatile",
-        "GROQ_API_KEY",
-    ),
-    (
-        "openrouter",
-        "OpenRouter",
-        "https://openrouter.ai/api",
-        "openai/gpt-4o",
-        "OPENROUTER_API_KEY",
-    ),
-    (
-        "together",
-        "Together AI",
-        "https://api.together.xyz",
-        "meta-llama/Llama-3.3-70B-Instruct-Turbo",
-        "TOGETHER_API_KEY",
-    ),
-    (
-        "ollama",
-        "Ollama (local)",
-        "http://localhost:11434",
-        "llama3.1",
-        "OLLAMA_API_KEY",
-    ),
-    ("other", "Other / custom endpoint", "", "", "OPENAI_API_KEY"),
-];
-
-/// Tidy a user-entered base URL: trim spaces and a trailing slash, and add a
-/// scheme if the user omitted one (so "localhost:11434" still works).
-fn normalize_base_url(input: &str) -> String {
-    let s = input.trim().trim_end_matches('/');
-    if s.is_empty() {
-        "https://api.openai.com".to_string()
-    } else if s.contains("://") {
-        s.to_string()
-    } else {
-        format!("https://{s}")
-    }
-}
-
-fn run_wizard() -> Result<Config> {
-    println!("\n  aishe — first-run setup\n  ───────────────────────");
-    let mut cfg = Config::default();
-
-    let provider = prompt_choice(
-        "Provider",
-        &[
-            ("anthropic", "Anthropic (Claude)"),
-            (
-                "openai",
-                "OpenAI-compatible (OpenAI, Groq, OpenRouter, Together, Ollama, …)",
-            ),
-        ],
-        "anthropic",
-    )?;
-    cfg.aishe.provider = provider.clone();
-
-    // Provider-specific details. For OpenAI-compatible services the endpoint
-    // (base URL) is what distinguishes Groq / OpenRouter / Ollama / ... from
-    // OpenAI, so always confirm it, pre-filled from the chosen preset.
-    if provider == "openai" {
-        let preset_opts: Vec<(&str, &str)> = OPENAI_PRESETS.iter().map(|p| (p.0, p.1)).collect();
-        let preset = prompt_choice("Service", &preset_opts, "openai")?;
-        let row = OPENAI_PRESETS
-            .iter()
-            .find(|p| p.0 == preset.as_str())
-            .copied()
-            .unwrap_or(OPENAI_PRESETS[0]);
-        let (_, _, def_base, def_model, def_key_env) = row;
-
-        let base_default = if def_base.is_empty() {
-            "https://api.openai.com"
-        } else {
-            def_base
-        };
-        let base_url = prompt_text(
-            &format!("API endpoint (base URL) [{base_default}]"),
-            base_default,
-        )?;
-        cfg.providers.openai.base_url = normalize_base_url(&base_url);
-
-        let key_env = prompt_text(
-            &format!("Env var holding your API key [{def_key_env}]"),
-            def_key_env,
-        )?;
-        cfg.providers.openai.api_key_env = key_env;
-
-        let model_default = if def_model.is_empty() {
-            "gpt-4o"
-        } else {
-            def_model
-        };
-        let model = prompt_text(&format!("Model [{model_default}]"), model_default)?;
-        cfg.providers.openai.model = model;
-    } else {
-        let key_env = prompt_text(
-            "Env var holding your API key [ANTHROPIC_API_KEY]",
-            "ANTHROPIC_API_KEY",
-        )?;
-        cfg.providers.anthropic.api_key_env = key_env;
-
-        let default_model = "claude-sonnet-4-20250514";
-        let model = prompt_text(&format!("Model [{default_model}]"), default_model)?;
-        cfg.providers.anthropic.model = model;
-    }
-
-    let mode = prompt_choice(
-        "Default mode",
-        &[
-            ("suggest", "suggest — confirm before running"),
-            ("auto", "auto — auto-run safe commands, confirm dangerous"),
-            ("yolo", "yolo — autonomous tool loop"),
-        ],
-        "suggest",
-    )?;
-    cfg.aishe.mode = mode;
-
-    // Recap what was chosen, and flag a missing API key before they hit it.
-    let (active_env, active_base, active_model) = if provider == "openai" {
-        (
-            cfg.providers.openai.api_key_env.as_str(),
-            cfg.providers.openai.base_url.as_str(),
-            cfg.providers.openai.model.as_str(),
-        )
-    } else {
-        (
-            cfg.providers.anthropic.api_key_env.as_str(),
-            cfg.providers.anthropic.base_url.as_str(),
-            cfg.providers.anthropic.model.as_str(),
-        )
+fn source_schema_version(text: &str) -> Result<u32> {
+    let value: toml::Value = toml::from_str(text)?;
+    let Some(version) = value.get("version") else {
+        return Ok(1);
     };
-    println!("\n  Summary");
-    println!("    provider: {provider}");
-    println!("    endpoint: {active_base}");
-    println!("    model:    {active_model}");
-    println!("    API key:  ${active_env}");
-
-    let key_set = std::env::var(active_env)
-        .map(|v| !v.trim().is_empty())
-        .unwrap_or(false);
-    if !key_set {
-        println!(
-            "\n  Note: ${active_env} is not set. Export it before using LLM features:\n    export {active_env}=...\n"
-        );
+    let Some(version) = version.as_integer() else {
+        anyhow::bail!("config `version` must be a positive integer");
+    };
+    if version < 1 || version > i64::from(u32::MAX) {
+        anyhow::bail!("config `version` must be between 1 and {}", u32::MAX);
     }
-
-    Ok(cfg)
+    Ok(version as u32)
 }
 
-fn prompt_text(label: &str, default: &str) -> Result<String> {
-    print!("  {label}: ");
-    std::io::stdout().flush().ok();
-    let mut line = String::new();
-    std::io::stdin().read_line(&mut line)?;
-    let line = line.trim();
-    Ok(if line.is_empty() {
-        default.to_string()
-    } else {
-        line.to_string()
-    })
-}
-
-fn prompt_choice(label: &str, options: &[(&str, &str)], default: &str) -> Result<String> {
-    println!("  {label}:");
-    for (i, (key, desc)) in options.iter().enumerate() {
-        let marker = if *key == default { "*" } else { " " };
-        println!("    {marker} {}) {desc}", i + 1);
-    }
-    print!("  choose [1-{}] (default {default}): ", options.len());
-    std::io::stdout().flush().ok();
-    let mut line = String::new();
-    std::io::stdin().read_line(&mut line)?;
-    let line = line.trim();
-    if line.is_empty() {
-        return Ok(default.to_string());
-    }
-    if let Ok(n) = line.parse::<usize>() {
-        if n >= 1 && n <= options.len() {
-            return Ok(options[n - 1].0.to_string());
-        }
-    }
-    // Allow typing the key directly.
-    for (key, _) in options {
-        if line.eq_ignore_ascii_case(key) {
-            return Ok((*key).to_string());
-        }
-    }
-    Ok(default.to_string())
+fn migration_backup_path(path: &Path, source_version: u32) -> PathBuf {
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_secs())
+        .unwrap_or(0);
+    path.with_extension(format!("toml.v{source_version}.{stamp}.bak"))
 }
 
 fn prompt_yes_no(label: &str) -> Result<bool> {
@@ -1005,41 +1024,6 @@ fn prompt_yes_no(label: &str) -> Result<bool> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn normalize_base_url_cases() {
-        assert_eq!(
-            normalize_base_url("https://api.groq.com/openai/"),
-            "https://api.groq.com/openai"
-        );
-        assert_eq!(normalize_base_url("  https://x.test  "), "https://x.test");
-        // A missing scheme gets https://; a bare host:port still works.
-        assert_eq!(
-            normalize_base_url("localhost:11434"),
-            "https://localhost:11434"
-        );
-        assert_eq!(
-            normalize_base_url("http://localhost:11434"),
-            "http://localhost:11434"
-        );
-        // Empty falls back to the OpenAI default.
-        assert_eq!(normalize_base_url("   "), "https://api.openai.com");
-    }
-
-    #[test]
-    fn openai_presets_are_well_formed() {
-        for (key, label, base, _model, key_env) in OPENAI_PRESETS {
-            assert!(!key.is_empty() && !label.is_empty() && !key_env.is_empty());
-            if *key == "other" {
-                continue; // intentionally blank base/model (prompted)
-            }
-            // base_url is the host root; the provider appends /v1, so presets
-            // must not bake it in.
-            assert!(base.contains("://"), "{key} base needs a scheme");
-            assert!(!base.ends_with("/v1"), "{key} base must not include /v1");
-            assert!(!base.ends_with('/'), "{key} base must not end with a slash");
-        }
-    }
 
     #[test]
     fn defaults_round_trip() {
@@ -1065,6 +1049,24 @@ mod tests {
         // Unspecified fields fall back to defaults.
         assert_eq!(cfg.aishe.provider, "anthropic");
         assert_eq!(cfg.providers.openai.base_url, "https://api.openai.com");
+    }
+
+    #[test]
+    fn pre_profile_config_loads_as_custom_without_changing_behavior() {
+        let text = r#"
+            [aishe]
+            mode = "yolo"
+            yolo_confirm = "never"
+            yolo_sandbox = false
+            budget_usd = 17.5
+        "#;
+        assert_eq!(source_schema_version(text).unwrap(), 1);
+        let cfg: Config = toml::from_str(text).unwrap();
+        assert_eq!(cfg.aishe.safety_profile, "custom");
+        assert_eq!(cfg.aishe.mode, "yolo");
+        assert_eq!(cfg.aishe.yolo_confirm, "never");
+        assert!(!cfg.aishe.yolo_sandbox);
+        assert_eq!(cfg.aishe.budget_usd, 17.5);
     }
 
     #[test]

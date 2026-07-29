@@ -1,9 +1,11 @@
-//! Build the environment context block prepended to LLM requests. Never
-//! includes file contents — only metadata, a directory listing, and recent
-//! command history.
+//! Build the environment context block prepended to LLM requests. It includes
+//! bounded, explicitly configured project instructions plus local metadata,
+//! directory names, task entry points, and recent command history.
 
 use std::process::Command;
 use std::sync::OnceLock;
+
+use serde::Serialize;
 
 use crate::executor::Executor;
 
@@ -23,15 +25,74 @@ pub fn init(shell: &std::path::Path) {
     SHELL_INFO.get_or_init(|| detect_shell_version(shell));
 }
 
-/// Build the context block string for the current executor state. When
-/// `redact_secrets` is set, recent commands are scrubbed of likely credentials
-/// before being included (they can contain `export TOKEN=...`, `mysql -p...`, or
-/// URLs with passwords). When `project_context` is set, a per-project
-/// `.aishe/context.md` found at or above the cwd is appended so repo-specific
-/// conventions reach the model.
-pub fn build(executor: &Executor, config: &crate::config::Config) -> String {
+#[derive(Clone, Debug, Serialize)]
+pub struct Section {
+    pub id: String,
+    pub label: String,
+    pub required: bool,
+    pub included: bool,
+    pub source: String,
+    pub chars: usize,
+    pub estimated_tokens: usize,
+    pub redactions: usize,
+    /// Runtime text is intentionally absent from JSON previews: metadata proves
+    /// what will be sent without re-exposing redacted history or project text.
+    #[serde(skip)]
+    pub text: String,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct Preview {
+    pub schema_version: u32,
+    pub provider: String,
+    pub model: String,
+    pub request_chars: usize,
+    pub request_estimated_tokens: usize,
+    pub context_chars: usize,
+    pub context_estimated_tokens: usize,
+    pub total_estimated_tokens: usize,
+    pub total_redactions: usize,
+    pub estimated_input_cost_usd: Option<f64>,
+    pub sections: Vec<Section>,
+}
+
+fn excluded(config: &crate::config::Config, section: &str) -> bool {
+    config
+        .aishe
+        .context_exclude
+        .iter()
+        .any(|item| item == section)
+}
+
+fn section(
+    id: &str,
+    label: &str,
+    required: bool,
+    included: bool,
+    source: impl Into<String>,
+    text: String,
+) -> Section {
+    let chars = text.chars().count();
+    Section {
+        id: id.into(),
+        label: label.into(),
+        required,
+        included: required || included,
+        source: source.into(),
+        chars,
+        estimated_tokens: estimate_tokens(chars),
+        redactions: text.matches("<redacted>").count(),
+        text,
+    }
+}
+
+fn estimate_tokens(chars: usize) -> usize {
+    chars.saturating_add(3) / 4
+}
+
+/// Build the exact named sections used by runtime requests and CLI previews.
+pub fn sections(executor: &Executor, config: &crate::config::Config) -> Vec<Section> {
     let redact_secrets = config.aishe.redact_secrets;
-    let project_context = config.aishe.project_context;
     let os = OS_INFO.get().cloned().unwrap_or_else(detect_os);
     let shell = SHELL_INFO
         .get()
@@ -39,78 +100,179 @@ pub fn build(executor: &Executor, config: &crate::config::Config) -> String {
         .unwrap_or_else(|| detect_shell_version(executor.shell()));
 
     let cwd = executor.cwd().display().to_string();
+    let mut result = Vec::new();
+    result.push(section(
+        "core",
+        "OS, shell, and working directory",
+        true,
+        true,
+        executor.cwd().display().to_string(),
+        format!("OS: {os}\nShell backend: {shell}\nCWD: {cwd}\n"),
+    ));
 
-    let mut out = String::new();
-    out.push_str(&format!("OS: {os}\n"));
-    out.push_str(&format!("Shell backend: {shell}\n"));
-    out.push_str(&format!("CWD: {cwd}\n"));
-
-    // What's actually installed on this host, so the model proposes commands that
-    // exist here (apt vs dnf vs brew, docker vs podman, ...). Cached.
-    if config.aishe.host_profile {
+    let mut host = String::new();
+    if config.aishe.host_profile && !excluded(config, "host_profile") {
         let tools = host_capabilities();
         if !tools.is_empty() {
-            out.push_str(&format!("Installed tools: {tools}\n"));
+            host.push_str(&format!("Installed tools: {tools}\n"));
         }
-        // Operational facts that change which command is correct (init system for
-        // service control; the active kube context so cluster ops target the right
-        // place). Cached; only non-empty parts are shown.
         let facts = host_facts();
         if !facts.is_empty() {
-            out.push_str(&format!("Host facts: {facts}\n"));
+            host.push_str(&format!("Host facts: {facts}\n"));
         }
     }
+    result.push(section(
+        "host_profile",
+        "Installed tools and host facts",
+        false,
+        config.aishe.host_profile && !excluded(config, "host_profile"),
+        "local PATH and OS runtime markers",
+        host,
+    ));
 
-    // This repo's task surface (justfile/Makefile/package.json/...), so "run the
-    // tests" resolves to *this* project's actual command. Walks up to the project
-    // root so it still works from a subdirectory.
-    if config.aishe.project_tasks {
+    let mut tasks_text = String::new();
+    let mut tasks_source = executor.cwd().display().to_string();
+    if config.aishe.project_tasks && !excluded(config, "project_tasks") {
         if let Some((dir, tasks)) = project_tasks_rooted(executor.cwd()) {
+            tasks_source = dir.display().to_string();
             if dir != *executor.cwd() {
-                out.push_str(&format!(
+                tasks_text.push_str(&format!(
                     "Project root: {} (you are in a subdirectory)\n",
                     dir.display()
                 ));
             }
-            out.push_str("Project tasks (prefer these for repo actions):\n  ");
-            out.push_str(&tasks);
-            out.push('\n');
+            tasks_text.push_str("Project tasks (prefer these for repo actions):\n  ");
+            tasks_text.push_str(&tasks);
+            tasks_text.push('\n');
         }
     }
-
-    out.push_str(&format!(
-        "Directory listing (max {MAX_DIR_ENTRIES} entries, dirs have trailing /):\n"
+    result.push(section(
+        "project_tasks",
+        "Project task surface",
+        false,
+        config.aishe.project_tasks && !excluded(config, "project_tasks"),
+        tasks_source,
+        tasks_text,
     ));
-    out.push_str("  ");
-    out.push_str(&directory_listing(executor.cwd()));
-    out.push('\n');
 
-    out.push_str(&format!(
-        "Recent commands (last {MAX_HISTORY}, [exit_code] cmd):\n"
+    result.push(section(
+        "directory",
+        "Working-directory listing",
+        true,
+        true,
+        executor.cwd().display().to_string(),
+        format!(
+            "Directory listing (max {MAX_DIR_ENTRIES} entries, dirs have trailing /):\n  {}\n",
+            directory_listing(executor.cwd())
+        ),
     ));
-    for (cmd, code) in executor.history.iter().take(MAX_HISTORY) {
+
+    let mut history = format!("Recent commands (last {MAX_HISTORY}, [exit_code] cmd):\n");
+    for (cmd, code) in executor.context_history(MAX_HISTORY) {
         let cmd = if redact_secrets {
-            crate::redact::redact(cmd)
+            crate::redact::redact(&cmd)
         } else {
-            cmd.clone()
+            cmd
         };
-        out.push_str(&format!("  [{code}] {cmd}\n"));
+        let code = code
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| "?".into());
+        history.push_str(&format!("  [{code}] {cmd}\n"));
     }
+    result.push(section(
+        "history",
+        "Recent command history",
+        false,
+        !excluded(config, "history"),
+        "current process and persistent Aishe history",
+        history,
+    ));
 
-    if project_context {
-        if let Some(block) = project_context_block(executor.cwd(), MAX_PROJECT_CONTEXT) {
-            out.push_str("Project context (.aishe/context.md):\n");
-            out.push_str(&block);
-            out.push('\n');
+    let mut project_text = String::new();
+    let mut project_source = ".aishe/context.md (not found)".into();
+    if config.aishe.project_context && !excluded(config, "project_context") {
+        if let Some((path, block)) =
+            project_context_block_with_path(executor.cwd(), MAX_PROJECT_CONTEXT)
+        {
+            project_source = path.display().to_string();
+            project_text.push_str("Project context (.aishe/context.md):\n");
+            project_text.push_str(&if redact_secrets {
+                crate::redact::redact(&block)
+            } else {
+                block
+            });
+            project_text.push('\n');
         }
     }
+    result.push(section(
+        "project_context",
+        "Project instructions",
+        false,
+        config.aishe.project_context && !excluded(config, "project_context"),
+        project_source,
+        project_text,
+    ));
+    result
+}
 
-    out
+/// Build the context block string from the same section objects exposed by
+/// `aishe context --explain/--json`.
+pub fn build(executor: &Executor, config: &crate::config::Config) -> String {
+    sections(executor, config)
+        .into_iter()
+        .filter(|section| section.included)
+        .map(|section| section.text)
+        .collect::<Vec<_>>()
+        .join("")
+}
+
+pub fn preview(
+    executor: &Executor,
+    config: &crate::config::Config,
+    request: Option<&str>,
+) -> Preview {
+    let sections = sections(executor, config);
+    let context_chars = sections
+        .iter()
+        .filter(|section| section.included)
+        .map(|section| section.chars)
+        .sum();
+    let context_estimated_tokens = sections
+        .iter()
+        .filter(|section| section.included)
+        .map(|section| section.estimated_tokens)
+        .sum();
+    let request_chars = request.map(|text| text.chars().count()).unwrap_or(0);
+    let request_estimated_tokens = estimate_tokens(request_chars);
+    let total_estimated_tokens = context_estimated_tokens + request_estimated_tokens;
+    let estimated_input_cost_usd = crate::usage::price_for(config.active_model(), &config.pricing)
+        .map(|price| (total_estimated_tokens as f64 / 1_000_000.0) * price.input);
+    Preview {
+        schema_version: 1,
+        provider: config.aishe.provider.clone(),
+        model: config.active_model().into(),
+        request_chars,
+        request_estimated_tokens,
+        context_chars,
+        context_estimated_tokens,
+        total_estimated_tokens,
+        total_redactions: sections.iter().map(|section| section.redactions).sum(),
+        estimated_input_cost_usd,
+        sections,
+    }
 }
 
 /// Find a `.aishe/context.md` at `start` or any ancestor directory and return its
 /// contents, truncated (char-safe) to `max` chars. The nearest file wins.
+#[cfg(test)]
 fn project_context_block(start: &std::path::Path, max: usize) -> Option<String> {
+    project_context_block_with_path(start, max).map(|(_, text)| text)
+}
+
+fn project_context_block_with_path(
+    start: &std::path::Path,
+    max: usize,
+) -> Option<(std::path::PathBuf, String)> {
     let mut dir = Some(start);
     while let Some(d) = dir {
         let candidate = d.join(".aishe").join("context.md");
@@ -121,9 +283,9 @@ fn project_context_block(start: &std::path::Path, max: usize) -> Option<String> 
             }
             if trimmed.chars().count() > max {
                 let kept: String = trimmed.chars().take(max).collect();
-                return Some(format!("{kept}\n[truncated to {max} chars]"));
+                return Some((candidate, format!("{kept}\n[truncated to {max} chars]")));
             }
-            return Some(trimmed.to_string());
+            return Some((candidate, trimmed.to_string()));
         }
         dir = d.parent();
     }
@@ -562,6 +724,24 @@ mod tests {
     }
 
     #[test]
+    fn persisted_history_is_included_and_redacted_for_short_lived_children() {
+        let log = std::env::temp_dir().join(format!(
+            "aishe-context-persisted-{}-{:?}.ext",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let secret = "sk-proj-fake-persisted-secret-abcdefghijklmnopqrstuvwxyz";
+        std::fs::write(&log, format!(": 1:0;export TOKEN={secret}\n")).unwrap();
+        let mut exec = Executor::new().unwrap();
+        exec.set_history_log(log.clone());
+
+        let block = build(&exec, &cfg(true, false));
+        assert!(block.contains("TOKEN=<redacted>"), "{block}");
+        assert!(!block.contains(secret));
+        std::fs::remove_file(log).ok();
+    }
+
+    #[test]
     fn project_context_found_capped_and_absent() {
         let base = std::env::temp_dir().join(format!("aishe_pctx_{}", std::process::id()));
         let nested = base.join("sub").join("deep");
@@ -753,5 +933,68 @@ mod tests {
         assert_eq!(a, b);
         // init_system returns a known label or None; never panics.
         let _ = init_system();
+    }
+
+    #[test]
+    fn preview_uses_runtime_sections_without_serializing_their_text() {
+        let mut exec = Executor::new().unwrap();
+        let secret = "sk-proj-fake-preview-secret-abcdefghijklmnopqrstuvwxyz";
+        exec.history
+            .push_front((format!("export TOKEN={secret}"), 1));
+        let mut config = cfg(true, false);
+        config.pricing.insert(
+            config.active_model().to_string(),
+            crate::usage::Price {
+                input: 2.0,
+                output: 4.0,
+            },
+        );
+        let report = preview(&exec, &config, Some("a private request"));
+        let json = serde_json::to_string(&report).unwrap();
+        assert!(!json.contains(secret));
+        assert!(!json.contains("private request"));
+        assert!(!json.contains("\"text\""));
+        assert!(report.total_redactions >= 1);
+        assert_eq!(
+            report.total_estimated_tokens,
+            report.context_estimated_tokens + report.request_estimated_tokens
+        );
+        assert!(report.estimated_input_cost_usd.is_some());
+        let runtime = build(&exec, &config);
+        assert!(runtime.contains("<redacted>"));
+        assert!(!runtime.contains(secret));
+    }
+
+    #[test]
+    fn project_context_secrets_are_redacted_in_runtime_and_preview_metadata() {
+        let dir = std::env::temp_dir().join(format!(
+            "aishe-context-redact-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        std::fs::create_dir_all(dir.join(".aishe")).unwrap();
+        let secret = "sk-proj-fake-project-secret-abcdefghijklmnopqrstuvwxyz";
+        std::fs::write(
+            dir.join(".aishe").join("context.md"),
+            format!("use token {secret}"),
+        )
+        .unwrap();
+        let mut exec = Executor::new().unwrap();
+        assert_eq!(
+            exec.run_builtin(&["cd".into(), dir.display().to_string()]),
+            0
+        );
+        let config = cfg(true, true);
+        let runtime = build(&exec, &config);
+        assert!(!runtime.contains(secret));
+        assert!(runtime.contains("<redacted>"));
+        let report = preview(&exec, &config, None);
+        let section = report
+            .sections
+            .iter()
+            .find(|section| section.id == "project_context")
+            .unwrap();
+        assert_eq!(section.redactions, 1);
+        std::fs::remove_dir_all(dir).ok();
     }
 }

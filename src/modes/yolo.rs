@@ -34,8 +34,10 @@ pub fn run(
     // the working tree, then preview + confirm/apply at the end.
     let dry = DryRun::setup(executor, config);
     let history = session.history();
+    let mut task = crate::tasks::Active::start(config, executor.cwd(), input);
+    println!("  {}", format!("task {}", task.id()).dim());
     let outcome = run_loop(
-        input, provider, executor, config, interrupt, skills, mcp, history,
+        input, provider, executor, config, interrupt, skills, mcp, history, &mut task, false,
     );
     super::report_usage(provider, config);
     if let Some(d) = dry {
@@ -173,6 +175,8 @@ fn run_loop(
     skills: &SkillRegistry,
     mcp: &McpRegistry,
     history: Vec<Msg>,
+    task: &mut crate::tasks::Active,
+    resumed: bool,
 ) -> Result<Option<String>> {
     let ctx = context::build(executor, config);
     // Effective confirmation tier (resolves `yolo_confirm` and the legacy
@@ -231,10 +235,11 @@ fn run_loop(
     // Plan-first (dry run): show the intended steps and require approval before
     // the loop touches anything. Interactive only — there is no one to approve a
     // piped/`-c` run, so it proceeds as normal there.
-    if config.aishe.yolo_plan && std::io::stdin().is_terminal() {
+    if !resumed && config.aishe.yolo_plan && std::io::stdin().is_terminal() {
         match plan_first(input, &ctx, provider, config) {
             PlanOutcome::Declined => {
                 println!("  {}", "aborted".dim());
+                task.interrupted(&messages, provider.meter().snapshot());
                 return Ok(None);
             }
             PlanOutcome::Approved(plan) => {
@@ -245,7 +250,15 @@ fn run_loop(
         }
     }
 
-    messages.push(Msg::User(user_msg));
+    if resumed {
+        messages.push(Msg::User(format!(
+            "{ctx}\nResume the existing task safely. Original objective: {input}. \
+             Inspect current state before making further changes."
+        )));
+    } else {
+        messages.push(Msg::User(user_msg));
+    }
+    task.checkpoint_messages(&messages, provider.meter().snapshot());
 
     interrupt.store(false, Ordering::SeqCst);
     crate::audit::ai_request("yolo", config.active_model(), input);
@@ -253,10 +266,12 @@ fn run_loop(
     for iteration in 0..config.aishe.max_yolo_iterations {
         if interrupt.load(Ordering::SeqCst) {
             println!("  {}", "aborted".dim());
+            task.interrupted(&messages, provider.meter().snapshot());
             return Ok(None);
         }
         // Stop before the next model call if the session budget is spent.
         if super::budget_reached(provider, config) {
+            task.interrupted(&messages, provider.meter().snapshot());
             return Ok(None);
         }
 
@@ -281,7 +296,16 @@ fn run_loop(
                     println!();
                 }
                 crate::audit::ai_error("yolo", config.active_model(), &e.to_string());
-                eprintln!("{}", format!("aishe: {e}").red());
+                eprintln!(
+                    "{}",
+                    format!("aishe: {}", crate::providers::actionable_error(&e)).red()
+                );
+                task.failed(
+                    &messages,
+                    provider.meter().snapshot(),
+                    e.kind(),
+                    &e.to_string(),
+                );
                 return Ok(None);
             }
         };
@@ -303,6 +327,11 @@ fn run_loop(
                 (Some(text), false) => render_markdown(text),
                 _ => {}
             }
+            messages.push(Msg::Assistant(AssistantMsg {
+                text: completion.text.clone(),
+                tool_calls: Vec::new(),
+            }));
+            task.completed(&messages, provider.meter().snapshot());
             return Ok(completion.text);
         }
 
@@ -330,14 +359,17 @@ fn run_loop(
                 },
             });
         }
+        task.checkpoint_messages(&messages, provider.meter().snapshot());
 
         for call in &completion.tool_calls {
+            task.pending(call, &messages, provider.meter().snapshot());
             if interrupt.load(Ordering::SeqCst) {
                 messages.push(Msg::ToolResult {
                     call_id: call.id.clone(),
                     content: "Interrupted by user.".to_string(),
                 });
                 println!("  {}", "aborted".dim());
+                task.interrupted(&messages, provider.meter().snapshot());
                 return Ok(None);
             }
 
@@ -358,14 +390,16 @@ fn run_loop(
                 };
                 messages.push(Msg::ToolResult {
                     call_id: call.id.clone(),
-                    content,
+                    content: content.clone(),
                 });
+                task.tool_completed(call, &content, &messages, provider.meter().snapshot());
                 continue;
             }
 
             // Built-in tools (file read/write/edit/list, web fetch_url) run
             // directly here, relative to the cwd where applicable.
             if crate::tools::is_builtin_tool(&call.name) {
+                task.mark_pending_started();
                 let (label, content) = crate::tools::execute(
                     &call.name,
                     &call.arguments,
@@ -376,20 +410,23 @@ fn run_loop(
                 crate::audit::action(&format!("yolo:{}", call.name), &label, None);
                 messages.push(Msg::ToolResult {
                     call_id: call.id.clone(),
-                    content,
+                    content: content.clone(),
                 });
+                task.tool_completed(call, &content, &messages, provider.meter().snapshot());
                 continue;
             }
 
             // MCP tools (namespaced mcp__server__tool) are proxied to the server.
             if crate::mcp::is_mcp_tool(&call.name) {
+                task.mark_pending_started();
                 println!("  🔌 {}", format!("mcp: {}", call.name).dim());
                 let (label, content) = mcp.call(&call.name, &call.arguments);
                 crate::audit::action(&format!("yolo:{}", call.name), &label, None);
                 messages.push(Msg::ToolResult {
                     call_id: call.id.clone(),
-                    content,
+                    content: content.clone(),
                 });
+                task.tool_completed(call, &content, &messages, provider.meter().snapshot());
                 continue;
             }
 
@@ -414,10 +451,12 @@ fn run_loop(
             );
 
             if command.trim().is_empty() {
+                let content = "No command provided.".to_string();
                 messages.push(Msg::ToolResult {
                     call_id: call.id.clone(),
-                    content: "No command provided.".to_string(),
+                    content: content.clone(),
                 });
+                task.tool_completed(call, &content, &messages, provider.meter().snapshot());
                 continue;
             }
 
@@ -433,6 +472,14 @@ fn run_loop(
                         call_id: call.id.clone(),
                         content: sandbox::refusal_message(&reason),
                     });
+                    let content = messages
+                        .last()
+                        .and_then(|message| match message {
+                            Msg::ToolResult { content, .. } => Some(content.clone()),
+                            _ => None,
+                        })
+                        .unwrap_or_default();
+                    task.tool_completed(call, &content, &messages, provider.meter().snapshot());
                     continue;
                 }
             }
@@ -449,10 +496,12 @@ fn run_loop(
                     !confirm_run(&command)
                 };
                 if declined {
+                    let content = "User declined to run this command.".to_string();
                     messages.push(Msg::ToolResult {
                         call_id: call.id.clone(),
-                        content: "User declined to run this command.".to_string(),
+                        content: content.clone(),
                     });
+                    task.tool_completed(call, &content, &messages, provider.meter().snapshot());
                     continue;
                 }
             }
@@ -464,6 +513,7 @@ fn run_loop(
                 executor.set_sandbox_wrap(wrap);
             }
             let verbose = config.aishe.yolo_verbose;
+            task.mark_pending_started();
             let (code, output) = executor.run_captured(&command, DEFAULT_CAPTURE_TIMEOUT, verbose);
             // Quiet by default: the model still gets the full output, but the
             // terminal shows only a compact result instead of dumping everything.
@@ -471,10 +521,12 @@ fn run_loop(
                 print_run_result(code, &output);
             }
             crate::audit::action("yolo", &command, Some(code));
+            let content = format!("exit code {code}\n{output}");
             messages.push(Msg::ToolResult {
                 call_id: call.id.clone(),
-                content: format!("exit code {code}\n{output}"),
+                content: content.clone(),
             });
+            task.tool_completed(call, &content, &messages, provider.meter().snapshot());
         }
 
         if iteration + 1 == config.aishe.max_yolo_iterations {
@@ -489,7 +541,95 @@ fn run_loop(
         }
     }
 
+    task.interrupted(&messages, provider.meter().snapshot());
     Ok(None)
+}
+
+/// Continue a durable task from its last complete checkpoint. A pending tool is
+/// never repeated automatically: the default records an explicit skipped result
+/// so the model can inspect current state before deciding what to do next.
+#[allow(clippy::too_many_arguments)]
+pub fn resume(
+    record: crate::tasks::Record,
+    provider: &dyn Provider,
+    executor: &mut Executor,
+    config: &Config,
+    interrupt: &AtomicBool,
+    skills: &SkillRegistry,
+    mcp: &McpRegistry,
+) -> Result<()> {
+    if record.status == crate::tasks::Status::Completed {
+        anyhow::bail!("task {} is already completed", record.id);
+    }
+    let objective = record.objective.clone();
+    let changed_provider =
+        record.provider != config.aishe.provider || record.model != config.active_model();
+    let mut messages = if changed_provider {
+        eprintln!(
+            "{}",
+            format!(
+                "aishe: resuming {} with {} / {} instead of {} / {}; \
+                 using provider-neutral canonical history",
+                record.id,
+                config.aishe.provider,
+                config.active_model(),
+                record.provider,
+                record.model
+            )
+            .yellow()
+        );
+        canonical_messages(&record.messages)
+    } else {
+        record.messages.clone()
+    };
+    let mut task = crate::tasks::Active::resume(record);
+    if let Some(pending) = task.record().pending_tool.clone() {
+        println!(
+            "{}",
+            format!(
+                "pending tool '{}' ({}) may not have completed before interruption",
+                pending.call.name, pending.call.id
+            )
+            .yellow()
+        );
+        let skip = if std::io::stdin().is_terminal() {
+            crate::promptui::confirm(
+                "Skip it and let the model inspect current state (never repeat automatically)",
+                true,
+            )?
+            .unwrap_or(false)
+        } else {
+            true
+        };
+        if !skip {
+            task.interrupted(&messages, provider.meter().snapshot());
+            println!("  resume cancelled; task remains interrupted");
+            return Ok(());
+        }
+        if let Some(result) = task.clear_pending_with_result(
+            "Skipped on resume because the prior process may have started this tool. \
+             Inspect current state before proposing another action.",
+        ) {
+            messages.push(result);
+        }
+    }
+    println!("  {}", format!("resuming task {}", task.id()).dim());
+    let outcome = run_loop(
+        &objective, provider, executor, config, interrupt, skills, mcp, messages, &mut task, true,
+    );
+    super::report_usage(provider, config);
+    outcome?;
+    Ok(())
+}
+
+fn canonical_messages(messages: &[Msg]) -> Vec<Msg> {
+    messages
+        .iter()
+        .map(|message| match message {
+            Msg::ProviderItems { assistant, .. } => Msg::Assistant(assistant.clone()),
+            other => other.clone(),
+        })
+        .collect()
 }
 
 /// Compact per-step result shown in non-verbose yolo: the exit code and a line
@@ -547,7 +687,14 @@ fn plan_first(input: &str, ctx: &str, provider: &dyn Provider, config: &Config) 
         Ok(p) => p,
         Err(e) => {
             crate::audit::ai_error("yolo-plan", config.active_model(), &e.to_string());
-            eprintln!("{}", format!("aishe: planning failed: {e}").red());
+            eprintln!(
+                "{}",
+                format!(
+                    "aishe: planning failed: {}",
+                    crate::providers::actionable_error(&e)
+                )
+                .red()
+            );
             return PlanOutcome::Skip;
         }
     };

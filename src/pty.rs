@@ -68,12 +68,17 @@ pub fn run_zsh(config: &Config, history_log: &std::path::Path) -> Result<u8> {
     cmd.env("AISHE_OUR_ZDOTDIR", &zdotdir);
     cmd.env("AISHE_REAL_ZDOTDIR", &real_zdotdir);
     cmd.env("AISHE_MODE", &config.aishe.mode);
-    cmd.env("AISHE_MODEL", config.active_model());
+    let display_model = crate::commands::display_safe(config.active_model());
+    cmd.env("AISHE_MODEL", &display_model);
+    cmd.env(
+        "AISHE_FAILURE_HINTS",
+        if config.aishe.failure_hints { "1" } else { "0" },
+    );
     // `aishe model <name>` runs as a child of zsh, so it cannot directly update
     // the parent shell's AISHE_MODEL. Share the current value through a tiny
     // per-session file that the prompt hook reads before every prompt.
     let model_file = std::env::temp_dir().join(format!("aishe-model-{}", std::process::id()));
-    let _model_guard = if std::fs::write(&model_file, config.active_model()).is_ok() {
+    let _model_guard = if std::fs::write(&model_file, &display_model).is_ok() {
         cmd.env("AISHE_MODEL_FILE", &model_file);
         Some(FileGuard(model_file))
     } else {
@@ -90,6 +95,30 @@ pub fn run_zsh(config: &Config, history_log: &std::path::Path) -> Result<u8> {
     std::fs::remove_file(&usage_file).ok();
     cmd.env("AISHE_USAGE_FILE", &usage_file);
     let _usage_guard = FileGuard(usage_file.clone());
+    // A separately rendered status file lets the next prompt show last-call and
+    // session totals without spawning a helper process from every `precmd`.
+    let status_file = std::env::temp_dir().join(format!("aishe-status-{}", std::process::id()));
+    crate::usagelog::write_status(
+        &status_file,
+        &usage_file,
+        &config.pricing,
+        None,
+        &config.aishe.status_line_items,
+    );
+    cmd.env("AISHE_STATUS_FILE", &status_file);
+    cmd.env(
+        "AISHE_STATUS_POSITION",
+        if config.aishe.status_line {
+            config.aishe.status_line_position.as_str()
+        } else {
+            "off"
+        },
+    );
+    cmd.env(
+        "AISHE_STATUS_ITEMS",
+        config.aishe.status_line_items.join(","),
+    );
+    let _status_guard = FileGuard(status_file);
     // Persist interactive commands to aishe's timestamped history log (via a zsh
     // preexec hook), so `aishe history` and semantic search have data — the PTY's
     // commands run in real zsh, not through aishe's executor. When the user's
@@ -97,6 +126,11 @@ pub fn run_zsh(config: &Config, history_log: &std::path::Path) -> Result<u8> {
     // native history so Up-arrow/Ctrl-R survive sessions and binary upgrades.
     if let Some(parent) = history_log.parent() {
         let _ = std::fs::create_dir_all(parent);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = std::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o700));
+        }
     }
     // zsh's SHARE_HISTORY appender expects the history file to exist. Create it
     // privately on first use; the mode only applies to a new file and never

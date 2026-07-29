@@ -6,9 +6,12 @@
 #
 # Environment overrides:
 #   AISHE_VERSION   release tag to install (default: latest), e.g. v0.1.5
+#   AISHE_RELEASE_BASE_URL  release root override for mirrors/tests
 #   AISHE_BIN_DIR   install directory (default: /usr/local/bin, or ~/.local/bin
 #                   if that is not writable)
 #   AISHE_SKIP_ZSH  set to 1 to skip ensuring zsh is installed
+# Arguments:
+#   --setup         run interactive setup after a fresh/updated install (TTY only)
 #
 # aishe's interactive shell drives your real zsh in a PTY (your plugins, history,
 # job control, completions), so it needs zsh. This installer ensures zsh is
@@ -22,9 +25,30 @@ set -eu
 
 REPO="billiondollarsolo/aishe"
 VERSION="${AISHE_VERSION:-latest}"
+RUN_SETUP=0
+for arg in "$@"; do
+  case "$arg" in
+    --setup) RUN_SETUP=1 ;;
+    *) printf 'aishe-install: unknown argument: %s\n' "$arg" >&2; exit 1 ;;
+  esac
+done
 
 err() { printf 'aishe-install: %s\n' "$1" >&2; exit 1; }
 note() { printf 'aishe-install: %s\n' "$1" >&2; }
+
+# Inventory only metadata (file count + allocated size), never names or
+# contents. This is proof that an update does not use config/data as scratch.
+state_inventory() {
+  label="$1"
+  path="$2"
+  if [ -d "$path" ]; then
+    count="$(find "$path" -type f 2>/dev/null | wc -l | tr -d ' ')"
+    kib="$(du -sk "$path" 2>/dev/null | awk '{print $1}')"
+    note "$label: $path (${count:-0} files, ${kib:-0} KiB)"
+  else
+    note "$label: $path (not present)"
+  fi
+}
 
 # Best-effort: make sure zsh is installed (aishe's interactive shell drives it).
 # Never fatal -- the binary is already installed by the time this runs, and the
@@ -100,7 +124,7 @@ tarball="aishe-${target}.tar.gz"
 printf 'aishe-install: detected %s/%s -> target %s\n' "$os" "$arch" "$target" >&2
 
 # --- resolve download URL ---------------------------------------------------
-base="https://github.com/${REPO}/releases"
+base="${AISHE_RELEASE_BASE_URL:-https://github.com/${REPO}/releases}"
 if [ "$VERSION" = "latest" ]; then
   url="${base}/latest/download/${tarball}"
 else
@@ -122,19 +146,23 @@ trap 'rm -rf "$tmp"' EXIT
 printf 'aishe-install: downloading %s\n' "$target" >&2
 dl "$url" "$tmp/$tarball" || err "download failed: $url"
 
-# --- verify checksum (best effort: skip if no sha256 tool) ------------------
-if dl "${url}.sha256" "$tmp/$tarball.sha256" 2>/dev/null; then
-  expected="$(awk '{print $1}' "$tmp/$tarball.sha256")"
-  if command -v sha256sum >/dev/null 2>&1; then
-    actual="$(sha256sum "$tmp/$tarball" | awk '{print $1}')"
-  elif command -v shasum >/dev/null 2>&1; then
-    actual="$(shasum -a 256 "$tmp/$tarball" | awk '{print $1}')"
-  else
-    actual=""
-  fi
-  if [ -n "$actual" ] && [ "$actual" != "$expected" ]; then
-    err "checksum mismatch (expected $expected, got $actual)"
-  fi
+# --- verify checksum (required; never install an unverified download) --------
+dl "${url}.sha256" "$tmp/$tarball.sha256" 2>/dev/null ||
+  err "checksum download failed: ${url}.sha256"
+expected="$(awk 'NR == 1 {print $1}' "$tmp/$tarball.sha256")"
+case "$expected" in
+  *[!0-9a-fA-F]* | "") err "release checksum is malformed" ;;
+esac
+[ "${#expected}" -eq 64 ] || err "release checksum is malformed"
+if command -v sha256sum >/dev/null 2>&1; then
+  actual="$(sha256sum "$tmp/$tarball" | awk '{print $1}')"
+elif command -v shasum >/dev/null 2>&1; then
+  actual="$(shasum -a 256 "$tmp/$tarball" | awk '{print $1}')"
+else
+  err "need sha256sum or shasum to verify the release"
+fi
+if [ "$actual" != "$expected" ]; then
+  err "checksum mismatch (expected $expected, got $actual)"
 fi
 
 tar -xzf "$tmp/$tarball" -C "$tmp"
@@ -168,6 +196,23 @@ else
 fi
 mkdir -p "$bindir"
 
+existing=0
+old_version="not installed"
+if [ -x "$bindir/aishe" ]; then
+  existing=1
+  old_version="$("$bindir/aishe" --version 2>/dev/null || printf unknown)"
+fi
+
+if [ "$os" = "Darwin" ]; then
+  config_state="${AISHE_CONFIG_DIR:-$HOME/Library/Application Support}/aishe"
+  data_state="${AISHE_DATA_DIR:-$HOME/Library/Application Support}/aishe"
+else
+  config_state="${AISHE_CONFIG_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}}/aishe"
+  data_state="${AISHE_DATA_DIR:-${XDG_DATA_HOME:-$HOME/.local/share}}/aishe"
+fi
+state_inventory "config before install" "$config_state"
+state_inventory "data before install" "$data_state"
+
 if [ -w "$bindir" ]; then
   install -m 0755 "$tmp/aishe" "$bindir/aishe"
 elif command -v sudo >/dev/null 2>&1; then
@@ -177,6 +222,14 @@ else
 fi
 
 printf 'aishe-install: installed %s to %s/aishe\n' "$target" "$bindir" >&2
+new_version="$("$bindir/aishe" --version 2>/dev/null || printf unknown)"
+if [ "$existing" = 1 ]; then
+  note "upgrade: $old_version -> $new_version"
+else
+  note "fresh install: $new_version"
+fi
+state_inventory "config after install (untouched)" "$config_state"
+state_inventory "data after install (untouched)" "$data_state"
 case ":$PATH:" in
   *":$bindir:"*) : ;;
   *) printf 'aishe-install: note: %s is not on your PATH\n' "$bindir" >&2 ;;
@@ -200,7 +253,28 @@ ensure_zsh
 # `aishe dry-run` and the bwrap yolo sandbox need it for OS isolation. Keep the
 # tarball installer non-invasive and explain the missing capability.
 if [ "$os" = "Linux" ] && ! command -v bwrap >/dev/null 2>&1; then
-  note "optional bubblewrap not found; core aishe works, but install bubblewrap to enable 'aishe dry-run' and the bwrap sandbox."
+  note "optional bubblewrap not found; core aishe works, but 'aishe dry-run' and the strongest yolo sandbox require it."
+  if command -v apt-get >/dev/null 2>&1; then
+    note "enable those features with: sudo apt-get install bubblewrap"
+  elif command -v dnf >/dev/null 2>&1; then
+    note "enable those features with: sudo dnf install bubblewrap"
+  elif command -v pacman >/dev/null 2>&1; then
+    note "enable those features with: sudo pacman -S bubblewrap"
+  elif command -v apk >/dev/null 2>&1; then
+    note "enable those features with: sudo apk add bubblewrap"
+  fi
 fi
 
-"$bindir/aishe" --version || true
+if [ "$existing" = 1 ]; then
+  note 'Run `aishe doctor` to verify the upgraded installation.'
+else
+  note 'Run `aishe setup`'
+fi
+
+if [ "$RUN_SETUP" = 1 ]; then
+  if [ -t 0 ] && [ -t 1 ]; then
+    "$bindir/aishe" setup
+  else
+    err "--setup requires interactive stdin and stdout; install completed, run 'aishe setup' in a terminal"
+  fi
+fi

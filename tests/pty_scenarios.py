@@ -250,6 +250,75 @@ def main():
             sh.expect("AISHE_RH=0 4 fg=green"),
         )
         sh.raw(b"\x03")
+        sh.expect("ZP> ")
+
+        # The first token can be a real command and initially green, then the
+        # completed buffer can become a natural-language question. Define the
+        # three collision names on every platform so the test does not depend
+        # on whether the host happens to ship /usr/bin/what or a `where` helper.
+        sh.send(
+            "what() { return 77; }; "
+            "where() { return 77; }; "
+            "who() { return 77; }"
+        )
+        sh.expect("ZP> ")
+        sh.buf = ""
+        sh.raw(b"what")
+        sh.settle(0.3)
+        sh.raw(b"\x18\x08")
+        check(
+            sh,
+            "ambiguous bare command starts green",
+            sh.expect("AISHE_RH=0 4 fg=green"),
+        )
+        sh.raw(b"\x03")
+        sh.expect("ZP> ")
+
+        for line, name in [
+            ("what is the capital of France", "what-question turns AI-colored"),
+            ("where is the ssh config", "where-question turns AI-colored"),
+            ("who am i logged in as", "who-question turns AI-colored"),
+        ]:
+            sh.buf = ""
+            sh.raw(line.encode("utf-8"))
+            sh.settle(0.3)
+            sh.raw(b"\x18\x08")
+            check(
+                sh,
+                name,
+                sh.expect("AISHE_RH=0 %d fg=magenta" % len(line)),
+            )
+            sh.raw(b"\x03")
+            sh.expect("ZP> ")
+
+        # Bare/ordinary commands remain shell-colored even after the collision
+        # grammar is enabled.
+        sh.buf = ""
+        sh.raw(b"who")
+        sh.settle(0.3)
+        sh.raw(b"\x18\x08")
+        check(sh, "bare who remains a shell command", sh.expect("AISHE_RH=0 3 fg=green"))
+        sh.raw(b"\x03")
+        sh.expect("ZP> ")
+        sh.buf = ""
+        sh.raw(b"ls -la")
+        sh.settle(0.3)
+        sh.raw(b"\x18\x08")
+        check(sh, "Linux command with arguments stays green", sh.expect("AISHE_RH=0 2 fg=green"))
+        sh.raw(b"\x03")
+        sh.expect("ZP> ")
+
+        # Enter uses the same grammar as highlighting. This is the regression
+        # assertion: a valid `what` command must not run once the full line is a
+        # recognizable question.
+        set_fake(sh, answer("ANSWER_COLLISION_42"))
+        sh.send("what is the capital of France")
+        check(
+            sh,
+            "question collision routes consistently with its color",
+            sh.expect("ANSWER_COLLISION_42"),
+        )
+
         # Keep later assertions about literal terminal echoes independent of
         # ANSI color sequences; the fallback itself has now been verified. Wait
         # for Ctrl-C to finish before sending the assignment, and put the marker
@@ -338,12 +407,63 @@ def main():
         sh.settle(0.3)
         sh.buf = ""
         set_fake(sh, command("echo FIXED_SCEN9_42", "corrected"))
+        hint_start = len(sh.transcript)
         sh.send("false")
+        check(
+            sh,
+            "failed command prints one recovery hint",
+            sh.expect("aishe: exit 1"),
+        )
         sh.settle(0.4)
+        hint_segment = sh.transcript[hint_start:]
+        check(
+            sh,
+            "failure hint is not repeated on prompt redraw",
+            hint_segment.count("aishe: exit 1") == 1,
+        )
         sh.buf = ""
         sh.raw(b"\x18\x06")  # Ctrl-X Ctrl-F
         check(sh, "fix key pre-fills a correction", sh.expect("echo FIXED_SCEN9_42"))
         sh.raw(b"\x03")  # clear the pre-filled line without running it
+
+        # Success, Ctrl-C, and an explicit opt-out must remain quiet.
+        sh.send("export AISHE_FAILURE_HINTS=0")
+        quiet_start = len(sh.transcript)
+        sh.send("false")
+        sh.send("print -r -- HINTS_DISABLED_DONE")
+        check(sh, "disabled failure hints stay quiet", sh.expect("HINTS_DISABLED_DONE"))
+        sh.settle(0.3)
+        check(
+            sh,
+            "disabled failure produced no recovery hint",
+            "aishe: exit 1" not in sh.transcript[quiet_start:],
+        )
+        sh.send("export AISHE_FAILURE_HINTS=1")
+
+        success_start = len(sh.transcript)
+        sh.send("true")
+        sh.send("print -r -- SUCCESS_HINT_DONE")
+        check(sh, "successful command stays hint-free", sh.expect("SUCCESS_HINT_DONE"))
+        sh.settle(0.3)
+        check(
+            sh,
+            "success produced no recovery hint",
+            "aishe: exit" not in sh.transcript[success_start:],
+        )
+
+        interrupt_start = len(sh.transcript)
+        sh.send("sleep 10")
+        sh.settle(0.3)
+        sh.raw(b"\x03")
+        sh.settle(0.3)
+        sh.send("print -r -- INTERRUPT_HINT_DONE")
+        check(sh, "Ctrl-C returns to the prompt", sh.expect("INTERRUPT_HINT_DONE"))
+        sh.settle(0.3)
+        check(
+            sh,
+            "Ctrl-C produced no recovery hint",
+            "aishe: exit 130" not in sh.transcript[interrupt_start:],
+        )
 
         # 10. Per-session usage summary: with token recording on (AISHE_FAKE_USAGE),
         #     an NL call tallies its tokens, and the PTY prints a one-line cost

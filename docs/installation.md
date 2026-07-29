@@ -33,6 +33,9 @@ it:
 curl -fsSL https://raw.githubusercontent.com/billiondollarsolo/aishe/main/install.sh | sh
 ```
 
+Checksum verification is mandatory: the installer stops before replacing the
+binary if the release checksum is unavailable, malformed, or does not match.
+
 The script also ensures **zsh** is installed (best effort, via your system
 package manager), because aishe's interactive shell drives your real zsh in a
 PTY. Without zsh you can still use `aishe -c …`, piped input, and the bash hook
@@ -40,6 +43,16 @@ PTY. Without zsh you can still use `aishe -c …`, piped input, and the bash hoo
 On Linux it also reports when optional **bubblewrap** is absent; it does not
 install it automatically because only the dry-run and `bwrap` sandbox features
 need it.
+
+Pass `--setup` to start guided setup after installation:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/billiondollarsolo/aishe/main/install.sh | sh -s -- --setup
+```
+
+An update replaces only the installed binary. It inventories the existing
+config and data locations before replacement and leaves configuration, history,
+durable tasks, audit logs, undo journals, and trust data untouched.
 
 It installs to `/usr/local/bin` when writable, otherwise `~/.local/bin`. Override
 with environment variables:
@@ -176,6 +189,9 @@ git pull
 cargo install --path . --force
 ```
 
+Re-running the install script is also an in-place binary update. It does not
+rerun setup unless you pass `--setup`, and never removes user state.
+
 ## Uninstall
 
 ```sh
@@ -197,15 +213,20 @@ rm -rf ~/"Library/Application Support/aishe"
 
 `aishe doctor` prints the resolved paths, so run it first if you are unsure.
 
-## What gets created on first run
+## What setup and use create
 
 aishe uses each platform's own directories — `~/.config/aishe` and
 `~/.local/share/aishe` on Linux, `~/Library/Application Support/aishe` for both
 on macOS. See [File locations](configuration.md#file-locations) for the full
 table and the `AISHE_CONFIG_DIR` / `AISHE_DATA_DIR` overrides.
 
-- `config.toml` in the config directory is written by the first-run wizard.
-- `history` in the data directory stores command history for the `history` builtin.
-- Nothing else is created until you add custom commands or skills.
+- `config.toml` in the config directory is written only after you apply
+  `aishe setup` or save a setting.
+- `history.ext` in the data directory is the timestamped shared shell history.
+- `tasks/` contains private, redacted durable agentic-task checkpoints. A
+  stateless reasoning checkpoint can also contain opaque encrypted provider
+  continuation data; support bundles never include task contents.
+- `capabilities/` caches endpoint/model feature checks.
+- `setup-draft.json` exists only while a resumable setup is in progress.
 
 Next: [Getting started](getting-started.md).

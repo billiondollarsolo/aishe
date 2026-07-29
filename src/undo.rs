@@ -125,13 +125,28 @@ fn record_to(
 fn append(journal: &Path, rec: &Record) -> Result<()> {
     if let Some(parent) = journal.parent() {
         std::fs::create_dir_all(parent).ok();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = std::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o700));
+        }
     }
     let line = serde_json::to_string(rec).context("serializing undo record")?;
-    let mut f = OpenOptions::new()
-        .create(true)
-        .append(true)
+    let mut options = OpenOptions::new();
+    options.create(true).append(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let mut f = options
         .open(journal)
         .with_context(|| format!("opening undo journal {}", journal.display()))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(journal, std::fs::Permissions::from_mode(0o600));
+    }
     writeln!(f, "{line}").context("writing undo record")?;
     Ok(())
 }

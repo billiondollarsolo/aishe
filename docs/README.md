@@ -9,8 +9,8 @@ If you are new, start with [Installation](installation.md) and then
 
 ## Guide
 
-- [Installation](installation.md) - build from source today, prebuilt packages later
-- [Getting started](getting-started.md) - first run, the wizard, your first requests
+- [Installation](installation.md) - prebuilt releases, packages, or source
+- [Getting started](getting-started.md) - guided setup and your first requests
 - [Modes](modes.md) - suggest, auto, yolo, streaming, structured output
 - [Front-ends](front-ends.md) - the zsh-PTY interactive shell and the native hook
 - [Providers](providers.md) - Anthropic, OpenAI, Groq, Ollama, and others
@@ -28,6 +28,7 @@ If you are new, start with [Installation](installation.md) and then
 - [Development](development.md) - building, testing, and the validation harness
 - [Roadmap](ROADMAP.md) - the tracked checklist of where aishe is headed
 - [Master plan](design/PLAN.md) - the long-form plan: reasoning, sequencing, and acceptance criteria
+- [Interactive UX milestone](design/UX_MILESTONE_PLAN.md) - implementation and validation contract for setup, diagnostics, status, and durable tasks
 - [Feature proposals](proposals.md) - detailed specs for the next wave (robustness + differentiators)
 
 ## Reference files in the repo

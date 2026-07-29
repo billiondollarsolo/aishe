@@ -163,7 +163,10 @@ fn run_stream(
         Ok(f) => f,
         Err(e) => {
             crate::audit::ai_error(mode, model, &e.to_string());
-            eprintln!("{}", format!("aishe: {e}").red());
+            eprintln!(
+                "{}",
+                format!("aishe: {}", crate::providers::actionable_error(&e)).red()
+            );
             return Ok(());
         }
     };
@@ -362,7 +365,10 @@ pub fn request(
         }
         Err(e) => {
             crate::audit::ai_error(mode, model, &e.to_string());
-            eprintln!("{}", format!("aishe: {e}").red());
+            eprintln!(
+                "{}",
+                format!("aishe: {}", crate::providers::actionable_error(&e)).red()
+            );
             // Surface the failure as an empty answer so the REPL keeps going.
             Ok(Suggestion::Answer {
                 explanation: String::new(),

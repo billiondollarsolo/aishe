@@ -34,14 +34,21 @@ tests in `tests/` can exercise internals directly.
 | `executor` | Run shell lines via `zsh -c`/`bash -c`; intercept state-mutating builtins (`cd`, `export`, ...); capture output; job table. |
 | `pty` | The flagship front-end: run the user's real interactive zsh inside a PTY. |
 | `integration` | The zsh/bash hook scripts (`aishe init zsh`) injected as `command_not_found_handler` + `precmd` + ZLE widgets. |
+| `setup` / `promptui` | Resumable setup state machine and reusable interactive menus/text prompts. |
+| `settings` / `profiles` | Transactional settings with provenance; named safety bundles and readiness checks. |
+| `provider_catalog` / `capabilities` | Service presets, transport/auth policy, model listing, live validation, and capability cache. |
+| `diagnostics` | Structured Doctor checks, safe repairs, JSON, and redacted support bundles. |
 | `providers` | The `Provider` trait and its Anthropic / OpenAI-compatible / fake implementations; retries, streaming, usage metering. |
 | `modes` | `suggest` and `yolo` (agentic) modes, the safety gate wrapper, markdown rendering. |
 | `tools` | Built-in agentic tools (`read_file`/`write_file`/`edit_file`/`list_dir`, `fetch_url`). |
 | `mcp` | Minimal MCP client (stdio + Streamable HTTP); exposes server tools to yolo as `mcp__<server>__<tool>`. |
 | `safety` / `sandbox` | Destructive-command gate; best-effort policy sandbox (network / out-of-tree writes) for yolo. |
 | `context` | The environment context block (cwd, dir listing, recent history, project context) prepended to LLM requests. |
+| `tasks` | Private durable yolo checkpoints, interrupted-task lifecycle, and safe resume. |
+| `tour` | Resumable guided first-session lessons in an isolated workspace. |
+| `usagelog` | Cross-process PTY usage aggregation and live status rendering data. |
 | `session` | In-session conversation memory, persisted to a per-session file for the hook front-ends (whose NL calls are separate processes). |
-| `config` | Config schema, load/migrate/save, the first-run wizard, CLI-override and project-overlay precedence. |
+| `config` | Versioned config schema, atomic migration/save, CLI override and project-overlay precedence. |
 | `trust` | Trust store for project `.aishe/config.toml` overlays (`aishe trust`). |
 | `cache` | Short-TTL response cache wrapping a `Provider` for identical suggest repeats. |
 | `redact` | Best-effort secret scrubbing of the context block. |
@@ -75,9 +82,12 @@ win:
    `|`/`;`/`&&`/`||`. Shell only if *every* segment's head is a known command or a
    reserved word, else natural language. (So `grep -E 'a|b'` stays one segment and
    `find junk | wat` falls through to the model.)
-7. **Cache hit:** if the effective head (after skipping `K=V` prefixes) is in the
+7. **Question grammar:** a conservative full-buffer grammar routes common
+   question forms whose first word collides with a real command (`what is`,
+   `where is`, `who am`, ...). Bare/option/path forms remain shell.
+8. **Cache hit:** if the effective head (after skipping `K=V` prefixes) is in the
    command cache, it is shell.
-8. **Otherwise:** natural language.
+9. **Otherwise:** natural language.
 
 ### The command cache
 
@@ -157,6 +167,10 @@ implementation maps messages to its wire format.
 `providers::make(config)` builds the configured provider, returns the fake when
 the env hook is set, and optionally wraps it in `cache::CachingProvider`. Retries
 (429/5xx/connection) use shared backoff-with-jitter that honors `Retry-After`.
+Provider errors are typed (auth/model/capability/rate/network/server/request), so
+the CLI can name the failing setting and suggest the right recovery command.
+`capabilities.rs` validates text/schema/tools/streaming and caches the result per
+endpoint/model/transport.
 
 **Structured-output step-down.** `ResponseFormat` is `Text` / `Json` /
 `JsonSchema`. Strict schema is best-effort: if an OpenAI-compatible server rejects
@@ -167,12 +181,15 @@ rejected so the loop can't spin. Callers always parse defensively regardless. Se
 
 ### Context and memory
 
-`context.rs` builds the block prepended to each request: cwd, a capped directory
-listing, recent command history, and an optional per-project `.aishe/context.md`.
-It never includes file contents. `redact.rs` scrubs likely secrets first (when
-`redact_secrets` is on). `session.rs` keeps a rolling transcript so follow-ups
-have context, persisted to a per-session file by the hook
-front-ends (whose NL calls are separate processes).
+`context.rs` builds typed sections for cwd/shell, a capped directory listing,
+recent command history, project instructions/tasks, git, and host profile. The
+runtime prompt and `aishe context --explain/--json` use the same section objects;
+the JSON form includes metadata but intentionally omits section text.
+Short-lived PTY children merge their in-memory queue with the newest entries in
+the persistent Aishe history log, so context does not reset between prompts.
+`redact.rs` scrubs likely secrets before runtime and preview output.
+`session.rs` keeps a rolling transcript so follow-ups have context, persisted to
+a per-session file by hook front-ends whose NL calls are separate processes.
 
 ### Modes (`src/modes/`)
 
@@ -182,7 +199,12 @@ front-ends (whose NL calls are separate processes).
 - **yolo** (`yolo.rs`): an agentic loop. The model is offered `run_command` plus
   (per config) the built-in file/web tools, MCP tools, and skills. Each tool call
   is gated, run, and its result fed back as a `Msg::ToolResult` until the model
-  stops or `max_yolo_iterations` is hit.
+  stops or `max_yolo_iterations` is hit. `tasks.rs` atomically checkpoints the
+  canonical/provider-native state before and after calls, enabling safe resume.
+  Plaintext content and arguments are redacted. Provider-generated item/call IDs
+  and opaque encrypted reasoning continuation data are retained exactly in the
+  private task file so a stateless `store: false` Responses session can resume;
+  support bundles never include task contents.
 
 ### The safety gate and sandbox
 
@@ -206,21 +228,24 @@ skills in the Claude-Code-compatible format.
 
 ## Cross-cutting concerns
 
-- **Config (`config.rs`).** Precedence is `CLI flags > project overlay > user
+- **Config (`config.rs`).** Schema v2 migration creates a private backup and
+  atomically rewrites the config. Precedence is `CLI flags > project overlay > user
   config > compiled defaults`. `Config::apply_overrides` applies the flag layer;
   `Config::apply_project_overlay` merges a repo's `.aishe/config.toml` under the
   tiered trust rules (safe keys always, sensitive keys only when `trust::is_trusted`),
   walking up from cwd. Audit logging resolves `AISHE_LOG`/`AISHE_LOG_FILE` over the
-  file via `resolve_audit` (in `main.rs`). A missing config triggers the first-run
-  wizard (only on a TTY); a pre-rename `llmsh` config is migrated on first run. All
-  precedence is unit/E2E tested.
+  file via `resolve_audit` (in `main.rs`). Missing non-TTY config is actionable and
+  never creates guessed defaults; guided setup is explicit and resumable. A
+  pre-rename `llmsh` config is migrated on first run. All precedence is unit/E2E
+  tested.
 - **Project trust (`trust.rs`).** A small JSON store under the data dir mapping a
   project config's absolute path to a content hash, so editing a trusted file
   drops trust. Managed with `aishe trust` / `aishe untrust`. See
   [project-config.md](project-config.md).
 - **Usage and budget (`usage.rs`).** A shared `UsageMeter` per provider records
   tokens; cost is estimated from a pricing table (overridable in config) and
-  enforced against `budget_usd`.
+  enforced against `budget_usd`. `usagelog.rs` combines the short-lived PTY child
+  calls into ordered live right/below status metrics.
 - **Audit and redaction.** Off by default. When on, prompts/responses/actions are
   written as JSONL; redaction applies to both the context block and the log.
 
@@ -236,8 +261,10 @@ See [development.md](development.md) for commands. The shape:
 - **Deterministic PTY suites** (Python, driven by the fake provider, no key, in
   CI): `tests/pty_scenarios.py` (targeted flows), `tests/pty_fuzz.py` (thousands
   of generative cases, logged to `test-results/fuzz-*.md`), and
-  `tests/zsh_features.py` (a 44-case zsh feature matrix). These prove routing and
-  the hook hold through a real zsh.
+  `tests/zsh_features.py` (a 44-case zsh feature matrix), plus
+  `tests/setup_pty.py`, `tests/statusline_pty.py`, and
+  `tests/durable_task_resume.py`. These prove setup cancellation, route-aware
+  highlighting, prompt status, and interrupted-task recovery through real PTYs.
 - **Opt-in real-model suite:** `tests/real_model.py` runs a classification corpus
   against a live endpoint when `AISHE_REALTEST_KEY` is set.
 - **Validation harness:** `tests/admin_validation.py` exercises a broad surface

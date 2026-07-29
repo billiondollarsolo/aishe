@@ -9,8 +9,11 @@ subcommands, a few inspection commands, and input prefixes that control routing.
 aishe                  launch the interactive zsh-PTY shell
 aishe zsh              the same, explicitly
 aishe -c '<line>'      run one line non-interactively and exit
+aishe setup            guided/resumable configuration and verification
+aishe settings         interactive settings hub with value provenance
+aishe tour             resumable guided first-session tour
 aishe init zsh|bash    print the shell-hook snippet (for ~/.zshrc / ~/.bashrc)
-aishe doctor           check shell, config, provider, and API key
+aishe doctor           diagnostics; --probe/--live/--json/--fix/--bundle
 aishe completions ...  print a shell completion script for aishe itself
 aishe trust [PATH]     trust this repo's .aishe/config.toml, or one project file
 aishe trust --list     list every trusted file
@@ -19,6 +22,11 @@ aishe untrust [PATH]   drop trust for this repo (or one file); --all for every o
 aishe mode [suggest|auto|yolo]      show or set the interaction mode
 aishe model [NAME]                  show or set the model (for the active provider)
 aishe provider [anthropic|openai]   show or set the provider
+aishe provider test [--live] [--json]  validate the active provider
+aishe models [--provider NAME]      list models returned by an endpoint
+aishe profile [VALUE]               show/apply a transparent safety profile
+aishe readiness [--json]            check autonomous-mode readiness
+aishe price list|set|remove         manage exact model price overrides
 aishe config                        print the active configuration
 aishe mcp                           list the MCP tools offered to yolo
 aishe commands                      list your custom slash-commands
@@ -28,6 +36,9 @@ aishe log [filters]                 show the audit log of AI calls and actions
 aishe usage [--by model|day|session]  token/cost totals from the audit log
 aishe context                       print the context block sent to the model
 aishe runbook [--session ID|-o DIR|--replay]  export a session as a script + runbook
+aishe sessions                      list durable AI task records
+aishe session show|rename|delete    inspect/manage exactly one task
+aishe resume [ID]                   resume an interrupted task
 ```
 
 These are real subcommands, so they work the same in the interactive zsh-PTY
@@ -83,6 +94,10 @@ aishe mode auto         # persist the default mode
 aishe provider openai   # switch provider...
 aishe model gpt-4o      # ...then set that provider's model
 ```
+
+Use `aishe settings` for the interactive editor. It shows whether each effective
+value came from defaults, the user config, a trusted project overlay, or a
+session override; changes are staged and written only when you apply them.
 
 The saved value goes to your user config (a project overlay or a `--mode`/
 `--provider` flag on the same command is not baked in). You can also set these

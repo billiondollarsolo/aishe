@@ -24,15 +24,20 @@ autonomously** until the task is done.
 # 1. Install (Linux/macOS; downloads the right prebuilt binary + verifies it)
 curl -fsSL https://raw.githubusercontent.com/billiondollarsolo/aishe/main/install.sh | sh
 
-# 2. Point it at a provider (any OpenAI-compatible endpoint or Anthropic)
+# 2. Point it at a provider (the key stays in your environment)
 export ANTHROPIC_API_KEY=sk-...            # or OPENAI_API_KEY / a local Ollama
 
-# 3. Use it right away, no shell hook needed
+# 3. Configure, validate, and take the optional guided tour
+aishe setup
+aishe doctor --probe
+aishe tour
+
+# 4. Use it right away, no shell hook needed
+aishe                                      # launches your real zsh with aishe active
 aishe -c "turn the logs directory into a tarball"   # prints a command to run
 aishe suggest --json "list files by size" | jq -r .command   # scriptable output
-aishe doctor                                # verify shell, provider, and key
 
-# 4. (Optional) make every new terminal AI-aware
+# 5. (Optional) make every new terminal AI-aware without launching `aishe`
 echo 'eval "$(aishe init zsh)"' >> ~/.zshrc   # or: aishe init bash  >> ~/.bashrc
 ```
 
@@ -85,7 +90,14 @@ of a shell. Prefix it with `?` to force the natural-language route
 - 🧰 **Agentic tools.** In yolo, the model edits files precisely, fetches web pages,
   and calls your [MCP servers](docs/mcp.md) and [skills](docs/custom-commands-and-skills.md).
 - 💸 **Cost-aware.** Per-call and whole-session token/cost metering with an optional
-  hard budget cap, so there are no surprise bills.
+  hard budget cap, plus a configurable right-prompt or below-prompt status line.
+  Setup asks for exact prices when the selected model is unknown.
+- 💾 **Durable AI tasks.** Agentic sessions checkpoint before and after tool calls,
+  so `aishe sessions` and `aishe resume` can recover interrupted work without
+  blindly repeating a command that may already have run.
+- 🧭 **Guided setup and diagnostics.** `aishe setup`, `aishe settings`, and
+  `aishe tour` are resumable interactive flows; `aishe doctor --json`,
+  `--fix`, `--bundle`, and `--live` make problems actionable.
 - 🔒 **Private by default.** API keys are read from the environment (never written
   to disk), secrets are redacted from the model context, and there's an optional
   local audit log (`aishe log` / `aishe usage`).
@@ -128,11 +140,14 @@ needed.
 
 ```sh
 export ANTHROPIC_API_KEY=sk-ant-...   # or OPENAI_API_KEY=...  (never written to disk)
-aishe                                 # first run writes config.toml (see below)
+aishe setup                           # guided, resumable configuration
+aishe                                 # launch your real zsh with aishe active
 ```
 
 Then type real commands as usual, or type a request in plain English. Not sure
-your setup is right? Run `aishe doctor`. A full walkthrough is in
+your setup is right? Run `aishe doctor --probe`. Setup configures aishe; it
+cannot modify the already-running parent shell, so run `aishe` afterward (or
+install the optional shell hook). A full walkthrough is in
 [docs/getting-started.md](docs/getting-started.md).
 
 **Where aishe keeps its files.** It follows each platform's convention, so the
@@ -206,8 +221,11 @@ There are three ways to use aishe. Details in
    oh-my-zsh, completions) work unmodified, including job control. A
    `command_not_found_handler` routes natural language to the LLM. **This requires
    zsh**; without it, aishe tells you to install it. On a minimal account with no
-   syntax-highlighting plugin, aishe colors a recognized first command word green;
-   a real zsh highlighting plugin automatically takes precedence.
+   syntax-highlighting plugin, aishe highlights complete command-shaped input
+   green and natural-language questions magenta. It evaluates the whole buffer:
+   `what --version` remains a command, while `what is my IP address?` changes to
+   the LLM color even though `what` is an installed command. A real zsh
+   highlighting plugin automatically takes precedence.
 
    ```sh
    aishe        # launch your zsh under aishe
@@ -247,8 +265,11 @@ aishe's subcommands:
 aishe                  launch the interactive zsh-PTY shell
 aishe zsh              the same, explicitly
 aishe -c '<line>'      run one line non-interactively and exit
+aishe setup            guided/resumable configuration; --verify checks only
+aishe settings         interactive settings hub with source/provenance
+aishe tour             resumable first-session walkthrough
 aishe init zsh|bash    print the shell-hook snippet (for ~/.zshrc / ~/.bashrc)
-aishe doctor [--probe] check shell/config/provider/API key (--probe: reachability)
+aishe doctor           diagnostics; --probe/--live/--json/--fix/--bundle
 aishe completions ...  print a shell completion script for aishe itself
 aishe trust [PATH]     trust this repo's .aishe/config.toml, or one project file
 aishe trust --list     list every trusted file
@@ -259,6 +280,11 @@ aishe undo [--list]                 revert the last AI/dry-run file change set
 aishe history search '<q>'|index    semantic recall over your shell history
 aishe log | usage                   read the audit log / summarize token cost
 aishe runbook | context             export a session as a runbook / preview context
+aishe sessions | session ...        list/inspect/rename/delete durable AI tasks
+aishe resume [ID]                    safely resume an interrupted task
+aishe price list|set|remove          manage exact per-model price overrides
+aishe profile [VALUE] | readiness    inspect safety profile/autonomy readiness
+aishe models [--provider NAME]       list endpoint models
 
 aishe mode|model|provider [VALUE]   show or set (and persist) a setting
 aishe config|mcp|commands|skills    print the active config / registries
@@ -329,12 +355,17 @@ and [examples/skills/](examples/skills/). Full guide:
 
 ## Token usage and cost
 
-aishe meters every model call. After each interaction it prints a dim
-`N in / N out / N req / ~$cost` line (disable with `show_usage = false`), and
-`aishe usage` shows the session total. Costs come from a built-in price table
-(USD per 1M tokens) that you can override per model in `[pricing]`. Set
-`budget_usd` to stop calling the model once the estimated session cost reaches a
-limit.
+aishe meters every model call. The status line can live in the right prompt,
+under the prompt, or be disabled, and its items are configurable. It can show
+the mode/model, last-call tokens and cost, session tokens/cost, request count,
+budget remaining, task state, and sandbox state. `aishe usage` shows persisted
+totals when audit logging is enabled.
+
+Costs come from a built-in price table (USD per 1M tokens) or an exact user
+override. Setup asks for input/output prices when it cannot price the selected
+model; it never guesses. Use `aishe price list`, `aishe price set MODEL
+--input ... --output ...`, or `aishe settings` later. Set `budget_usd` to stop
+calling the model once the estimated session cost reaches a limit.
 
 ```toml
 [aishe]
@@ -466,13 +497,13 @@ The [docs/](docs/) directory has the full user guide:
 ## Development
 
 ```sh
-cargo build
-cargo test            # unit and integration (integration tests spawn a real shell)
-cargo clippy --all-targets -- -D warnings
-cargo fmt --check
+cargo build --locked
+cargo test --all-targets --locked  # integration tests spawn a real shell
+cargo clippy --all-targets --all-features --locked -- -D warnings
+cargo fmt --all -- --check
 
 # end-to-end validation harness (no API key needed for the deterministic suites)
-cargo build --release && python3 tests/admin_validation.py
+cargo build --release --locked && python3 tests/admin_validation.py
 ```
 
 See [docs/development.md](docs/development.md) for the test layout and how the

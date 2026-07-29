@@ -13,6 +13,10 @@
 # variable named by `api_key_env`.
 
 [aishe]
+# Named setup bundle: conservative | balanced | autonomous | custom. Applying a
+# profile prints every setting it changes; hand edits make it custom.
+safety_profile = "custom"
+
 # Interaction mode for natural-language input.
 #   suggest = propose a command, you confirm  (default)
 #   auto    = run safe commands immediately, confirm dangerous ones
@@ -25,8 +29,8 @@ provider = "anthropic"
 # Optional fallback chain: providers (by block name) tried in turn when the one
 # above fails after its own retries — a dead endpoint or hard error degrades to
 # the next instead of failing. Each named block must have its API-key env set or
-# it is skipped. Example: fall back to a local Ollama configured in
-# [providers.openai] (set OPENAI_API_KEY to any non-empty value for it).
+# it is skipped. Example: fall back to a local Ollama configured with
+# auth_required = false in [providers.openai].
 # provider_fallback = ["openai"]
 
 # In the zsh-PTY front-end, show aishe's branded prompt (`<cwd> <glyph>`, with the
@@ -150,10 +154,23 @@ structured = "schema"
 # Stream answers token-by-token (suggest and auto).
 stream = false
 
+# Provider reasoning effort. `auto` uses the endpoint/model default.
+reasoning_effort = "auto"
+
+# Print one concise recovery hint after a non-zero interactive command.
+failure_hints = true
+
 # Print a dim per-call token+cost line after each model interaction, and a
 # one-line "aishe session: … reqs · ~$…" summary across the whole interactive
 # session when you exit the zsh front-end.
 show_usage = true
+
+# Live branded-prompt status: right | below | off. Detailed fields are easier to
+# read below the prompt on narrow terminals.
+status_line = true
+status_line_position = "right"
+status_line_items = ["model", "mode", "session_cost", "requests"]
+# Other fields: last_tokens, last_cost, session_tokens.
 
 # Stop calling the model once the estimated session cost reaches this many USD.
 # 0 = unlimited. Only enforced when the model's price is known.
@@ -192,6 +209,10 @@ project_tasks = true
 # (cached `which` + local config reads). See `aishe context` to preview the block.
 host_profile = true
 
+# Optional context sections to suppress before each model request. Inspect the
+# available section IDs and token estimates with `aishe context --explain`.
+# context_exclude = ["git", "host_profile"]
+
 # A repo can also ship a project-local config overlay at .aishe/config.toml
 # (discovered like .aishe/context.md) that is merged over this file. Safe keys
 # (model, mode, budget, cosmetics) apply automatically; sensitive keys (provider/
@@ -222,6 +243,8 @@ host_profile = true
 base_url = "https://api.anthropic.com"
 api_key_env = "ANTHROPIC_API_KEY"
 model = "claude-sonnet-4-20250514"
+transport = "auto"
+auth_required = true
 
 [providers.openai]
 # Point base_url at any OpenAI-compatible endpoint:
@@ -232,6 +255,8 @@ model = "claude-sonnet-4-20250514"
 base_url = "https://api.openai.com"
 api_key_env = "OPENAI_API_KEY"
 model = "gpt-4o"
+transport = "auto"    # official OpenAI => Responses; custom endpoints => Chat
+auth_required = true  # set false for a local Ollama; no dummy key is required
 
 # ---------------------------------------------------------------------------
 # Optional: MCP (Model Context Protocol) servers. Their tools are offered to the
@@ -256,9 +281,8 @@ model = "gpt-4o"
 
 # ---------------------------------------------------------------------------
 # Optional: per-model price overrides for cost estimates (USD per 1M tokens).
-# Keys are matched by exact model name first, then by substring. Falls back to a
-# built-in table. Only needed if a model is missing from the table or priced
-# differently for you.
+# Prefer an exact model key (or `aishe price set ...`). Legacy substring keys and
+# then the built-in table are fallbacks. Setup asks when a model is unpriced.
 # ---------------------------------------------------------------------------
 
 # [pricing."openai/gpt-oss-120b"]

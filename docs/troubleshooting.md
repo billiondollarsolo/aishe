@@ -7,7 +7,10 @@ aishe doctor
 ```
 
 It reports your backing shell, config path, resolved front-end, provider, and
-whether the API key is set. Most setup problems show up here.
+whether the exact API-key environment variable is set. Most setup problems show
+up here. Add `--probe` for reachability, `--live` for minimal feature calls,
+`--json` for automation, `--fix` for safe local repairs, or `--bundle PATH` for
+a redacted support bundle.
 
 ## A config file, custom command, or skill is ignored
 
@@ -45,14 +48,16 @@ your config. Export it in the same shell you launch aishe from:
 export ANTHROPIC_API_KEY=sk-ant-...      # or whatever api_key_env names
 ```
 
-For Ollama and other local servers, the variable still has to be set to something
-non-empty even if the server ignores it.
+For a local server such as Ollama, use `auth_required = false`; no dummy key is
+needed.
 
 ## A natural-language request ran as a command
 
-If your request starts with a real command name (for example "find large files"),
-aishe treats it as a command. Force the natural-language route with the `?`
-prefix:
+The full-buffer router recognizes common question grammar even when the first
+word is an installed command: `what is ...`, `where is ...`, and `who am ...`
+route to the LLM and use the natural-language highlight, while `what --version`
+remains a command. For an ambiguous line such as `find large files`, force the
+natural-language route with the `?` prefix:
 
 ```
 ?find large files
@@ -106,7 +111,8 @@ survives.
 ## Costs or budgets look wrong
 
 Cost is estimated from a price table. If your model is missing or priced
-differently, add a `[pricing]` override. See
+differently, run `aishe price set MODEL --input PRICE --output PRICE` or use
+`aishe settings`; setup asks automatically for unknown models. See
 [Token usage and cost](usage-and-cost.md). Budgets are only enforced when the
 model's price is known.
 
@@ -118,16 +124,16 @@ with `stream on` at the aishe prompt, or `stream = true` in your config
 (`stream` is a [prompt-only meta command](commands.md#prompt-only-meta-commands),
 not an `aishe` subcommand).
 
-## Resetting to defaults
+## Repairing or reconfiguring
 
-Remove the config to re-run the first-run wizard. Use the path `aishe doctor`
-reports rather than assuming, since it differs by platform:
+Use `aishe settings` to edit the active configuration or `aishe setup` to rerun
+the guided flow. An interrupted setup resumes with `aishe setup --resume`;
+`aishe setup --restart` discards only its draft and leaves the active config
+untouched.
 
-```sh
-rm ~/.config/aishe/config.toml                        # Linux
-rm ~/"Library/Application Support/aishe/config.toml"  # macOS
-aishe
-```
+A malformed config is never silently replaced with defaults. Aishe reports the
+parse error so you can fix the file or restore one of its private `.bak` files.
+Schema migrations also create a backup before an atomic rewrite.
 
-A malformed config does not stop aishe from starting; it reports the problem and
-falls back to defaults.
+Upgrades replace only the executable. They do not remove configuration,
+`history.ext`, durable task records, audit data, or the trust store.

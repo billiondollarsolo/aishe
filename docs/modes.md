@@ -117,6 +117,16 @@ and decides what to do next, repeating until the task is done or it hits
   on demand. See [Custom commands and skills](custom-commands-and-skills.md).
 - Every tool call is recorded in the [audit log](logging.md) (`run_command` as an
   `action`, the built-in tools as `yolo:read_file` / `yolo:fetch_url` etc.).
+- The task is checkpointed privately and atomically before and after each tool
+  call. If the terminal, process, or connection dies, inspect it with `aishe
+  sessions` and continue with `aishe resume [ID]`. If interruption happened
+  after a tool might have started but before its result was saved, resume asks
+  what happened instead of silently executing it again.
+
+Use `aishe profile conservative|balanced|autonomous` to apply a transparent
+bundle of mode, confirmation, preview, planning, sandbox, and iteration
+settings. `aishe readiness` reports whether provider tools, OS isolation, and
+the other autonomous prerequisites have actually been validated.
 
 ## Reversible edits
 

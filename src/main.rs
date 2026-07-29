@@ -8,7 +8,7 @@ use std::process::ExitCode;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use crossterm::style::Stylize;
 
@@ -120,6 +120,63 @@ struct Args {
 
 #[derive(Subcommand, Debug)]
 enum Cmd {
+    /// Configure and verify Aishe interactively, or provision it with flags.
+    Setup {
+        /// Resume the last interrupted setup draft.
+        #[arg(long)]
+        resume: bool,
+        /// Discard only the setup draft and start from the active config.
+        #[arg(long)]
+        restart: bool,
+        /// Verify the active config without changing it.
+        #[arg(long)]
+        verify: bool,
+        /// Configure from flags without opening a terminal UI.
+        #[arg(long)]
+        non_interactive: bool,
+        /// Service preset: anthropic, openai, groq, openrouter, together, ollama, custom.
+        #[arg(long)]
+        service: Option<String>,
+        /// Provider base URL (host root, without /v1).
+        #[arg(long)]
+        base_url: Option<String>,
+        /// Name of the environment variable containing the API key.
+        #[arg(long)]
+        key_env: Option<String>,
+        /// Model identifier.
+        #[arg(long)]
+        model: Option<String>,
+        /// API transport: auto, responses, or chat.
+        #[arg(long, value_parser = ["auto", "responses", "chat"])]
+        transport: Option<String>,
+        /// Safety profile.
+        #[arg(long, value_parser = ["conservative", "balanced", "autonomous", "custom"])]
+        profile: Option<String>,
+        /// Input price in USD per million tokens.
+        #[arg(long)]
+        input_price: Option<f64>,
+        /// Output price in USD per million tokens.
+        #[arg(long)]
+        output_price: Option<f64>,
+        /// Make minimal live generation requests while validating.
+        #[arg(long)]
+        live: bool,
+    },
+    /// Edit the current configuration through an interactive section hub.
+    Settings {
+        /// Print effective fields and their provenance as JSON.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Run the resumable guided first-session tour.
+    Tour {
+        /// Discard only tour progress/workspace and begin at lesson one.
+        #[arg(long)]
+        restart: bool,
+        /// Run every lesson without terminal prompts.
+        #[arg(long)]
+        non_interactive: bool,
+    },
     /// Print a shell integration snippet: `eval "$(aishe init zsh)"`.
     Init {
         /// Shell to emit integration for (zsh or bash).
@@ -133,6 +190,18 @@ enum Cmd {
         /// network request per endpoint; costs no tokens).
         #[arg(long)]
         probe: bool,
+        /// Run minimal live text, structured-output, tools, and streaming checks.
+        #[arg(long)]
+        live: bool,
+        /// Emit the structured report as JSON.
+        #[arg(long)]
+        json: bool,
+        /// Apply safe, local, idempotent repairs (never installs packages).
+        #[arg(long)]
+        fix: bool,
+        /// Write a redacted JSON support bundle to this path.
+        #[arg(long, value_name = "PATH")]
+        bundle: Option<std::path::PathBuf>,
     },
     /// Print a shell completion script for `aishe` itself (bash/zsh/fish/...).
     Completions {
@@ -173,11 +242,52 @@ enum Cmd {
     Model { value: Option<String> },
     /// Show or set the provider (with a value, saves it to your config).
     Provider {
-        #[arg(value_parser = ["anthropic", "openai"])]
+        /// Set anthropic/openai, or use `test` to validate the active provider.
+        #[arg(value_parser = ["anthropic", "openai", "test"])]
+        value: Option<String>,
+        /// With `provider test`, make minimal text/structured/tool/stream requests.
+        #[arg(long)]
+        live: bool,
+        /// With `provider test`, emit the capability report as JSON.
+        #[arg(long)]
+        json: bool,
+    },
+    /// List models returned by the configured endpoint.
+    Models {
+        /// Provider block to query (defaults to the active provider).
+        #[arg(long, value_parser = ["anthropic", "openai"])]
+        provider: Option<String>,
+        /// Ignore a cached capability record and request the endpoint again.
+        #[arg(long)]
+        refresh: bool,
+        /// Emit a JSON array.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Show or apply a transparent safety profile.
+    Profile {
+        #[arg(value_parser = ["conservative", "balanced", "autonomous", "custom"])]
         value: Option<String>,
     },
+    /// Check whether autonomous mode is ready for real work.
+    Readiness {
+        #[arg(long)]
+        json: bool,
+    },
+    /// Manage per-model token prices used for estimates and budgets.
+    Price {
+        #[command(subcommand)]
+        cmd: PriceCmd,
+    },
     /// Print the active configuration.
-    Config,
+    Config {
+        /// Include effective-value provenance after project overlays.
+        #[arg(long)]
+        effective: bool,
+        /// Emit JSON instead of TOML/text.
+        #[arg(long)]
+        json: bool,
+    },
     /// List the MCP tools offered to yolo.
     Mcp,
     /// List your custom slash-commands.
@@ -237,6 +347,24 @@ enum Cmd {
         #[command(subcommand)]
         cmd: HistoryCmd,
     },
+    /// List durable AI task sessions.
+    Sessions {
+        /// Emit JSON.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Inspect or manage one durable AI task session.
+    Session {
+        #[command(subcommand)]
+        cmd: TaskSessionCmd,
+    },
+    /// Resume the most recent interrupted task, or a specific task ID.
+    Resume {
+        id: Option<String>,
+        /// Replacement working directory when the original no longer exists.
+        #[arg(long, value_name = "PATH")]
+        cwd: Option<std::path::PathBuf>,
+    },
     /// Preview a command's file changes against a throwaway copy of the working
     /// tree (read-only system, no network via bubblewrap), then keep or discard.
     DryRun {
@@ -246,8 +374,24 @@ enum Cmd {
         #[arg(long)]
         apply: bool,
     },
-    /// Print the environment context block aishe sends to the model (redacted).
-    Context,
+    /// Inspect or configure the environment context sent to the model.
+    Context {
+        /// Explain included/excluded sections, sources, and token estimates.
+        #[arg(long)]
+        explain: bool,
+        /// Include a proposed request in the token/cost estimate (text is not echoed).
+        #[arg(long, value_name = "TEXT")]
+        preview: Option<String>,
+        /// Emit stable metadata JSON; section contents are intentionally omitted.
+        #[arg(long)]
+        json: bool,
+        /// Persistently exclude an optional section (repeatable).
+        #[arg(long, value_name = "SECTION")]
+        exclude: Vec<String>,
+        /// Persistently include an optional section (repeatable).
+        #[arg(long, value_name = "SECTION")]
+        include: Vec<String>,
+    },
     /// Generate a runnable script + markdown runbook from a recorded session.
     Runbook {
         /// The audit session id to export (default: the most recent session).
@@ -285,6 +429,36 @@ enum HistoryCmd {
     },
 }
 
+#[derive(Subcommand, Debug)]
+enum TaskSessionCmd {
+    /// Show one task record.
+    Show {
+        id: String,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Set a human-readable task name.
+    Rename { id: String, name: String },
+    /// Delete exactly one task record.
+    Delete { id: String },
+}
+
+#[derive(Subcommand, Debug)]
+enum PriceCmd {
+    /// List built-in matches and exact user price overrides.
+    List,
+    /// Set input/output USD per million tokens for an exact model ID.
+    Set {
+        model: String,
+        #[arg(long)]
+        input: f64,
+        #[arg(long)]
+        output: f64,
+    },
+    /// Remove an exact user price override.
+    Remove { model: String },
+}
+
 fn main() -> ExitCode {
     match run() {
         Ok(code) => ExitCode::from(code),
@@ -298,9 +472,104 @@ fn main() -> ExitCode {
 fn run() -> Result<u8> {
     let args = Args::parse();
 
+    // Setup is deliberately handled before ordinary config loading: its job is
+    // to create, repair, or verify the config without invoking a legacy wizard.
+    if let Some(Cmd::Setup {
+        resume,
+        restart,
+        verify,
+        non_interactive,
+        service,
+        base_url,
+        key_env,
+        model,
+        transport,
+        profile,
+        input_price,
+        output_price,
+        live,
+    }) = &args.cmd
+    {
+        let outcome = aishe::setup::run(aishe::setup::Options {
+            resume: *resume,
+            restart: *restart,
+            verify_only: *verify,
+            non_interactive: *non_interactive,
+            service: service.clone(),
+            base_url: base_url.clone(),
+            key_env: key_env.clone(),
+            model: model.clone(),
+            transport: transport.clone(),
+            profile: profile.as_deref().and_then(aishe::profiles::Profile::parse),
+            input_price: *input_price,
+            output_price: *output_price,
+            live: *live,
+        })?;
+        return Ok(
+            if outcome
+                .report
+                .as_ref()
+                .is_some_and(|report| report.credential.state == aishe::capabilities::State::Fail)
+            {
+                1
+            } else {
+                0
+            },
+        );
+    }
+
+    if let Some(Cmd::Settings { json }) = &args.cmd {
+        if *json {
+            let (_, provenance) = aishe::settings::provenance()?;
+            println!("{}", serde_json::to_string_pretty(&provenance)?);
+        } else {
+            aishe::settings::run()?;
+        }
+        return Ok(0);
+    }
+
+    if let Some(Cmd::Tour {
+        restart,
+        non_interactive,
+    }) = &args.cmd
+    {
+        aishe::tour::run(aishe::tour::Options {
+            restart: *restart,
+            non_interactive: *non_interactive,
+        })?;
+        return Ok(0);
+    }
+
     // `doctor` inspects the environment without loading/initializing config.
-    if let Some(Cmd::Doctor { probe }) = args.cmd {
-        return Ok(doctor(probe));
+    if let Some(Cmd::Doctor {
+        probe,
+        live,
+        json,
+        fix,
+        bundle,
+    }) = &args.cmd
+    {
+        let report = aishe::diagnostics::inspect(
+            VERSION,
+            &aishe::diagnostics::Options {
+                probe: *probe || *live,
+                live: *live,
+                fix: *fix,
+            },
+        );
+        if let Some(path) = bundle {
+            let config = Config::load_quiet().ok().flatten();
+            aishe::diagnostics::write_bundle(path, &report, config.as_ref())?;
+            if !*json {
+                eprintln!("aishe: wrote redacted support bundle to {}", path.display());
+            }
+        }
+        if *json {
+            println!("{}", serde_json::to_string_pretty(&report)?);
+        } else {
+            print!("{}", aishe::diagnostics::render_text(&report));
+        }
+        return Ok(if report.critical_ok() { 0 } else { 1 });
     }
 
     // `completions <shell>` prints a completion script and exits.
@@ -327,6 +596,13 @@ fn run() -> Result<u8> {
     }
     if let Some(Cmd::Untrust { all, path }) = &args.cmd {
         return Ok(untrust_command(*all, path.as_deref()));
+    }
+
+    if let Some(Cmd::Sessions { json }) = &args.cmd {
+        return Ok(tasks_list_command(*json));
+    }
+    if let Some(Cmd::Session { cmd }) = &args.cmd {
+        return task_session_command(cmd);
     }
 
     // `undo` reverts AI file changes from the journal; no config or provider.
@@ -370,11 +646,28 @@ fn run() -> Result<u8> {
     // script. The inspectors show the *effective* config (project overlay + flags
     // applied); the setters write to the user config file (see `set_or_show`).
     match &args.cmd {
-        Some(Cmd::Config) => {
-            println!("config file: {}", Config::path().display());
-            match toml::to_string_pretty(&config) {
-                Ok(t) => println!("\n{t}"),
-                Err(e) => eprintln!("aishe: {e}"),
+        Some(Cmd::Config { effective, json }) => {
+            if *effective {
+                let (effective_config, provenance) = aishe::settings::provenance()?;
+                if *json {
+                    println!(
+                        "{}",
+                        serde_json::to_string_pretty(&serde_json::json!({
+                            "config": effective_config,
+                            "provenance": provenance,
+                        }))?
+                    );
+                } else {
+                    aishe::settings::print_provenance(&provenance);
+                }
+            } else if *json {
+                println!("{}", serde_json::to_string_pretty(&config)?);
+            } else {
+                println!("config file: {}", Config::path().display());
+                match toml::to_string_pretty(&config) {
+                    Ok(t) => println!("\n{t}"),
+                    Err(e) => eprintln!("aishe: {e}"),
+                }
             }
             return Ok(0);
         }
@@ -415,8 +708,74 @@ fn run() -> Result<u8> {
         }
         Some(Cmd::Mode { value }) => return Ok(set_or_show("mode", value.as_deref(), &config)),
         Some(Cmd::Model { value }) => return Ok(set_or_show("model", value.as_deref(), &config)),
-        Some(Cmd::Provider { value }) => {
-            return Ok(set_or_show("provider", value.as_deref(), &config))
+        Some(Cmd::Provider { value, live, json }) => {
+            if value.as_deref() == Some("test") {
+                let report = aishe::capabilities::validate(&config, *live);
+                if *json {
+                    println!("{}", serde_json::to_string_pretty(&report)?);
+                } else {
+                    print_capability_report(&report);
+                }
+                return Ok(
+                    if report.credential.state == aishe::capabilities::State::Fail {
+                        1
+                    } else {
+                        0
+                    },
+                );
+            }
+            if *live || *json {
+                eprintln!("aishe: --live/--json require `aishe provider test`");
+                return Ok(1);
+            }
+            return Ok(set_or_show("provider", value.as_deref(), &config));
+        }
+        Some(Cmd::Models {
+            provider,
+            refresh,
+            json,
+        }) => {
+            if *refresh {
+                let _ = aishe::capabilities::clear();
+            }
+            return Ok(models_command(
+                &config,
+                provider.as_deref().unwrap_or(&config.aishe.provider),
+                *json,
+            ));
+        }
+        Some(Cmd::Profile { value }) => {
+            return Ok(profile_command(&config, value.as_deref()));
+        }
+        Some(Cmd::Readiness { json }) => {
+            let report = aishe::profiles::readiness(&config);
+            if *json {
+                println!("{}", serde_json::to_string_pretty(&report)?);
+            } else {
+                println!(
+                    "autonomous readiness: {}",
+                    if report.ready { "ready" } else { "not ready" }
+                );
+                for check in report.checks {
+                    println!(
+                        "  {} {}: {}",
+                        if check.ready {
+                            "✓"
+                        } else if check.required {
+                            "✗"
+                        } else {
+                            "!"
+                        },
+                        check.id,
+                        check.detail
+                    );
+                }
+            }
+            return Ok(if report.ready { 0 } else { 1 });
+        }
+        Some(Cmd::Price { cmd }) => return Ok(price_command(&config, cmd)),
+        Some(Cmd::Resume { id, cwd }) => {
+            return resume_task_command(&config, id.as_deref(), cwd.as_deref())
         }
         Some(Cmd::Log {
             session,
@@ -443,11 +802,21 @@ fn run() -> Result<u8> {
                 since.as_deref(),
             ));
         }
-        Some(Cmd::Context) => {
-            let executor = Executor::new()?;
-            context::init(executor.shell());
-            print!("{}", context::build(&executor, &config));
-            return Ok(0);
+        Some(Cmd::Context {
+            explain,
+            preview,
+            json,
+            exclude,
+            include,
+        }) => {
+            return context_command(
+                config,
+                *explain,
+                preview.as_deref(),
+                *json,
+                exclude,
+                include,
+            );
         }
         Some(Cmd::Runbook {
             session,
@@ -461,6 +830,15 @@ fn run() -> Result<u8> {
         }
         Some(Cmd::DryRun { command, apply }) => {
             return dry_run_command(command, *apply);
+        }
+        Some(
+            Cmd::Setup { .. }
+            | Cmd::Settings { .. }
+            | Cmd::Tour { .. }
+            | Cmd::Sessions { .. }
+            | Cmd::Session { .. },
+        ) => {
+            unreachable!("handled before config load")
         }
         _ => {}
     }
@@ -636,255 +1014,6 @@ fn run() -> Result<u8> {
     // Every interactive session is handled by the zsh-PTY branch above, and every
     // non-interactive path (hooks, `-c`, piped stdin) returns before here.
     Ok(0)
-}
-
-/// Environment check (`aishe doctor`): report shell, config, front-end,
-/// provider, and API-key status. Returns 1 if a *critical* check fails (no
-/// backing shell, or a malformed config); a missing API key is a warning only.
-fn doctor(probe: bool) -> u8 {
-    let ok = "✓".green();
-    let bad = "✗".red();
-    let warn = "!".yellow();
-    let mut critical_ok = true;
-
-    println!("{}", "aishe doctor".bold());
-    println!("────────────");
-    println!("{ok} version: aishe {VERSION}");
-
-    // Backing shell.
-    let zsh = aishe::executor::which("zsh");
-    let bash = aishe::executor::which("bash");
-    match (&zsh, &bash) {
-        (Some(z), _) => println!("{ok} backing shell: zsh ({})", z.display()),
-        (None, Some(b)) => println!("{ok} backing shell: bash ({}) — zsh not found", b.display()),
-        (None, None) => {
-            println!("{bad} backing shell: none found (install zsh or bash)");
-            critical_ok = false;
-        }
-    }
-
-    // Config.
-    let mut cfg = match Config::load_quiet() {
-        Ok(Some(c)) => {
-            println!("{ok} config: {}", Config::path().display());
-            c
-        }
-        Ok(None) => {
-            println!("{warn} config: not created yet (run `aishe` once to set up)");
-            Config::default()
-        }
-        Err(e) => {
-            println!(
-                "{bad} config: malformed at {} ({e})",
-                Config::path().display()
-            );
-            critical_ok = false;
-            Config::default()
-        }
-    };
-
-    // Project-local config overlay (`.aishe/config.toml`), if any. Apply it to
-    // `cfg` so the provider/model/front-end lines below reflect what will
-    // actually be used in this directory.
-    if let Ok(cwd) = std::env::current_dir() {
-        match cfg.apply_project_overlay(&cwd) {
-            Some(o) if o.error.is_some() => {
-                println!(
-                    "{warn} project config: malformed at {} ({})",
-                    o.path.display(),
-                    o.error.as_deref().unwrap_or("")
-                );
-            }
-            Some(o) => {
-                let trust = if o.trusted { "trusted" } else { "untrusted" };
-                println!(
-                    "{ok} project config: {} ({trust}; {} applied, {} deferred)",
-                    o.path.display(),
-                    o.applied.len(),
-                    o.deferred.len()
-                );
-                if !o.deferred.is_empty() {
-                    println!(
-                        "{warn} deferred until trusted (`aishe trust`): {}",
-                        o.deferred.join(", ")
-                    );
-                }
-            }
-            None => println!("{ok} project config: none"),
-        }
-    }
-
-    // Front-end: the interactive shell is the zsh-PTY wrapper, which requires zsh.
-    if zsh.is_some() {
-        println!("{ok} front-end: zsh-pty (wraps your real zsh)");
-    } else {
-        println!(
-            "{bad} front-end: zsh-pty needs zsh, which is not installed. \
-             Install it for the interactive shell; `aishe -c …` and the bash hook \
-             still work without it."
-        );
-        critical_ok = false;
-    }
-
-    // Provider, model, and API key.
-    let (provider, model, key_env) = match cfg.aishe.provider.as_str() {
-        "openai" => (
-            "openai",
-            &cfg.providers.openai.model,
-            &cfg.providers.openai.api_key_env,
-        ),
-        _ => (
-            "anthropic",
-            &cfg.providers.anthropic.model,
-            &cfg.providers.anthropic.api_key_env,
-        ),
-    };
-    println!("{ok} provider: {provider} · model {model}");
-    if !cfg.aishe.provider_fallback.is_empty() {
-        println!(
-            "{ok} fallback chain: {} → {}",
-            provider,
-            cfg.aishe.provider_fallback.join(" → ")
-        );
-    }
-    // Reachability probe (opt-in `--probe`): one short, read-only request per chain
-    // member, so "offline-capable" / fallback claims are verifiable. Unreachable or
-    // key-rejected members are warnings, not critical: a fallback may legitimately
-    // be down, and `doctor` should still pass offline.
-    if probe {
-        println!("  {}", "reachability probe:".bold());
-        let print_probe = |label: &str, pr: providers::Probe| match pr.reach {
-            providers::Reach::Up(s) => {
-                println!("  {ok} {label}: reachable [HTTP {s}] ({})", pr.endpoint)
-            }
-            providers::Reach::Unauthorized(s) => println!(
-                "  {warn} {label}: reachable but key rejected [HTTP {s}] ({})",
-                pr.endpoint
-            ),
-            providers::Reach::Down(e) => {
-                println!("  {warn} {label}: unreachable ({}) — {e}", pr.endpoint)
-            }
-        };
-        for name in providers::chain_names(&cfg) {
-            let pr = providers::probe(&cfg, &name);
-            print_probe(&name, pr);
-        }
-        // When semantic history is on, also probe the embedding endpoint, which
-        // may be a different provider block than the chat chain.
-        if cfg.aishe.semantic_history {
-            let emb = if cfg.aishe.embedding_provider.trim().is_empty() {
-                cfg.aishe.provider.clone()
-            } else {
-                cfg.aishe.embedding_provider.clone()
-            };
-            let pr = providers::probe(&cfg, &emb);
-            print_probe(&format!("embedding ({emb})"), pr);
-        }
-    }
-    // Yolo sandbox backend.
-    if cfg.aishe.yolo_sandbox {
-        if cfg.aishe.sandbox_backend == "bwrap" {
-            if aishe::sandbox::bwrap_available() {
-                println!("{ok} yolo sandbox: bwrap (OS isolation: read-only root)");
-            } else {
-                println!(
-                    "{warn} yolo sandbox: bwrap requested but bubblewrap not installed — using policy"
-                );
-            }
-        } else {
-            println!("{ok} yolo sandbox: policy (best-effort gate)");
-        }
-    }
-    // Reversible command preview (`aishe dry-run`), which needs bubblewrap.
-    if aishe::overlay::available() {
-        println!("{ok} dry-run: available (bubblewrap)");
-    } else {
-        println!(
-            "{warn} optional dry-run: bubblewrap not installed \
-             (core shell works; install it to enable `aishe dry-run`)"
-        );
-    }
-    let key_set = std::env::var(key_env)
-        .map(|v| !v.trim().is_empty())
-        .unwrap_or(false);
-    if key_set {
-        println!("{ok} API key: ${key_env} is set");
-    } else {
-        println!("{warn} API key: ${key_env} not set — LLM features disabled (export it)");
-    }
-
-    // Privacy: secret redaction and audit logging.
-    println!(
-        "{ok} secret redaction: {}",
-        if cfg.aishe.redact_secrets {
-            "on"
-        } else {
-            "off"
-        }
-    );
-    let env_log = matches!(
-        std::env::var("AISHE_LOG").ok().as_deref(),
-        Some("1") | Some("true") | Some("yes")
-    );
-    if cfg.logging.enabled || env_log {
-        let path = std::env::var("AISHE_LOG_FILE").ok().unwrap_or_else(|| {
-            cfg.logging
-                .file
-                .clone()
-                .unwrap_or_else(|| aishe::audit::default_path().display().to_string())
-        });
-        println!(
-            "{ok} audit log: on ({path}; redact {})",
-            if cfg.logging.redact { "on" } else { "off" }
-        );
-    } else {
-        println!("{warn} audit log: off (enable with [logging] enabled=true or AISHE_LOG=1)");
-    }
-
-    // Project skills that are present but gated. This is the status readout, so
-    // it is the right place to surface them — the startup path deliberately
-    // stays quiet so plain shell commands are not spammed.
-    let skill_reg = aishe::skills::SkillRegistry::load();
-    let untrusted_skills = skill_reg.untrusted();
-    if !untrusted_skills.is_empty() {
-        println!(
-            "{warn} project skills: {} ignored until trusted (`aishe trust <file>`)",
-            untrusted_skills.len()
-        );
-        for p in untrusted_skills {
-            println!(
-                "    {}",
-                aishe::commands::display_safe(&p.display().to_string()).dim()
-            );
-        }
-    }
-
-    // MCP servers and history.
-    let enabled_mcp = cfg.mcp_servers.values().filter(|s| s.enabled).count();
-    if cfg.mcp_servers.is_empty() {
-        println!("{ok} MCP servers: none configured");
-    } else {
-        println!(
-            "{ok} MCP servers: {} configured ({enabled_mcp} enabled) — `aishe mcp` to list",
-            cfg.mcp_servers.len()
-        );
-    }
-    let (_, hist_log) = history_paths(&cfg);
-    let history_status = if cfg.aishe.share_history {
-        "shared across sessions; persistent across upgrades"
-    } else {
-        "per-session (sharing disabled)"
-    };
-    println!("{ok} history: {} ({history_status})", hist_log.display(),);
-
-    println!();
-    if critical_ok {
-        println!("{}", "all critical checks passed".green());
-        0
-    } else {
-        println!("{}", "some checks failed".red());
-        1
-    }
 }
 
 /// Shell-hook helper: print a suggested command to stdout (for `print -z` /
@@ -1645,6 +1774,17 @@ fn record_session_usage(provider: Option<&dyn Provider>, config: &Config) {
         return;
     }
     aishe::usagelog::append(std::path::Path::new(&path), snap, config.active_model());
+    if let Ok(status_path) = std::env::var("AISHE_STATUS_FILE") {
+        if !status_path.is_empty() {
+            aishe::usagelog::write_status(
+                std::path::Path::new(&status_path),
+                std::path::Path::new(&path),
+                &config.pricing,
+                Some((snap, config.active_model())),
+                &config.aishe.status_line_items,
+            );
+        }
+    }
 }
 
 fn print_usage_summary(provider: Option<&dyn Provider>, config: &Config) {
@@ -1693,7 +1833,10 @@ fn set_or_show(field: &str, value: Option<&str>, effective: &Config) -> u8 {
         }
     };
     match field {
-        "mode" => cfg.aishe.mode = value.to_string(),
+        "mode" => {
+            cfg.aishe.mode = value.to_string();
+            cfg.aishe.safety_profile = "custom".to_string();
+        }
         "provider" => cfg.aishe.provider = value.to_string(),
         _ => cfg.set_active_model(value.to_string()),
     }
@@ -1706,10 +1849,492 @@ fn set_or_show(field: &str, value: Option<&str>, effective: &Config) -> u8 {
         // model on its very next precmd. This is best-effort: config persistence
         // is the source of truth, and non-PTY invocations have no state file.
         if let Some(path) = std::env::var_os("AISHE_MODEL_FILE").filter(|p| !p.is_empty()) {
-            let _ = std::fs::write(path, cfg.active_model());
+            let _ = std::fs::write(path, aishe::commands::display_safe(cfg.active_model()));
         }
     }
-    println!("{field} = {value}  (saved to {})", Config::path().display());
+    println!(
+        "{} = {}  (saved to {})",
+        aishe::commands::display_safe(field),
+        aishe::commands::display_safe(value),
+        aishe::commands::display_safe(&Config::path().display().to_string())
+    );
+    0
+}
+
+fn models_command(config: &Config, provider: &str, json: bool) -> u8 {
+    match aishe::capabilities::list_models(config, provider) {
+        Ok(models) => {
+            if json {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&models).unwrap_or_else(|_| "[]".into())
+                );
+            } else {
+                println!("{provider}: {} model(s):", models.len());
+                for model in models {
+                    let active =
+                        if provider == config.aishe.provider && model == config.active_model() {
+                            " (active)"
+                        } else {
+                            ""
+                        };
+                    println!("  {}{active}", aishe::commands::display_safe(&model));
+                }
+            }
+            0
+        }
+        Err(error) => {
+            eprintln!(
+                "aishe: models: {:?}: {}",
+                error.kind(),
+                aishe::redact::redact(&error.to_string())
+            );
+            1
+        }
+    }
+}
+
+fn print_capability_report(report: &aishe::capabilities::Report) {
+    println!(
+        "provider validation: {} · {} · {}",
+        aishe::commands::display_safe(&report.provider),
+        aishe::commands::display_safe(&report.model),
+        aishe::commands::display_safe(&report.transport)
+    );
+    for (label, check) in [
+        ("credential", &report.credential),
+        ("reachability", &report.reachability),
+        ("model list", &report.model_list),
+        ("model", &report.model_available),
+        ("text", &report.text),
+        ("structured", &report.structured),
+        ("tools", &report.tools),
+        ("streaming", &report.streaming),
+    ] {
+        let marker = match check.state {
+            aishe::capabilities::State::Pass => "✓",
+            aishe::capabilities::State::Warn => "!",
+            aishe::capabilities::State::Fail => "✗",
+            aishe::capabilities::State::Skipped => "·",
+        };
+        println!(
+            "  {marker} {label}: {}",
+            aishe::commands::display_safe(&check.detail)
+        );
+    }
+}
+
+fn context_command(
+    mut effective: Config,
+    explain: bool,
+    request: Option<&str>,
+    json_output: bool,
+    excludes: &[String],
+    includes: &[String],
+) -> Result<u8> {
+    const OPTIONAL: &[&str] = &[
+        "history",
+        "project_context",
+        "project_tasks",
+        "host_profile",
+    ];
+    for section in excludes.iter().chain(includes.iter()) {
+        if !OPTIONAL.contains(&section.as_str()) {
+            eprintln!(
+                "aishe: unknown context section '{section}' (expected {})",
+                OPTIONAL.join(", ")
+            );
+            return Ok(1);
+        }
+    }
+    if let Some(section) = excludes
+        .iter()
+        .find(|section| includes.iter().any(|included| included == *section))
+    {
+        eprintln!("aishe: context section '{section}' cannot be included and excluded together");
+        return Ok(1);
+    }
+
+    if !excludes.is_empty() || !includes.is_empty() {
+        let mut persisted =
+            Config::load_quiet()?.context("no config exists; run `aishe setup` first")?;
+        for section in excludes {
+            if !persisted
+                .aishe
+                .context_exclude
+                .iter()
+                .any(|item| item == section)
+            {
+                persisted.aishe.context_exclude.push(section.clone());
+            }
+        }
+        for section in includes {
+            persisted
+                .aishe
+                .context_exclude
+                .retain(|item| item != section);
+            match section.as_str() {
+                "project_context" => persisted.aishe.project_context = true,
+                "project_tasks" => persisted.aishe.project_tasks = true,
+                "host_profile" => persisted.aishe.host_profile = true,
+                _ => {}
+            }
+        }
+        persisted.save()?;
+        effective.aishe.context_exclude = persisted.aishe.context_exclude.clone();
+        effective.aishe.project_context = persisted.aishe.project_context;
+        effective.aishe.project_tasks = persisted.aishe.project_tasks;
+        effective.aishe.host_profile = persisted.aishe.host_profile;
+        if !json_output {
+            for section in excludes {
+                println!("context.{section} = excluded");
+            }
+            for section in includes {
+                println!("context.{section} = included");
+            }
+        }
+    }
+
+    let mut executor = Executor::new()?;
+    executor.set_history_log(history_paths(&effective).1);
+    context::init(executor.shell());
+    if !explain && request.is_none() && !json_output && excludes.is_empty() && includes.is_empty() {
+        print!("{}", context::build(&executor, &effective));
+        return Ok(0);
+    }
+    let report = context::preview(&executor, &effective, request);
+    if json_output {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+        return Ok(0);
+    }
+    println!(
+        "context preview: {} · {} · ~{} tokens{}",
+        aishe::commands::display_safe(&report.provider),
+        aishe::commands::display_safe(&report.model),
+        report.total_estimated_tokens,
+        report
+            .estimated_input_cost_usd
+            .map(|cost| format!(" · ~${cost:.6} input"))
+            .unwrap_or_else(|| " · cost n/a".into())
+    );
+    for section in &report.sections {
+        println!(
+            "  {} {:16} ~{:5} tok · {} · {}{}",
+            if section.included { "✓" } else { "–" },
+            aishe::commands::display_safe(&section.id),
+            section.estimated_tokens,
+            if section.required {
+                "required"
+            } else if section.included {
+                "included"
+            } else {
+                "excluded"
+            },
+            aishe::commands::display_safe(&section.source),
+            if section.redactions > 0 {
+                format!(" · {} redacted", section.redactions)
+            } else {
+                String::new()
+            }
+        );
+    }
+    if let Some(text) = request {
+        println!(
+            "  request: {} chars · ~{} tokens (text intentionally not echoed)",
+            text.chars().count(),
+            report.request_estimated_tokens
+        );
+    }
+    Ok(0)
+}
+
+fn tasks_list_command(json_output: bool) -> u8 {
+    let records = aishe::tasks::list();
+    if json_output {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&records).unwrap_or_else(|_| "[]".into())
+        );
+        return 0;
+    }
+    if records.is_empty() {
+        println!("no durable AI task sessions");
+        return 0;
+    }
+    println!("durable AI task sessions (oldest first):");
+    for record in records {
+        println!(
+            "  {}  {:?}  {} / {}  {}",
+            aishe::commands::display_safe(&record.id),
+            record.status,
+            aishe::commands::display_safe(&record.provider),
+            aishe::commands::display_safe(&record.model),
+            aishe::commands::display_safe(
+                &record
+                    .name
+                    .as_deref()
+                    .unwrap_or(record.objective.as_str())
+                    .chars()
+                    .take(72)
+                    .collect::<String>()
+            )
+        );
+    }
+    0
+}
+
+fn task_session_command(command: &TaskSessionCmd) -> Result<u8> {
+    match command {
+        TaskSessionCmd::Show { id, json } => {
+            let record = aishe::tasks::load(id)?;
+            if *json {
+                println!("{}", serde_json::to_string_pretty(&record)?);
+            } else {
+                println!("task: {}", record.id);
+                println!("status: {:?}", record.status);
+                println!(
+                    "name: {}",
+                    aishe::commands::display_safe(record.name.as_deref().unwrap_or("(none)"))
+                );
+                println!(
+                    "objective: {}",
+                    aishe::commands::display_safe(&record.objective)
+                );
+                println!(
+                    "provider: {} · {}",
+                    aishe::commands::display_safe(&record.provider),
+                    aishe::commands::display_safe(&record.model)
+                );
+                println!(
+                    "cwd: {}",
+                    aishe::commands::display_safe(&record.cwd.display().to_string())
+                );
+                println!(
+                    "usage: {} in · {} out · {} reqs",
+                    record.usage.input, record.usage.output, record.usage.requests
+                );
+                println!("messages: {}", record.messages.len());
+                println!("completed tools: {}", record.completed_tools.len());
+                if let Some(pending) = record.pending_tool {
+                    println!(
+                        "pending tool: {} ({}, may_have_started={})",
+                        aishe::commands::display_safe(&pending.call.name),
+                        aishe::commands::display_safe(&pending.call.id),
+                        pending.may_have_started
+                    );
+                }
+                if let Some(error) = record.last_error {
+                    println!("last error: {}", aishe::commands::display_safe(&error));
+                }
+            }
+            Ok(0)
+        }
+        TaskSessionCmd::Rename { id, name } => {
+            aishe::tasks::rename(id, name)?;
+            println!("renamed task {id} to {name}");
+            Ok(0)
+        }
+        TaskSessionCmd::Delete { id } => {
+            aishe::tasks::delete(id)?;
+            println!("deleted task {id} (the task record cannot be recovered)");
+            Ok(0)
+        }
+    }
+}
+
+fn resume_task_command(
+    config: &Config,
+    id: Option<&str>,
+    replacement_cwd: Option<&std::path::Path>,
+) -> Result<u8> {
+    let record = match id {
+        Some(id) => aishe::tasks::load(id)?,
+        None => aishe::tasks::most_recent_resumable()
+            .context("no interrupted, failed, or active task is available to resume")?,
+    };
+    let cwd = if record.cwd.is_dir() {
+        record.cwd.clone()
+    } else if let Some(path) = replacement_cwd {
+        if !path.is_dir() {
+            anyhow::bail!("replacement cwd {} is not a directory", path.display());
+        }
+        path.to_path_buf()
+    } else if std::io::stdin().is_terminal() {
+        let current = std::env::current_dir()?;
+        let Some(value) = aishe::promptui::text(
+            &format!(
+                "Original cwd {} is missing; replacement",
+                record.cwd.display()
+            ),
+            &current.display().to_string(),
+            |value| {
+                if std::path::Path::new(value).is_dir() {
+                    Ok(())
+                } else {
+                    anyhow::bail!("path must be an existing directory")
+                }
+            },
+        )?
+        else {
+            anyhow::bail!("resume cancelled");
+        };
+        if value == ":back" {
+            anyhow::bail!("resume cancelled");
+        }
+        std::path::PathBuf::from(value)
+    } else {
+        anyhow::bail!(
+            "original cwd {} no longer exists; pass `aishe resume {} --cwd PATH`",
+            record.cwd.display(),
+            record.id
+        );
+    };
+    let provider = providers::make(config).map_err(|error| {
+        anyhow::anyhow!("cannot resume without an LLM provider: {error}; run `aishe doctor --live`")
+    })?;
+    let mut executor = Executor::new()?;
+    executor.redirect_cwd(cwd);
+    executor.set_history_log(history_paths(config).1);
+    context::init(executor.shell());
+    init_audit(config);
+    let skills = SkillRegistry::load();
+    let mcp = aishe::mcp::McpRegistry::connect(&config.mcp_servers);
+    modes::yolo::resume(
+        record,
+        provider.as_ref(),
+        &mut executor,
+        config,
+        &INTERRUPTED,
+        &skills,
+        &mcp,
+    )?;
+    record_session_usage(Some(provider.as_ref()), config);
+    Ok(0)
+}
+
+fn profile_command(effective: &Config, value: Option<&str>) -> u8 {
+    let Some(value) = value else {
+        println!("profile: {}", effective.aishe.safety_profile);
+        return 0;
+    };
+    let Some(profile) = aishe::profiles::Profile::parse(value) else {
+        eprintln!("aishe: unknown profile '{value}'");
+        return 1;
+    };
+    let mut config = match Config::load_quiet() {
+        Ok(Some(config)) => config,
+        Ok(None) => {
+            eprintln!("aishe: no config; run `aishe setup`");
+            return 1;
+        }
+        Err(error) => {
+            eprintln!("aishe: {error}");
+            return 1;
+        }
+    };
+    let changes = aishe::profiles::apply(&mut config, profile);
+    if let Err(error) = config.save() {
+        eprintln!("aishe: {error}");
+        return 1;
+    }
+    println!("profile = {}", profile.key());
+    if changes.is_empty() {
+        println!("  no setting changes");
+    } else {
+        for change in changes {
+            println!("  {}: {} → {}", change.field, change.before, change.after);
+        }
+    }
+    0
+}
+
+fn price_command(_effective: &Config, command: &PriceCmd) -> u8 {
+    let mut config = match Config::load_quiet() {
+        Ok(Some(config)) => config,
+        Ok(None) => {
+            eprintln!("aishe: no config; run `aishe setup`");
+            return 1;
+        }
+        Err(error) => {
+            eprintln!("aishe: {error}");
+            return 1;
+        }
+    };
+    match command {
+        PriceCmd::List => {
+            if config.pricing.is_empty() {
+                println!("no user price overrides");
+            } else {
+                println!("user prices (USD per 1M tokens):");
+                for (model, price) in &config.pricing {
+                    println!(
+                        "  {}: input ${:.6} · output ${:.6}",
+                        aishe::commands::display_safe(model),
+                        price.input,
+                        price.output
+                    );
+                }
+            }
+            let model = config.active_model();
+            match aishe::usage::price_for(model, &config.pricing) {
+                Some(price) => println!(
+                    "active {}: input ${:.6} · output ${:.6}",
+                    aishe::commands::display_safe(model),
+                    price.input,
+                    price.output
+                ),
+                None => {
+                    let model = aishe::commands::display_safe(model);
+                    println!(
+                        "active {model}: unknown; run `aishe price set {model} --input USD --output USD`"
+                    )
+                }
+            }
+            return 0;
+        }
+        PriceCmd::Set {
+            model,
+            input,
+            output,
+        } => {
+            if !input.is_finite() || *input < 0.0 || !output.is_finite() || *output < 0.0 {
+                eprintln!("aishe: prices must be finite non-negative numbers");
+                return 1;
+            }
+            config.pricing.insert(
+                model.clone(),
+                aishe::usage::Price {
+                    input: *input,
+                    output: *output,
+                },
+            );
+            if let Err(error) = config.save() {
+                eprintln!("aishe: {error}");
+                return 1;
+            }
+            println!(
+                "price {} = input ${input:.6} · output ${output:.6} per 1M tokens",
+                aishe::commands::display_safe(model)
+            );
+        }
+        PriceCmd::Remove { model } => {
+            if config.pricing.remove(model).is_none() {
+                eprintln!(
+                    "aishe: no exact user price override for '{}'",
+                    aishe::commands::display_safe(model)
+                );
+                return 1;
+            }
+            if let Err(error) = config.save() {
+                eprintln!("aishe: {error}");
+                return 1;
+            }
+            println!(
+                "removed price override for {}",
+                aishe::commands::display_safe(model)
+            );
+        }
+    }
     0
 }
 

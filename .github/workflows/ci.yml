@@ -38,19 +38,19 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.toml') }}
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.toml', 'Cargo.lock') }}
 
       - name: Format check
         run: cargo fmt --all -- --check
 
       - name: Clippy
-        run: cargo clippy --all-targets -- -D warnings
+        run: cargo clippy --all-targets --all-features --locked -- -D warnings
 
       - name: Build
-        run: cargo build --verbose
+        run: cargo build --verbose --locked
 
       - name: Test
-        run: cargo test --verbose
+        run: cargo test --all-targets --verbose --locked
 
   msrv:
     name: MSRV (1.88) build
@@ -66,9 +66,9 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: ${{ runner.os }}-msrv-cargo-${{ hashFiles('**/Cargo.toml') }}
+          key: ${{ runner.os }}-msrv-cargo-${{ hashFiles('**/Cargo.toml', 'Cargo.lock') }}
       - name: Build on 1.88
-        run: cargo build --verbose
+        run: cargo build --verbose --locked
 
   pty-smoke:
     name: PTY smoke tests (zsh-pty)
@@ -98,16 +98,31 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.toml') }}
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.toml', 'Cargo.lock') }}
 
       - name: Build release binary
-        run: cargo build --release
+        run: cargo build --release --locked
+
+      - name: Installer upgrade preserves config and data
+        run: sh tests/installer_upgrade.sh target/release/aishe
+
+      - name: Unauthenticated loopback provider
+        run: python3 tests/provider_unauthenticated.py target/release/aishe
 
       - name: Drive real zsh through the PTY front-end
         run: python3 tests/pty_smoke.py target/release/aishe
 
       - name: zsh-PTY scenario tests (NL routing, sigils, auto-mode, history)
         run: python3 tests/pty_scenarios.py target/release/aishe
+
+      - name: zsh-PTY statusline placement and live metrics
+        run: python3 tests/statusline_pty.py target/release/aishe
+
+      - name: Interactive setup state-machine PTY
+        run: python3 tests/setup_pty.py target/release/aishe
+
+      - name: Durable task interruption and resume
+        run: python3 tests/durable_task_resume.py target/release/aishe
 
       - name: zsh-PTY fuzz (generated commands, sigil NL, adversarial responses)
         run: python3 tests/pty_fuzz.py target/release/aishe
@@ -121,10 +136,14 @@ jobs:
       - name: Real-model classification (opt-in; skips without the secret)
         env:
           AISHE_REALTEST_KEY: ${{ secrets.AISHE_REALTEST_KEY }}
+          AISHE_REALTEST_BASE_URL: https://api.openai.com
+          AISHE_REALTEST_MODEL: gpt-5.6-luna
         run: python3 tests/real_model.py target/release/aishe
       - name: Real-model robustness fuzz (opt-in; skips without the secret)
         env:
           AISHE_REALTEST_KEY: ${{ secrets.AISHE_REALTEST_KEY }}
+          AISHE_REALTEST_BASE_URL: https://api.openai.com
+          AISHE_REALTEST_MODEL: gpt-5.6-luna
         run: python3 tests/real_fuzz.py target/release/aishe
       - name: Admin validation (shell pass-through + file ops; NL skipped w/o key)
         run: python3 tests/admin_validation.py target/release/aishe

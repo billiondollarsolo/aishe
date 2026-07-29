@@ -1,0 +1,896 @@
+//! Structured diagnostics, safe repairs, and redacted support bundles.
+//! Text and JSON output are deliberately rendered from the same `Report`.
+
+use std::fs::OpenOptions;
+use std::path::{Path, PathBuf};
+
+use anyhow::{Context, Result};
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
+
+use crate::capabilities;
+use crate::config::{self, Config};
+use crate::providers::{self, Reach};
+
+pub const REPORT_SCHEMA_VERSION: u32 = 1;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Status {
+    Pass,
+    Warn,
+    Fail,
+    Skipped,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Severity {
+    Info,
+    Warning,
+    Critical,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct Check {
+    pub id: String,
+    pub status: Status,
+    pub severity: Severity,
+    pub summary: String,
+    pub detail: String,
+    pub fixable: bool,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub changed_paths: Vec<PathBuf>,
+}
+
+impl Check {
+    fn new(
+        id: impl Into<String>,
+        status: Status,
+        severity: Severity,
+        summary: impl Into<String>,
+        detail: impl Into<String>,
+    ) -> Self {
+        Self {
+            id: id.into(),
+            status,
+            severity,
+            summary: summary.into(),
+            detail: detail.into(),
+            fixable: false,
+            changed_paths: Vec::new(),
+        }
+    }
+
+    fn fixable(mut self, value: bool) -> Self {
+        self.fixable = value;
+        self
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct Paths {
+    pub config: PathBuf,
+    pub config_dir: PathBuf,
+    pub data_dir: PathBuf,
+    pub history: PathBuf,
+    pub capability_dir: PathBuf,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct Report {
+    pub schema_version: u32,
+    pub generated_at_ms: u128,
+    pub version: String,
+    pub platform: String,
+    pub paths: Paths,
+    pub checks: Vec<Check>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub capability_report: Option<capabilities::Report>,
+}
+
+impl Report {
+    pub fn critical_ok(&self) -> bool {
+        !self
+            .checks
+            .iter()
+            .any(|check| check.severity == Severity::Critical && check.status == Status::Fail)
+    }
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct Options {
+    pub probe: bool,
+    pub live: bool,
+    pub fix: bool,
+}
+
+pub fn inspect(version: &str, options: &Options) -> Report {
+    let paths = resolved_paths();
+    let mut checks = Vec::new();
+    checks.push(Check::new(
+        "version",
+        Status::Pass,
+        Severity::Info,
+        format!("version: aishe {version}"),
+        "running binary metadata",
+    ));
+
+    let zsh = crate::executor::which("zsh");
+    let bash = crate::executor::which("bash");
+    match (&zsh, &bash) {
+        (Some(path), _) => checks.push(Check::new(
+            "shell.backing",
+            Status::Pass,
+            Severity::Critical,
+            format!("backing shell: zsh ({})", path.display()),
+            "the interactive PTY uses the installed zsh",
+        )),
+        (None, Some(path)) => checks.push(Check::new(
+            "shell.backing",
+            Status::Warn,
+            Severity::Critical,
+            format!("backing shell: bash ({}) — zsh not found", path.display()),
+            "non-interactive use and the bash hook work; install zsh for `aishe`",
+        )),
+        (None, None) => checks.push(Check::new(
+            "shell.backing",
+            Status::Fail,
+            Severity::Critical,
+            "backing shell: none found",
+            "install zsh or bash",
+        )),
+    }
+    checks.push(if zsh.is_some() {
+        Check::new(
+            "shell.frontend",
+            Status::Pass,
+            Severity::Critical,
+            "front-end: zsh-pty (wraps your real zsh)",
+            "native zsh line editing, plugins, job control, and history remain active",
+        )
+    } else {
+        Check::new(
+            "shell.frontend",
+            Status::Fail,
+            Severity::Critical,
+            "front-end: zsh-pty needs zsh",
+            "install zsh; `aishe -c` and `aishe init bash` remain available",
+        )
+    });
+
+    let (mut config, config_valid) = match Config::load_quiet() {
+        Ok(Some(config)) => {
+            let schema = Config::schema_version_on_disk()
+                .ok()
+                .flatten()
+                .unwrap_or(config.version);
+            let current_schema = config::CONFIG_SCHEMA_VERSION;
+            let (status, detail) = if schema < current_schema {
+                (
+                    Status::Warn,
+                    format!(
+                        "schema {schema} on disk; the next normal command migrates it atomically \
+                         to schema {current_schema} after creating a timestamped backup"
+                    ),
+                )
+            } else {
+                (Status::Pass, format!("schema {schema}"))
+            };
+            checks.push(
+                Check::new(
+                    "config.file",
+                    status,
+                    Severity::Critical,
+                    format!("config: {}", paths.config.display()),
+                    detail,
+                )
+                .fixable(true),
+            );
+            (config, true)
+        }
+        Ok(None) => {
+            checks.push(Check::new(
+                "config.file",
+                Status::Warn,
+                Severity::Critical,
+                format!("config: not created at {}", paths.config.display()),
+                "run `aishe setup`; Doctor never invents an unverified provider config",
+            ));
+            (Config::default(), false)
+        }
+        Err(error) => {
+            checks.push(
+                Check::new(
+                    "config.file",
+                    Status::Fail,
+                    Severity::Critical,
+                    format!("config: malformed at {}", paths.config.display()),
+                    crate::redact::redact(&error.to_string()),
+                )
+                .fixable(false),
+            );
+            (Config::default(), false)
+        }
+    };
+
+    match std::env::current_dir()
+        .ok()
+        .and_then(|cwd| config.apply_project_overlay(&cwd))
+    {
+        Some(outcome) if outcome.error.is_some() => checks.push(Check::new(
+            "config.project",
+            Status::Warn,
+            Severity::Warning,
+            format!("project config: malformed at {}", outcome.path.display()),
+            crate::redact::redact(outcome.error.as_deref().unwrap_or("unknown error")),
+        )),
+        Some(outcome) => checks.push(Check::new(
+            "config.project",
+            if outcome.deferred.is_empty() {
+                Status::Pass
+            } else {
+                Status::Warn
+            },
+            Severity::Warning,
+            format!(
+                "project config: {} ({})",
+                outcome.path.display(),
+                if outcome.trusted {
+                    "trusted"
+                } else {
+                    "untrusted"
+                }
+            ),
+            format!(
+                "{} applied; {} deferred{}",
+                outcome.applied.len(),
+                outcome.deferred.len(),
+                if outcome.deferred.is_empty() {
+                    String::new()
+                } else {
+                    format!(": {}", outcome.deferred.join(", "))
+                }
+            ),
+        )),
+        None => checks.push(Check::new(
+            "config.project",
+            Status::Pass,
+            Severity::Info,
+            "project config: none",
+            "using user configuration and command-line overrides",
+        )),
+    }
+
+    let provider = config.aishe.provider.clone();
+    let provider_config = active_provider(&config);
+    checks.push(Check::new(
+        "provider.active",
+        Status::Pass,
+        Severity::Info,
+        format!("provider: {provider} · model {}", provider_config.model),
+        format!(
+            "{} · transport {}",
+            provider_config.base_url, provider_config.transport
+        ),
+    ));
+    if !config.aishe.provider_fallback.is_empty() {
+        checks.push(Check::new(
+            "provider.fallback",
+            Status::Pass,
+            Severity::Info,
+            format!(
+                "fallback chain: {} → {}",
+                provider,
+                config.aishe.provider_fallback.join(" → ")
+            ),
+            "fallbacks are tried only after the active provider fails",
+        ));
+    }
+
+    let credential = std::env::var(&provider_config.api_key_env)
+        .ok()
+        .is_some_and(|value| !value.trim().is_empty());
+    checks.push(if !provider_config.requires_auth() {
+        Check::new(
+            "provider.credential",
+            Status::Pass,
+            Severity::Warning,
+            "API key: not required for this endpoint",
+            format!(
+                "{} is local or explicitly configured without authentication",
+                provider_config.base_url
+            ),
+        )
+    } else if credential {
+        Check::new(
+            "provider.credential",
+            Status::Pass,
+            Severity::Warning,
+            format!("API key: ${} is set", provider_config.api_key_env),
+            "the value is not displayed or written to diagnostics",
+        )
+    } else {
+        Check::new(
+            "provider.credential",
+            Status::Warn,
+            Severity::Warning,
+            format!("API key: ${} not set", provider_config.api_key_env),
+            format!(
+                "LLM features are disabled; export {} and run `aishe doctor --live`",
+                provider_config.api_key_env
+            ),
+        )
+    });
+
+    if options.probe && !options.live {
+        let probe = providers::probe(&config, &provider);
+        let (status, detail) = match probe.reach {
+            Reach::Up(status) => (
+                Status::Pass,
+                format!("{provider}: reachable [HTTP {status}] ({})", probe.endpoint),
+            ),
+            Reach::Unauthorized(status) => (
+                Status::Warn,
+                format!(
+                    "{provider}: reachable but key rejected [HTTP {status}] ({})",
+                    probe.endpoint
+                ),
+            ),
+            Reach::Down(error) => (
+                Status::Warn,
+                format!(
+                    "{provider}: unreachable ({}) — {}",
+                    probe.endpoint,
+                    crate::redact::redact(&error)
+                ),
+            ),
+        };
+        checks.push(Check::new(
+            "provider.reachability",
+            status,
+            Severity::Warning,
+            "reachability probe:",
+            detail,
+        ));
+    }
+
+    let capability_report = if options.live && config_valid {
+        let report = capabilities::validate(&config, true);
+        checks.extend(capability_checks(&report));
+        Some(report)
+    } else {
+        capabilities::load(&config)
+    };
+
+    let bwrap = crate::sandbox::bwrap_available();
+    checks.push(if bwrap {
+        Check::new(
+            "sandbox.bubblewrap",
+            Status::Pass,
+            Severity::Warning,
+            "optional dry-run: available (bubblewrap)",
+            "OS-isolated dry-run and strongest autonomous sandbox are available",
+        )
+    } else {
+        Check::new(
+            "sandbox.bubblewrap",
+            Status::Warn,
+            Severity::Warning,
+            "optional dry-run: bubblewrap not installed",
+            format!(
+                "core shell and LLM features work; install with `{}` to enable `aishe dry-run`",
+                bubblewrap_install_command()
+            ),
+        )
+    });
+
+    checks.push(Check::new(
+        "privacy.redaction",
+        if config.aishe.redact_secrets {
+            Status::Pass
+        } else {
+            Status::Warn
+        },
+        Severity::Warning,
+        format!(
+            "secret redaction: {}",
+            if config.aishe.redact_secrets {
+                "on"
+            } else {
+                "off"
+            }
+        ),
+        "redaction applies to context, diagnostics, and configured audit fields",
+    ));
+    let audit_on = config.logging.enabled
+        || matches!(
+            std::env::var("AISHE_LOG").ok().as_deref(),
+            Some("1") | Some("true") | Some("yes")
+        );
+    checks.push(Check::new(
+        "logging.audit",
+        if audit_on { Status::Pass } else { Status::Warn },
+        Severity::Info,
+        format!("audit log: {}", if audit_on { "on" } else { "off" }),
+        if audit_on {
+            format!(
+                "{}; redact {}",
+                config
+                    .logging
+                    .file
+                    .clone()
+                    .unwrap_or_else(|| crate::audit::default_path().display().to_string()),
+                if config.logging.redact { "on" } else { "off" }
+            )
+        } else {
+            "enable with [logging] enabled=true or AISHE_LOG=1".into()
+        },
+    ));
+
+    let enabled_mcp = config
+        .mcp_servers
+        .values()
+        .filter(|server| server.enabled)
+        .count();
+    checks.push(Check::new(
+        "mcp.servers",
+        Status::Pass,
+        Severity::Info,
+        if config.mcp_servers.is_empty() {
+            "MCP servers: none configured".into()
+        } else {
+            format!(
+                "MCP servers: {} configured ({enabled_mcp} enabled)",
+                config.mcp_servers.len()
+            )
+        },
+        "run `aishe mcp` for the configured server list",
+    ));
+    checks.push(
+        Check::new(
+            "history.persistence",
+            if paths.history.exists() || !config_valid {
+                Status::Pass
+            } else {
+                Status::Warn
+            },
+            Severity::Warning,
+            format!(
+                "history: {} ({})",
+                paths.history.display(),
+                if config.aishe.share_history {
+                    "shared; persistent across upgrades"
+                } else {
+                    "per-session"
+                }
+            ),
+            if paths.history.exists() {
+                "history file exists and is never removed by setup or update"
+            } else {
+                "the file will be created on first command; `doctor --fix` can create it now"
+            },
+        )
+        .fixable(config_valid),
+    );
+    checks.push(Check::new(
+        "statusline",
+        Status::Pass,
+        Severity::Info,
+        format!(
+            "statusline: {}",
+            if config.aishe.status_line {
+                config.aishe.status_line_position.as_str()
+            } else {
+                "off"
+            }
+        ),
+        format!("items: {}", config.aishe.status_line_items.join(", ")),
+    ));
+    checks.push(Check::new(
+        "pricing.active_model",
+        if crate::usage::price_for(&provider_config.model, &config.pricing).is_some() {
+            Status::Pass
+        } else {
+            Status::Warn
+        },
+        Severity::Info,
+        if crate::usage::price_for(&provider_config.model, &config.pricing).is_some() {
+            format!("pricing: configured for '{}'", provider_config.model)
+        } else {
+            format!("pricing: no price for '{}'", provider_config.model)
+        },
+        if crate::usage::price_for(&provider_config.model, &config.pricing).is_some() {
+            "cost and budget estimates are available".into()
+        } else {
+            format!(
+                "set exact rates with `aishe price set {} --input USD --output USD`",
+                provider_config.model
+            )
+        },
+    ));
+
+    if options.fix {
+        checks.push(apply_safe_fixes(&paths, config_valid));
+    }
+
+    Report {
+        schema_version: REPORT_SCHEMA_VERSION,
+        generated_at_ms: now_ms(),
+        version: version.to_string(),
+        platform: format!("{}-{}", std::env::consts::OS, std::env::consts::ARCH),
+        paths,
+        checks,
+        capability_report,
+    }
+}
+
+fn capability_checks(report: &capabilities::Report) -> Vec<Check> {
+    [
+        ("provider.live.credential", &report.credential),
+        ("provider.live.reachability", &report.reachability),
+        ("provider.live.model_list", &report.model_list),
+        ("provider.live.model", &report.model_available),
+        ("provider.live.text", &report.text),
+        ("provider.live.structured", &report.structured),
+        ("provider.live.tools", &report.tools),
+        ("provider.live.streaming", &report.streaming),
+    ]
+    .into_iter()
+    .map(|(id, check)| {
+        let status = match check.state {
+            capabilities::State::Pass => Status::Pass,
+            capabilities::State::Warn => Status::Warn,
+            capabilities::State::Fail => Status::Warn,
+            capabilities::State::Skipped => Status::Skipped,
+        };
+        Check::new(
+            id,
+            status,
+            Severity::Warning,
+            id.trim_start_matches("provider.live.").replace('_', " "),
+            check.detail.clone(),
+        )
+    })
+    .collect()
+}
+
+fn active_provider(config: &Config) -> &config::ProviderConfig {
+    if config.aishe.provider == "openai" {
+        &config.providers.openai
+    } else {
+        &config.providers.anthropic
+    }
+}
+
+pub fn resolved_paths() -> Paths {
+    let config_path = Config::path();
+    let config_dir = config_path
+        .parent()
+        .unwrap_or_else(|| Path::new("."))
+        .to_path_buf();
+    let data_dir = config::data_root()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join("aishe");
+    Paths {
+        config: config_path,
+        config_dir,
+        history: data_dir.join("history.ext"),
+        capability_dir: data_dir.join("capabilities"),
+        data_dir,
+    }
+}
+
+fn apply_safe_fixes(paths: &Paths, config_valid: bool) -> Check {
+    let mut changed = Vec::new();
+    for dir in [&paths.config_dir, &paths.data_dir] {
+        if !dir.exists() && std::fs::create_dir_all(dir).is_ok() {
+            changed.push(dir.clone());
+        }
+    }
+    if config_valid && !paths.history.exists() {
+        if let Some(parent) = paths.history.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        if OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&paths.history)
+            .is_ok()
+        {
+            changed.push(paths.history.clone());
+        }
+    }
+    for root in [&paths.config_dir, &paths.data_dir] {
+        repair_private_tree(root, &mut changed);
+    }
+    let removed = capabilities::clear_stale().unwrap_or(0);
+    changed.sort();
+    changed.dedup();
+    let detail = if changed.is_empty() && removed == 0 {
+        "no changes were necessary".into()
+    } else {
+        format!(
+            "{} path(s) created/repaired; {removed} stale capability record(s) removed",
+            changed.len()
+        )
+    };
+    Check {
+        id: "repair.safe".into(),
+        status: Status::Pass,
+        severity: Severity::Info,
+        summary: "safe repairs".into(),
+        detail,
+        fixable: true,
+        changed_paths: changed,
+    }
+}
+
+fn repair_private_tree(path: &Path, changed: &mut Vec<PathBuf>) {
+    let Ok(metadata) = std::fs::symlink_metadata(path) else {
+        return;
+    };
+    if metadata.file_type().is_symlink() {
+        return;
+    }
+    let desired = if metadata.is_dir() { 0o700 } else { 0o600 };
+    if set_private_mode(path, desired) {
+        changed.push(path.to_path_buf());
+    }
+    if metadata.is_dir() {
+        let Ok(entries) = std::fs::read_dir(path) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            repair_private_tree(&entry.path(), changed);
+        }
+    }
+}
+
+#[cfg(unix)]
+fn set_private_mode(path: &Path, desired: u32) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    let Ok(metadata) = std::fs::metadata(path) else {
+        return false;
+    };
+    if metadata.permissions().mode() & 0o777 == desired {
+        return false;
+    }
+    let mut permissions = metadata.permissions();
+    permissions.set_mode(desired);
+    std::fs::set_permissions(path, permissions).is_ok()
+}
+
+#[cfg(not(unix))]
+fn set_private_mode(_path: &Path, _desired: u32) -> bool {
+    false
+}
+
+fn bubblewrap_install_command() -> &'static str {
+    if crate::executor::which("apt-get").is_some() || crate::executor::which("apt").is_some() {
+        "sudo apt-get install bubblewrap"
+    } else if crate::executor::which("dnf").is_some() {
+        "sudo dnf install bubblewrap"
+    } else if crate::executor::which("pacman").is_some() {
+        "sudo pacman -S bubblewrap"
+    } else if crate::executor::which("apk").is_some() {
+        "sudo apk add bubblewrap"
+    } else {
+        "install bubblewrap with your OS package manager"
+    }
+}
+
+pub fn render_text(report: &Report) -> String {
+    let mut output = String::from("aishe doctor\n────────────\n");
+    for check in &report.checks {
+        let icon = match check.status {
+            Status::Pass => "✓",
+            Status::Warn => "!",
+            Status::Fail => "✗",
+            Status::Skipped => "·",
+        };
+        output.push_str(&format!(
+            "{icon} {}: {}\n",
+            crate::commands::display_safe(&check.id),
+            crate::commands::display_safe(&check.summary)
+        ));
+        if !check.detail.is_empty() {
+            output.push_str(&format!(
+                "    {}\n",
+                crate::commands::display_safe(&check.detail)
+            ));
+        }
+        for path in &check.changed_paths {
+            output.push_str(&format!(
+                "    changed: {}\n",
+                crate::commands::display_safe(&path.display().to_string())
+            ));
+        }
+    }
+    output.push('\n');
+    output.push_str(if report.critical_ok() {
+        "all critical checks passed\n"
+    } else {
+        "some critical checks failed\n"
+    });
+    output
+}
+
+#[derive(Serialize)]
+struct SupportBundle<'a> {
+    schema_version: u32,
+    report: &'a Report,
+    config: Value,
+    exclusions: [&'static str; 6],
+}
+
+pub fn write_bundle(path: &Path, report: &Report, config: Option<&Config>) -> Result<()> {
+    let config = config
+        .and_then(|config| serde_json::to_value(config).ok())
+        .map(redact_config)
+        .unwrap_or(Value::Null);
+    let bundle = SupportBundle {
+        schema_version: 1,
+        report,
+        config,
+        exclusions: [
+            "credential values",
+            "environment values",
+            "prompts",
+            "command history",
+            "file contents",
+            "audit contents",
+        ],
+    };
+    let bytes = serde_json::to_vec_pretty(&bundle)?;
+    config::write_atomic(path, &bytes)
+        .with_context(|| format!("writing support bundle {}", path.display()))?;
+    let _ = set_private_mode(path, 0o600);
+    Ok(())
+}
+
+fn redact_config(mut value: Value) -> Value {
+    redact_value(&mut value, None);
+    value
+}
+
+fn redact_value(value: &mut Value, parent: Option<&str>) {
+    match value {
+        Value::Object(map) => {
+            for (key, child) in map.iter_mut() {
+                let lower = key.to_ascii_lowercase();
+                let secret_field = lower != "api_key_env"
+                    && (lower.contains("password")
+                        || lower.contains("secret")
+                        || lower == "token"
+                        || lower == "authorization"
+                        || lower == "api_key");
+                let secret_container = matches!(lower.as_str(), "env" | "headers")
+                    || matches!(parent, Some("env" | "headers"));
+                if secret_field || secret_container {
+                    *child = Value::String("<redacted>".into());
+                } else {
+                    redact_value(child, Some(&lower));
+                }
+            }
+        }
+        Value::Array(values) => {
+            for child in values {
+                redact_value(child, parent);
+            }
+        }
+        Value::String(text) => *text = crate::redact::redact(text),
+        _ => {}
+    }
+}
+
+fn now_ms() -> u128 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_millis())
+        .unwrap_or(0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn redacted_config_keeps_key_name_but_not_secret_values() {
+        let mut config = Config::default();
+        config.providers.openai.api_key_env = "OPENAI_API_KEY".into();
+        config.mcp_servers.insert(
+            "secret-test".into(),
+            config::McpServerConfig {
+                command: Some("tool".into()),
+                args: Vec::new(),
+                env: [("TOKEN".into(), "sk-proj-super-secret".into())]
+                    .into_iter()
+                    .collect(),
+                url: None,
+                headers: [("Authorization".into(), "Bearer abc123".into())]
+                    .into_iter()
+                    .collect(),
+                enabled: true,
+            },
+        );
+        let value = redact_config(serde_json::to_value(config).unwrap());
+        let text = serde_json::to_string(&value).unwrap();
+        assert!(text.contains("OPENAI_API_KEY"));
+        assert!(!text.contains("sk-proj-super-secret"));
+        assert!(!text.contains("Bearer abc123"));
+        assert!(text.contains("<redacted>"));
+    }
+
+    #[test]
+    fn text_uses_the_same_check_ids_as_json() {
+        let report = Report {
+            schema_version: 1,
+            generated_at_ms: 0,
+            version: "test".into(),
+            platform: "test".into(),
+            paths: resolved_paths(),
+            checks: vec![Check::new(
+                "example.check",
+                Status::Pass,
+                Severity::Info,
+                "example",
+                "detail",
+            )],
+            capability_report: None,
+        };
+        let text = render_text(&report);
+        let json = serde_json::to_string(&report).unwrap();
+        assert!(text.contains("example.check"));
+        assert!(json.contains("example.check"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn private_tree_repair_covers_nested_state_without_following_symlinks() {
+        use std::os::unix::fs::{symlink, PermissionsExt};
+
+        let root =
+            std::env::temp_dir().join(format!("aishe-private-repair-{}", std::process::id()));
+        let nested = root.join("nested");
+        let outside = root.with_extension("outside");
+        std::fs::create_dir_all(&nested).unwrap();
+        std::fs::write(nested.join("state.json"), "{}").unwrap();
+        std::fs::write(&outside, "outside").unwrap();
+        std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o755)).unwrap();
+        std::fs::set_permissions(&nested, std::fs::Permissions::from_mode(0o755)).unwrap();
+        std::fs::set_permissions(
+            nested.join("state.json"),
+            std::fs::Permissions::from_mode(0o644),
+        )
+        .unwrap();
+        std::fs::set_permissions(&outside, std::fs::Permissions::from_mode(0o644)).unwrap();
+        symlink(&outside, nested.join("outside-link")).unwrap();
+
+        let mut changed = Vec::new();
+        repair_private_tree(&root, &mut changed);
+        assert_eq!(
+            std::fs::metadata(&root).unwrap().permissions().mode() & 0o777,
+            0o700
+        );
+        assert_eq!(
+            std::fs::metadata(&nested).unwrap().permissions().mode() & 0o777,
+            0o700
+        );
+        assert_eq!(
+            std::fs::metadata(nested.join("state.json"))
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o600
+        );
+        assert_eq!(
+            std::fs::metadata(&outside).unwrap().permissions().mode() & 0o777,
+            0o644
+        );
+
+        std::fs::remove_dir_all(&root).ok();
+        std::fs::remove_file(&outside).ok();
+    }
+}

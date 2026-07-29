@@ -1055,6 +1055,10 @@ def main():
     report.append("\n**`history` builtin reads the timestamped log:**\n")
     hist_root = tempfile.mkdtemp(prefix="aishe-hist-")
     hist_env = base_env(hist_root, with_key=False)
+    hist_config_dir = os.path.join(hist_root, "aishe")
+    os.makedirs(hist_config_dir, exist_ok=True)
+    with open(os.path.join(hist_config_dir, "config.toml"), "w") as f:
+        f.write('version = 2\n\n[aishe]\nmode = "suggest"\n')
     histdir = os.path.join(hist_env["XDG_DATA_HOME"], "aishe")
     os.makedirs(histdir, exist_ok=True)
     with open(os.path.join(histdir, "history.ext"), "w") as f:

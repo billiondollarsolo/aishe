@@ -30,11 +30,14 @@ before zsh's `NOMATCH` glob check runs. The check is deliberately narrow: if the
 first word is a real command or an explicit path, zsh still handles `?`, `*`,
 and other glob syntax normally.
 
-If the account has no syntax-highlighting plugin, the hook colors a recognized
-first command word green as a minimal fallback. Full syntax highlighting remains
-the job of zsh-syntax-highlighting or fast-syntax-highlighting, and either plugin
-automatically takes precedence. Set `AISHE_COMMAND_HIGHLIGHT=0` to turn the
-fallback off.
+If the account has no syntax-highlighting plugin, the hook provides a
+route-aware fallback over the whole edit buffer. Complete command-shaped input
+is green and natural-language questions are magenta. It deliberately
+distinguishes collisions such as `what --version` (command) from `what is my IP
+address?` (LLM), rather than permanently coloring by the first token. Full
+syntax highlighting remains the job of zsh-syntax-highlighting or
+fast-syntax-highlighting, and either plugin automatically takes precedence. Set
+`AISHE_COMMAND_HIGHLIGHT=0` to turn the fallback off.
 
 ### Behavior by mode
 
@@ -168,6 +171,18 @@ file and enables `EXTENDED_HISTORY`, `APPEND_HISTORY`, and—when
 expansion therefore survive shell restarts and exchange entries with concurrent
 Aishe sessions. The log lives in Aishe's user data directory; installers and
 package upgrades replace only the binary and do not remove it.
+
+## Branded prompt status line
+
+With `pty_prompt = true`, aishe can render its live status in the right prompt,
+on a separate line above the input prompt, or nowhere. Configure it in `aishe
+setup` / `aishe settings`, or set `status_line_position = "right"`, `"below"`,
+or `"off"`. Ordered fields can include `model`, `mode`, `last_tokens`,
+`last_cost`, `session_tokens`, `session_cost`, and `requests`. The below-prompt
+layout is usually more readable when you select the detailed metrics. Status
+text is passed through zsh's non-recursive `psvar` prompt escape, so even with a
+theme's `PROMPT_SUBST` option enabled, model names and provider text cannot
+become shell substitutions.
 
 ### Semantic history search (opt-in)
 

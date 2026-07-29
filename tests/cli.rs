@@ -1,6 +1,7 @@
 //! End-to-end CLI tests via the built binary.
 
-use std::io::Write;
+use std::io::{Read, Write};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use assert_cmd::Command;
 use predicates::prelude::PredicateBooleanExt;
@@ -9,7 +10,7 @@ use predicates::str::contains;
 /// Write a minimal valid config into a temp XDG_CONFIG_HOME so the binary does
 /// not invoke the interactive first-run wizard.
 fn temp_config_home() -> std::path::PathBuf {
-    let dir = std::env::temp_dir().join(format!("aishe-cli-{}", std::process::id()));
+    let dir = temp_root("config");
     let cfg_dir = dir.join("aishe");
     std::fs::create_dir_all(&cfg_dir).unwrap();
     let mut f = std::fs::File::create(cfg_dir.join("config.toml")).unwrap();
@@ -32,6 +33,38 @@ model = "gpt-x"
     )
     .unwrap();
     dir
+}
+
+fn temp_root(label: &str) -> std::path::PathBuf {
+    static NEXT: AtomicU64 = AtomicU64::new(1);
+    let dir = std::env::temp_dir().join(format!(
+        "aishe-cli-{label}-{}-{}",
+        std::process::id(),
+        NEXT.fetch_add(1, Ordering::Relaxed)
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    dir
+}
+
+fn serve_model_catalog(requests: usize) -> (String, std::thread::JoinHandle<()>) {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    let handle = std::thread::spawn(move || {
+        for _ in 0..requests {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = [0u8; 4096];
+            let _ = stream.read(&mut request);
+            let body = r#"{"data":[{"id":"local-model-b"},{"id":"local-model-a"}]}"#;
+            write!(
+                stream,
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            )
+            .unwrap();
+        }
+    });
+    (format!("http://{address}"), handle)
 }
 
 #[test]
@@ -638,6 +671,55 @@ model = "gpt-x"
 }
 
 #[test]
+fn profile_changes_are_transparent_and_readiness_json_is_stable() {
+    let dir = temp_root("profile-readiness");
+    let config_dir = dir.join("aishe");
+    std::fs::create_dir_all(&config_dir).unwrap();
+    std::fs::write(
+        config_dir.join("config.toml"),
+        r#"version = 2
+
+[aishe]
+safety_profile = "custom"
+mode = "suggest"
+provider = "openai"
+
+[providers.openai]
+base_url = "http://127.0.0.1:9"
+api_key_env = "UNUSED_LOCAL_KEY"
+model = "local-readiness-model"
+transport = "chat"
+auth_required = false
+"#,
+    )
+    .unwrap();
+    let run = |args: &[&str]| {
+        let mut command = Command::cargo_bin("aishe").unwrap();
+        command
+            .env("AISHE_CONFIG_DIR", &dir)
+            .env("AISHE_DATA_DIR", dir.join("data"))
+            .args(args);
+        command
+    };
+
+    run(&["profile", "balanced"])
+        .assert()
+        .success()
+        .stdout(contains("profile = balanced"))
+        .stdout(contains("mode: suggest → auto"))
+        .stdout(contains("yolo_confirm: dangerous → writes"));
+    run(&["readiness", "--json"])
+        .assert()
+        .failure()
+        .stdout(contains("\"ready\": false"))
+        .stdout(contains("\"id\": \"provider_tools\""))
+        .stdout(contains("\"id\": \"sandbox\""))
+        .stdout(contains("\"id\": \"redaction\""));
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
 fn undo_restores_a_recorded_file_change() {
     // Seed an undo journal by hand (the format the file tools write) and confirm
     // `aishe undo` restores the file's prior contents. Uses the AISHE_UNDO_JOURNAL
@@ -763,4 +845,409 @@ fn runbook_generates_script_and_markdown() {
     assert!(md.contains("## Reproduce"));
 
     std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn missing_config_in_non_tty_mode_is_actionable_and_does_not_write_defaults() {
+    let dir = temp_root("missing-config");
+    Command::cargo_bin("aishe")
+        .unwrap()
+        .env("AISHE_CONFIG_DIR", &dir)
+        .env("AISHE_DATA_DIR", dir.join("data"))
+        .arg("-c")
+        .arg("!true")
+        .assert()
+        .failure()
+        .stderr(contains("aishe setup --non-interactive"));
+    assert!(!dir.join("aishe").join("config.toml").exists());
+    std::fs::remove_dir_all(dir).ok();
+}
+
+#[test]
+fn noninteractive_setup_is_rerunnable_and_preserves_existing_fields() {
+    let dir = temp_root("setup");
+    let data = dir.join("data");
+    let run = |args: &[&str]| {
+        let mut command = Command::cargo_bin("aishe").unwrap();
+        command
+            .env("AISHE_CONFIG_DIR", &dir)
+            .env("AISHE_DATA_DIR", &data)
+            .args(args);
+        command
+    };
+    run(&[
+        "setup",
+        "--non-interactive",
+        "--service",
+        "ollama",
+        "--model",
+        "local-test-model",
+        "--profile",
+        "balanced",
+        "--input-price",
+        "0.25",
+        "--output-price",
+        "0.75",
+    ])
+    .assert()
+    .success()
+    .stdout(contains("Saved config"));
+
+    let config_path = dir.join("aishe").join("config.toml");
+    let mut config = std::fs::read_to_string(&config_path).unwrap();
+    config.push_str("\n[named_dirs]\nimportant = \"/srv/keep-me\"\n");
+    std::fs::write(&config_path, config).unwrap();
+
+    // With an existing config, omitting --service must preserve provider
+    // endpoint/auth/transport and unrelated tables while allowing an override.
+    run(&[
+        "setup",
+        "--non-interactive",
+        "--model",
+        "local-test-model-v2",
+    ])
+    .assert()
+    .success();
+    let updated = std::fs::read_to_string(&config_path).unwrap();
+    assert!(updated.contains("base_url = \"http://localhost:11434\""));
+    assert!(updated.contains("auth_required = false"));
+    assert!(updated.contains("model = \"local-test-model-v2\""));
+    assert!(updated.contains("important = \"/srv/keep-me\""));
+    assert!(updated.contains("[pricing.local-test-model]"));
+    run(&[
+        "setup",
+        "--non-interactive",
+        "--model",
+        "local-test-model-v3",
+    ])
+    .assert()
+    .success();
+    let backup_texts: Vec<String> = std::fs::read_dir(dir.join("aishe"))
+        .unwrap()
+        .flatten()
+        .filter(|entry| entry.file_name().to_string_lossy().contains(".setup."))
+        .map(|entry| std::fs::read_to_string(entry.path()).unwrap())
+        .collect();
+    assert_eq!(
+        backup_texts.len(),
+        2,
+        "rapid setup applies must create distinct backups"
+    );
+    assert!(
+        backup_texts
+            .iter()
+            .any(|text| text.contains("model = \"local-test-model-v2\"")),
+        "second setup state was not preserved in its own backup"
+    );
+    assert!(
+        backup_texts
+            .iter()
+            .any(|text| text.contains("model = \"local-test-model\"")),
+        "original setup state was not preserved in its own backup"
+    );
+    std::fs::remove_dir_all(dir).ok();
+}
+
+#[test]
+fn price_commands_persist_exact_model_rates_and_validate_values() {
+    let dir = temp_config_home();
+    let data = dir.join("data");
+    let run = |args: &[&str]| {
+        let mut command = Command::cargo_bin("aishe").unwrap();
+        command
+            .env("AISHE_CONFIG_DIR", &dir)
+            .env("AISHE_DATA_DIR", &data)
+            .args(args);
+        command
+    };
+    run(&[
+        "price",
+        "set",
+        "gpt-5.6-luna",
+        "--input",
+        "1.125",
+        "--output",
+        "7.25",
+    ])
+    .assert()
+    .success()
+    .stdout(contains("gpt-5.6-luna"));
+    run(&["price", "list"])
+        .assert()
+        .success()
+        .stdout(contains("input $1.125000").and(contains("output $7.250000")));
+    let persisted = std::fs::read_to_string(dir.join("aishe").join("config.toml")).unwrap();
+    assert!(persisted.contains("gpt-5.6-luna"));
+    run(&["price", "set", "bad", "--input=-1", "--output", "2"])
+        .assert()
+        .failure()
+        .stderr(contains("non-negative"));
+    run(&["price", "remove", "gpt-5.6-luna"]).assert().success();
+    let persisted = std::fs::read_to_string(dir.join("aishe").join("config.toml")).unwrap();
+    assert!(!persisted.contains("gpt-5.6-luna"));
+    std::fs::remove_dir_all(dir).ok();
+}
+
+#[test]
+fn doctor_json_fix_and_support_bundle_share_checks_and_redact_secrets() {
+    let dir = temp_config_home();
+    let data = dir.join("data");
+    let config_path = dir.join("aishe").join("config.toml");
+    let mut config = std::fs::read_to_string(&config_path).unwrap();
+    config.push_str(
+        r#"
+[mcp_servers.private]
+command = "private-tool"
+
+[mcp_servers.private.env]
+TOKEN = "sk-proj-this-is-only-a-fake-test-secret"
+
+[mcp_servers.private.headers]
+Authorization = "Bearer fake-private-header"
+"#,
+    );
+    std::fs::write(&config_path, config).unwrap();
+    let bundle = dir.join("support.json");
+    let output = Command::cargo_bin("aishe")
+        .unwrap()
+        .env("AISHE_CONFIG_DIR", &dir)
+        .env("AISHE_DATA_DIR", &data)
+        .env("ANTHROPIC_API_KEY", "fake-test-key")
+        .args([
+            "doctor",
+            "--json",
+            "--fix",
+            "--bundle",
+            bundle.to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{:?}", output);
+    let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let ids: Vec<&str> = report["checks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|check| check["id"].as_str())
+        .collect();
+    assert!(ids.contains(&"config.file"));
+    assert!(ids.contains(&"provider.credential"));
+    assert!(ids.contains(&"history.persistence"));
+    assert!(ids.contains(&"repair.safe"));
+    let config_check = report["checks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|check| check["id"] == "config.file")
+        .unwrap();
+    assert!(
+        config_check["detail"]
+            .as_str()
+            .unwrap()
+            .contains("schema 1 on disk"),
+        "Doctor must report the source schema rather than serde's current-schema default"
+    );
+
+    let support = std::fs::read_to_string(&bundle).unwrap();
+    assert!(!support.contains("sk-proj-this-is-only-a-fake-test-secret"));
+    assert!(!support.contains("Bearer fake-private-header"));
+    assert!(support.contains("<redacted>"));
+    assert!(support.contains("\"command history\""));
+
+    // The safe repair path is idempotent.
+    let second = Command::cargo_bin("aishe")
+        .unwrap()
+        .env("AISHE_CONFIG_DIR", &dir)
+        .env("AISHE_DATA_DIR", &data)
+        .env("ANTHROPIC_API_KEY", "fake-test-key")
+        .args(["doctor", "--json", "--fix"])
+        .output()
+        .unwrap();
+    assert!(second.status.success());
+    let second: serde_json::Value = serde_json::from_slice(&second.stdout).unwrap();
+    let repair = second["checks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|check| check["id"] == "repair.safe")
+        .unwrap();
+    assert_eq!(
+        repair["changed_paths"]
+            .as_array()
+            .map(Vec::len)
+            .unwrap_or(0),
+        0
+    );
+    std::fs::remove_dir_all(dir).ok();
+}
+
+#[test]
+fn effective_config_and_context_json_are_structured_and_content_free() {
+    let dir = temp_config_home();
+    let data = dir.join("data");
+    let project = dir.join("project");
+    std::fs::create_dir_all(project.join(".aishe")).unwrap();
+    let fake_secret = "sk-proj-fake-context-secret-abcdefghijklmnopqrstuvwxyz";
+    std::fs::write(
+        project.join(".aishe").join("context.md"),
+        format!("never expose {fake_secret}\n"),
+    )
+    .unwrap();
+    let run = |args: &[&str]| {
+        let mut command = Command::cargo_bin("aishe").unwrap();
+        command
+            .env("AISHE_CONFIG_DIR", &dir)
+            .env("AISHE_DATA_DIR", &data)
+            .current_dir(&project)
+            .args(args);
+        command
+    };
+    let output = run(&["config", "--effective", "--json"]).output().unwrap();
+    assert!(output.status.success());
+    let effective: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert!(effective["config"].is_object());
+    assert!(effective["provenance"]["fields"].is_array());
+
+    let request = "private request text must not be echoed";
+    let output = run(&["context", "--preview", request, "--json"])
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let raw = String::from_utf8(output.stdout).unwrap();
+    assert!(!raw.contains(request));
+    assert!(!raw.contains(fake_secret));
+    let preview: serde_json::Value = serde_json::from_str(&raw).unwrap();
+    assert!(preview["sections"].is_array());
+    assert!(preview["total_estimated_tokens"].as_u64().is_some());
+
+    run(&["context", "--exclude", "project_context", "--json"])
+        .assert()
+        .success();
+    let persisted = std::fs::read_to_string(dir.join("aishe").join("config.toml")).unwrap();
+    assert!(persisted.contains("project_context"));
+    std::fs::remove_dir_all(dir).ok();
+}
+
+#[test]
+fn noninteractive_tour_is_isolated_resumable_and_proves_undo() {
+    let dir = temp_root("tour");
+    let cwd = dir.join("invocation");
+    std::fs::create_dir_all(&cwd).unwrap();
+    let sentinel = cwd.join("keep.txt");
+    std::fs::write(&sentinel, "unchanged").unwrap();
+    let run = || {
+        let mut command = Command::cargo_bin("aishe").unwrap();
+        command
+            .env("AISHE_CONFIG_DIR", dir.join("config"))
+            .env("AISHE_DATA_DIR", dir.join("data"))
+            .current_dir(&cwd)
+            .args(["tour", "--non-interactive"]);
+        command
+    };
+    run()
+        .assert()
+        .success()
+        .stdout(contains("Tour complete").and(contains("proved undo")));
+    assert_eq!(std::fs::read_to_string(&sentinel).unwrap(), "unchanged");
+    assert!(!dir.join("data/aishe/tour/workspace/undo-demo.txt").exists());
+    run()
+        .assert()
+        .success()
+        .stdout(contains("tour is complete"));
+    let state: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(dir.join("data/aishe/tour/state.json")).unwrap())
+            .unwrap();
+    assert_eq!(state["completed"], true);
+    std::fs::remove_dir_all(dir).ok();
+}
+
+#[test]
+fn durable_task_cli_lifecycle_is_private_and_redacted() {
+    let dir = temp_config_home();
+    let data = dir.join("data");
+    let fake_secret = "sk-proj-fake-task-secret-abcdefghijklmnopqrstuvwxyz";
+    let run = |args: &[&str]| {
+        let mut command = Command::cargo_bin("aishe").unwrap();
+        command
+            .env("AISHE_CONFIG_DIR", &dir)
+            .env("AISHE_DATA_DIR", &data)
+            .env("AISHE_FAKE_LLM", "task complete")
+            .args(args);
+        command
+    };
+    run(&["--yolo-line", &format!("summarize {fake_secret}")])
+        .assert()
+        .success()
+        .stdout(contains("task complete"));
+    let listing = run(&["sessions", "--json"]).output().unwrap();
+    assert!(listing.status.success());
+    let records: serde_json::Value = serde_json::from_slice(&listing.stdout).unwrap();
+    let record = &records.as_array().unwrap()[0];
+    let id = record["id"].as_str().unwrap();
+    assert_eq!(record["status"], "completed");
+    let task_path = data.join("aishe").join("tasks").join(format!("{id}.json"));
+    let task_text = std::fs::read_to_string(&task_path).unwrap();
+    assert!(!task_text.contains(fake_secret));
+    assert!(task_text.contains("<redacted>"));
+
+    run(&["session", "show", id, "--json"])
+        .assert()
+        .success()
+        .stdout(contains("\"status\": \"completed\""));
+    run(&["session", "rename", id, "deployment check"])
+        .assert()
+        .success();
+    run(&["session", "delete", id]).assert().success();
+    assert!(!task_path.exists());
+    std::fs::remove_dir_all(dir).ok();
+}
+
+#[test]
+fn provider_test_and_model_listing_support_local_unauthenticated_endpoints() {
+    let dir = temp_root("provider-test");
+    let config_dir = dir.join("aishe");
+    std::fs::create_dir_all(&config_dir).unwrap();
+    let (endpoint, server) = serve_model_catalog(3);
+    std::fs::write(
+        config_dir.join("config.toml"),
+        format!(
+            r#"version = 2
+
+[aishe]
+mode = "suggest"
+provider = "openai"
+
+[providers.openai]
+base_url = "{endpoint}"
+api_key_env = "LOCAL_UNUSED_KEY"
+model = "local-model-a"
+transport = "chat"
+auth_required = false
+"#
+        ),
+    )
+    .unwrap();
+    let run = |args: &[&str]| {
+        let mut command = Command::cargo_bin("aishe").unwrap();
+        command
+            .env("AISHE_CONFIG_DIR", &dir)
+            .env("AISHE_DATA_DIR", dir.join("data"))
+            .env_remove("LOCAL_UNUSED_KEY")
+            .args(args);
+        command
+    };
+    let output = run(&["provider", "test", "--json"]).output().unwrap();
+    assert!(output.status.success(), "{:?}", output);
+    let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(report["credential"]["state"], "pass");
+    assert_eq!(report["credential_required"], false);
+    assert_eq!(report["model_available"]["state"], "pass");
+    assert_eq!(report["text"]["state"], "skipped");
+
+    run(&["models", "--provider", "openai", "--json"])
+        .assert()
+        .success()
+        .stdout(contains("local-model-a").and(contains("local-model-b")));
+    server.join().unwrap();
+    std::fs::remove_dir_all(dir).ok();
 }

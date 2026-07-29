@@ -203,7 +203,10 @@ pub fn summary(usage: Usage, model: &str, overrides: &BTreeMap<String, Price>) -
     );
     match price_for(model, overrides) {
         Some(p) => format!("{base} · ~${:.4}", cost(usage, p)),
-        None => format!("{base} · cost n/a (no price for '{model}')"),
+        None => format!(
+            "{base} · cost n/a (no price for '{}')",
+            crate::commands::display_safe(model)
+        ),
     }
 }
 

@@ -6,8 +6,10 @@ annotated copy you can paste in is at
 [examples/config.toml](../examples/config.toml). Every field has a default, so a
 minimal config is valid.
 
-You can change most settings at runtime with the [meta commands](commands.md),
-which persist your choice back to the file.
+Use `aishe setup` for guided configuration or `aishe settings` for the
+interactive section editor. The settings hub shows the provenance of each
+effective value and stages changes until you apply them. A few
+[meta commands](commands.md) also persist individual choices.
 
 ## File locations
 
@@ -26,10 +28,14 @@ Inside them:
 - Custom commands: `<config>/commands/` and `<project>/.aishe/commands/`
 - Skills: `<config>/skills/` and `<project>/.aishe/skills/`
 - Startup file: `~/.aishrc` and `<config>/aishrc`
-- History (the `history` builtin): `<data>/history`
+- Timestamped shell history: `<data>/history.ext`
 - Audit log: `<data>/audit.jsonl` (override with `AISHE_LOG_FILE`)
 - Undo journal: `<data>/undo.jsonl` (override with `AISHE_UNDO_JOURNAL`)
 - Semantic-history index: `<data>/history.vec`
+- Durable AI tasks: `<data>/tasks/*.json` (private and redacted; stateless
+  reasoning resumes may retain opaque encrypted provider continuation data)
+- Provider capability cache: `<data>/capabilities/*.json`
+- Resumable setup draft: `<data>/setup-draft.json`
 
 **Run `aishe doctor` to see the paths actually resolved on your machine** — it
 prints the config and history locations rather than leaving you to guess.
@@ -46,6 +52,7 @@ brevity. Read `~/.config/aishe/...` as `<config>/...` and
 
 | Field | Type | Default | Meaning |
 |-------|------|---------|---------|
+| `safety_profile` | string | `custom` | Named settings bundle: `conservative`, `balanced`, `autonomous`, or `custom`. |
 | `mode` | string | `suggest` | Interaction mode: `suggest`, `auto`, or `yolo`. |
 | `provider` | string | `anthropic` | Which provider block to use: `anthropic` or `openai`. |
 | `yolo_confirm_dangerous` | bool | `true` | In yolo, confirm commands the safety gate flags. Honored only when `yolo_confirm` is unset. |
@@ -61,7 +68,13 @@ brevity. Read `~/.config/aishe/...` as `<config>/...` and
 | `share_history` | bool | `true` | Share Aishe's timestamped history across concurrent and future sessions (zsh `SHARE_HISTORY` when Aishe supplies the native-history fallback); off makes Aishe history per-session. |
 | `structured` | string | `schema` | Suggest output format: `schema`, `json`, or `prompt`. |
 | `stream` | bool | `false` | Stream answers token-by-token (suggest and auto). |
-| `show_usage` | bool | `true` | Print a per-session token and cost line after each interaction. |
+| `reasoning_effort` | string | `auto` | Provider reasoning effort; `auto` lets the model/endpoint choose. |
+| `failure_hints` | bool | `true` | Show one concise recovery hint after an interactive command fails. |
+| `context_exclude` | array | `[]` | Optional context section IDs to omit. Manage with `aishe context`. |
+| `show_usage` | bool | `true` | Record and display model-call usage in the interactive session. |
+| `status_line` | bool | `true` | Enable the branded prompt's live status display. |
+| `status_line_position` | string | `right` | Status placement: `right`, `below`, or `off`. |
+| `status_line_items` | array | `["model","mode","session_cost","requests"]` | Ordered fields; also supports `last_tokens`, `last_cost`, and `session_tokens`. |
 | `budget_usd` | float | `0.0` | Stop calling the model past this session cost. `0` = unlimited. |
 | `memory` | bool | `true` | Remember recent natural-language turns so follow-ups have context. Clear at the aishe prompt with `reset`. |
 | `cache` | bool | `true` | Cache identical suggest-mode responses briefly so repeats are instant and free. Toggle at the aishe prompt with `cache on`/`off`. |
@@ -106,6 +119,8 @@ See [Logging and privacy](logging.md) for the event shapes and examples.
 | `base_url` | string | API root. For OpenAI-compatible services, point this at the service. |
 | `api_key_env` | string | Name of the environment variable that holds the API key. |
 | `model` | string | Model identifier sent with each request. |
+| `transport` | string | `auto`, `responses`, or `chat`. Auto uses Responses for official OpenAI and Chat Completions for compatible endpoints. |
+| `auth_required` | bool | Optional explicit auth policy. When absent, loopback endpoints need no key; non-loopback endpoints do. |
 
 Defaults:
 
@@ -114,21 +129,25 @@ Defaults:
 base_url = "https://api.anthropic.com"
 api_key_env = "ANTHROPIC_API_KEY"
 model = "claude-sonnet-4-20250514"
+transport = "auto"
+auth_required = true
 
 [providers.openai]
 base_url = "https://api.openai.com"
 api_key_env = "OPENAI_API_KEY"
 model = "gpt-4o"
+transport = "auto"
+auth_required = true
 ```
 
 See [Providers](providers.md) for Groq, Ollama, and others.
 
 ## `[pricing."<model>"]` (optional)
 
-Per-model price overrides for cost estimates, in USD per 1M tokens. Keys are
-matched by exact model name first, then by substring, then fall back to a
-built-in table. Only needed when a model is missing from the table or priced
-differently for you.
+Per-model price overrides for cost estimates, in USD per 1M tokens. Exact keys
+win; legacy substring overrides and then the built-in table are compatibility
+fallbacks. Prefer `aishe price set MODEL --input PRICE --output PRICE`, which
+writes an exact override. Setup prompts when it cannot price the selected model.
 
 ```toml
 [pricing."openai/gpt-oss-120b"]
@@ -193,8 +212,10 @@ AISHE_CONFIG_DIR=/tmp/try AISHE_DATA_DIR=/tmp/try aishe doctor
 aishe [--mode suggest|auto|yolo] [--model NAME] [--provider anthropic|openai] [-c "INPUT"]
 
 aishe zsh                 launch your real zsh under aishe (zsh-PTY), explicitly
+aishe setup               guided/resumable setup (`--non-interactive` for CI)
+aishe settings            transactional interactive settings editor
 aishe init <zsh|bash>     print a shell integration snippet
-aishe doctor              environment check (prints the resolved config paths)
+aishe doctor              diagnostics; add --probe/--live/--json/--fix/--bundle
 ```
 
 Flags override config for that session only. `-c "INPUT"` runs a single input
@@ -202,6 +223,12 @@ non-interactively and exits.
 
 ## Recovery
 
-If the config file is malformed, aishe reports the problem and falls back to
-defaults rather than refusing to start. A pre-rename `llmsh/config.toml` in the
-same config directory is migrated automatically on first run.
+If the config file is malformed, aishe reports the exact error and refuses to
+silently replace it with defaults. Repair it with `aishe settings`, restore a
+`.bak` file, or use `aishe setup --restart` to discard only a setup draft.
+
+Schema upgrades are automatic and transactional: aishe writes a private backup,
+then atomically writes the migrated v2 config. A pre-rename
+`llmsh/config.toml` in the same config directory is migrated on first run.
+Installers and package upgrades replace the binary only; they do not delete the
+config, history, tasks, trust store, or other user data.

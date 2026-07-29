@@ -36,27 +36,35 @@ branded prompt whose glyph reflects the mode). The hook ergonomics described in
 injects the same hook.
 
 **The branded prompt overrides your own.** By default (`pty_prompt = true`) aishe
-replaces your zsh prompt with its `<cwd> <glyph>` + `model · mode` line, so any
-git-aware segments (branch, dirty, ahead/behind) from powerlevel10k or a similar
-theme are hidden while you are in aishe. Only the *prompt* is overridden:
+replaces your zsh prompt with its `<cwd> <glyph>` plus configurable status line,
+so any git-aware segments (branch, dirty, ahead/behind) from powerlevel10k or a
+similar theme are hidden while you are in aishe. Only the *prompt* is overridden:
 everything else is your real zsh, so zsh-autosuggestions, zsh-syntax-highlighting,
 your completions, fzf-tab, and oh-my-zsh all behave exactly as usual. To keep your
 own prompt, set `pty_prompt = false`. This is recommended for powerlevel10k users
 in particular, since p10k's instant-prompt and transient-prompt can otherwise
 conflict with the branded prompt.
 
-On a minimal account with no syntax-highlighting plugin, aishe supplies a narrow
-fallback: a recognized first command word is colored green. It does not attempt
-to parse full shell syntax, and automatically gets out of the way when
-zsh-syntax-highlighting or fast-syntax-highlighting is loaded. Set
-`AISHE_COMMAND_HIGHLIGHT=0` to disable the fallback.
+On a minimal account with no syntax-highlighting plugin, aishe supplies a
+route-aware fallback: complete command-shaped input is green and recognized
+natural-language questions are magenta. It evaluates the full buffer, so
+`what --version` stays a command while `what is the capital of France?` changes
+to the LLM route/color even if `what` is installed. It automatically gets out
+of the way when zsh-syntax-highlighting or fast-syntax-highlighting is loaded.
+Set `AISHE_COMMAND_HIGHLIGHT=0` to disable the fallback.
 
-Because routing is by command name, a question whose first word is a real command
-(`who`, `which`, `find`, `time`, `test`, `make`) would otherwise run that command.
-To force a line to the AI, **start it with `?` or `#`** (e.g. `? who was the first
-man on the moon`); the sigil is stripped by the line editor before zsh sees it, so
-the shell's comment and glob rules never apply. The force-NL key (Alt-Enter, or
-`AISHE_NL_KEY`) does the same for the line you are editing. **Shift-Tab** (or
+The branded prompt also has a configurable live status display. `right` keeps
+the current shell-like layout, `below` gives detailed metrics room in narrow
+terminals, and `off` hides it. Choose the position and ordered fields during
+setup or in `aishe settings`.
+
+The router recognizes a conservative set of full-line question forms beginning
+with collision-prone commands such as `what`, `where`, and `who`. Ambiguous
+imperatives such as `find large files` remain commands. To force any line to the
+AI, **start it with `?` or `#`** (e.g. `? find large files`); the sigil is
+stripped by the line editor before zsh sees it, so the shell's comment and glob
+rules never apply. The force-NL key (Alt-Enter, or `AISHE_NL_KEY`) does the same
+for the line you are editing. **Shift-Tab** (or
 `AISHE_MODE_KEY`) cycles the interaction mode for the session
 (`suggest -> auto -> yolo`); the prompt glyph updates to match.
 

@@ -8,6 +8,7 @@
 use std::time::Duration;
 
 use anyhow::Result;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::config::Config;
@@ -18,7 +19,8 @@ pub mod fallback;
 pub mod openai_compat;
 
 /// A single message in a conversation, in our canonical (provider-neutral) form.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "role", content = "data", rename_all = "snake_case")]
 pub enum Msg {
     /// A user turn (plain text).
     User(String),
@@ -38,14 +40,14 @@ pub enum Msg {
 }
 
 /// An assistant message: optional prose plus zero or more tool calls.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct AssistantMsg {
     pub text: Option<String>,
     pub tool_calls: Vec<ToolCall>,
 }
 
 /// A request from the model to invoke a tool.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolCall {
     pub id: String,
     pub name: String,
@@ -80,6 +82,158 @@ pub enum ProviderError {
     Api { status: u16, message: String },
     #[error("failed to parse provider response: {0}")]
     Parse(String),
+}
+
+/// Stable classification used by Setup, Doctor, support bundles, and
+/// user-facing recovery messages. It is derived from the provider response and
+/// never contains credentials or request bodies.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ErrorKind {
+    MissingCredential,
+    InvalidCredential,
+    Permission,
+    ModelNotFound,
+    UnsupportedParameter,
+    UnsupportedTools,
+    UnsupportedFormat,
+    RateLimited,
+    Quota,
+    Timeout,
+    Network,
+    Server,
+    MalformedResponse,
+    Unknown,
+}
+
+impl ProviderError {
+    pub fn kind(&self) -> ErrorKind {
+        match self {
+            Self::Http(message) => {
+                let lower = message.to_ascii_lowercase();
+                if lower.contains("timed out") || lower.contains("timeout") {
+                    ErrorKind::Timeout
+                } else {
+                    ErrorKind::Network
+                }
+            }
+            Self::Parse(_) => ErrorKind::MalformedResponse,
+            Self::Api { status, message } => classify_api_error(*status, message),
+        }
+    }
+}
+
+/// Redacted, deterministic recovery text for an end-user provider failure.
+/// Keeping this mapping next to `ErrorKind` prevents setup, shell modes, and
+/// future front ends from offering contradictory next actions.
+pub fn actionable_error(error: &ProviderError) -> String {
+    let base = crate::redact::redact(&error.to_string());
+    let next = match error.kind() {
+        ErrorKind::MissingCredential => {
+            "Set the named API-key environment variable, then run `aishe doctor --live`."
+        }
+        ErrorKind::InvalidCredential => {
+            "Check the configured API-key environment variable, then run `aishe doctor --live`."
+        }
+        ErrorKind::Permission => {
+            "Verify that this API project can access the selected model and endpoint."
+        }
+        ErrorKind::ModelNotFound => {
+            "Run `aishe models --refresh`, then select an available model with `aishe model MODEL`."
+        }
+        ErrorKind::UnsupportedTools => {
+            "Run `aishe settings`; for GPT-5.6 reasoning plus tools choose the Responses transport."
+        }
+        ErrorKind::UnsupportedParameter | ErrorKind::UnsupportedFormat => {
+            "Run `aishe doctor --live` to verify this model/transport combination, then open `aishe settings`."
+        }
+        ErrorKind::RateLimited => "The retry budget was exhausted; wait briefly and retry.",
+        ErrorKind::Quota => "Check provider billing or quota before retrying.",
+        ErrorKind::Timeout | ErrorKind::Network => {
+            "Check connectivity and the endpoint with `aishe doctor --probe`."
+        }
+        ErrorKind::Server => "The provider returned a server error after retries; retry later.",
+        ErrorKind::MalformedResponse => {
+            "Run `aishe doctor --live`; the endpoint returned an incompatible response shape."
+        }
+        ErrorKind::Unknown => "Run `aishe doctor --live` for a classified compatibility report.",
+    };
+    format!("{base}\nNext: {next}")
+}
+
+pub fn classify_api_error(status: u16, message: &str) -> ErrorKind {
+    let lower = message.to_ascii_lowercase();
+    if lower.contains("api key not found")
+        || lower.contains("key is not set")
+        || lower.contains("missing api key")
+    {
+        return ErrorKind::MissingCredential;
+    }
+    match status {
+        401 => return ErrorKind::InvalidCredential,
+        403 => return ErrorKind::Permission,
+        408 => return ErrorKind::Timeout,
+        429 => return ErrorKind::RateLimited,
+        500..=599 => return ErrorKind::Server,
+        _ => {}
+    }
+    if lower.contains("quota")
+        || lower.contains("billing")
+        || lower.contains("insufficient_quota")
+        || lower.contains("credit balance")
+    {
+        ErrorKind::Quota
+    } else if lower.contains("model")
+        && (lower.contains("not found")
+            || lower.contains("does not exist")
+            || lower.contains("not have access"))
+    {
+        ErrorKind::ModelNotFound
+    } else if lower.contains("tool")
+        && (lower.contains("not supported")
+            || lower.contains("unsupported")
+            || lower.contains("cannot use"))
+    {
+        ErrorKind::UnsupportedTools
+    } else if lower.contains("response_format")
+        || lower.contains("text.format")
+        || lower.contains("json_schema")
+        || (lower.contains("structured") && lower.contains("not supported"))
+    {
+        ErrorKind::UnsupportedFormat
+    } else if lower.contains("unsupported parameter")
+        || lower.contains("unrecognized request argument")
+        || lower.contains("unknown parameter")
+        || lower.contains("invalid parameter")
+    {
+        ErrorKind::UnsupportedParameter
+    } else {
+        ErrorKind::Unknown
+    }
+}
+
+#[cfg(test)]
+mod recovery_tests {
+    use super::*;
+
+    #[test]
+    fn actionable_messages_are_classified_and_redacted() {
+        let error = ProviderError::Api {
+            status: 400,
+            message: "Function tools are not supported with reasoning_effort".into(),
+        };
+        let text = actionable_error(&error);
+        assert!(text.contains("Responses transport"));
+        assert!(text.contains("Next:"));
+
+        let auth = ProviderError::Api {
+            status: 401,
+            message: "Bearer sk-proj-abcdefghijklmnopqrstuvwxyz1234567890 rejected".into(),
+        };
+        let text = actionable_error(&auth);
+        assert!(!text.contains("abcdefghijklmnopqrstuvwxyz"));
+        assert!(text.contains("API-key environment variable"));
+    }
 }
 
 /// How the model's output should be constrained (best-effort; providers that
@@ -455,7 +609,7 @@ pub fn probe(config: &Config, name: &str) -> Probe {
             key.map(|k| ("x-api-key".to_string(), k)),
         )
     };
-    let base = base_url.trim_end_matches('/').to_string();
+    let base = crate::provider_catalog::normalize_base_url(&base_url);
     let url = format!("{base}/v1/models");
     let agent = ureq::AgentBuilder::new()
         .timeout_connect(Duration::from_secs(3))
@@ -531,11 +685,13 @@ fn build_one(config: &Config, name: &str) -> Result<std::sync::Arc<dyn Provider>
         }
         "openai" => {
             let p = &config.providers.openai;
-            let key = read_key(&p.api_key_env)?;
-            Ok(Arc::new(openai_compat::OpenAiProvider::new(
+            let key = read_optional_key(&p.api_key_env, p.requires_auth())?;
+            Ok(Arc::new(openai_compat::OpenAiProvider::with_options(
                 p.base_url.clone(),
                 key,
                 p.model.clone(),
+                &p.transport,
+                &config.aishe.reasoning_effort,
             )))
         }
         other => anyhow::bail!("unknown provider '{other}' (expected 'anthropic' or 'openai')"),
@@ -549,6 +705,14 @@ fn read_key(env_var: &str) -> Result<String> {
             "API key not found — is ${env_var} set? \
              Export it, e.g. `export {env_var}=...`"
         ),
+    }
+}
+
+fn read_optional_key(env_var: &str, required: bool) -> Result<String> {
+    match std::env::var(env_var) {
+        Ok(value) if !value.trim().is_empty() => Ok(value),
+        _ if !required => Ok(String::new()),
+        _ => read_key(env_var),
     }
 }
 

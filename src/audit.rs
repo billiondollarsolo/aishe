@@ -40,13 +40,27 @@ pub fn init(enabled: bool, path: Option<PathBuf>, redact: bool) {
     let sink = if enabled {
         if let Some(parent) = resolved.parent() {
             std::fs::create_dir_all(parent).ok();
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let _ = std::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o700));
+            }
         }
-        OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&resolved)
-            .ok()
-            .map(Mutex::new)
+        let mut options = OpenOptions::new();
+        options.create(true).append(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        options.open(&resolved).ok().map(|file| {
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let _ = std::fs::set_permissions(&resolved, std::fs::Permissions::from_mode(0o600));
+            }
+            Mutex::new(file)
+        })
     } else {
         None
     };

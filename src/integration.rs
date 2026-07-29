@@ -99,10 +99,14 @@ _aishe_force_nl() { printf '%s' "$1" > "$AISHE_FORCE_FILE"; }
 # Runs in the MAIN shell before each prompt: route a forced-NL line (from the
 # sigil or key), then act on a staged command.
 aishe_precmd() {
-  # Opt-in (AISHE_AUTODIAGNOSE): after a command fails, hint that the fix key is
-  # available. AISHE_LAST_EXIT is set by _aishe_capture_exit, which runs first.
-  if [[ -n "$AISHE_AUTODIAGNOSE" && "${AISHE_LAST_EXIT:-0}" != 0 && -n "$AISHE_LAST_CMD" ]]; then
-    print -P "%F{244}aishe: last command exited ${AISHE_LAST_EXIT}; press ${AISHE_FIX_KEY:-^X^F} to fix it%f"
+  # One concise, configurable hint after an ordinary failure. A signature keeps
+  # prompt redraws from repeating it; Ctrl-C (130) is intentionally quiet.
+  local _aishe_hint_sig="${AISHE_LAST_EXIT:-0}:${AISHE_LAST_CMD:-}"
+  if [[ "${AISHE_FAILURE_HINTS:-${AISHE_AUTODIAGNOSE:-0}}" == 1 &&
+        "${AISHE_LAST_EXIT:-0}" != 0 && "${AISHE_LAST_EXIT:-0}" != 130 &&
+        -n "$AISHE_LAST_CMD" && "$_aishe_hint_sig" != "$_AISHE_LAST_HINT_SIGNATURE" ]]; then
+    print -P "%F{244}aishe: exit ${AISHE_LAST_EXIT} — ? explain · Ctrl-X Ctrl-F suggest a fix · !<cmd> force shell%f"
+    typeset -g _AISHE_LAST_HINT_SIGNATURE="$_aishe_hint_sig"
   fi
   if [[ -f "$AISHE_FORCE_FILE" ]]; then
     local fline
@@ -228,34 +232,99 @@ aishe-recall() {
   fi
 }
 
-# Minimal command-name highlighting for accounts that do not load
-# zsh-syntax-highlighting or fast-syntax-highlighting. It colors only a
-# recognized first word green; full shell grammar highlighting remains the
-# external plugin's job. The exact prior region is removed on every redraw so
-# edits never leave stale color behind, while regions owned by other widgets are
-# preserved.
-typeset -g _AISHE_COMMAND_HIGHLIGHT_SPEC=""
-_aishe_clear_command_highlight() {
-  [[ -n "$_AISHE_COMMAND_HIGHLIGHT_SPEC" ]] || return
-  local -a kept
-  local spec
-  for spec in "${region_highlight[@]}"; do
-    [[ "$spec" == "$_AISHE_COMMAND_HIGHLIGHT_SPEC" ]] || kept+=("$spec")
-  done
-  region_highlight=("${kept[@]}")
-  _AISHE_COMMAND_HIGHLIGHT_SPEC=""
+# Route-aware highlighting. A recognized command is green on minimal accounts;
+# input Aishe will treat as natural language is magenta. The natural-language
+# overlay also corrects the common zsh-syntax-highlighting ambiguity where a
+# question such as `what is ...` stays green merely because macOS ships a real
+# `what` binary. Full shell grammar highlighting remains the external plugin's
+# job. Exact prior regions are removed on every redraw so edits never leave
+# stale color behind, while regions owned by other widgets are preserved.
+# zsh 5.9 added `memo=token`, which is the collision-free way for plugins to
+# remove only their own regions. On 5.8, use an Aishe-specific bold color
+# combination as a compatibility marker.
+autoload -Uz is-at-least
+typeset -g _AISHE_HIGHLIGHT_MEMO=""
+is-at-least 5.9 && _AISHE_HIGHLIGHT_MEMO="memo=aishe"
+# Conservative question grammar for command-name collisions. It deliberately
+# requires a recognizable question phrase instead of treating every valid
+# command with arguments as prose. Prefix `!` always forces the shell; `?` or
+# `#` always forces Aishe.
+_aishe_looks_like_question() {
+  emulate -L zsh
+  setopt extendedglob
+  local line="${1##[[:space:]]#}"
+  line="${line%%[[:space:]]#}"
+  [[ -n "$line" ]] || return 1
+  [[ "$line" == [#?]* ]] && return 0
+  [[ "$line" == '!'* ]] && return 1
+
+  # Operators, redirections, expansions, assignments, and explicit paths are
+  # stronger shell signals than the question-word heuristic.
+  [[ "$line" != *[\|\;\&\<\>\$\`\(\)\{\}]* ]] || return 1
+  local -a words
+  words=(${(z)line}) 2>/dev/null || return 1
+  (( ${#words} >= 2 )) || return 1
+  local first="${words[1]:l}"
+  local second="${words[2]:l}"
+  second="${second%%[^[:alnum:]_]#}"
+
+  case "${first}:${second}" in
+    what:is|what:are|what:was|what:were|what:do|what:does|what:did|what:can|what:could|what:would|what:should|what:will)
+      return 0 ;;
+    where:is|where:are|where:was|where:were|where:do|where:does|where:did|where:can|where:could|where:would|where:should|where:will)
+      return 0 ;;
+    who:is|who:are|who:was|who:were|who:am|who:do|who:does|who:did|who:can|who:could|who:would|who:should|who:will)
+      return 0 ;;
+    when:is|when:are|when:was|when:were|when:do|when:does|when:did|when:can|when:could|when:would|when:should|when:will)
+      return 0 ;;
+    why:is|why:are|why:was|why:were|why:do|why:does|why:did|why:can|why:could|why:would|why:should|why:will)
+      return 0 ;;
+    how:is|how:are|how:was|how:were|how:do|how:does|how:did|how:can|how:could|how:would|how:should|how:will|how:many|how:much|how:long|how:far|how:old|how:often)
+      return 0 ;;
+    can:you|could:you|would:you|will:you|should:i|should:we|is:there|are:there|do:you|does:the|did:the)
+      return 0 ;;
+  esac
+
+  # A trailing question mark is sufficient only for a question-word lead. This
+  # avoids stealing legitimate commands such as `find . -name foo?`.
+  if [[ "$line" == *'?' ]]; then
+    case "$first" in
+      what|where|who|when|why|how|which|whose|whom|can|could|would|will|should|is|are|do|does|did)
+        return 0 ;;
+    esac
+  fi
+  return 1
 }
 
 _aishe_highlight_command() {
   emulate -L zsh
   setopt extendedglob
-  _aishe_clear_command_highlight
+  # `region_highlight` is a widget-scoped special array. Cleanup must happen in
+  # this hook itself (a nested helper would mutate its own scoped copy and leave
+  # stale spans behind as the buffer grows).
+  local -a kept
+  local spec
+  for spec in "${region_highlight[@]}"; do
+    if [[ -n "$_AISHE_HIGHLIGHT_MEMO" ]]; then
+      [[ "$spec" == *" memo=aishe" ]] || kept+=("$spec")
+    else
+      case "$spec" in
+        <->\ <->\ fg=green,bold|<->\ <->\ fg=magenta,bold) ;;
+        *) kept+=("$spec") ;;
+      esac
+    fi
+  done
+  region_highlight=("${kept[@]}")
   [[ "${AISHE_COMMAND_HIGHLIGHT:-1}" != 0 && -n "$BUFFER" ]] || return
 
-  # Never compete with a real syntax-highlighting plugin, regardless of whether
-  # it was loaded before or after the aishe hook.
-  if (( $+functions[_zsh_highlight] || $+functions[_zsh_highlight_main] ||
-        $+functions[_fast_highlight] || $+functions[_fast_main] )); then
+  if _aishe_looks_like_question "$BUFFER"; then
+    local owned_spec
+    if [[ -n "$_AISHE_HIGHLIGHT_MEMO" ]]; then
+      owned_spec="0 ${#BUFFER} fg=magenta memo=aishe"
+    else
+      owned_spec="0 ${#BUFFER} fg=magenta,bold"
+    fi
+    region_highlight+=("$owned_spec")
     return
   fi
 
@@ -263,23 +332,48 @@ _aishe_highlight_command() {
   local rest="${BUFFER#$leading}"
   local head="${rest%%[[:space:]]*}"
   [[ "$head" == [[:alnum:]_./+-]## ]] || return
-  whence -w -- "$head" >/dev/null 2>&1 || return
+
+  if ! whence -w -- "$head" >/dev/null 2>&1; then
+    # Unknown command heads route through Aishe's command-not-found handler.
+    local owned_spec
+    if [[ -n "$_AISHE_HIGHLIGHT_MEMO" ]]; then
+      owned_spec="${#leading} ${#BUFFER} fg=magenta memo=aishe"
+    else
+      owned_spec="${#leading} ${#BUFFER} fg=magenta,bold"
+    fi
+    region_highlight+=("$owned_spec")
+    return
+  fi
+
+  # A real syntax plugin owns valid shell grammar and command colors. Aishe only
+  # overlays the natural-language route above.
+  if (( $+functions[_zsh_highlight] || $+functions[_zsh_highlight_main] ||
+        $+functions[_fast_highlight] || $+functions[_fast_main] )); then
+    return
+  fi
 
   local start=${#leading}
   local end=$(( start + ${#head} ))
-  _AISHE_COMMAND_HIGHLIGHT_SPEC="$start $end fg=green"
-  region_highlight+=("$_AISHE_COMMAND_HIGHLIGHT_SPEC")
+  local owned_spec
+  if [[ -n "$_AISHE_HIGHLIGHT_MEMO" ]]; then
+    owned_spec="$start $end fg=green memo=aishe"
+  else
+    owned_spec="$start $end fg=green,bold"
+  fi
+  region_highlight+=("$owned_spec")
 }
 
 # A plain-language question ending in `?` never reaches
 # command_not_found_handler when NOMATCH is enabled: zsh rejects the unmatched
-# `?` glob first. Pre-route only when the first word is an unknown, non-glob
-# command name. Real commands and explicit paths keep zsh's native glob behavior.
+# `?` glob first. Question-grammar collisions (`what is`, `where is`, `who am`)
+# also need pre-routing because their first word can be a real command. Other
+# real commands and explicit paths keep zsh's native behavior.
 _aishe_should_route_question() {
   emulate -L zsh
   setopt extendedglob
   local line="${1##[[:space:]]#}"
   line="${line%%[[:space:]]#}"
+  _aishe_looks_like_question "$line" && return 0
   [[ "$line" == *'?' ]] || return 1
   local head="${line%%[[:space:]]*}"
   # A shell operator, quote, expansion, assignment, or path in the first token
@@ -423,14 +517,16 @@ fi
 /// Branded prompt for the PTY front-end only (never `init zsh`, which must leave
 /// the user's prompt alone). Mirrors the reedline prompt: `<cwd> <glyph>`, where
 /// the glyph reflects the mode and is green/red by the last exit code, with a
-/// dim `model · mode` right prompt. Applied via a precmd hook added last so it
-/// wins over a prompt that the user's config rebuilds each prompt. Honors
-/// `AISHE_PTY_PROMPT` (set from the `pty_prompt` config option).
+/// configurable status line. `right` uses RPROMPT; `below` renders a secondary
+/// line with the next prompt; `off` hides it. Applied via a precmd hook added
+/// last so it wins over a prompt that the user's config rebuilds each prompt.
 const PTY_PROMPT: &str = r#"# --- aishe branded prompt (PTY front-end; pty_prompt config) ---
 if [[ -o interactive && "${AISHE_PTY_PROMPT:-1}" == 1 ]]; then
   autoload -Uz add-zsh-hook
   aishe_set_prompt() {
-    local glyph
+    local glyph model mode status_text status_prompt base_prompt key value item
+    local -A metrics
+    local -a status_items
     if [[ -n "${AISHE_MODEL_FILE:-}" && -r "${AISHE_MODEL_FILE}" ]]; then
       IFS= read -r AISHE_MODEL < "${AISHE_MODEL_FILE}"
     fi
@@ -439,8 +535,52 @@ if [[ -o interactive && "${AISHE_PTY_PROMPT:-1}" == 1 ]]; then
       auto) glyph='»' ;;
       *)    glyph='❯' ;;
     esac
-    PROMPT="%B%F{cyan}%~%f%b %(?.%F{green}.%F{red})${glyph}%f "
-    RPROMPT="%F{244}${AISHE_MODEL:-} · ${AISHE_MODE:-suggest}%f"
+    model="${AISHE_MODEL}"
+    mode="${AISHE_MODE:-suggest}"
+    metrics=()
+    if [[ -n "${AISHE_STATUS_FILE:-}" && -r "${AISHE_STATUS_FILE}" ]]; then
+      while IFS=$'\t' read -r key value; do
+        [[ -n "$key" ]] && metrics[$key]="$value"
+      done < "${AISHE_STATUS_FILE}"
+    fi
+    status_text=""
+    status_items=("${(@s:,:)${AISHE_STATUS_ITEMS:-model,mode,session_cost,requests}}")
+    for item in "${status_items[@]}"; do
+      value=""
+      case "$item" in
+        model) value="$model" ;;
+        mode) value="$mode" ;;
+        *) value="${metrics[$item]:-}" ;;
+      esac
+      [[ -n "$value" ]] && status_text="${status_text:+${status_text} · }${value}"
+    done
+    # Never interpolate provider/model text directly into PROMPT/RPROMPT.
+    # Themes commonly enable PROMPT_SUBST, which would otherwise evaluate a
+    # model name containing `$()` or backticks. zsh's `%v` prompt escape reads
+    # psvar without recursively expanding its contents. Slot 99 is reserved for
+    # Aishe's rendered status text.
+    psvar[99]="$status_text"
+    if [[ -n "$status_text" && -z "${NO_COLOR:-}" ]]; then
+      status_prompt="%F{244}%99v%f"
+    else
+      status_prompt="%99v"
+    fi
+    base_prompt="%B%F{cyan}%~%f%b %(?.%F{green}.%F{red})${glyph}%f "
+    case "${AISHE_STATUS_POSITION:-right}" in
+      off)
+        PROMPT="${base_prompt}"
+        RPROMPT=""
+        ;;
+      below)
+        PROMPT="${status_prompt:+${status_prompt}
+}${base_prompt}"
+        RPROMPT=""
+        ;;
+      *)
+        PROMPT="${base_prompt}"
+        RPROMPT="${status_prompt}"
+        ;;
+    esac
   }
   add-zsh-hook precmd aishe_set_prompt
 fi
@@ -489,9 +629,15 @@ __aishe_prompt() {
   # to PROMPT_COMMAND, so it runs before anything resets $?), for the fix-it key.
   AISHE_LAST_EXIT=$?
   AISHE_LAST_CMD="$(HISTTIMEFORMAT='' builtin history 1 2>/dev/null | sed 's/^ *[0-9][0-9]* *//')"
-  # Opt-in (AISHE_AUTODIAGNOSE): hint that the fix key is available after a failure.
-  if [ -n "$AISHE_AUTODIAGNOSE" ] && [ "${AISHE_LAST_EXIT:-0}" -ne 0 ] && [ -n "$AISHE_LAST_CMD" ]; then
-    printf '\033[2maishe: last command exited %s; press Ctrl-X Ctrl-F to fix it\033[0m\n' "$AISHE_LAST_EXIT"
+  # One concise hint after an ordinary failure (never after Ctrl-C).
+  local __aishe_hint_sig="${AISHE_LAST_EXIT:-0}:${AISHE_LAST_CMD:-}"
+  if [ "${AISHE_FAILURE_HINTS:-${AISHE_AUTODIAGNOSE:-0}}" = 1 ] \
+     && [ "${AISHE_LAST_EXIT:-0}" -ne 0 ] \
+     && [ "${AISHE_LAST_EXIT:-0}" -ne 130 ] \
+     && [ -n "$AISHE_LAST_CMD" ] \
+     && [ "$__aishe_hint_sig" != "${_AISHE_LAST_HINT_SIGNATURE:-}" ]; then
+    printf '\033[2maishe: exit %s — ? explain · Ctrl-X Ctrl-F suggest a fix · !<cmd> force shell\033[0m\n' "$AISHE_LAST_EXIT"
+    _AISHE_LAST_HINT_SIGNATURE="$__aishe_hint_sig"
   fi
   [ -f "$AISHE_PENDING_FILE" ] || return
   local action cmd
@@ -630,6 +776,10 @@ mod tests {
         assert!(s.contains("--fix-line"));
         // Opt-in ambient hint after a failure.
         assert!(s.contains("AISHE_AUTODIAGNOSE"));
+        assert!(s.contains("AISHE_FAILURE_HINTS"));
+        assert!(s.contains(r#""${AISHE_LAST_EXIT:-0}" != 130"#));
+        assert!(s.contains("_AISHE_LAST_HINT_SIGNATURE"));
+        assert!(s.contains("Ctrl-X Ctrl-F suggest a fix"));
     }
 
     #[test]
@@ -640,6 +790,8 @@ mod tests {
         assert!(s.contains("__aishe_fix"));
         assert!(s.contains(r#"bind -x '"\C-x\C-f": __aishe_fix'"#));
         assert!(s.contains("AISHE_AUTODIAGNOSE"));
+        assert!(s.contains("AISHE_FAILURE_HINTS"));
+        assert!(s.contains(r#"[ "${AISHE_LAST_EXIT:-0}" -ne 130 ]"#));
     }
 
     #[test]
@@ -729,11 +881,58 @@ mod tests {
     fn zsh_script_has_fallback_command_highlighting() {
         let s = script("zsh").unwrap();
         assert!(s.contains("_aishe_highlight_command"));
+        assert!(s.contains("_aishe_looks_like_question"));
+        assert!(s.contains("fg=magenta"));
         assert!(s.contains(r#"whence -w -- "$head""#));
-        assert!(s.contains(r#"region_highlight+=("$_AISHE_COMMAND_HIGHLIGHT_SPEC")"#));
+        assert!(s.contains(r#"region_highlight+=("$owned_spec")"#));
+        assert!(s.contains("memo=aishe"));
+        assert!(s.contains("fg=green,bold"));
         assert!(s.contains("add-zle-hook-widget line-pre-redraw _aishe_highlight_command"));
         assert!(s.contains("$+functions[_zsh_highlight]"));
         assert!(s.contains("AISHE_COMMAND_HIGHLIGHT"));
+    }
+
+    #[test]
+    fn zsh_question_grammar_disambiguates_command_name_collisions() {
+        if std::process::Command::new("zsh")
+            .arg("--version")
+            .output()
+            .is_err()
+        {
+            return;
+        }
+        let cases = [
+            ("what is the capital of France", true),
+            ("where is the config", true),
+            ("who am i", true),
+            ("how many files are here", true),
+            ("can you list large files", true),
+            ("who", false),
+            ("where ls", false),
+            ("what /bin/ls", false),
+            ("find . -name foo?", false),
+            ("!who am i", false),
+        ];
+        for (line, expected) in cases {
+            let quoted = line.replace('\'', "'\\''");
+            let program = format!(
+                "{ZSH_HOOK}\nif _aishe_looks_like_question '{quoted}'; then print yes; else print no; fi"
+            );
+            let output = std::process::Command::new("zsh")
+                .args(["-fc", &program])
+                .output()
+                .expect("run zsh question grammar");
+            assert!(
+                output.status.success(),
+                "zsh script failed for {line:?}: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            assert_eq!(
+                String::from_utf8_lossy(&output.stdout).trim(),
+                if expected { "yes" } else { "no" },
+                "route for {line:?}"
+            );
+        }
     }
 
     #[test]

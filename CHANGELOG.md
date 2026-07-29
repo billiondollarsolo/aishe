@@ -6,6 +6,92 @@ breaking changes can land in any release.
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-07-29
+
+### Added
+- A resumable `aishe setup` flow now covers service presets, model discovery or
+  manual entry, transport, authentication policy, safety profile, unknown-model
+  pricing, status-line layout, capability checks, and a final diff before an
+  atomic save. Non-TTY provisioning is explicit with `--non-interactive`.
+- `aishe settings` provides a transactional section editor and identifies
+  whether effective values came from defaults, user config, a project overlay,
+  environment, or the command line.
+- `aishe tour` provides resumable, isolated first-session lessons with fake and
+  live-provider paths.
+- Provider introspection now includes `aishe models`,
+  `aishe provider test [--live] [--json]`, typed error categories, model-scoped
+  capability caching, and support for unauthenticated loopback services.
+- Doctor now has structured checks plus `--json`, `--live`, safe/idempotent
+  `--fix`, and redacted `--bundle` output.
+- Named `conservative`, `balanced`, and `autonomous` safety profiles and an
+  `aishe readiness` report make their exact tradeoffs visible.
+- The branded zsh prompt has a configurable `right`, `below`, or `off` status
+  line with ordered last-call and session token/cost/request metrics.
+- Unknown model pricing is offered during setup/settings and can be managed
+  directly with `aishe price list|set|remove`.
+- Yolo tasks now checkpoint privately and atomically. `aishe sessions`,
+  `aishe session show|rename|delete`, and `aishe resume` recover interrupted
+  work without blindly repeating a tool that may already have started.
+- `aishe context --explain/--preview/--json` exposes section provenance and
+  token estimates without leaking context contents; optional sections can be
+  persistently included or excluded.
+
+### Changed
+- Configuration is schema-versioned. Schema migration makes a private backup
+  and uses an atomic rewrite; setup drafts, capability records, configs, and
+  task records use private filesystem permissions. Doctor repairs nested
+  config/data permissions without following symlinks and reports the schema
+  actually stored on disk. Rapid repeated setup applies create distinct,
+  fully-synced backups instead of sharing a timestamped filename.
+- The install script distinguishes fresh installs from upgrades, inventories
+  existing state without reading it, preserves all config/history/data, and
+  optionally launches setup with `--setup`. Downloads now fail closed if their
+  checksum is missing, malformed, or mismatched.
+- Tagged builds validate tag/manifest/changelog version parity, use the lockfile,
+  and keep the GitHub release in draft until every binary, checksum, and Linux
+  package has uploaded successfully.
+- OpenAI provider requests retain model-native Responses state, use
+  `max_output_tokens`, send reasoning effort through the Responses shape, and
+  set `store: false`. Compatible Chat endpoints retain the learned token-limit
+  parameter across processes. Private durable checkpoints preserve opaque
+  encrypted reasoning and provider routing IDs exactly while redacting
+  plaintext, so stateless tool sessions remain resumable.
+- Context construction, preview, and redaction now use the same typed sections,
+  including project task and host-profile sources. Short-lived model requests
+  merge bounded, redacted persistent history with their in-memory shell history
+  so useful context survives restarts and concurrent sessions.
+
+### Fixed
+- The minimal zsh highlighter and Enter-time dispatcher now use the same
+  full-buffer question grammar. Valid commands stay green, while inputs such as
+  `what is ...`, `where is ...`, and `who am ...` switch to the
+  natural-language color/route even when their first word is installed.
+- Recoloring a command into a question no longer leaves stale green regions,
+  including on zsh 5.8 and 5.9.
+- A non-zero interactive command emits one concise fix/explain hint; success,
+  Ctrl-C, repeated prompts, and disabled hints stay quiet.
+- Rerunning non-interactive setup without a service flag preserves existing
+  provider fields instead of replacing them with custom defaults.
+- Provider failures now name a missing API-key environment variable and provide
+  deterministic recovery commands instead of only saying “LLM not configured.”
+  Doctor/live validation also blocks redundant endpoint and model-list requests
+  when a required credential is known to be absent, avoiding a confusing second
+  HTTP 401 diagnosis.
+- History files and all other newly created Aishe state use private permissions;
+  safe repair recursively fixes older state while leaving symlink targets alone.
+- Provider/model text is control-escaped at terminal boundaries, and status
+  text uses zsh's non-recursive `psvar` prompt channel. A provider-supplied
+  model name therefore cannot repaint the terminal or become command
+  substitution when a theme enables `PROMPT_SUBST`.
+- Provider endpoint input now accepts the commonly copied trailing `/v1`
+  without generating a broken `/v1/v1/...` URL or misclassifying official
+  OpenAI as a Chat Completions endpoint.
+
+### Tests
+- Added hermetic upgrade preservation, interactive setup/settings, live
+  status-line and prompt-injection, guided-tour lifecycle, route/highlight
+  collision, and kill/resume durable-task suites.
+
 ## [0.2.30] - 2026-07-28
 
 ### Fixed

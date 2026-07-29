@@ -6,10 +6,12 @@ aishe talks to three provider shapes:
 - the official OpenAI **Responses API**, and
 - any custom **OpenAI-compatible Chat Completions API**.
 
-The `[providers.openai]` block selects the wire format from `base_url`.
-`https://api.openai.com` uses Responses, including reasoning-model tool calls
-and their continuation items. Groq, Ollama, OpenRouter, Together, and other
-custom URLs use Chat Completions for broad compatibility.
+The `[providers.openai]` block's `transport = "auto"` selects the wire format
+from `base_url`. `https://api.openai.com` uses Responses, including
+reasoning-model tool calls and their continuation items. Groq, Ollama,
+OpenRouter, Together, and other custom URLs use Chat Completions for broad
+compatibility. Set `transport = "responses"` or `"chat"` only when a gateway
+needs an explicit choice.
 
 API keys are read only from the environment variable named by `api_key_env`. They
 are never written to the config file.
@@ -41,6 +43,8 @@ provider = "openai"
 base_url = "https://api.openai.com"
 api_key_env = "OPENAI_API_KEY"
 model = "gpt-4o"
+transport = "auto"
+auth_required = true
 ```
 
 ```sh
@@ -51,7 +55,24 @@ aishe
 Official OpenAI requests use `/v1/responses` for normal, structured, streaming,
 and tool-use calls. In a multi-step yolo run, aishe sends the response's native
 reasoning and function-call items back with each tool result, as required by
-reasoning models.
+reasoning models. It uses Responses-native `max_output_tokens`,
+`reasoning = { effort = ... }`, and `store = false`; this avoids the
+Chat-Completions incompatibility between reasoning effort and function tools on
+models such as GPT-5.6.
+
+With `store = false`, current Responses reasoning items contain opaque
+`encrypted_content` by default. Aishe replays every returned provider item in
+memory and retains encrypted reasoning plus provider routing IDs exactly in
+private durable checkpoints; plaintext checkpoint fields remain redacted. This
+follows OpenAI's
+[stateless reasoning guidance](https://developers.openai.com/api/docs/guides/reasoning#preserve-reasoning-without-stored-responses);
+the legacy `include = ["reasoning.encrypted_content"]` request field is no
+longer required.
+
+`base_url` is the service root. Aishe also accepts the commonly copied
+`https://api.openai.com/v1` form and canonicalizes the trailing `/v1` before
+appending `/v1/responses`; compatible and Anthropic endpoints receive the same
+protection against accidental `/v1/v1/...` URLs.
 
 ## Groq
 
@@ -66,6 +87,8 @@ provider = "openai"
 base_url = "https://api.groq.com/openai"
 api_key_env = "GROQ_API_KEY"
 model = "openai/gpt-oss-120b"
+transport = "chat"
+auth_required = true
 ```
 
 ```sh
@@ -75,8 +98,8 @@ aishe
 
 ## Ollama (local models)
 
-Ollama serves an OpenAI-compatible API locally. No real key is needed, but
-`api_key_env` must name a variable that is set to something non-empty.
+Ollama serves an OpenAI-compatible API locally. No key or dummy environment
+variable is required:
 
 ```toml
 [aishe]
@@ -86,10 +109,11 @@ provider = "openai"
 base_url = "http://localhost:11434"
 api_key_env = "OLLAMA_API_KEY"
 model = "llama3.1"
+transport = "chat"
+auth_required = false
 ```
 
 ```sh
-export OLLAMA_API_KEY=ollama   # any non-empty value
 aishe
 ```
 
@@ -119,6 +143,8 @@ embedding_model = "nomic-embed-text"
 base_url = "http://localhost:11434"
 api_key_env = "OLLAMA_API_KEY"
 model = "llama3.1"
+transport = "chat"
+auth_required = false
 ```
 
 ```sh
@@ -173,12 +199,15 @@ provider_fallback = ["openai"]   # then a local Ollama configured below
 
 [providers.openai]
 base_url = "http://localhost:11434"   # Ollama
-api_key_env = "OPENAI_API_KEY"        # set it to any non-empty value
+api_key_env = "OPENAI_API_KEY"        # ignored because auth_required is false
 model = "llama3"
+transport = "chat"
+auth_required = false
 ```
 
-Each named block must have its API-key env set or it is skipped (so a missing key
-in a fallback never breaks the primary). `aishe doctor` shows the resolved chain.
+Each authenticated block must have its API-key env set or it is skipped (so a
+missing key in a fallback never breaks the primary); local blocks with
+`auth_required = false` need none. `aishe doctor` shows the resolved chain.
 When a fallback is used, a one-line notice is printed once. Note: configuring a
 chain serves answers non-streamed (resilience over live token streaming); a
 single provider streams as usual. The setting is treated as sensitive, so a
@@ -196,6 +225,18 @@ completion, so it costs no tokens) and reports each as **reachable**, **reachabl
 but key rejected** (a 401/403 — the endpoint is up but the key is wrong), or
 **unreachable** (connection refused / timeout). An unreachable member is a
 warning, not a failure, so `doctor` still passes offline.
+
+For a focused provider check, run:
+
+```sh
+aishe provider test             # configuration + endpoint capability checks
+aishe provider test --live      # minimal text/schema/tool/stream calls
+aishe models --provider openai  # enumerate that configured endpoint
+```
+
+Capability results are cached per endpoint, model, and transport in aishe's
+private data directory, so a compatible model does not relearn the same
+behavior on every request.
 
 ## Cost and trust storage
 
