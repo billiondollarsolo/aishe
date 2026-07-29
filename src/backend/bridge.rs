@@ -20,6 +20,7 @@ const JOURNAL_SCHEMA_VERSION: u32 = 1;
 const MAX_JOURNAL_BYTES: u64 = 16 * 1024 * 1024;
 const LEASE_TTL: Duration = Duration::from_secs(45);
 const USAGE_RECONCILIATION_GRACE: Duration = Duration::from_secs(30);
+const BUDGET_RESERVATION_TTL: Duration = Duration::from_secs(10 * 60);
 const TOOL_WAIT: Duration = Duration::from_secs(60 * 60);
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -154,7 +155,13 @@ struct ToolLease {
     workspace: PathBuf,
     expires_at: Instant,
     queue: VecDeque<CallKey>,
-    pending_budget_reservations: HashMap<String, VecDeque<f64>>,
+    pending_budget_reservations: HashMap<String, VecDeque<BudgetReservation>>,
+}
+
+#[derive(Clone)]
+struct BudgetReservation {
+    amount_usd: f64,
+    expires_at: Instant,
 }
 
 /// A closed foreground lease has no tool or provider-turn authority, but keeps
@@ -163,7 +170,7 @@ struct ToolLease {
 /// completed immediately before unregister.
 struct RetiredUsageLease {
     price: Option<crate::usage::Price>,
-    pending_budget_reservations: HashMap<String, VecDeque<f64>>,
+    pending_budget_reservations: HashMap<String, VecDeque<BudgetReservation>>,
     expires_at: Instant,
 }
 
@@ -417,11 +424,12 @@ impl Bridge {
                 "A hard budget lease is missing its trusted model price",
             ));
         };
+        prune_budget_reservations(&mut lease.pending_budget_reservations);
         let reserved = lease
             .pending_budget_reservations
             .values()
             .flatten()
-            .copied()
+            .map(|reservation| reservation.amount_usd)
             .sum::<f64>();
         let spent = lease.registration.baseline_spent_usd.max(durable_spent) + reserved;
         let remaining = (budget - spent).max(0.0);
@@ -450,7 +458,10 @@ impl Bridge {
             .pending_budget_reservations
             .entry(request.session_id.clone())
             .or_default()
-            .push_back(reservation);
+            .push_back(BudgetReservation {
+                amount_usd: reservation,
+                expires_at: Instant::now() + BUDGET_RESERVATION_TTL,
+            });
         Ok(ProviderTurnDecision {
             max_output_tokens: cap,
             remaining_usd: Some(remaining),
@@ -477,6 +488,7 @@ impl Bridge {
         cleanup_expired(&mut state);
         let owner = lease_owner(&state, &report.session_id)?;
         let cost = if let Some(lease) = state.leases.get_mut(&owner) {
+            prune_budget_reservations(&mut lease.pending_budget_reservations);
             let cost = report.cost_usd.or_else(|| {
                 lease.registration.price.map(|price| {
                     crate::usage::cost(
@@ -497,6 +509,7 @@ impl Bridge {
             }
             cost
         } else if let Some(lease) = state.retired_usage_leases.get_mut(&owner) {
+            prune_budget_reservations(&mut lease.pending_budget_reservations);
             let cost = report.cost_usd.or_else(|| {
                 lease.price.map(|price| {
                     crate::usage::cost(
@@ -1210,6 +1223,14 @@ fn cleanup_expired(state: &mut BridgeState) {
         .retain(|_, lease| lease.expires_at > now);
 }
 
+fn prune_budget_reservations(reservations: &mut HashMap<String, VecDeque<BudgetReservation>>) {
+    let now = Instant::now();
+    reservations.retain(|_, queue| {
+        queue.retain(|reservation| reservation.expires_at > now);
+        !queue.is_empty()
+    });
+}
+
 fn validate_shell_id(value: &str) -> Result<()> {
     if value.len() < 16
         || value.len() > 128
@@ -1604,6 +1625,52 @@ mod tests {
             })
             .unwrap();
         assert_eq!(remaining.max_output_tokens, 5);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn failed_provider_turn_reservations_expire_without_spending_budget() {
+        let (bridge, root, workspace) = bridge("budget-expiry");
+        let mut configured = registration(&workspace);
+        configured.budget_usd = Some(0.001);
+        configured.price = Some(crate::usage::Price {
+            input: 0.0,
+            output: 100.0,
+        });
+        bridge.register(configured).unwrap();
+        assert_eq!(
+            bridge
+                .authorize_provider_turn(&ProviderTurnRequest {
+                    session_id: "ses_test".into(),
+                    requested_max_output_tokens: Some(100),
+                })
+                .unwrap()
+                .max_output_tokens,
+            10
+        );
+        {
+            let mut state = bridge.state.lock().unwrap();
+            let reservation = state
+                .leases
+                .get_mut("ses_test")
+                .unwrap()
+                .pending_budget_reservations
+                .get_mut("ses_test")
+                .unwrap()
+                .front_mut()
+                .unwrap();
+            reservation.expires_at = Instant::now() - Duration::from_millis(1);
+        }
+        assert_eq!(
+            bridge
+                .authorize_provider_turn(&ProviderTurnRequest {
+                    session_id: "ses_test".into(),
+                    requested_max_output_tokens: Some(100),
+                })
+                .unwrap()
+                .max_output_tokens,
+            10
+        );
         std::fs::remove_dir_all(root).unwrap();
     }
 }
