@@ -50,11 +50,20 @@ fn functional_probe(binary: &Path) -> Result<()> {
     std::fs::create_dir_all(&root)?;
     crate::config::set_private_dir(&root);
     let marker = ".aishe-probe-writable";
-    let script = format!(
-        "set -eu; : > {marker}; \
-         if : > /etc/.aishe-bwrap-must-not-write 2>/dev/null; then exit 41; fi; \
-         test -r /etc/passwd"
-    );
+    let touch = crate::executor::which("touch")
+        .context("touch is required for the bubblewrap functional test")?;
+    let denied = PathBuf::from(format!(
+        "/etc/.aishe-bwrap-must-not-write-{}-{}",
+        std::process::id(),
+        random_hex(6)
+    ));
+    // The denied write must run as an external command. A redirection failure
+    // on the `:` special builtin is fatal in some /bin/sh implementations even
+    // when it appears as an `if` condition, which makes a correctly read-only
+    // /etc look like a broken sandbox.
+    let script = "set -eu; : > \"$1\"; \
+                  if \"$2\" \"$3\" 2>/dev/null; then exit 41; fi; \
+                  test -r /etc/passwd";
     let output = Command::new(binary)
         .args([
             "--ro-bind",
@@ -78,12 +87,22 @@ fn functional_probe(binary: &Path) -> Result<()> {
             "--",
             "/bin/sh",
             "-c",
-            &script,
+            script,
+            "aishe-bwrap-probe",
+            marker,
         ])
+        .arg(&touch)
+        .arg(&denied)
         .stdin(Stdio::null())
         .output();
     let result = match output {
-        Ok(output) if output.status.success() && root.join(marker).is_file() => Ok(()),
+        Ok(output)
+            if output.status.success()
+                && root.join(marker).is_file()
+                && !denied.try_exists().unwrap_or(true) =>
+        {
+            Ok(())
+        }
         Ok(output) => anyhow::bail!(
             "bubblewrap functional test failed ({}): {}",
             output.status,
@@ -91,6 +110,7 @@ fn functional_probe(binary: &Path) -> Result<()> {
         ),
         Err(error) => Err(error).context("starting bubblewrap functional test"),
     };
+    let _ = std::fs::remove_file(&denied);
     let _ = std::fs::remove_dir_all(&root);
     result
 }
@@ -266,6 +286,16 @@ mod tests {
     fn non_linux_probe_is_explicit() {
         if !cfg!(target_os = "linux") {
             assert_eq!(bubblewrap_probe(), BubblewrapState::Unsupported);
+        }
+    }
+
+    #[test]
+    fn installed_bubblewrap_passes_the_functional_probe() {
+        if cfg!(target_os = "linux") && crate::executor::which("bwrap").is_some() {
+            assert!(
+                matches!(bubblewrap_probe(), BubblewrapState::Usable { .. }),
+                "an installed bubblewrap must prove both allowed and denied writes"
+            );
         }
     }
 
