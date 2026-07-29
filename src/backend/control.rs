@@ -12,7 +12,12 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
+use crate::backend::bridge::{
+    Bridge, BridgeFailure, ChildRegistration, LeaseIdentity, LeaseRegistration, PluginToolRequest,
+    ToolCompletion, ToolStarted, ToolWork,
+};
 use crate::backend::opencode::OpenCodeConnection;
 
 pub const SUPERVISOR_PROTOCOL_VERSION: u32 = 1;
@@ -98,12 +103,93 @@ impl SupervisorState {
 }
 
 #[derive(Clone)]
+pub struct SupervisorClient {
+    state: SupervisorState,
+}
+
+impl SupervisorClient {
+    pub fn new(state: SupervisorState) -> Result<Self> {
+        state.validate()?;
+        Ok(Self { state })
+    }
+
+    pub fn opencode_connection(&self) -> OpenCodeConnection {
+        self.state.opencode_connection()
+    }
+
+    pub fn provider_id(&self) -> &str {
+        &self.state.provider_id
+    }
+
+    pub fn model_id(&self) -> &str {
+        &self.state.model_id
+    }
+
+    pub fn register(&self, registration: &LeaseRegistration) -> Result<LeaseIdentity> {
+        self.post("/v1/lease/register", registration, Duration::from_secs(5))
+    }
+
+    pub fn heartbeat(&self, identity: &LeaseIdentity) -> Result<()> {
+        let _: Value = self.post("/v1/lease/heartbeat", identity, Duration::from_secs(5))?;
+        Ok(())
+    }
+
+    pub fn next(&self, identity: &LeaseIdentity) -> Result<Option<ToolWork>> {
+        self.post("/v1/lease/next", identity, Duration::from_secs(30))
+    }
+
+    pub fn started(&self, started: &ToolStarted) -> Result<()> {
+        let _: Value = self.post("/v1/lease/started", started, Duration::from_secs(5))?;
+        Ok(())
+    }
+
+    pub fn complete(&self, completion: &ToolCompletion) -> Result<()> {
+        let _: Value = self.post("/v1/lease/complete", completion, Duration::from_secs(10))?;
+        Ok(())
+    }
+
+    pub fn unregister(&self, identity: &LeaseIdentity) -> Result<()> {
+        let _: Value = self.post("/v1/lease/unregister", identity, Duration::from_secs(5))?;
+        Ok(())
+    }
+
+    fn post<T: Serialize, U: serde::de::DeserializeOwned>(
+        &self,
+        path: &str,
+        body: &T,
+        timeout: Duration,
+    ) -> Result<U> {
+        let url = format!("{}{}", self.state.control_url.trim_end_matches('/'), path);
+        let agent = ureq::AgentBuilder::new().redirects(0).build();
+        let response = agent
+            .post(&url)
+            .set(
+                "Authorization",
+                &format!("Bearer {}", self.state.control_token),
+            )
+            .set("Content-Type", "application/json")
+            .timeout(timeout)
+            .send_json(serde_json::to_value(body)?)
+            .map_err(|error| {
+                anyhow::anyhow!(
+                    "backend control request failed: {}",
+                    crate::redact::redact(&control_error(error))
+                )
+            })?;
+        response
+            .into_json()
+            .context("backend control response is invalid")
+    }
+}
+
+#[derive(Clone)]
 pub struct ServerContext {
     pub state: SupervisorState,
     pub control_token: String,
     pub plugin_token: String,
     pub shutdown: Arc<AtomicBool>,
     pub last_activity: Arc<Mutex<Instant>>,
+    pub bridge: Arc<Bridge>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -303,38 +389,114 @@ pub fn serve_connection(mut stream: TcpStream, context: &ServerContext) -> Resul
             context.shutdown.store(true, Ordering::SeqCst);
             write_json(&mut stream, 202, &serde_json::json!({"stopping":true}))
         }
-        ("POST", "/v1/plugin/provider-turn") => {
-            if require_json(&request).is_err() {
-                return write_error(
+        ("POST", "/v1/lease/register") => {
+            let registration: LeaseRegistration = match parse_json(&request) {
+                Ok(value) => value,
+                Err(()) => {
+                    return write_error(
+                        &mut stream,
+                        400,
+                        "invalid_json",
+                        "Lease registration is invalid",
+                    )
+                }
+            };
+            match context.bridge.register(registration) {
+                Ok(identity) => write_json(&mut stream, 200, &identity),
+                Err(error) => write_error(
                     &mut stream,
                     400,
-                    "invalid_json",
-                    "A JSON request body is required",
-                );
+                    "invalid_lease",
+                    &crate::redact::redact(&error.to_string()),
+                ),
             }
-            // The lease/budget registry replaces this conservative bootstrap
-            // response. It never widens a provider-requested token cap.
-            write_json(
-                &mut stream,
-                200,
-                &serde_json::json!({"max_output_tokens":null}),
-            )
         }
-        ("POST", "/v1/plugin/tool") => {
-            if require_json(&request).is_err() {
+        ("POST", "/v1/lease/heartbeat") => bridge_unit(
+            &mut stream,
+            parse_json::<LeaseIdentity>(&request)
+                .map_err(|_| invalid_bridge_request())
+                .and_then(|identity| context.bridge.heartbeat(&identity)),
+        ),
+        ("POST", "/v1/lease/unregister") => bridge_unit(
+            &mut stream,
+            parse_json::<LeaseIdentity>(&request)
+                .map_err(|_| invalid_bridge_request())
+                .and_then(|identity| context.bridge.unregister(&identity)),
+        ),
+        ("POST", "/v1/lease/next") => {
+            let identity: LeaseIdentity = match parse_json(&request) {
+                Ok(value) => value,
+                Err(()) => return write_bridge_failure(&mut stream, &invalid_bridge_request()),
+            };
+            match context.bridge.next(&identity, Duration::from_secs(20)) {
+                Ok(work) => write_json(&mut stream, 200, &work),
+                Err(error) => write_bridge_failure(&mut stream, &error),
+            }
+        }
+        ("POST", "/v1/lease/started") => bridge_unit(
+            &mut stream,
+            parse_json::<ToolStarted>(&request)
+                .map_err(|_| invalid_bridge_request())
+                .and_then(|started| context.bridge.started(&started)),
+        ),
+        ("POST", "/v1/lease/complete") => bridge_unit(
+            &mut stream,
+            parse_json::<ToolCompletion>(&request)
+                .map_err(|_| invalid_bridge_request())
+                .and_then(|completion| context.bridge.complete(completion)),
+        ),
+        ("POST", "/v1/plugin/provider-turn") => {
+            let value: serde_json::Value = match parse_json(&request) {
+                Ok(value) => value,
+                Err(()) => {
+                    return write_error(
+                        &mut stream,
+                        400,
+                        "invalid_json",
+                        "Provider-turn request is invalid",
+                    )
+                }
+            };
+            let Some(session_id) = value.get("session_id").and_then(serde_json::Value::as_str)
+            else {
                 return write_error(
                     &mut stream,
                     400,
-                    "invalid_json",
-                    "A JSON request body is required",
+                    "invalid_session",
+                    "Provider-turn session is missing",
                 );
+            };
+            match context.bridge.authorize_session(session_id) {
+                Ok(()) => write_json(
+                    &mut stream,
+                    200,
+                    &serde_json::json!({"max_output_tokens":value.get("requested_max_output_tokens")}),
+                ),
+                Err(error) => write_bridge_failure(&mut stream, &error),
             }
-            write_error(
-                &mut stream,
-                503,
-                "foreground_unavailable",
-                "No authenticated foreground tool lease is registered",
-            )
+        }
+        ("POST", "/v1/plugin/child") => bridge_unit(
+            &mut stream,
+            parse_json::<ChildRegistration>(&request)
+                .map_err(|_| invalid_bridge_request())
+                .and_then(|child| context.bridge.register_child(child)),
+        ),
+        ("POST", "/v1/plugin/tool") => {
+            let tool: PluginToolRequest = match parse_json(&request) {
+                Ok(value) => value,
+                Err(()) => {
+                    return write_error(
+                        &mut stream,
+                        400,
+                        "invalid_json",
+                        "Tool bridge request is invalid",
+                    )
+                }
+            };
+            match context.bridge.admit_and_wait(tool) {
+                Ok(outcome) => write_json(&mut stream, 200, &outcome),
+                Err(error) => write_bridge_failure(&mut stream, &error),
+            }
         }
         _ => write_error(&mut stream, 404, "not_found", "Control route not found"),
     }
@@ -435,6 +597,35 @@ fn require_json(request: &HttpRequest) -> Result<()> {
     Ok(())
 }
 
+fn parse_json<T: serde::de::DeserializeOwned>(request: &HttpRequest) -> Result<T, ()> {
+    require_json(request).map_err(|_| ())?;
+    serde_json::from_slice(&request.body).map_err(|_| ())
+}
+
+fn invalid_bridge_request() -> BridgeFailure {
+    BridgeFailure {
+        status: 400,
+        code: "invalid_request",
+        message: "Foreground bridge request is invalid".into(),
+    }
+}
+
+fn bridge_unit(stream: &mut TcpStream, result: Result<(), BridgeFailure>) -> Result<()> {
+    match result {
+        Ok(()) => write_json(stream, 200, &serde_json::json!({"ok":true})),
+        Err(error) => write_bridge_failure(stream, &error),
+    }
+}
+
+fn write_bridge_failure(stream: &mut TcpStream, failure: &BridgeFailure) -> Result<()> {
+    write_error(
+        stream,
+        failure.status,
+        failure.code,
+        &crate::redact::redact(&failure.message),
+    )
+}
+
 fn write_error(stream: &mut TcpStream, status: u16, code: &str, message: &str) -> Result<()> {
     write_json(
         stream,
@@ -480,6 +671,21 @@ fn validate_loopback_url(value: &str) -> Result<()> {
     Ok(())
 }
 
+fn control_error(error: ureq::Error) -> String {
+    match error {
+        ureq::Error::Status(status, response) => {
+            let body = response
+                .into_string()
+                .unwrap_or_else(|_| "request rejected".into());
+            format!(
+                "status {status}: {}",
+                body.chars().take(1024).collect::<String>()
+            )
+        }
+        ureq::Error::Transport(error) => error.to_string(),
+    }
+}
+
 fn process_exists(pid: u32) -> bool {
     #[cfg(unix)]
     {
@@ -510,6 +716,13 @@ pub fn constant_time_eq(left: &[u8], right: &[u8]) -> bool {
 mod tests {
     use super::*;
 
+    fn bridge_path(port: u16) -> PathBuf {
+        std::env::temp_dir().join(format!(
+            "aishe-control-bridge-test-{}-{port}.json",
+            std::process::id()
+        ))
+    }
+
     fn context_for(port: u16) -> ServerContext {
         let state = SupervisorState::new(
             std::process::id(),
@@ -530,13 +743,15 @@ mod tests {
             plugin_token: "d".repeat(64),
             shutdown: Arc::new(AtomicBool::new(false)),
             last_activity: Arc::new(Mutex::new(Instant::now())),
+            bridge: Arc::new(Bridge::open(bridge_path(port)).unwrap()),
         }
     }
 
     #[test]
     fn authenticated_health_binds_identity() {
         let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
-        let context = context_for(listener.local_addr().unwrap().port());
+        let port = listener.local_addr().unwrap().port();
+        let context = context_for(port);
         let server = context.clone();
         let worker = std::thread::spawn(move || {
             let (stream, _) = listener.accept().unwrap();
@@ -553,6 +768,7 @@ mod tests {
                 .into_json()
                 .unwrap();
         worker.join().unwrap();
+        std::fs::remove_file(bridge_path(port)).unwrap();
         assert_eq!(response["healthy"], true);
         assert_eq!(response["startup_nonce"], "a".repeat(64));
         assert_eq!(response["protocol_version"], SUPERVISOR_PROTOCOL_VERSION);
@@ -572,6 +788,17 @@ mod tests {
             .set("Content-Type", "application/json")
             .send_json(serde_json::json!({}));
         worker.join().unwrap();
+        std::fs::remove_file(bridge_path(
+            context
+                .state
+                .control_url
+                .rsplit(':')
+                .next()
+                .unwrap()
+                .parse()
+                .unwrap(),
+        ))
+        .unwrap();
         assert!(matches!(result, Err(ureq::Error::Status(401, _))));
         assert!(!context.shutdown.load(Ordering::SeqCst));
     }

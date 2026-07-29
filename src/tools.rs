@@ -7,6 +7,7 @@
 //! are confirmed when `yolo_confirm_dangerous` is on, mirroring the command
 //! safety gate.
 
+use std::fs::OpenOptions;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -248,7 +249,7 @@ fn write_file(args: &Value, cwd: &Path, confirm_writes: bool, preview: bool) -> 
     } else if confirm_writes && outside_tree(path) && !confirm("write", path) {
         return (format!("write {path}"), "User declined the write.".into());
     }
-    match std::fs::write(&resolved, content) {
+    match atomic_replace(&resolved, content.as_bytes()) {
         Ok(_) => {
             // Journal for `aishe undo`. Skip when an existing file wasn't valid
             // UTF-8 (we can't faithfully restore it); the write still stands.
@@ -360,7 +361,7 @@ fn edit_file(args: &Value, cwd: &Path, confirm_writes: bool, preview: bool) -> (
         return (format!("edit {path}"), "User declined the edit.".into());
     }
     println!("  {} {}", "✏️".yellow(), format!("edit {path}").dim());
-    match std::fs::write(&resolved, &new) {
+    match atomic_replace(&resolved, new.as_bytes()) {
         Ok(_) => {
             crate::undo::record(
                 &resolved,
@@ -382,6 +383,72 @@ fn edit_file(args: &Value, cwd: &Path, confirm_writes: bool, preview: bool) -> (
             format!("Error writing '{path}': {e}"),
         ),
     }
+}
+
+/// Replace one regular file through a same-directory temporary file. This
+/// prevents interrupted agent edits from leaving a partially-written target
+/// and preserves the existing mode when replacing a file.
+fn atomic_replace(path: &Path, contents: &[u8]) -> std::io::Result<()> {
+    use rand::RngCore;
+
+    let parent = path.parent().unwrap_or_else(|| Path::new("."));
+    let name = path
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or("file");
+    let existing_permissions = std::fs::metadata(path)
+        .ok()
+        .filter(|metadata| metadata.is_file())
+        .map(|metadata| metadata.permissions());
+
+    let mut last_error = None;
+    for _ in 0..16 {
+        let mut random = [0u8; 8];
+        rand::rng().fill_bytes(&mut random);
+        let suffix = random
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+        let temporary = parent.join(format!(".{name}.aishe-{suffix}.tmp"));
+        let mut options = OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o666);
+        }
+        match options.open(&temporary) {
+            Ok(mut file) => {
+                let result = (|| {
+                    if let Some(permissions) = existing_permissions.clone() {
+                        file.set_permissions(permissions)?;
+                    }
+                    file.write_all(contents)?;
+                    file.sync_all()?;
+                    drop(file);
+                    std::fs::rename(&temporary, path)?;
+                    if let Ok(directory) = std::fs::File::open(parent) {
+                        let _ = directory.sync_all();
+                    }
+                    Ok(())
+                })();
+                if result.is_err() {
+                    let _ = std::fs::remove_file(&temporary);
+                }
+                return result;
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                last_error = Some(error);
+            }
+            Err(error) => return Err(error),
+        }
+    }
+    Err(last_error.unwrap_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::AlreadyExists,
+            "could not allocate an atomic write temporary file",
+        )
+    }))
 }
 
 fn list_dir(args: &Value, cwd: &Path) -> (String, String) {

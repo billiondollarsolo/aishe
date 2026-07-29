@@ -1,5 +1,6 @@
 //! Managed agent-backend runtime and protocol implementations.
 
+pub mod bridge;
 pub mod control;
 pub mod manifest;
 pub mod opencode;

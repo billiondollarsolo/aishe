@@ -244,12 +244,14 @@ pub fn run_supervisor() -> Result<u8> {
     super::control::write_state(&state)?;
     let shutdown = Arc::new(AtomicBool::new(false));
     let last_activity = Arc::new(Mutex::new(Instant::now()));
+    let bridge = Arc::new(super::bridge::Bridge::open_default()?);
     let context = ServerContext {
         state: state.clone(),
         control_token,
         plugin_token,
         shutdown: Arc::clone(&shutdown),
         last_activity: Arc::clone(&last_activity),
+        bridge,
     };
     let active_connections = Arc::new(AtomicUsize::new(0));
     let idle_timeout = Duration::from_secs(bootstrap.idle_timeout_secs);

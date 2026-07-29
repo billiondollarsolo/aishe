@@ -176,6 +176,22 @@ impl Executor {
         })
     }
 
+    /// Construct the restricted executor used by foreground agent-tool leases.
+    /// It does not source user `.aishrc` files and removes credential-shaped
+    /// environment variables before any model-requested process is started.
+    pub fn new_agent(cwd: &Path) -> Result<Self> {
+        let mut executor = Self::new()?;
+        executor.session_rc = None;
+        executor.set_cwd(
+            cwd.canonicalize()
+                .map_err(|error| anyhow!("invalid agent cwd {}: {error}", cwd.display()))?,
+        );
+        executor
+            .env
+            .retain(|name, _| agent_environment_allowed(name));
+        Ok(executor)
+    }
+
     /// Set (or clear, with an empty vec) the sandbox wrapper argv prepended before
     /// the shell in [`run_captured`]. Used by the yolo loop's `bwrap` backend.
     pub fn set_sandbox_wrap(&mut self, wrap: Vec<String>) {
@@ -1090,6 +1106,29 @@ fn strip_quotes(v: &str) -> String {
     }
 }
 
+fn agent_environment_allowed(name: &str) -> bool {
+    let upper = name.to_ascii_uppercase();
+    ![
+        "TOKEN",
+        "SECRET",
+        "PASSWORD",
+        "PASSWD",
+        "API_KEY",
+        "APIKEY",
+        "AUTHORIZATION",
+        "CREDENTIAL",
+        "PRIVATE_KEY",
+        "ACCESS_KEY",
+    ]
+    .iter()
+    .any(|marker| upper.contains(marker))
+        || matches!(
+            upper.as_str(),
+            // Harmless session metadata that contains a broad substring.
+            "XDG_SESSION_TYPE"
+        )
+}
+
 /// Create the per-session rc file that every delegated command sources. It
 /// begins by loading the user's `~/.aishrc` and `~/.config/aishe/aishrc` (if
 /// present); interactively-defined aliases/options are appended later.
@@ -1219,6 +1258,29 @@ mod tests {
         let (code2, out2) = e.run_captured("echo PLAIN_OK", Duration::from_secs(10), false);
         assert_eq!(code2, 0, "{out2}");
         assert!(out2.contains("PLAIN_OK"), "{out2}");
+    }
+
+    #[test]
+    fn agent_executor_drops_credentials_and_user_rc() {
+        let mut executor = Executor::new().unwrap();
+        executor
+            .env
+            .insert("OPENAI_API_KEY".into(), "should-not-survive".into());
+        executor
+            .env
+            .insert("AWS_SECRET_ACCESS_KEY".into(), "should-not-survive".into());
+        executor.env.insert("LANG".into(), "C.UTF-8".into());
+        executor.session_rc = None;
+        executor
+            .env
+            .retain(|name, _| agent_environment_allowed(name));
+        assert!(!executor.env.contains_key("OPENAI_API_KEY"));
+        assert!(!executor.env.contains_key("AWS_SECRET_ACCESS_KEY"));
+        assert_eq!(
+            executor.env.get("LANG").map(String::as_str),
+            Some("C.UTF-8")
+        );
+        assert!(executor.session_rc.is_none());
     }
 
     #[test]

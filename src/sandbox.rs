@@ -88,6 +88,42 @@ pub fn bwrap_wrap_argv(cwd: &std::path::Path) -> Vec<String> {
     .collect()
 }
 
+/// OS-enforced workspace profile for OpenCode proxy commands. Unlike the
+/// legacy yolo wrapper, `/tmp` is private and network is unshared by default.
+pub fn agent_bwrap_argv(
+    workspace: &std::path::Path,
+    cwd: &std::path::Path,
+    network: crate::agent::NetworkPolicy,
+) -> Vec<String> {
+    let workspace = workspace.display().to_string();
+    let cwd = cwd.display().to_string();
+    let mut args = [
+        "bwrap",
+        "--ro-bind",
+        "/",
+        "/",
+        "--tmpfs",
+        "/tmp",
+        "--dev",
+        "/dev",
+        "--proc",
+        "/proc",
+        "--bind",
+        &workspace,
+        &workspace,
+        "--chdir",
+        &cwd,
+    ]
+    .iter()
+    .map(|value| value.to_string())
+    .collect::<Vec<_>>();
+    if network == crate::agent::NetworkPolicy::Deny {
+        args.push("--unshare-net".into());
+    }
+    args.extend(["--die-with-parent".into(), "--".into()]);
+    args
+}
+
 /// When the yolo loop pauses to confirm a `run_command` call.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Tier {
@@ -583,6 +619,21 @@ mod tests {
             .any(|w| w == ["--bind", "/home/me/proj", "/home/me/proj"]));
         assert!(argv.windows(2).any(|w| w == ["--chdir", "/home/me/proj"]));
         assert_eq!(argv.last().unwrap(), "--"); // shell is appended after
+    }
+
+    #[test]
+    fn agent_bwrap_profile_has_private_tmp_and_optional_network() {
+        let workspace = std::path::Path::new("/tmp/project");
+        let denied = agent_bwrap_argv(workspace, workspace, crate::agent::NetworkPolicy::Deny);
+        assert!(denied
+            .windows(2)
+            .any(|values| values == ["--tmpfs", "/tmp"]));
+        assert!(denied.iter().any(|value| value == "--unshare-net"));
+        assert!(denied
+            .windows(3)
+            .any(|values| values == ["--bind", "/tmp/project", "/tmp/project"]));
+        let allowed = agent_bwrap_argv(workspace, workspace, crate::agent::NetworkPolicy::Allow);
+        assert!(!allowed.iter().any(|value| value == "--unshare-net"));
     }
 
     fn cfg_with(confirm: &str, dangerous: bool) -> Config {

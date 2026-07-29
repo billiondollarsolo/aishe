@@ -7,6 +7,7 @@
 pub mod backend;
 pub mod events;
 pub mod policy;
+pub mod tool_worker;
 
 pub use backend::{
     AgentBackend, BackendHealth, BackendSession, PromptHandle, PromptRequest, SessionFilter,
@@ -17,3 +18,4 @@ pub use events::{
     UsageDelta, UserFacingError, UserQuestion,
 };
 pub use policy::{ExecutionScope, Mode, NetworkPolicy};
+pub use tool_worker::ToolWorker;

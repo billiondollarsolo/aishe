@@ -38,6 +38,12 @@ async function invoke(tool, args, context) {
     throw new Error(`Aishe tool bridge rejected ${tool}: ${response.status} ${body}`)
   }
   const decoded = JSON.parse(body)
+  if (decoded.success === false) {
+    const message = typeof decoded.output === "string"
+      ? decoded.output
+      : JSON.stringify(decoded.output)
+    throw new Error(`Aishe tool failed: ${message}`)
+  }
   return decoded.output
 }
 
@@ -52,6 +58,26 @@ function proxy(name, description, args) {
 }
 
 export const AisheBridge = async () => ({
+  event: async ({ event }) => {
+    if (event?.type !== "session.created") return
+    const info = event?.properties?.info
+    if (!info?.id || !info?.parentID) return
+    const response = await fetch(`${bridgeUrl}/v1/plugin/child`, {
+      method: "POST",
+      redirect: "error",
+      headers: {
+        "authorization": `Bearer ${bridgeToken}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        parent_session_id: info.parentID,
+        child_session_id: info.id,
+      }),
+    })
+    if (!response.ok) {
+      throw new Error(`Aishe child-session lease registration failed: ${response.status}`)
+    }
+  },
   tool: {
     aishe_run_command: proxy(
       "run_command",
