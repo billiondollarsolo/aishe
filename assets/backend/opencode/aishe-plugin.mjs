@@ -109,11 +109,12 @@ export const AisheBridge = async () => ({
   tool: {
     aishe_run_command: proxy(
       "run_command",
-      "Run one command through Aishe policy, sandbox, audit, and the foreground terminal.",
+      "Run one command through Aishe policy, sandbox, audit, and the foreground terminal. Set interactive=true when the command may prompt through a TTY (for example sudo, ssh, passwd, GPG, or a terminal UI).",
       {
         command: tool.schema.string().min(1).max(65536),
         cwd: tool.schema.string().max(4096).optional(),
         timeout_secs: tool.schema.number().int().min(1).max(3600).optional(),
+        interactive: tool.schema.boolean().optional(),
       },
     ),
     aishe_read_file: proxy(

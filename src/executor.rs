@@ -4,6 +4,7 @@
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::io::{BufRead, BufReader, Read, Write};
+use std::os::fd::AsRawFd;
 use std::os::unix::process::{CommandExt, ExitStatusExt};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
@@ -12,6 +13,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use anyhow::{anyhow, Result};
+use portable_pty::{native_pty_system, CommandBuilder, PtySize};
 
 /// A background job started with a trailing `&`. The reedline front-end manages
 /// a table of these so `jobs`/`fg`/`bg`/`wait`/`disown` work for backgrounded
@@ -107,6 +109,48 @@ impl DrainBuffer {
             .map(String::as_str)
             .collect::<Vec<_>>()
             .join("\n");
+        if self.dropped {
+            format!("[... output dropped: kept only the last {DRAIN_MAX_BYTES} bytes ...]\n{body}")
+        } else {
+            body
+        }
+    }
+}
+
+/// Bounded byte-for-byte PTY transcript. Unlike [`DrainBuffer`], this preserves
+/// terminal control sequences and partial lines while streaming so programs
+/// such as sudo, ssh, pinentry, and full-screen tools see a real terminal. The
+/// model-facing transcript is sanitized after the child exits.
+#[derive(Default)]
+struct PtyDrainBuffer {
+    bytes: Vec<u8>,
+    dropped: bool,
+}
+
+impl PtyDrainBuffer {
+    fn push(&mut self, chunk: &[u8]) {
+        if chunk.len() >= DRAIN_MAX_BYTES {
+            self.bytes.clear();
+            self.bytes
+                .extend_from_slice(&chunk[chunk.len() - DRAIN_MAX_BYTES..]);
+            self.dropped = true;
+            return;
+        }
+        let overflow = self
+            .bytes
+            .len()
+            .saturating_add(chunk.len())
+            .saturating_sub(DRAIN_MAX_BYTES);
+        if overflow > 0 {
+            self.bytes.drain(..overflow);
+            self.dropped = true;
+        }
+        self.bytes.extend_from_slice(chunk);
+    }
+
+    fn transcript(&self) -> String {
+        let text = String::from_utf8_lossy(&self.bytes);
+        let body = strip_terminal_sequences(&text);
         if self.dropped {
             format!("[... output dropped: kept only the last {DRAIN_MAX_BYTES} bytes ...]\n{body}")
         } else {
@@ -478,6 +522,219 @@ impl Executor {
             output.push_str(&note);
         } else if cancelled {
             output.push_str("\n[aishe: command interrupted and process group terminated]");
+        }
+        let output = truncate_tail(&output, CAPTURE_TRUNCATE_CHARS);
+        self.record(line, code);
+        (code, output)
+    }
+
+    /// Run a model-requested command in a nested foreground PTY.
+    ///
+    /// The outer Aishe process remains the terminal owner, but the child receives
+    /// its own controlling terminal so OS-level prompts and terminal programs
+    /// behave normally. Input, output, and resize events are proxied in-place;
+    /// output is simultaneously retained in a bounded, sanitized transcript for
+    /// the model. This is intentionally separate from [`run_captured`]: only an
+    /// explicitly interactive foreground lease may call it.
+    pub fn run_interactive_captured(
+        &mut self,
+        line: &str,
+        timeout: Duration,
+        tee: bool,
+    ) -> (i32, String) {
+        let (cols, rows) = crossterm::terminal::size().unwrap_or((80, 24));
+        let pair = match native_pty_system().openpty(PtySize {
+            rows,
+            cols,
+            pixel_width: 0,
+            pixel_height: 0,
+        }) {
+            Ok(pair) => pair,
+            Err(error) => {
+                let message = format!("aishe: failed to allocate interactive PTY: {error}");
+                self.record(line, 127);
+                return (127, message);
+            }
+        };
+
+        let mut command = if self.sandbox_wrap.is_empty() {
+            CommandBuilder::new(&self.shell)
+        } else {
+            let mut command = CommandBuilder::new(&self.sandbox_wrap[0]);
+            command.args(&self.sandbox_wrap[1..]);
+            command.arg(&self.shell);
+            command
+        };
+        command.arg("-c");
+        command.arg(line);
+        command.env_clear();
+        for (name, value) in &self.env {
+            command.env(name, value);
+        }
+        command.cwd(&self.cwd);
+
+        let mut child = match pair.slave.spawn_command(command) {
+            Ok(child) => child,
+            Err(error) => {
+                let message = format!("aishe: failed to launch interactive command: {error}");
+                self.record(line, 127);
+                return (127, message);
+            }
+        };
+        drop(pair.slave);
+        let pgid = child.process_id().map(|pid| pid as i32);
+        let mut reader = match pair.master.try_clone_reader() {
+            Ok(reader) => reader,
+            Err(error) => {
+                if let Some(pgid) = pgid {
+                    kill_process_group(pgid);
+                }
+                let _ = child.kill();
+                let _ = child.wait();
+                let message = format!("aishe: failed to read interactive PTY: {error}");
+                self.record(line, 127);
+                return (127, message);
+            }
+        };
+        let mut writer = match pair.master.take_writer() {
+            Ok(writer) => writer,
+            Err(error) => {
+                if let Some(pgid) = pgid {
+                    kill_process_group(pgid);
+                }
+                let _ = child.kill();
+                let _ = child.wait();
+                let message = format!("aishe: failed to write interactive PTY: {error}");
+                self.record(line, 127);
+                return (127, message);
+            }
+        };
+        let master = pair.master;
+        let collected = Arc::new(Mutex::new(PtyDrainBuffer::default()));
+        let reader_collected = Arc::clone(&collected);
+        let drainer = std::thread::spawn(move || {
+            let mut buffer = [0u8; 4096];
+            loop {
+                match reader.read(&mut buffer) {
+                    Ok(0) => break,
+                    Ok(count) => {
+                        if tee {
+                            let mut stdout = std::io::stdout();
+                            let _ = stdout.write_all(&buffer[..count]);
+                            let _ = stdout.flush();
+                        }
+                        reader_collected
+                            .lock()
+                            .unwrap_or_else(|error| error.into_inner())
+                            .push(&buffer[..count]);
+                    }
+                    Err(_) => break,
+                }
+            }
+        });
+
+        struct RawModeGuard(bool);
+        impl Drop for RawModeGuard {
+            fn drop(&mut self) {
+                if self.0 {
+                    let _ = crossterm::terminal::disable_raw_mode();
+                }
+            }
+        }
+        let raw_guard = RawModeGuard(crossterm::terminal::enable_raw_mode().is_ok());
+        let mut stdin = std::io::stdin();
+        let stdin_fd = stdin.as_raw_fd();
+        let started = Instant::now();
+        let mut last_size = (cols, rows);
+        let mut last_resize = Instant::now();
+        let mut timed_out = false;
+        let mut cancelled = false;
+        let code = loop {
+            match child.try_wait() {
+                Ok(Some(status)) => break status.exit_code().min(i32::MAX as u32) as i32,
+                Ok(None) => {}
+                Err(_) => break 1,
+            }
+            if self
+                .cancel
+                .as_ref()
+                .is_some_and(|cancel| cancel.load(Ordering::SeqCst))
+            {
+                if let Some(pgid) = pgid {
+                    kill_process_group(pgid);
+                }
+                let _ = child.kill();
+                let _ = child.wait();
+                cancelled = true;
+                break 130;
+            }
+            if started.elapsed() >= timeout {
+                if let Some(pgid) = pgid {
+                    kill_process_group(pgid);
+                }
+                let _ = child.kill();
+                let _ = child.wait();
+                timed_out = true;
+                break 137;
+            }
+            if last_resize.elapsed() >= Duration::from_millis(200) {
+                if let Ok(size) = crossterm::terminal::size() {
+                    if size != last_size {
+                        last_size = size;
+                        let _ = master.resize(PtySize {
+                            rows: size.1,
+                            cols: size.0,
+                            pixel_width: 0,
+                            pixel_height: 0,
+                        });
+                    }
+                }
+                last_resize = Instant::now();
+            }
+            let mut poll = libc::pollfd {
+                fd: stdin_fd,
+                events: libc::POLLIN,
+                revents: 0,
+            };
+            // A bounded poll prevents a dead stdin read from outliving the tool
+            // and stealing bytes from the user's next shell prompt.
+            let ready = unsafe { libc::poll(&mut poll, 1, 20) };
+            if ready > 0 && poll.revents & libc::POLLIN != 0 {
+                let mut input = [0u8; 4096];
+                match stdin.read(&mut input) {
+                    Ok(0) => {}
+                    Ok(count) => {
+                        if writer.write_all(&input[..count]).is_err() || writer.flush().is_err() {
+                            break 1;
+                        }
+                    }
+                    Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
+                    Err(_) => break 1,
+                }
+            }
+        };
+
+        if let Some(pgid) = pgid {
+            kill_process_group(pgid);
+        }
+        drop(writer);
+        drop(master);
+        join_drainers_bounded(vec![drainer], Duration::from_secs(2));
+        drop(raw_guard);
+
+        let mut output = collected
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .transcript();
+        if timed_out {
+            output.push_str(&format!(
+                "\n[aishe: interactive command timed out after {}s and was killed]",
+                timeout.as_secs()
+            ));
+        } else if cancelled {
+            output.push_str(
+                "\n[aishe: interactive command interrupted and process group terminated]",
+            );
         }
         let output = truncate_tail(&output, CAPTURE_TRUNCATE_CHARS);
         self.record(line, code);
@@ -1125,6 +1382,51 @@ fn truncate_tail(s: &str, max: usize) -> String {
     format!("[... output truncated to last {max} chars ...]\n{tail}")
 }
 
+/// Remove ANSI/VT control sequences from a captured PTY transcript while
+/// preserving ordinary text, tabs, and line breaks. Terminal bytes were already
+/// streamed unmodified; this copy is only for model context and audit-safe
+/// diagnostics.
+fn strip_terminal_sequences(input: &str) -> String {
+    #[derive(Clone, Copy)]
+    enum State {
+        Text,
+        Escape,
+        Csi,
+        Osc,
+        OscEscape,
+    }
+
+    let mut state = State::Text;
+    let mut output = String::with_capacity(input.len());
+    for character in input.chars() {
+        state = match state {
+            State::Text if character == '\u{1b}' => State::Escape,
+            State::Text => {
+                if character == '\n'
+                    || character == '\r'
+                    || character == '\t'
+                    || !character.is_control()
+                {
+                    output.push(character);
+                }
+                State::Text
+            }
+            State::Escape if character == '[' => State::Csi,
+            State::Escape if character == ']' => State::Osc,
+            State::Escape => State::Text,
+            State::Csi if ('@'..='~').contains(&character) => State::Text,
+            State::Csi => State::Csi,
+            State::Osc if character == '\u{7}' => State::Text,
+            State::Osc if character == '\u{1b}' => State::OscEscape,
+            State::Osc => State::Osc,
+            State::OscEscape if character == '\\' => State::Text,
+            State::OscEscape if character == '\u{1b}' => State::OscEscape,
+            State::OscEscape => State::Osc,
+        };
+    }
+    output
+}
+
 fn strip_quotes(v: &str) -> String {
     let v = v.trim();
     if (v.starts_with('"') && v.ends_with('"') && v.len() >= 2)
@@ -1430,6 +1732,33 @@ mod tests {
     #[test]
     fn truncate_noop_when_short() {
         assert_eq!(truncate_tail("hello", 8_000), "hello");
+    }
+
+    #[test]
+    fn pty_capture_is_bounded_and_model_transcript_has_no_terminal_controls() {
+        let mut capture = PtyDrainBuffer::default();
+        capture.push(b"\x1b[31msecret-safe text\x1b[0m\r\n");
+        capture.push(b"\x1b]0;window title\x07prompt\tvalue\n");
+        assert_eq!(capture.transcript(), "secret-safe text\r\nprompt\tvalue\n");
+
+        capture.push(&vec![b'x'; DRAIN_MAX_BYTES + 1]);
+        assert_eq!(capture.bytes.len(), DRAIN_MAX_BYTES);
+        assert!(capture.dropped);
+        assert!(capture.transcript().starts_with("[... output dropped:"));
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn interactive_pty_captures_the_merged_terminal_transcript() {
+        let mut executor = Executor::new().unwrap();
+        let (code, output) = executor.run_interactive_captured(
+            "printf 'pty-out\\n'; printf 'pty-err\\n' >&2",
+            Duration::from_secs(10),
+            false,
+        );
+        assert_eq!(code, 0, "{output}");
+        assert!(output.contains("pty-out"), "{output}");
+        assert!(output.contains("pty-err"), "{output}");
     }
 
     #[test]

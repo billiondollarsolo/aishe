@@ -1123,7 +1123,7 @@ fn validate_tool_args(tool: &str, args: &Value) -> Result<(), BridgeFailure> {
         .as_object()
         .ok_or_else(|| failure(400, "invalid_tool_args", "Tool arguments must be an object"))?;
     let allowed: &[&str] = match tool {
-        "run_command" => &["command", "cwd", "timeout_secs"],
+        "run_command" => &["command", "cwd", "timeout_secs", "interactive"],
         "read_file" | "list_dir" => &["path"],
         "write_file" => &["path", "content"],
         "edit_file" => &["path", "old", "new"],
@@ -1167,6 +1167,16 @@ fn validate_tool_args(tool: &str, args: &Value) -> Result<(), BridgeFailure> {
                 .is_some_and(|number| (1..=3600).contains(&number))
             {
                 return Err(failure(400, "invalid_tool_args", "Tool timeout is invalid"));
+            }
+            continue;
+        }
+        if matches!(key.as_str(), "interactive") {
+            if !value.is_boolean() {
+                return Err(failure(
+                    400,
+                    "invalid_tool_args",
+                    "Tool interactive flag is invalid",
+                ));
             }
             continue;
         }
@@ -1365,6 +1375,28 @@ mod tests {
             directory: workspace.into(),
             worktree: workspace.into(),
         }
+    }
+
+    #[test]
+    fn run_command_interactive_flag_is_strictly_boolean() {
+        assert!(validate_tool_args(
+            "run_command",
+            &serde_json::json!({
+                "command":"sudo -v",
+                "interactive":true,
+                "timeout_secs":30
+            })
+        )
+        .is_ok());
+        assert_eq!(
+            validate_tool_args(
+                "run_command",
+                &serde_json::json!({"command":"sudo -v","interactive":"yes"})
+            )
+            .unwrap_err()
+            .code,
+            "invalid_tool_args"
+        );
     }
 
     #[test]

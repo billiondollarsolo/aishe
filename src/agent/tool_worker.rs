@@ -420,13 +420,148 @@ fn run_command(
         .and_then(Value::as_u64)
         .unwrap_or(120)
         .clamp(1, 3600);
+    let interactive = work
+        .args
+        .get("interactive")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+        || command_requires_interactive_terminal(command);
     println!("  → {}", crate::commands::display_safe(command));
-    let (code, output) = executor.run_captured(command, Duration::from_secs(timeout), true);
+    let (code, output) = if interactive {
+        if !work.interactive || !std::io::stdin().is_terminal() || !std::io::stdout().is_terminal()
+        {
+            return failure(
+                "This command requires a foreground terminal. Resume the session from an interactive Aishe shell and try again.",
+            );
+        }
+        println!("  ↳ attached interactive terminal (Ctrl-C interrupts the child)");
+        executor.run_interactive_captured(command, Duration::from_secs(timeout), true)
+    } else {
+        executor.run_captured(command, Duration::from_secs(timeout), true)
+    };
     ExecutionResult {
         success: code == 0,
         output,
         exit_code: Some(code),
     }
+}
+
+fn command_requires_interactive_terminal(command: &str) -> bool {
+    let mut command_position = true;
+    let mut wrapper = false;
+    for token in shell_words_and_operators(command) {
+        if matches!(token.as_str(), ";" | "|" | "||" | "&&" | "&" | "(" | ")") {
+            command_position = true;
+            wrapper = false;
+            continue;
+        }
+        if !command_position {
+            continue;
+        }
+        let token = token.to_ascii_lowercase();
+        if token.contains('=') && !token.starts_with('=') {
+            continue;
+        }
+        if wrapper && token.starts_with('-') {
+            continue;
+        }
+        let executable = token.rsplit('/').next().unwrap_or(&token);
+        if matches!(
+            executable,
+            "sudo"
+                | "doas"
+                | "su"
+                | "login"
+                | "passwd"
+                | "ssh"
+                | "sftp"
+                | "ftp"
+                | "telnet"
+                | "gpg"
+                | "gpg2"
+                | "pinentry"
+                | "cryptsetup"
+                | "mysql"
+                | "psql"
+                | "sqlite3"
+                | "vim"
+                | "vi"
+                | "nvim"
+                | "nano"
+                | "emacs"
+                | "less"
+                | "more"
+                | "top"
+                | "htop"
+                | "btop"
+                | "watch"
+        ) {
+            return true;
+        }
+        wrapper = matches!(
+            executable,
+            "env" | "command" | "exec" | "nohup" | "nice" | "timeout" | "stdbuf"
+        );
+        command_position = wrapper;
+    }
+    false
+}
+
+/// Minimal quote-aware tokenization for command-head detection. It deliberately
+/// does not attempt to evaluate shell expansions; it only prevents words inside
+/// quoted arguments from being mistaken for executables and identifies control
+/// operators that begin a new pipeline command.
+fn shell_words_and_operators(command: &str) -> Vec<String> {
+    let mut result = Vec::new();
+    let mut current = String::new();
+    let mut quote = None;
+    let mut escaped = false;
+    let mut characters = command.chars().peekable();
+    while let Some(character) = characters.next() {
+        if escaped {
+            current.push(character);
+            escaped = false;
+            continue;
+        }
+        if character == '\\' && quote != Some('\'') {
+            escaped = true;
+            continue;
+        }
+        if let Some(active) = quote {
+            if character == active {
+                quote = None;
+            } else {
+                current.push(character);
+            }
+            continue;
+        }
+        if matches!(character, '\'' | '"' | '`') {
+            quote = Some(character);
+            continue;
+        }
+        if character.is_whitespace() {
+            if !current.is_empty() {
+                result.push(std::mem::take(&mut current));
+            }
+            continue;
+        }
+        if matches!(character, ';' | '|' | '&' | '(' | ')') {
+            if !current.is_empty() {
+                result.push(std::mem::take(&mut current));
+            }
+            let mut operator = character.to_string();
+            if matches!(character, '|' | '&') && characters.peek() == Some(&character) {
+                operator.push(characters.next().expect("peeked operator"));
+            }
+            result.push(operator);
+            continue;
+        }
+        current.push(character);
+    }
+    if !current.is_empty() {
+        result.push(current);
+    }
+    result
 }
 
 fn command_cwd(work: &ToolWork) -> Result<PathBuf> {
@@ -911,5 +1046,32 @@ mod tests {
             std::thread::sleep(Duration::from_millis(250));
         });
         assert!(!finish_worker_thread(handle));
+    }
+
+    #[test]
+    fn interactive_terminal_detection_is_conservative_and_path_aware() {
+        for command in [
+            "sudo apt update",
+            "/usr/bin/ssh user@example.test",
+            "git commit && gpg --sign file",
+            "env FOO=1 nvim README.md",
+            "printf x | less",
+        ] {
+            assert!(
+                command_requires_interactive_terminal(command),
+                "expected interactive detection for {command}"
+            );
+        }
+        for command in [
+            "printf 'sudo is only text'",
+            "echo ssh-compatible",
+            "psql-dump database",
+            "cargo test",
+        ] {
+            assert!(
+                !command_requires_interactive_terminal(command),
+                "unexpected interactive detection for {command}"
+            );
+        }
     }
 }
