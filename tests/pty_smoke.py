@@ -88,12 +88,15 @@ class Pty:
         round trip and wait for its *output*, so the editor has demonstrably
         processed a full line before the real assertions start.
         """
-        marker = "PTY_READY_MARKER"
+        marker = "PTY_READY_OUTPUT"
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
-            self.send("print -r -- %s" % marker)
-            # Consume the echo of the typed line, then look for the output.
-            if self.expect(marker, timeout=2) and self.expect(marker, timeout=2):
+            # Keep the expected output distinct from the command text. ZLE can
+            # interleave prompt-redraw escape sequences with the echoed input
+            # (notably when SHARE_HISTORY imports a concurrent shell's entry),
+            # so a literal match against the terminal echo is inherently racy.
+            self.send("print -r -- %s # PTY_READY_COMMAND" % marker)
+            if self.expect(marker, timeout=2):
                 return True
         return False
 
@@ -186,11 +189,11 @@ def main():
     try:
         if not sh.wait_ready():
             fail("wrapped zsh never became ready for input", sh)
-        # 1) native command runs through the wrapped zsh. Consume both the typed
-        #    echo and command output. Keeping a literal marker in the command is
-        #    important for the on-disk history assertions below.
-        sh.send("print -r -- PTY_OK_42")
-        if not sh.expect("PTY_OK_42") or not sh.expect("PTY_OK_42"):
+        # 1) native command runs through the wrapped zsh. Keep the history
+        #    marker in a comment so the independently asserted output cannot
+        #    accidentally match a terminal echo of the command.
+        sh.send("print -r -- PTY_OUTPUT_42 # PTY_OK_42")
+        if not sh.expect("PTY_OUTPUT_42"):
             fail("native command did not run through wrapped zsh", sh)
 
         # 2) the AI hook is installed.
@@ -284,8 +287,8 @@ def main():
         peer = Pty([os.path.abspath(BINARY), "zsh"], env)
         if not peer.wait_ready():
             fail("concurrent wrapped zsh never became ready for input", peer)
-        second.send("print -r -- PTY_PEER_42")
-        if not second.expect("PTY_PEER_42") or not second.expect("PTY_PEER_42"):
+        second.send("print -r -- PTY_PEER_OUTPUT # PTY_PEER_42")
+        if not second.expect("PTY_PEER_OUTPUT"):
             fail("concurrent history marker command did not run", second)
         peer.send(
             "print -r -- PEERSEEN=$(fc -l 1 | grep -c "
