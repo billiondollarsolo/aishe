@@ -34,8 +34,11 @@ cargo fmt --all -- --check
     loopback providers can list/validate models with no dummy API key.
   - `tests/pty_smoke.py`: PTY smoke test for the zsh-PTY front-end.
   - `tests/real_model.py`: opt-in command-vs-answer classification corpus against a
-    live model. **Skips** unless `AISHE_REALTEST_KEY` is set (default endpoint: Groq
+    live model through the `suggest --json` contract. **Skips** unless
+    `AISHE_REALTEST_KEY` is set (default endpoint: Groq
     `openai/gpt-oss-120b`; override with `AISHE_REALTEST_BASE_URL`/`_MODEL`).
+    `tests/live_contract_test.py` tests the shared response validator without a
+    key.
   - `tests/real_fuzz.py`: opt-in **real-model robustness fuzz** — generated inputs
     (questions, tasks, prompt-injection, metacharacter lines) through
     the machine-readable `aishe suggest --json` contract against the live model,
@@ -44,6 +47,11 @@ cargo fmt --all -- --check
     greenlit). Same `AISHE_REALTEST_KEY` gate; scale with a multiplier arg
     (`real_fuzz.py <bin> 2`). Real API calls cost money and hit rate limits —
     keep the scale modest.
+  - `tests/live_release.py`: paid, isolated release-candidate matrix combining
+    live provider/Doctor capability checks, answer/command contracts, a real
+    yolo function-tool round trip, classification, and scaled fuzz. It defaults
+    to GPT-5.6 Luna and accepts the credential only through
+    `AISHE_REALTEST_KEY`.
   - `tests/admin_validation.py`: the end-to-end validation harness.
 
 ## Validation harness

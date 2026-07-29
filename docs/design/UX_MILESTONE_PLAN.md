@@ -1032,7 +1032,7 @@ release-candidate run.
 | TEST-02 | This exact-ID matrix | all |
 | TEST-03 | `setup_pty.py:interactive setup PTY`; setup state/validation unit tests | 2–4 |
 | TEST-04 | `installer_upgrade.sh:installer rejected corruption and preserved config, history, tasks, and data` | 7 |
-| TEST-05 | `real_model.py`; real `doctor --live`; explicit GPT-5.6 Luna SSH calls | 9–12 |
+| TEST-05 | `live_contract_test.py`; `live_release.py`; `real_model.py`; `real_fuzz.py`; real `doctor --live`; explicit GPT-5.6 Luna SSH calls | 9–12 |
 | TEST-06 | `cli::man_emits_a_roff_page`; `cli::completions_emits_a_script`; `admin_validation.py:examples/config.toml parses` | 5 |
 
 ## 20. Implementation sequence

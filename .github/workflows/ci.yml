@@ -109,6 +109,9 @@ jobs:
       - name: Unauthenticated loopback provider
         run: python3 tests/provider_unauthenticated.py target/release/aishe
 
+      - name: Real-model JSON/exit contract validator
+        run: python3 tests/live_contract_test.py
+
       - name: Drive real zsh through the PTY front-end
         run: python3 tests/pty_smoke.py target/release/aishe
 

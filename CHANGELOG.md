@@ -94,6 +94,12 @@ breaking changes can land in any release.
 - Added hermetic upgrade preservation, interactive setup/settings, live
   status-line and prompt-injection, guided-tour lifecycle, route/highlight
   collision, and kill/resume durable-task suites.
+- Real-model classification and fuzz now share a deterministically tested
+  `suggest --json` validator for answer/command shape, shell syntax, risk, and
+  exit-code agreement.
+- Added an isolated paid release matrix for GPT-5.6 text, structured output,
+  streaming, tools, repeated routing, answer/command classification, and
+  adversarial fuzz.
 
 ## [0.2.30] - 2026-07-28
 

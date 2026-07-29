@@ -24,17 +24,20 @@ retry. Configured entirely via the environment; no key is written to the repo:
 Usage: real_fuzz.py [path-to-aishe] [scale]   Writes test-results/real-fuzz-<ts>.md
 """
 
-import json
-import os
-import shutil
-import sys
-import time
-import random
 import datetime
-import tempfile
+import os
+import random
+import shutil
 import subprocess
+import sys
+import tempfile
+import time
 
-BINARY = sys.argv[1] if len(sys.argv) > 1 else "target/release/aishe"
+from live_contract import validate_suggest_result
+
+BINARY = os.path.abspath(
+    sys.argv[1] if len(sys.argv) > 1 else "target/release/aishe"
+)
 SCALE = int(sys.argv[2]) if len(sys.argv) > 2 else 3
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 REPORT_DIR = os.path.join(REPO_ROOT, "test-results")
@@ -78,11 +81,16 @@ def make_config():
     home = tempfile.mkdtemp(prefix="aishe-realfuzz-")
     cfg = os.path.join(home, ".config", "aishe")
     os.makedirs(cfg, exist_ok=True)
-    with open(os.path.join(cfg, "config.toml"), "w") as f:
-        f.write(
+    with open(os.path.join(cfg, "config.toml"), "w", encoding="utf-8") as file:
+        file.write(
+            "version = 2\n"
             '[aishe]\nmode = "auto"\nprovider = "openai"\ncache = false\n\n'
             "[providers.openai]\n"
-            'base_url = "%s"\napi_key_env = "AISHE_REALTEST_KEY"\nmodel = "%s"\n'
+            'base_url = "%s"\n'
+            'api_key_env = "AISHE_REALTEST_KEY"\n'
+            'model = "%s"\n'
+            'transport = "auto"\n'
+            "auth_required = true\n"
             % (BASE_URL, MODEL))
     return home
 
@@ -107,26 +115,19 @@ def gen_inputs(rng, scale):
     return cases
 
 
-def syntax_ok(cmd):
-    if not cmd:
-        return True  # an answer (empty stdout) is fine
-    try:
-        return subprocess.run(["zsh", "-nc", cmd], capture_output=True,
-                              timeout=10).returncode == 0
-    except Exception:
-        return True  # don't fail the fuzz on a zsh hiccup
-
-
 def run_one(home, prompt):
     env = dict(os.environ)
-    env.update({
-        "HOME": home, "XDG_CONFIG_HOME": os.path.join(home, ".config"),
- # macOS ignores XDG_*; these are honored on every platform.
- "AISHE_CONFIG_DIR": os.path.join(home, ".config"),
- "AISHE_DATA_DIR": os.path.join(home, ".local", "share"),
-        "XDG_DATA_HOME": os.path.join(home, ".local", "share"),
-        "AISHE_REALTEST_KEY": KEY,
-    })
+    env.update(
+        {
+            "HOME": home,
+            "XDG_CONFIG_HOME": os.path.join(home, ".config"),
+            # macOS ignores XDG_*; these are honored on every platform.
+            "AISHE_CONFIG_DIR": os.path.join(home, ".config"),
+            "AISHE_DATA_DIR": os.path.join(home, ".local", "share"),
+            "XDG_DATA_HOME": os.path.join(home, ".local", "share"),
+            "AISHE_REALTEST_KEY": KEY,
+        }
+    )
     # One retry on a timeout, rate limit, or transient provider failure. Safety
     # rejections and model classifications are never retried.
     for attempt in range(2):
@@ -172,77 +173,72 @@ def main():
 
     rng = random.Random(SEED)
     home = make_config()
-    cases = gen_inputs(rng, SCALE)
-    started = time.monotonic()
-    breaches = []
-    rows = []
-    for kind, prompt in cases:
-        out, err, rc = run_one(home, prompt)
-        combined = (out + "\n" + err)
-        problems = []
-        if rc == 101 or "panicked" in combined.lower():
-            problems.append("panic")
-        if rc < 0:
-            problems.append("crash/timeout")
-        if "parse error" in combined or "(eval)" in combined:
-            problems.append("parse/eval leak")
-        payload = None
-        try:
-            payload = json.loads(out)
-        except (TypeError, json.JSONDecodeError):
-            problems.append("invalid JSON contract")
-        command = ""
-        risk = "invalid"
-        response_kind = "invalid"
-        if isinstance(payload, dict):
-            response_kind = payload.get("kind", "")
-            command = payload.get("command", "") or ""
-            risk = payload.get("risk", "")
-            if response_kind not in ("answer", "command"):
-                problems.append("invalid response kind")
-            if response_kind == "command" and not command:
-                problems.append("command response is empty")
-            if response_kind == "answer" and command:
-                problems.append("answer unexpectedly contains command")
-            if command and not syntax_ok(command):
-                problems.append("invalid command syntax")
-            expected_rc = 20 if risk in ("dangerous", "unknown") else 0
-            if risk not in ("safe", "dangerous", "unknown"):
-                problems.append("invalid risk")
-            elif rc != expected_rc:
-                problems.append("risk/exit contract mismatch")
-        ok = not problems
-        if not ok:
-            breaches.append((kind, prompt, rc, combined[:200], problems))
-        shown = command if command else "(answer)"
-        rows.append((kind, prompt, rc, response_kind, risk, shown[:70], ok))
-        time.sleep(0.4)  # be gentle with rate limits
+    try:
+        cases = gen_inputs(rng, SCALE)
+        started = time.monotonic()
+        breaches = []
+        rows = []
+        for kind, prompt in cases:
+            out, err, rc = run_one(home, prompt)
+            combined = out + "\n" + err
+            payload, problems = validate_suggest_result(out, err, rc)
+            command = ""
+            risk = "invalid"
+            response_kind = "invalid"
+            if payload:
+                response_kind = payload.get("kind", "")
+                command = payload.get("command", "") or ""
+                risk = payload.get("risk", "")
+            ok = not problems
+            if not ok:
+                breaches.append((kind, prompt, rc, combined[:200], problems))
+            shown = command if command else "(answer)"
+            rows.append((kind, prompt, rc, response_kind, risk, shown[:70], ok))
+            time.sleep(0.4)  # be gentle with rate limits
 
-    elapsed = time.monotonic() - started
-    passed = sum(1 for row in rows if row[6])
-    # Report.
-    os.makedirs(REPORT_DIR, exist_ok=True)
-    ts = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    report = os.path.join(REPORT_DIR, "real-fuzz-%s.md" % ts)
-    with open(report, "w") as f:
-        f.write("# Real-model robustness fuzz\n\n")
-        f.write("- Model: `%s` via `%s`\n- Cases: %d  Seed: %d  Scale: %d\n"
-                % (MODEL, BASE_URL, len(rows), SEED, SCALE))
-        f.write("- Result: **%s** (%d/%d, %.0fs)\n\n"
-                % ("PASS" if not breaches else "FAIL", passed, len(rows), elapsed))
-        f.write("| kind | response | risk / rc | prompt → suggestion |\n")
-        f.write("|---|---|---|---|\n")
-        for kind, prompt, rc, response_kind, risk, shown, ok in rows:
-            f.write("| %s%s | %s | %s / %d | `%s` → `%s` |\n"
-                    % ("" if ok else "❌ ", kind, response_kind, risk, rc,
-                       prompt.replace("|", "\\|")[:60], shown.replace("|", "\\|")))
-    print("real-fuzz: %d/%d invariant-clean over %s (%.0fs) -> %s"
-          % (passed, len(rows), MODEL, elapsed, report))
-    for kind, prompt, rc, snip, probs in breaches[:20]:
-        print("  BREACH [%s rc=%d %s] %r :: %s" % (kind, rc, ",".join(probs), prompt, snip))
-    shutil.rmtree(home, ignore_errors=True)
-    sys.exit(1 if breaches else 0)
+        elapsed = time.monotonic() - started
+        passed = sum(1 for row in rows if row[6])
+        os.makedirs(REPORT_DIR, exist_ok=True)
+        ts = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        report = os.path.join(REPORT_DIR, "real-fuzz-%s.md" % ts)
+        with open(report, "w", encoding="utf-8") as file:
+            file.write("# Real-model robustness fuzz\n\n")
+            file.write(
+                "- Model: `%s` via `%s`\n- Cases: %d  Seed: %d  Scale: %d\n"
+                % (MODEL, BASE_URL, len(rows), SEED, SCALE)
+            )
+            file.write(
+                "- Result: **%s** (%d/%d, %.0fs)\n\n"
+                % ("PASS" if not breaches else "FAIL", passed, len(rows), elapsed)
+            )
+            file.write("| kind | response | risk / rc | prompt → suggestion |\n")
+            file.write("|---|---|---|---|\n")
+            for kind, prompt, rc, response_kind, risk, shown, ok in rows:
+                file.write(
+                    "| %s%s | %s | %s / %d | `%s` → `%s` |\n"
+                    % (
+                        "" if ok else "❌ ",
+                        kind,
+                        response_kind,
+                        risk,
+                        rc,
+                        prompt.replace("|", "\\|")[:60],
+                        shown.replace("|", "\\|"),
+                    )
+                )
+        print(
+            "real-fuzz: %d/%d invariant-clean over %s (%.0fs) -> %s"
+            % (passed, len(rows), MODEL, elapsed, report)
+        )
+        for kind, prompt, rc, snip, problems in breaches[:20]:
+            print(
+                "  BREACH [%s rc=%d %s] %r :: %s"
+                % (kind, rc, ",".join(problems), prompt, snip)
+            )
+        return 1 if breaches else 0
+    finally:
+        shutil.rmtree(home, ignore_errors=True)
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())
