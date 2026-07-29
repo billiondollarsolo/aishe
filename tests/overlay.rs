@@ -107,7 +107,7 @@ fn yolo_dry_run_session_previews_applies_and_is_undoable() {
     std::fs::create_dir_all(&work).unwrap();
     std::fs::write(
         cfg.join("config.toml"),
-        "[aishe]\nmode = \"yolo\"\nprovider = \"anthropic\"\nyolo_dry_run = true\nyolo_confirm = \"never\"\n\n[providers.anthropic]\nbase_url = \"https://api.anthropic.com\"\napi_key_env = \"ANTHROPIC_API_KEY\"\nmodel = \"claude-x\"\n",
+        "[aishe]\nmode = \"yolo\"\nprovider = \"anthropic\"\nyolo_dry_run = true\nyolo_confirm = \"never\"\n\n[providers.anthropic]\nbase_url = \"https://api.anthropic.com\"\napi_key_env = \"ANTHROPIC_API_KEY\"\nmodel = \"claude-x\"\n\n[backend]\nengine = \"native\"\n",
     )
     .unwrap();
     std::fs::write(work.join("data.txt"), "v1\n").unwrap();
