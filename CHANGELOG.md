@@ -103,6 +103,12 @@ breaking changes can land in any release.
 - Real-model subprocess deadlines now sit outside Aishe's four-attempt provider
   retry envelope, preventing the release harness from killing a valid retry at
   the first 60-second provider timeout.
+- Explicit `aishe suggest` calls are no longer killed by the native shell-hook
+  alarm. Prompt-blocking hooks now default to a configurable 60-second budget
+  (`hook_timeout_secs`, 1–600) so slower reasoning models can complete while
+  native prompts remain bounded.
+- `aishe suggest --json` now propagates exhausted provider failures with exit 1
+  and empty stdout instead of emitting a successful empty-answer placeholder.
 
 ## [0.2.30] - 2026-07-28
 

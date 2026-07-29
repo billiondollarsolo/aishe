@@ -118,6 +118,65 @@ fn suggest_subcommand_scripting_contract() {
 }
 
 #[test]
+fn explicit_suggest_is_not_cut_off_by_the_shell_hook_budget() {
+    let home = temp_config_home();
+    let path = home.join("aishe").join("config.toml");
+    let text = std::fs::read_to_string(&path).unwrap().replace(
+        "mode = \"suggest\"",
+        "mode = \"suggest\"\nhook_timeout_secs = 1\ncache = false",
+    );
+    std::fs::write(&path, text).unwrap();
+    let response = r#"{"type":"command","command":"ls -la","explanation":"lists"}"#;
+    let base = || {
+        let mut command = Command::cargo_bin("aishe").unwrap();
+        command
+            .env("XDG_CONFIG_HOME", &home)
+            .env("XDG_DATA_HOME", home.join("data"))
+            .env("AISHE_CONFIG_DIR", &home)
+            .env("AISHE_DATA_DIR", home.join("data"))
+            .env("ANTHROPIC_API_KEY", "sk-test")
+            .env("AISHE_FAKE_LLM", response)
+            .env("AISHE_FAKE_DELAY_MS", "1500");
+        command
+    };
+
+    // Explicit scripting waits for the real result, even when it takes longer
+    // than the interactive hook's responsiveness budget.
+    base()
+        .args(["suggest", "--json", "list", "files"])
+        .assert()
+        .success()
+        .stdout(contains("\"command\":\"ls -la\""));
+
+    // The native shell hook remains bounded by that configured budget.
+    base()
+        .args(["--suggest-line", "show files slowly"])
+        .assert()
+        .success()
+        .stdout("")
+        .stderr(contains("suggestion timed out"));
+}
+
+#[test]
+fn explicit_suggest_propagates_provider_failure() {
+    let home = temp_config_home();
+    Command::cargo_bin("aishe")
+        .unwrap()
+        .env("XDG_CONFIG_HOME", &home)
+        .env("XDG_DATA_HOME", home.join("data"))
+        .env("AISHE_CONFIG_DIR", &home)
+        .env("AISHE_DATA_DIR", home.join("data"))
+        .env("ANTHROPIC_API_KEY", "sk-test")
+        .env("AISHE_FAKE_LLM", "unused")
+        .env("AISHE_FAKE_ERROR", "synthetic upstream failure")
+        .args(["suggest", "--json", "list", "files"])
+        .assert()
+        .code(1)
+        .stdout("")
+        .stderr(contains("synthetic upstream failure").and(contains("Next:")));
+}
+
+#[test]
 fn suggest_hook_appends_to_the_session_usage_tally() {
     // Under the interactive PTY, each NL child appends its metered usage to the
     // shared tally named by AISHE_USAGE_FILE; the PTY prints a one-line summary on

@@ -65,6 +65,8 @@ def validate_suggest_result(stdout, stderr, returncode, syntax_check=shell_synta
     if response_kind == "answer":
         if command:
             problems.append("answer unexpectedly contains command")
+        if not isinstance(explanation, str) or not explanation.strip():
+            problems.append("answer explanation is empty")
         if risk != "n/a":
             problems.append("answer risk is not n/a")
         if returncode != 0:

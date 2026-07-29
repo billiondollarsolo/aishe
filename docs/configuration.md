@@ -68,6 +68,7 @@ brevity. Read `~/.config/aishe/...` as `<config>/...` and
 | `share_history` | bool | `true` | Share Aishe's timestamped history across concurrent and future sessions (zsh `SHARE_HISTORY` when Aishe supplies the native-history fallback); off makes Aishe history per-session. |
 | `structured` | string | `schema` | Suggest output format: `schema`, `json`, or `prompt`. |
 | `stream` | bool | `false` | Stream answers token-by-token (suggest and auto). |
+| `hook_timeout_secs` | integer | `60` | Maximum wait (1–600 seconds) for a prompt-blocking native shell hook. Explicit `aishe suggest` calls wait through the provider's retry policy and are not signal-truncated; exhausted provider failures return exit 1. |
 | `reasoning_effort` | string | `auto` | Provider reasoning effort; `auto` lets the model/endpoint choose. |
 | `failure_hints` | bool | `true` | Show one concise recovery hint after an interactive command fails. |
 | `context_exclude` | array | `[]` | Optional context section IDs to omit. Manage with `aishe context`. |

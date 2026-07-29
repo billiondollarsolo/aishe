@@ -45,11 +45,13 @@ extern "C" fn handle_sigint(_sig: libc::c_int) {
     INTERRUPTED.store(true, Ordering::SeqCst);
 }
 
-/// Hard wall-clock budget for the prompt-blocking shell hooks (`--suggest-line`,
-/// `--auto-line`). On a dead/slow network these would otherwise hang the user's
-/// prompt for the provider read timeout plus retries; instead we arm a SIGALRM
-/// and bail out cleanly when it fires. See [`arm_hook_budget`].
-const HOOK_BUDGET_SECS: u32 = 15;
+/// Clamp the configurable prompt-blocking shell-hook budget. Explicit commands
+/// (`aishe suggest`) deliberately do not use this budget: a script must receive
+/// a complete JSON result or a normal provider error, never a signal-truncated
+/// success response.
+fn hook_budget_secs(config: &Config) -> u32 {
+    config.aishe.hook_timeout_secs.clamp(1, 600)
+}
 
 /// SIGALRM handler for the hook budget. The whole point is to leave stdout EMPTY
 /// so the shell hook sees no suggestion and the prompt simply returns. This runs
@@ -64,15 +66,15 @@ extern "C" fn handle_hook_alarm(_sig: libc::c_int) {
     }
 }
 
-/// Install the SIGALRM handler and arm a `HOOK_BUDGET_SECS` alarm. The caller is
+/// Install the SIGALRM handler and arm the configured hook alarm. The caller is
 /// responsible for cancelling it (`libc::alarm(0)`) before returning normally.
-fn arm_hook_budget() {
+fn arm_hook_budget(config: &Config) {
     unsafe {
         libc::signal(
             libc::SIGALRM,
             handle_hook_alarm as *const () as libc::sighandler_t,
         );
-        libc::alarm(HOOK_BUDGET_SECS);
+        libc::alarm(hook_budget_secs(config));
     }
 }
 
@@ -1103,7 +1105,7 @@ fn suggest_line(
         return Ok(1);
     };
     // Bound the blocking LLM call so a dead/slow network can't freeze the prompt.
-    arm_hook_budget();
+    arm_hook_budget(config);
     // Hook calls are one per process; share memory across them via a file so
     // follow-ups ("is it enabled?") keep the prior turns' context.
     let mem = hook_session_path(config);
@@ -1181,7 +1183,7 @@ fn fix_line(
     let ctx = aishe::fix::error_context(cmd, config.aishe.fix_capture_stderr);
     let prompt = aishe::fix::build_prompt(cmd, &exit, ctx.as_deref());
 
-    arm_hook_budget();
+    arm_hook_budget(config);
     let suggestion = modes::suggest::request(&prompt, p, executor, config, Vec::new())?;
     cancel_hook_budget();
     match suggestion {
@@ -1276,7 +1278,7 @@ fn auto_line(
         return Ok(1);
     };
     // Bound the blocking LLM call so a dead/slow network can't freeze the prompt.
-    arm_hook_budget();
+    arm_hook_budget(config);
     let mem = hook_session_path(config);
     let mut session = match &mem {
         Some(path) => Session::load_persisted(path),
@@ -1357,7 +1359,7 @@ fn auto_line(
 /// - `0` — a safe command (printed to stdout) or a prose answer (to stderr),
 /// - `20` — a command the safety gate flags (still printed, for review): either
 ///   dangerous, or one whose head the gate could not resolve,
-/// - `1` — no provider / no query.
+/// - `1` — no provider, no query, or provider request failure.
 ///
 /// In JSON mode a single object is printed to stdout with fields
 /// `{kind, command, explanation, risk, reason}`. `risk` is `"safe"`,
@@ -1380,9 +1382,16 @@ fn suggest_command(
         print_llm_unavailable(config);
         return Ok(1);
     };
-    arm_hook_budget();
-    let suggestion = modes::suggest::request(query, p, executor, config, Vec::new())?;
-    cancel_hook_budget();
+    let suggestion = match modes::suggest::request_strict(query, p, executor, config, Vec::new()) {
+        Ok(suggestion) => suggestion,
+        Err(error) => {
+            eprintln!(
+                "{}",
+                format!("aishe: {}", crate::providers::actionable_error(&error)).red()
+            );
+            return Ok(1);
+        }
+    };
 
     // Classify into (kind, command, explanation, risk, reason, exit).
     let (kind, command, explanation, risk, reason, code) = match suggestion {

@@ -102,6 +102,11 @@ pub fn provenance() -> Result<(Config, Provenance)> {
         ),
         field("aishe.pty_prompt", json!(config.aishe.pty_prompt), &source),
         field(
+            "aishe.hook_timeout_secs",
+            json!(config.aishe.hook_timeout_secs),
+            &source,
+        ),
+        field(
             "aishe.status_line_position",
             json!(config.aishe.status_line_position),
             &source,
@@ -382,6 +387,10 @@ fn shell_section(config: &mut Config) -> Result<()> {
             format!("Branded prompt: {}", on_off(config.aishe.pty_prompt)),
             format!("Failure hints: {}", on_off(config.aishe.failure_hints)),
             format!(
+                "AI hook timeout: {} seconds",
+                config.aishe.hook_timeout_secs
+            ),
+            format!(
                 "Statusline: {}",
                 if config.aishe.status_line {
                     config.aishe.status_line_position.as_str()
@@ -406,13 +415,32 @@ fn shell_section(config: &mut Config) -> Result<()> {
             MenuResult::Selected(0) => config.aishe.share_history = !config.aishe.share_history,
             MenuResult::Selected(1) => config.aishe.pty_prompt = !config.aishe.pty_prompt,
             MenuResult::Selected(2) => config.aishe.failure_hints = !config.aishe.failure_hints,
-            MenuResult::Selected(3) => choose_status_position(config)?,
-            MenuResult::Selected(4) => choose_status_items(config)?,
-            MenuResult::Selected(5) => reset_shell_section(config),
-            MenuResult::Selected(6) | MenuResult::Back | MenuResult::Cancel => return Ok(()),
+            MenuResult::Selected(3) => choose_hook_timeout(config)?,
+            MenuResult::Selected(4) => choose_status_position(config)?,
+            MenuResult::Selected(5) => choose_status_items(config)?,
+            MenuResult::Selected(6) => reset_shell_section(config),
+            MenuResult::Selected(7) | MenuResult::Back | MenuResult::Cancel => return Ok(()),
             MenuResult::Selected(_) => {}
         }
     }
+}
+
+fn choose_hook_timeout(config: &mut Config) -> Result<()> {
+    let default = config.aishe.hook_timeout_secs.to_string();
+    let Some(value) = promptui::text("AI hook timeout seconds (1–600)", &default, |value| {
+        let seconds: u32 = value.parse().context("enter a whole number")?;
+        if !(1..=600).contains(&seconds) {
+            anyhow::bail!("timeout must be between 1 and 600 seconds")
+        }
+        Ok(())
+    })?
+    else {
+        return Ok(());
+    };
+    if value != ":back" {
+        config.aishe.hook_timeout_secs = value.parse()?;
+    }
+    Ok(())
 }
 
 fn choose_status_position(config: &mut Config) -> Result<()> {
@@ -712,6 +740,7 @@ fn reset_shell_section(config: &mut Config) {
     let defaults = Config::default();
     config.aishe.share_history = defaults.aishe.share_history;
     config.aishe.pty_prompt = defaults.aishe.pty_prompt;
+    config.aishe.hook_timeout_secs = defaults.aishe.hook_timeout_secs;
     config.aishe.failure_hints = defaults.aishe.failure_hints;
     config.aishe.status_line = defaults.aishe.status_line;
     config.aishe.status_line_position = defaults.aishe.status_line_position;
@@ -897,6 +926,7 @@ mod tests {
         config.aishe.share_history = !defaults.aishe.share_history;
         config.aishe.pty_prompt = !defaults.aishe.pty_prompt;
         config.aishe.failure_hints = !defaults.aishe.failure_hints;
+        config.aishe.hook_timeout_secs = 1;
         config.aishe.status_line = !defaults.aishe.status_line;
         config.aishe.status_line_position = "off".into();
         config.aishe.status_line_items = vec!["requests".into()];
@@ -904,6 +934,10 @@ mod tests {
         assert_eq!(config.aishe.share_history, defaults.aishe.share_history);
         assert_eq!(config.aishe.pty_prompt, defaults.aishe.pty_prompt);
         assert_eq!(config.aishe.failure_hints, defaults.aishe.failure_hints);
+        assert_eq!(
+            config.aishe.hook_timeout_secs,
+            defaults.aishe.hook_timeout_secs
+        );
         assert_eq!(config.aishe.status_line, defaults.aishe.status_line);
         assert_eq!(
             config.aishe.status_line_position,

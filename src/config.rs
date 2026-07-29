@@ -244,6 +244,12 @@ pub struct AisheConfig {
     /// Stream answers token-by-token (suggest/auto).
     #[serde(default)]
     pub stream: bool,
+    /// Wall-clock budget, in seconds, for model calls made by prompt-blocking
+    /// shell hooks (`--suggest-line`, `--auto-line`, and fix). Explicit
+    /// scripting commands such as `aishe suggest` are not constrained by this
+    /// interactive responsiveness budget.
+    #[serde(default = "default_hook_timeout_secs")]
+    pub hook_timeout_secs: u32,
     /// Reasoning effort for providers that expose it. `auto` omits the field and
     /// lets the selected model/endpoint choose its documented default.
     #[serde(default = "default_reasoning_effort")]
@@ -350,6 +356,9 @@ fn default_structured() -> String {
 fn default_reasoning_effort() -> String {
     "auto".to_string()
 }
+fn default_hook_timeout_secs() -> u32 {
+    60
+}
 fn default_status_line_items() -> Vec<String> {
     vec![
         "model".to_string(),
@@ -419,6 +428,7 @@ impl Default for AisheConfig {
             share_history: true,
             structured: default_structured(),
             stream: false,
+            hook_timeout_secs: default_hook_timeout_secs(),
             reasoning_effort: default_reasoning_effort(),
             failure_hints: true,
             context_exclude: Vec::new(),
@@ -897,6 +907,7 @@ fn aishe_key_is_sensitive(key: &str, value: &toml::Value) -> bool {
         | "yolo_confirm_dangerous"
         | "yolo_sandbox"
         | "sandbox_backend"
+        | "hook_timeout_secs"
         | "semantic_history"
         | "embedding_provider" => true,
         "mode" => value.as_str() == Some("yolo"),
@@ -1036,6 +1047,7 @@ mod tests {
         assert_eq!(parsed.providers.openai.model, "gpt-4o");
         assert!(parsed.aishe.yolo_confirm_dangerous);
         assert_eq!(parsed.aishe.max_yolo_iterations, 10);
+        assert_eq!(parsed.aishe.hook_timeout_secs, 60);
     }
 
     #[test]
@@ -1343,6 +1355,10 @@ mod tests {
         assert!(aishe_key_is_sensitive(
             "yolo_sandbox",
             &toml::Value::Boolean(false)
+        ));
+        assert!(aishe_key_is_sensitive(
+            "hook_timeout_secs",
+            &toml::Value::Integer(60)
         ));
         assert!(!aishe_key_is_sensitive(
             "stream",

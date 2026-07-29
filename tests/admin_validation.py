@@ -663,6 +663,7 @@ mode = "auto"
 provider = "openai"
 structured = "json"
 stream = true
+hook_timeout_secs = 90
 show_usage = false
 budget_usd = 1.5
 memory = false
@@ -1004,6 +1005,7 @@ def main():
         'mode = "auto"',
         "auto_pushd = true",
         "share_history = false",
+        "hook_timeout_secs = 90",
         "file_tools = false",
         "web_tool = false",
         "yolo_plan = true",

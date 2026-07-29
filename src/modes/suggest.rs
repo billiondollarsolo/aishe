@@ -11,7 +11,7 @@ use super::{extract_json, render_markdown, safety_gate, GateOutcome};
 use crate::config::Config;
 use crate::context;
 use crate::executor::Executor;
-use crate::providers::{Msg, Provider, ResponseFormat};
+use crate::providers::{Msg, Provider, ProviderError, ResponseFormat};
 use crate::session::Session;
 
 /// The model's structured response.
@@ -335,6 +335,31 @@ pub fn request(
     config: &Config,
     history: Vec<Msg>,
 ) -> Result<Suggestion> {
+    match request_strict(input, provider, executor, config, history) {
+        Ok(suggestion) => Ok(suggestion),
+        Err(error) => {
+            eprintln!(
+                "{}",
+                format!("aishe: {}", crate::providers::actionable_error(&error)).red()
+            );
+            // Interactive callers keep their shell after a provider failure.
+            Ok(Suggestion::Answer {
+                explanation: String::new(),
+            })
+        }
+    }
+}
+
+/// Strict suggestion request for the public scripting interface. Unlike the
+/// interactive wrapper above, provider failures propagate so a script receives
+/// a non-zero exit and never mistakes an empty placeholder for a valid answer.
+pub fn request_strict(
+    input: &str,
+    provider: &dyn Provider,
+    executor: &Executor,
+    config: &Config,
+    history: Vec<Msg>,
+) -> std::result::Result<Suggestion, ProviderError> {
     let ctx = context::build(executor, config);
     let shell = executor
         .shell()
@@ -365,14 +390,7 @@ pub fn request(
         }
         Err(e) => {
             crate::audit::ai_error(mode, model, &e.to_string());
-            eprintln!(
-                "{}",
-                format!("aishe: {}", crate::providers::actionable_error(&e)).red()
-            );
-            // Surface the failure as an empty answer so the REPL keeps going.
-            Ok(Suggestion::Answer {
-                explanation: String::new(),
-            })
+            Err(e)
         }
     }
 }

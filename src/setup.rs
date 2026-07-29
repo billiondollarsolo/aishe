@@ -757,6 +757,9 @@ pub(crate) fn validate_config(config: &Config) -> Result<()> {
         anyhow::bail!("status_line_position must be right, below, or off");
     }
     validate_status_items(&config.aishe.status_line_items)?;
+    if !(1..=600).contains(&config.aishe.hook_timeout_secs) {
+        anyhow::bail!("hook_timeout_secs must be between 1 and 600");
+    }
     Ok(())
 }
 

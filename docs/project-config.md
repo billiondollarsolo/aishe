@@ -47,8 +47,9 @@ and `[providers.<name>].model`.
 exfiltrate prompts, run code, or weaken safety: `provider`, a
 `[providers.<name>]` `base_url`/`api_key_env`, `[mcp_servers]` (which can launch
 arbitrary commands), `[logging]`, `redact_secrets`, `yolo_sandbox`,
-`yolo_confirm`/`yolo_confirm_dangerous`, and `mode = "yolo"` (a repo must not
-silently put you into autonomous command-running).
+`yolo_confirm`/`yolo_confirm_dangerous`, `hook_timeout_secs`, and
+`mode = "yolo"` (a repo must not silently put you into autonomous
+command-running or extend a prompt-blocking wait).
 
 Until you trust a file, its sensitive keys are reported but **not** applied:
 

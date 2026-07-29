@@ -820,7 +820,10 @@ assert equality.
 - **TEST-03** Clean setup PTY tests cover every branch and invalid input.
 - **TEST-04** Upgrade tests prove config/history/data preservation.
 - **TEST-05** Real-model tests cover text, structured suggest, streaming, and a
-  yolo function-tool round trip.
+  yolo function-tool round trip. Explicit scripting is never signal-truncated
+  by the native shell-hook responsiveness alarm; native hooks remain bounded by
+  the configurable `hook_timeout_secs` budget, and exhausted provider failures
+  return a truthful non-zero scripting result.
 - **TEST-06** Documentation commands and examples are executable or validated.
 
 ## 15. Documentation changes
@@ -1028,11 +1031,11 @@ release-candidate run.
 | CTX-03 | `context::project_context_secrets_are_redacted_in_runtime_and_preview_metadata`; `context::persisted_history_is_included_and_redacted_for_short_lived_children`; `executor::context_history_merges_memory_and_persistent_entries_newest_first` | 15 |
 | CTX-04 | `settings::context_toggle_is_reversible`; `cli::effective_config_and_context_json_are_structured_and_content_free` | 15 |
 | CTX-05 | `cli::effective_config_and_context_json_are_structured_and_content_free` | 15 |
-| TEST-01 | `cargo test --all-targets`; `admin_validation.py:454/454`; all deterministic PTY suites | all |
+| TEST-01 | `cargo test --all-targets` (420 tests); `admin_validation.py:455/455`; all deterministic PTY suites | all |
 | TEST-02 | This exact-ID matrix | all |
 | TEST-03 | `setup_pty.py:interactive setup PTY`; setup state/validation unit tests | 2–4 |
 | TEST-04 | `installer_upgrade.sh:installer rejected corruption and preserved config, history, tasks, and data` | 7 |
-| TEST-05 | `live_contract_test.py`; `live_release.py`; `real_model.py`; `real_fuzz.py`; real `doctor --live`; explicit GPT-5.6 Luna SSH calls | 9–12 |
+| TEST-05 | `cli::explicit_suggest_is_not_cut_off_by_the_shell_hook_budget`; `cli::explicit_suggest_propagates_provider_failure`; `live_contract_test.py`; `live_release.py`; `real_model.py`; `real_fuzz.py`; real `doctor --live`; explicit GPT-5.6 Luna SSH calls | 9–12 |
 | TEST-06 | `cli::man_emits_a_roff_page`; `cli::completions_emits_a_script`; `admin_validation.py:examples/config.toml parses` | 5 |
 
 ## 20. Implementation sequence

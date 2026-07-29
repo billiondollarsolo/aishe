@@ -23,6 +23,10 @@ class ContractTests(unittest.TestCase):
             "reason": "",
         }
         self.assertEqual(self.validate(payload, 0), [])
+        self.assertIn(
+            "answer explanation is empty",
+            self.validate({**payload, "explanation": ""}, 0),
+        )
         self.assertIn("answer risk is not n/a", self.validate({**payload, "risk": "safe"}, 0))
         self.assertIn("answer exit code is not 0", self.validate(payload, 20))
 

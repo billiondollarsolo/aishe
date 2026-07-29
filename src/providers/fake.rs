@@ -23,6 +23,12 @@ pub const ENV_FILE: &str = "AISHE_FAKE_LLM_FILE";
 /// every call, so usage/cost/session-summary paths are testable without a real
 /// provider. Unset (the default) records nothing, preserving prior behavior.
 pub const ENV_USAGE: &str = "AISHE_FAKE_USAGE";
+/// Optional deterministic delay for timeout-path integration tests. It is
+/// ignored unless the fake provider is active and capped to 30 seconds.
+pub const ENV_DELAY_MS: &str = "AISHE_FAKE_DELAY_MS";
+/// Optional deterministic provider failure for error-contract integration
+/// tests. Its value becomes a synthetic status-500 message.
+pub const ENV_ERROR: &str = "AISHE_FAKE_ERROR";
 /// Optional shell command the fake emits as a single `run_command` tool call on
 /// the first agentic turn (then finishes with text), so the yolo loop — and its
 /// dry-run overlay — is testable without a real model. Unset = no tool calls.
@@ -64,6 +70,27 @@ impl FakeProvider {
             }
         }
     }
+
+    fn delay_for_test(&self) {
+        let millis = std::env::var(ENV_DELAY_MS)
+            .ok()
+            .and_then(|value| value.parse::<u64>().ok())
+            .unwrap_or(0)
+            .min(30_000);
+        if millis > 0 {
+            std::thread::sleep(std::time::Duration::from_millis(millis));
+        }
+    }
+
+    fn error_for_test(&self) -> Option<ProviderError> {
+        std::env::var(ENV_ERROR)
+            .ok()
+            .filter(|message| !message.is_empty())
+            .map(|message| ProviderError::Api {
+                status: 500,
+                message,
+            })
+    }
 }
 
 impl Provider for FakeProvider {
@@ -73,6 +100,10 @@ impl Provider for FakeProvider {
         _messages: &[Msg],
         _format: &ResponseFormat,
     ) -> Result<String, ProviderError> {
+        self.delay_for_test();
+        if let Some(error) = self.error_for_test() {
+            return Err(error);
+        }
         self.meter_fake_usage();
         Ok(self.body())
     }
@@ -83,6 +114,10 @@ impl Provider for FakeProvider {
         messages: &[Msg],
         _tools: &[ToolDef],
     ) -> Result<Completion, ProviderError> {
+        self.delay_for_test();
+        if let Some(error) = self.error_for_test() {
+            return Err(error);
+        }
         self.meter_fake_usage();
         // Test hook: on the first turn (before any tool result is in the
         // conversation) emit one `run_command` tool call from AISHE_FAKE_TOOL, so
