@@ -2,15 +2,21 @@
 """Interactive setup/settings/tour PTY coverage."""
 
 import json
+import fcntl
+import http.server
 import os
 import pty
 import select
 import shutil
 import signal
+import struct
 import subprocess
 import sys
 import tempfile
+import termios
+import threading
 import time
+from contextlib import contextmanager
 
 BINARY = os.path.abspath(
     sys.argv[1] if len(sys.argv) > 1 else "target/release/aishe"
@@ -18,8 +24,13 @@ BINARY = os.path.abspath(
 
 
 class Pty:
-    def __init__(self, argv, env):
+    def __init__(self, argv, env, cols=100):
         self.master, slave = pty.openpty()
+        fcntl.ioctl(
+            self.master,
+            termios.TIOCSWINSZ,
+            struct.pack("HHHH", 30, cols, 0, 0),
+        )
         self.proc = subprocess.Popen(
             argv,
             stdin=slave,
@@ -96,8 +107,88 @@ class Pty:
             pass
 
 
+@contextmanager
+def model_server(models, accepted_keys=None):
+    accepted_keys = set(accepted_keys or [])
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def log_message(self, _format, *_args):
+            pass
+
+        def send_json(self, status, payload):
+            body = json.dumps(payload).encode()
+            self.send_response(status)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def authorized(self):
+            if not accepted_keys:
+                return True
+            header = self.headers.get("Authorization", "")
+            return header.startswith("Bearer ") and header[7:] in accepted_keys
+
+        def do_GET(self):
+            if self.path != "/v1/models":
+                self.send_json(404, {"error": {"message": "not found"}})
+            elif not self.authorized():
+                self.send_json(401, {"error": {"message": "invalid API key"}})
+            else:
+                self.send_json(200, {"data": [{"id": model} for model in models]})
+
+        def do_POST(self):
+            length = int(self.headers.get("Content-Length", "0"))
+            payload = json.loads(self.rfile.read(length) or b"{}")
+            model = payload.get("model", "")
+            if not self.authorized():
+                self.send_json(401, {"error": {"message": "invalid API key"}})
+            elif model not in models:
+                self.send_json(
+                    404,
+                    {"error": {"message": "model does not exist or is unavailable"}},
+                )
+            elif self.path == "/v1/responses":
+                self.send_json(
+                    200,
+                    {
+                        "id": "setup-model-check",
+                        "output": [
+                            {
+                                "type": "message",
+                                "content": [
+                                    {"type": "output_text", "text": "setup-ok"}
+                                ],
+                            }
+                        ],
+                        "usage": {"input_tokens": 1, "output_tokens": 1},
+                    },
+                )
+            else:
+                self.send_json(
+                    200,
+                    {
+                        "choices": [
+                            {"message": {"role": "assistant", "content": "setup-ok"}}
+                        ],
+                        "usage": {"prompt_tokens": 1, "completion_tokens": 1},
+                    },
+                )
+
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield "http://127.0.0.1:%d" % server.server_port
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+
+
 def isolated_env(root):
     env = dict(os.environ)
+    env.pop("NO_COLOR", None)
     env.update(
         {
             "HOME": root,
@@ -111,7 +202,115 @@ def isolated_env(root):
     return env
 
 
-def complete_setup(root, env):
+def setup_visual_style_and_alignment():
+    root = tempfile.mkdtemp(prefix="aishe-setup-visual-")
+    try:
+        env = isolated_env(root)
+        shell = Pty([BINARY, "setup"], env, cols=58)
+        try:
+            shell.expect("Provider service")
+            shell.drain(0.3)
+            if "\x1b[1;36mProvider service\x1b[0m" not in shell.transcript:
+                raise AssertionError("setup menu title was not color styled")
+            if "\x1b[1;36;7m› " not in shell.transcript:
+                raise AssertionError("current setup selection was not highlighted")
+            if "…\x1b[0m" not in shell.transcript:
+                raise AssertionError("narrow focus row was not kept to one line")
+            if "       reasoning and tools." not in shell.transcript:
+                raise AssertionError("long provider help did not word-wrap with indentation")
+
+            shell.menu(2)
+            shell.expect("API endpoint")
+            shell.drain(0.2)
+            aligned = "\x1b[0m\r\n  \x1b[1;36mAPI endpoint\x1b[0m"
+            if aligned not in shell.transcript:
+                raise AssertionError(
+                    "text prompt did not return to the left margin after raw menu mode\n"
+                    + shell.transcript[-2500:]
+                )
+            shell.line(":cancel")
+            shell.expect("Setup paused")
+            if shell.finish() != 0:
+                raise AssertionError("visual setup probe returned nonzero")
+        finally:
+            shell.close()
+        print("  ok   colored focus, narrow wrapping, and prompt alignment")
+    finally:
+        shutil.rmtree(root, ignore_errors=True)
+
+
+def setup_checks_catalog_credential_and_manual_model():
+    root = tempfile.mkdtemp(prefix="aishe-setup-model-check-")
+    good_key = "setup-catalog-good-key"
+    try:
+        env = isolated_env(root)
+        catalog = ["catalog-valid-model"] + [
+            "catalog-model-%02d" % number for number in range(1, 12)
+        ]
+        with model_server(catalog, [good_key]) as endpoint:
+            rejected = Pty([BINARY, "setup"], env)
+            try:
+                rejected.expect("Provider service")
+                rejected.menu(7)
+                rejected.expect("API endpoint")
+                rejected.line(endpoint)
+                rejected.expect("Credential profile 'custom'")
+                rejected.menu(1)
+                rejected.expect("API key for 'custom'")
+                rejected.line("wrong-key")
+                rejected.expect("Could not load /v1/models (InvalidCredential)")
+                rejected.expect("Model discovery needs attention")
+                rejected.line()  # default: back to credential
+                rejected.expect("Credential profile 'custom'")
+                rejected.send("\x1b")
+                rejected.expect("Setup paused")
+                if rejected.finish() != 0:
+                    raise AssertionError("invalid-credential setup probe returned nonzero")
+            finally:
+                rejected.close()
+
+            restarted = Pty([BINARY, "setup", "--restart"], env)
+            try:
+                restarted.expect("Provider service")
+                restarted.menu(7)
+                restarted.expect("API endpoint")
+                restarted.line(endpoint)
+                restarted.expect("Credential profile 'custom'")
+                restarted.menu(1)
+                restarted.expect("API key for 'custom'")
+                restarted.line(good_key)
+                restarted.expect("Credential accepted; /v1/models returned 12 model(s)")
+                restarted.expect("Available models (refreshed from /v1/models)")
+                restarted.menu(1)
+                restarted.expect("Model ID")
+                restarted.line("catalog-missing-model")
+                restarted.expect("Validate it with one minimal request?")
+                restarted.line()
+                restarted.expect("making one minimal request")
+                restarted.expect("Model validation failed (ModelNotFound)")
+                restarted.expect("Model ID")
+                restarted.line("catalog-valid-model")
+                restarted.expect("present in the current endpoint catalog")
+                restarted.expect("Safety profile")
+                restarted.send("b")
+                restarted.expect("Available models (refreshed from /v1/models)")
+                restarted.menu(10)
+                restarted.expect(
+                    "Model 'catalog-model-08' is present in the current endpoint catalog"
+                )
+                restarted.expect("Safety profile")
+                restarted.send("\x1b")
+                restarted.expect("Setup paused")
+                if restarted.finish() != 0:
+                    raise AssertionError("manual-model setup probe returned nonzero")
+            finally:
+                restarted.close()
+        print("  ok   /models rejects bad keys and validates selected or typed models")
+    finally:
+        shutil.rmtree(root, ignore_errors=True)
+
+
+def complete_setup(root, env, endpoint):
     shell = Pty([BINARY, "setup"], env)
     try:
         shell.expect("Provider service")
@@ -120,15 +319,19 @@ def complete_setup(root, env):
         shell.expect("API endpoint")
         shell.line("ftp://bad")
         shell.expect("endpoint must use http:// or https://")
-        shell.line()  # accept local preset
+        shell.line(endpoint)
 
-        shell.expect("Model")
+        shell.expect("Available models (refreshed from /v1/models)")
+        shell.menu(1)  # type a model ID
+        shell.expect("Model ID")
         shell.line(":back")
-        # Credential is skipped for local endpoints; back returns to it and then
-        # immediately advances to Model again.
-        shell.expect("Credential: not required")
-        shell.expect("Model")
+        # Back from typed entry returns to the catalog picker; the menu's own
+        # back action returns to the previous setup step.
+        shell.expect("Available models (refreshed from /v1/models)")
+        shell.menu(1)
+        shell.expect("Model ID")
         shell.line("setup-local-model")
+        shell.expect("present in the current endpoint catalog")
 
         shell.expect("Safety profile")
         shell.menu(2)  # balanced
@@ -286,6 +489,8 @@ def settings_are_transactional(root, env, config):
 def hidden_auth_and_staged_setup_are_secret_safe():
     root = tempfile.mkdtemp(prefix="aishe-credential-pty-")
     secret = "pty-secret-must-never-echo"
+    server_context = model_server(["custom-credential-model"], [secret])
+    endpoint = server_context.__enter__()
     try:
         env = isolated_env(root)
         shell = Pty([BINARY, "setup"], env)
@@ -293,12 +498,13 @@ def hidden_auth_and_staged_setup_are_secret_safe():
             shell.expect("Provider service")
             shell.menu(7)  # custom, with authentication required
             shell.expect("API endpoint")
-            shell.line("http://127.0.0.1:9")
+            shell.line(endpoint)
             shell.expect("Credential profile 'custom'")
             shell.menu(1)  # enter and save locally
             shell.expect("API key for 'custom'")
             shell.line(secret)
-            shell.expect("Model")
+            shell.expect("Credential accepted; /v1/models returned 1 model(s)")
+            shell.expect("Available models (refreshed from /v1/models)")
 
             draft = os.path.join(root, "data", "aishe", "setup-draft.json")
             draft_text = open(draft, encoding="utf-8").read()
@@ -312,7 +518,7 @@ def hidden_auth_and_staged_setup_are_secret_safe():
             if secret in shell.transcript:
                 raise AssertionError("hidden setup input appeared in the PTY transcript")
 
-            shell.line(":cancel")
+            shell.send("\x1b")
             shell.expect("Setup paused")
             if shell.finish() != 0:
                 raise AssertionError("staged setup cancel returned nonzero")
@@ -331,8 +537,11 @@ def hidden_auth_and_staged_setup_are_secret_safe():
             resumed.menu(1)
             resumed.expect("API key for 'custom'")
             resumed.line(secret)
-            resumed.expect("Model")
+            resumed.expect("Available models (refreshed from /v1/models)")
+            resumed.menu(1)
+            resumed.expect("Model ID")
             resumed.line("custom-credential-model")
+            resumed.expect("present in the current endpoint catalog")
             resumed.expect("Safety profile")
             resumed.menu(1)
             resumed.expect("No price is known")
@@ -383,6 +592,7 @@ def hidden_auth_and_staged_setup_are_secret_safe():
             raise AssertionError("interactive auth replacement was not saved")
         print("  ok   hidden setup/auth input, cancel, resume, and Apply are secret-safe")
     finally:
+        server_context.__exit__(None, None, None)
         shutil.rmtree(root, ignore_errors=True)
 
 
@@ -450,10 +660,13 @@ def main():
         raise SystemExit("FAIL: binary not found: " + BINARY)
     root = tempfile.mkdtemp(prefix="aishe-setup-pty-")
     try:
+        setup_visual_style_and_alignment()
+        setup_checks_catalog_credential_and_manual_model()
         env = isolated_env(root)
-        config = complete_setup(root, env)
-        cancel_preserves_active_config(root, env, config)
-        settings_are_transactional(root, env, config)
+        with model_server(["setup-local-model"]) as endpoint:
+            config = complete_setup(root, env, endpoint)
+            cancel_preserves_active_config(root, env, config)
+            settings_are_transactional(root, env, config)
         hidden_auth_and_staged_setup_are_secret_safe()
         tour_pause_resume_skip_restart_and_complete(root, env)
         print("PASS: interactive setup/settings/tour PTY")

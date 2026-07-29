@@ -61,12 +61,14 @@ pub fn run(options: Options) -> Result<bool> {
         return Ok(true);
     }
 
-    println!("\n  aishe guided tour\n  ─────────────────");
-    println!(
-        "  workspace: {}",
-        crate::commands::display_safe(&workspace.display().to_string())
+    promptui::header(
+        "aishe guided tour",
+        &format!(
+            "workspace: {}",
+            crate::commands::display_safe(&workspace.display().to_string())
+        ),
+        "Your current directory and project files are never changed.",
     );
-    println!("  Your current directory and project files are never changed.");
 
     while state.next_lesson < LESSON_COUNT {
         let lesson = state.next_lesson;

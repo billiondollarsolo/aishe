@@ -176,6 +176,27 @@ pub fn list_models(config: &Config, provider_name: &str) -> Result<Vec<String>, 
     Ok(models)
 }
 
+/// Make one minimal text request with the active model. Setup uses this only
+/// when a manually entered model is not present in (or cannot be checked
+/// against) `/v1/models`. Catalog-backed selections remain free; this fallback
+/// proves that the exact model ID is accepted by the configured runtime path.
+pub fn validate_model_request(config: &Config) -> Result<(), ProviderError> {
+    let mut isolated = config.clone();
+    isolated.aishe.provider_fallback.clear();
+    isolated.aishe.cache = false;
+    let provider = providers::make(&isolated).map_err(|error| ProviderError::Api {
+        status: 0,
+        message: crate::redact::redact(&error.to_string()),
+    })?;
+    provider
+        .complete(
+            "Reply with only setup-ok.",
+            &[Msg::User("Validate this model.".into())],
+            &ResponseFormat::Text,
+        )
+        .map(|_| ())
+}
+
 fn model_ids(value: &Value) -> Vec<String> {
     value
         .get("data")

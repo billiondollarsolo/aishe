@@ -42,17 +42,26 @@ It asks for:
   Together, Ollama, or a custom endpoint) and the **API endpoint (base URL)**,
   pre-filled from the chosen service,
 - a saved credential profile, hidden key entry, or environment-only workflow,
-- the model and API transport,
+- a current model catalog from the endpoint and a validated model selection,
 - per-million-token input/output prices when that exact model has no known price,
 - status-line position and contents, and
 - optional live verification and a configuration review before saving.
 
 The endpoint prompt is what lets you point at Groq, Ollama, or any other
 OpenAI-compatible service instead of OpenAI; pick the service and the base URL
-and model are filled in for you (editable). Setup writes nothing until you apply
-the review. If interrupted, rerun `aishe setup --resume`; use `--restart` to
-discard only its draft. In a pipe or CI, setup exits instead of inventing
-defaults; use `aishe setup --non-interactive` with explicit flags.
+are filled in for you (editable). After the credential step, Setup calls
+`GET /v1/models`. A successful response verifies the endpoint and key without
+using tokens and supplies the model picker. You can also type any model ID:
+Setup checks the full returned catalog, then makes one clearly disclosed
+minimal generation request only when the ID was not listed. Credential,
+permission, network, and model-not-found failures stay in Setup with retry/back
+choices instead of silently accepting an unverified value.
+
+Setup writes nothing until you apply the review. If interrupted, rerun `aishe
+setup --resume`; use `--restart` to discard only its draft. In a pipe or CI,
+setup exits instead of inventing defaults; use `aishe setup
+--non-interactive` with explicit flags. Its interactive color and focus
+treatment adapts to terminal width and honors `NO_COLOR`.
 
 Setup does not and cannot activate aishe in the parent shell that launched it.
 After setup, run:

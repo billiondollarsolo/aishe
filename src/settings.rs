@@ -196,7 +196,11 @@ pub fn run() -> Result<bool> {
     let baseline = Config::load_quiet()?.context("no config exists; run `aishe setup` first")?;
     let mut draft = baseline.clone();
     loop {
-        println!("\n  aishe settings\n  ──────────────");
+        promptui::header(
+            "aishe settings",
+            "Edit configuration in reviewable, transactional sections.",
+            "Nothing is saved until you choose Review and apply.",
+        );
         println!(
             "  {} · {} · {} · status {}",
             draft.aishe.provider,

@@ -147,9 +147,11 @@ fn run_non_interactive(options: Options) -> Result<Outcome> {
 }
 
 fn run_interactive(options: Options) -> Result<Outcome> {
-    println!("\n  aishe setup\n  ───────────");
-    println!("  Configure, verify, and safely apply your Aishe environment.");
-    println!("  Active config is not changed until the final Apply step.");
+    promptui::header(
+        "aishe setup",
+        "Configure, verify, and safely apply your Aishe environment.",
+        "Active config is not changed until the final Apply step.",
+    );
 
     if options.restart {
         discard_draft()?;
@@ -257,10 +259,10 @@ fn run_interactive(options: Options) -> Result<Outcome> {
             Step::Credential => {
                 let provider = active_provider(&draft.config).clone();
                 if !provider.requires_auth() {
-                    println!(
-                        "\n  Credential: not required for local endpoint {}",
+                    promptui::success(&format!(
+                        "Credential not required for local endpoint {}",
                         provider.base_url
-                    );
+                    ));
                     pending_credential = None;
                     advance(&mut draft)?;
                     continue;
@@ -343,43 +345,125 @@ fn run_interactive(options: Options) -> Result<Outcome> {
             Step::Model => {
                 let provider_name = draft.config.aishe.provider.clone();
                 let current = active_provider(&draft.config).model.clone();
-                let models = with_pending(&pending_credential, || {
+                let catalog = with_pending(&pending_credential, || {
                     capabilities::list_models(&draft.config, &provider_name)
-                })?
-                .ok();
-                if let Some(models) = models {
-                    let mut options: Vec<String> =
-                        std::iter::once(current.clone()).chain(models).collect();
-                    options.sort();
-                    options.dedup();
-                    options.truncate(30);
-                    options.push("Enter a model manually…".into());
+                })?;
+                if let Ok(models) = catalog {
+                    let auth_required = active_provider(&draft.config).requires_auth();
+                    promptui::success(&format!(
+                        "{}; /v1/models returned {} model(s)",
+                        if auth_required {
+                            "Credential accepted"
+                        } else {
+                            "Endpoint reached"
+                        },
+                        models.len()
+                    ));
+                    const VISIBLE_MODEL_LIMIT: usize = 24;
+                    let mut visible = Vec::new();
+                    if models.iter().any(|model| model == &current) {
+                        visible.push(current.clone());
+                    }
+                    visible.extend(
+                        models
+                            .iter()
+                            .filter(|model| *model != &current)
+                            .take(VISIBLE_MODEL_LIMIT.saturating_sub(visible.len()))
+                            .cloned(),
+                    );
+                    let mut options = vec!["Type a model ID…".to_string()];
+                    options.extend(visible.iter().cloned());
+                    let default = visible
+                        .iter()
+                        .position(|model| model == &current)
+                        .map(|position| position + 1)
+                        .unwrap_or(0);
+                    if models.len() > visible.len() {
+                        promptui::warning(&format!(
+                            "Showing {} of {} models; type any returned model ID to select it",
+                            visible.len(),
+                            models.len()
+                        ));
+                    }
                     match promptui::menu(
-                        "Model",
+                        "Available models (refreshed from /v1/models)",
                         &options,
-                        options.iter().position(|model| model == &current).unwrap_or(0),
+                        default,
                         true,
-                        "The list comes from the configured endpoint; manual entry is always available.",
+                        "Listed models are validated by exact catalog membership. A typed ID is checked against the full catalog, then with one minimal request only if it was not listed.",
                     )? {
-                        MenuResult::Selected(index) if index + 1 == options.len() => {
-                            match prompt_manual_model(&mut draft)? {
+                        MenuResult::Selected(0) => {
+                            match prompt_manual_model(
+                                &mut draft,
+                                Some(&models),
+                                &pending_credential,
+                            )? {
                                 PromptResult::Value(()) => advance(&mut draft)?,
-                                PromptResult::Back => draft.step = draft.step.previous(),
+                                PromptResult::Back => {}
                                 PromptResult::Cancel => return cancel(draft),
                             }
                         }
                         MenuResult::Selected(index) => {
-                            active_provider_mut(&mut draft.config).model = options[index].clone();
+                            let model = visible[index - 1].clone();
+                            active_provider_mut(&mut draft.config).model = model.clone();
+                            promptui::success(&format!(
+                                "Model '{model}' is present in the current endpoint catalog"
+                            ));
                             advance(&mut draft)?;
                         }
                         MenuResult::Back => draft.step = draft.step.previous(),
                         MenuResult::Cancel => return cancel(draft),
                     }
                 } else {
-                    match prompt_manual_model(&mut draft)? {
-                        PromptResult::Value(()) => advance(&mut draft)?,
-                        PromptResult::Back => draft.step = draft.step.previous(),
-                        PromptResult::Cancel => return cancel(draft),
+                    let error = catalog.unwrap_err();
+                    let detail = crate::redact::redact(&error.to_string());
+                    promptui::error(&format!(
+                        "Could not load /v1/models ({:?}): {detail}",
+                        error.kind()
+                    ));
+                    let credential_rejected = matches!(
+                        error.kind(),
+                        crate::providers::ErrorKind::MissingCredential
+                            | crate::providers::ErrorKind::InvalidCredential
+                    );
+                    let choices = if credential_rejected {
+                        vec![
+                            "Back to credential".into(),
+                            "Retry /v1/models".into(),
+                            "Cancel setup".into(),
+                        ]
+                    } else {
+                        vec![
+                            "Retry /v1/models".into(),
+                            "Type a model ID and validate with one minimal request".into(),
+                            "Back to credential or endpoint".into(),
+                            "Cancel setup".into(),
+                        ]
+                    };
+                    match promptui::menu(
+                        "Model discovery needs attention",
+                        &choices,
+                        0,
+                        false,
+                        "A successful catalog request validates the endpoint and credential without spending tokens. Manual fallback makes one small generation request.",
+                    )? {
+                        MenuResult::Selected(0) if credential_rejected => {
+                            draft.step = draft.step.previous()
+                        }
+                        MenuResult::Selected(1) if credential_rejected => {}
+                        MenuResult::Selected(0) => {}
+                        MenuResult::Selected(1) => {
+                            match prompt_manual_model(&mut draft, None, &pending_credential)? {
+                                PromptResult::Value(()) => advance(&mut draft)?,
+                                PromptResult::Back => {}
+                                PromptResult::Cancel => return cancel(draft),
+                            }
+                        }
+                        MenuResult::Selected(2) if !credential_rejected => {
+                            draft.step = draft.step.previous()
+                        }
+                        MenuResult::Selected(_) | MenuResult::Cancel => return cancel(draft),
+                        MenuResult::Back => unreachable!(),
                     }
                 }
             }
@@ -525,7 +609,7 @@ fn run_interactive(options: Options) -> Result<Outcome> {
                 validate_config(&draft.config)?;
                 let backup = save_with_pending(&draft.config, pending_credential.take())?;
                 discard_draft()?;
-                println!("\n  Setup complete");
+                promptui::success("Setup complete");
                 println!("  config: {}", Config::path().display());
                 println!("  credentials: {}", crate::credentials::path().display());
                 if let Some(path) = &backup {
@@ -663,20 +747,74 @@ fn cancel(draft: Draft) -> Result<Outcome> {
     })
 }
 
-fn prompt_manual_model(draft: &mut Draft) -> Result<PromptResult<()>> {
-    let current = active_provider(&draft.config).model.clone();
-    match promptui::text("Model", &current, |value| {
-        if value.trim().is_empty() {
-            anyhow::bail!("model cannot be empty");
+fn prompt_manual_model(
+    draft: &mut Draft,
+    catalog: Option<&[String]>,
+    pending_credential: &Option<(String, String)>,
+) -> Result<PromptResult<()>> {
+    let mut current = active_provider(&draft.config).model.clone();
+    loop {
+        match promptui::text("Model ID", &current, |value| {
+            if value.trim().is_empty() {
+                anyhow::bail!("model cannot be empty");
+            }
+            if value.len() > 256 || value.chars().any(char::is_control) {
+                anyhow::bail!("model must be at most 256 characters with no control characters");
+            }
+            Ok(())
+        })? {
+            Some(value) if value == ":back" => return Ok(PromptResult::Back),
+            Some(value) => {
+                let model = value.trim().to_string();
+                if catalog.is_some_and(|models| models.iter().any(|item| item == &model)) {
+                    active_provider_mut(&mut draft.config).model = model.clone();
+                    promptui::success(&format!(
+                        "Model '{model}' is present in the current endpoint catalog"
+                    ));
+                    return Ok(PromptResult::Value(()));
+                }
+
+                if catalog.is_some() {
+                    let Some(validate) = promptui::confirm(
+                        "Model was not listed. Validate it with one minimal request? (may use tokens)",
+                        true,
+                    )?
+                    else {
+                        return Ok(PromptResult::Cancel);
+                    };
+                    if !validate {
+                        current = model;
+                        continue;
+                    }
+                }
+                promptui::warning(&format!(
+                    "Model '{model}' was not returned by /v1/models; making one minimal request to validate the exact ID"
+                ));
+                let mut candidate = draft.config.clone();
+                active_provider_mut(&mut candidate).model = model.clone();
+                let checked = with_pending(pending_credential, || {
+                    capabilities::validate_model_request(&candidate)
+                })?;
+                match checked {
+                    Ok(()) => {
+                        active_provider_mut(&mut draft.config).model = model.clone();
+                        promptui::success(&format!(
+                            "Model '{model}' accepted a generation request"
+                        ));
+                        return Ok(PromptResult::Value(()));
+                    }
+                    Err(error) => {
+                        promptui::error(&format!(
+                            "Model validation failed ({:?}): {}",
+                            error.kind(),
+                            crate::redact::redact(&error.to_string())
+                        ));
+                        current = model;
+                    }
+                }
+            }
+            None => return Ok(PromptResult::Cancel),
         }
-        Ok(())
-    })? {
-        Some(value) if value == ":back" => Ok(PromptResult::Back),
-        Some(value) => {
-            active_provider_mut(&mut draft.config).model = value;
-            Ok(PromptResult::Value(()))
-        }
-        None => Ok(PromptResult::Cancel),
     }
 }
 
@@ -875,10 +1013,10 @@ fn profile_index(value: &str) -> usize {
 }
 
 fn print_report(report: &Report) {
-    println!(
-        "\n  Provider check: {} · {} · {}",
+    promptui::section(&format!(
+        "Provider check: {} · {} · {}",
         report.provider, report.model, report.transport
-    );
+    ));
     for (label, check) in [
         ("credential", &report.credential),
         ("reachability", &report.reachability),
@@ -889,16 +1027,13 @@ fn print_report(report: &Report) {
         ("tools", &report.tools),
         ("streaming", &report.streaming),
     ] {
-        let marker = match check.state {
-            State::Pass => "✓",
-            State::Warn => "!",
-            State::Fail => "✗",
-            State::Skipped => "·",
-        };
-        println!(
-            "    {marker} {label}: {}",
-            crate::commands::display_safe(&check.detail)
-        );
+        let detail = format!("{label}: {}", crate::commands::display_safe(&check.detail));
+        match check.state {
+            State::Pass => promptui::success(&detail),
+            State::Warn => promptui::warning(&detail),
+            State::Fail => promptui::error(&detail),
+            State::Skipped => println!("  · {detail}"),
+        }
     }
 }
 
@@ -910,7 +1045,7 @@ fn print_review(
 ) -> Result<()> {
     let before = toml::to_string_pretty(baseline)?;
     let after = toml::to_string_pretty(configured)?;
-    println!("\n  Review");
+    promptui::section("Review");
     println!(
         "    provider: {}",
         crate::commands::display_safe(&configured.aishe.provider)

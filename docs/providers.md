@@ -18,6 +18,14 @@ API keys are resolved from the profile named by `credential` in Aishe's private
 higher-precedence override for CI, containers, and temporary testing. Keys are
 never written to ordinary `config.toml`.
 
+During interactive Setup, Aishe calls `GET /v1/models` immediately after the
+credential step. This is a token-free credential/endpoint check and the source
+of the model picker. Choosing a listed model or typing an ID present anywhere
+in the full response validates it without a generation call. If a custom
+endpoint has an incomplete or unavailable catalog, a manually typed ID must
+pass one minimal generation request before Setup continues; the UI discloses
+that request first.
+
 ## Anthropic
 
 ```toml
