@@ -19,6 +19,8 @@ use crate::backend::control::SupervisorClient;
 use crate::config::Config;
 use crate::executor::Executor;
 
+const WORKER_SHUTDOWN_GRACE: Duration = Duration::from_millis(100);
+
 pub struct ToolWorker {
     stop: Arc<AtomicBool>,
     client: SupervisorClient,
@@ -109,7 +111,14 @@ impl ToolWorker {
         self.stop.store(true, Ordering::SeqCst);
         let _ = self.client.unregister(&self.identity);
         if let Some(thread) = self.thread.take() {
-            let _ = thread.join();
+            // Unregister wakes an idle bridge poll immediately. A command also
+            // observes the shared cancellation flag and tears down its process
+            // group. External HTTP/MCP implementations are only timeout-bounded,
+            // however, and Rust cannot safely kill their worker thread. Never
+            // hold Ctrl-C or foreground teardown hostage to that timeout: after
+            // a short grace, detach. The revoked lease makes any late completion
+            // fail and the started durable call remains outcome-unknown.
+            finish_worker_thread(thread);
         }
     }
 }
@@ -117,6 +126,21 @@ impl ToolWorker {
 impl Drop for ToolWorker {
     fn drop(&mut self) {
         self.shutdown();
+    }
+}
+
+fn finish_worker_thread(thread: JoinHandle<()>) -> bool {
+    let deadline = std::time::Instant::now() + WORKER_SHUTDOWN_GRACE;
+    while !thread.is_finished() && std::time::Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    if thread.is_finished() {
+        let _ = thread.join();
+        true
+    } else {
+        // Dropping a JoinHandle detaches it. Its bridge lease has already been
+        // revoked, so a late completion cannot be accepted.
+        false
     }
 }
 
@@ -134,19 +158,25 @@ fn execute(
     cancel: &Arc<AtomicBool>,
     denied_environment: &HashSet<String>,
 ) -> ExecutionResult {
+    if cancel.load(Ordering::SeqCst) {
+        return failure("Agent tool execution was cancelled before it started.");
+    }
     let mut work = work.clone();
     if let Err(message) = approve(&mut work, approvals) {
         return failure(&message);
     }
+    if cancel.load(Ordering::SeqCst) {
+        return failure("Agent tool execution was cancelled before it started.");
+    }
     let result = match work.tool.as_str() {
         "run_command" => run_command(&work, cancel, denied_environment),
         "read_file" | "write_file" | "edit_file" | "list_dir" => run_file_tool(&work),
-        "search_files" => search_files(&work, denied_environment),
-        "fetch_url" => fetch_url(&work),
+        "search_files" => search_files(&work, denied_environment, cancel),
+        "fetch_url" => fetch_url(&work, cancel),
         "use_skill" => use_skill(&work, skills),
-        "mcp_call" => mcp_call(&work, mcp),
+        "mcp_call" => mcp_call(&work, mcp, cancel),
         "ask_user" => ask_user(&work),
-        "apply_patch" => apply_patch(&work, denied_environment),
+        "apply_patch" => apply_patch(&work, denied_environment, cancel),
         _ => failure("unknown foreground tool"),
     };
     crate::audit::action(
@@ -474,7 +504,11 @@ fn validate_tool_path(work: &ToolWork, value: &str, write: bool) -> Result<PathB
     Ok(canonical)
 }
 
-fn search_files(work: &ToolWork, denied_environment: &HashSet<String>) -> ExecutionResult {
+fn search_files(
+    work: &ToolWork,
+    denied_environment: &HashSet<String>,
+    cancel: &Arc<AtomicBool>,
+) -> ExecutionResult {
     let query = work.args.get("query").and_then(Value::as_str).unwrap_or("");
     let path = work.args.get("path").and_then(Value::as_str).unwrap_or(".");
     if let Err(error) = validate_tool_path(work, path, false) {
@@ -487,6 +521,7 @@ fn search_files(work: &ToolWork, denied_environment: &HashSet<String>) -> Execut
         Ok(executor) => executor,
         Err(error) => return failure(&error.to_string()),
     };
+    executor.set_cancel_flag(Arc::clone(cancel));
     let command = format!(
         "{} --no-heading --line-number --color never --max-columns 2048 --max-count 1000 -- {} {}",
         shell_quote(&rg.to_string_lossy()),
@@ -509,7 +544,11 @@ fn search_files(work: &ToolWork, denied_environment: &HashSet<String>) -> Execut
     }
 }
 
-fn apply_patch(work: &ToolWork, denied_environment: &HashSet<String>) -> ExecutionResult {
+fn apply_patch(
+    work: &ToolWork,
+    denied_environment: &HashSet<String>,
+    cancel: &Arc<AtomicBool>,
+) -> ExecutionResult {
     use rand::RngCore;
     use std::fs::OpenOptions;
 
@@ -567,6 +606,7 @@ fn apply_patch(work: &ToolWork, denied_environment: &HashSet<String>) -> Executi
             return failure(&error.to_string());
         }
     };
+    executor.set_cancel_flag(Arc::clone(cancel));
     let argument = shell_quote(&patch_path.to_string_lossy());
     let check = format!("git apply --check --whitespace=nowarn -- {argument}");
     let (check_code, check_output) = executor.run_captured(&check, Duration::from_secs(30), false);
@@ -577,6 +617,10 @@ fn apply_patch(work: &ToolWork, denied_environment: &HashSet<String>) -> Executi
             output: format!("Patch validation failed:\n{check_output}"),
             exit_code: Some(check_code),
         };
+    }
+    if cancel.load(Ordering::SeqCst) {
+        let _ = std::fs::remove_file(&patch_path);
+        return failure("Patch application was cancelled after validation.");
     }
     let apply = format!("git apply --whitespace=nowarn -- {argument}");
     let (code, output) = executor.run_captured(&apply, Duration::from_secs(60), false);
@@ -677,7 +721,10 @@ fn shell_quote(value: &str) -> String {
     format!("'{}'", value.replace('\'', "'\"'\"'"))
 }
 
-fn fetch_url(work: &ToolWork) -> ExecutionResult {
+fn fetch_url(work: &ToolWork, cancel: &Arc<AtomicBool>) -> ExecutionResult {
+    if cancel.load(Ordering::SeqCst) {
+        return failure("Network request was cancelled before it started.");
+    }
     if work.network == NetworkPolicy::Deny {
         return failure("Network access is denied for this workspace tool lease.");
     }
@@ -697,7 +744,14 @@ fn use_skill(work: &ToolWork, skills: &crate::skills::SkillRegistry) -> Executio
     }
 }
 
-fn mcp_call(work: &ToolWork, mcp: &crate::mcp::McpRegistry) -> ExecutionResult {
+fn mcp_call(
+    work: &ToolWork,
+    mcp: &crate::mcp::McpRegistry,
+    cancel: &Arc<AtomicBool>,
+) -> ExecutionResult {
+    if cancel.load(Ordering::SeqCst) {
+        return failure("MCP request was cancelled before it started.");
+    }
     let server = work
         .args
         .get("server")
@@ -824,5 +878,38 @@ mod tests {
         assert!(approve(&mut item, &mut approvals).is_err());
         item.mode = Mode::Yolo;
         assert!(approve(&mut item, &mut approvals).is_ok());
+    }
+
+    #[test]
+    fn cancellation_prevents_every_tool_before_dispatch() {
+        let root = std::env::temp_dir().join(format!("aishe-tool-cancel-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let item = work(
+            &root,
+            "write_file",
+            serde_json::json!({"path":"must-not-exist","content":"no"}),
+        );
+        let cancel = Arc::new(AtomicBool::new(true));
+        let mut approvals = HashSet::new();
+        let result = execute(
+            &item,
+            &crate::skills::SkillRegistry::default(),
+            &crate::mcp::McpRegistry::default(),
+            &mut approvals,
+            &cancel,
+            &HashSet::new(),
+        );
+        assert!(!result.success);
+        assert!(result.output.contains("cancelled"));
+        assert!(!root.join("must-not-exist").exists());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn worker_join_is_bounded_for_a_stuck_external_call() {
+        let handle = std::thread::spawn(|| {
+            std::thread::sleep(Duration::from_millis(250));
+        });
+        assert!(!finish_worker_thread(handle));
     }
 }

@@ -1407,6 +1407,39 @@ mod tests {
     }
 
     #[test]
+    fn started_call_becomes_outcome_unknown_after_foreground_loss() {
+        let (bridge, root, workspace) = bridge("cancel-outcome");
+        let lease = bridge.register(registration(&workspace)).unwrap();
+        std::thread::scope(|scope| {
+            let caller = scope.spawn(|| bridge.admit_and_wait(request(&workspace)));
+            let work = bridge
+                .next(&lease, Duration::from_secs(2))
+                .unwrap()
+                .unwrap();
+            bridge
+                .started(&ToolStarted {
+                    lease_id: lease.lease_id.clone(),
+                    session_id: work.session_id,
+                    message_id: work.message_id,
+                    call_id: work.call_id,
+                })
+                .unwrap();
+            bridge.unregister(&lease).unwrap();
+            assert_eq!(
+                caller.join().unwrap().unwrap_err().code,
+                "foreground_unavailable"
+            );
+        });
+        drop(bridge);
+
+        let reopened = Bridge::open(root.join("journal.json")).unwrap();
+        reopened.register(registration(&workspace)).unwrap();
+        let error = reopened.admit_and_wait(request(&workspace)).unwrap_err();
+        assert_eq!(error.code, "outcome_unknown");
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn no_lease_or_forged_workspace_fails_closed_and_journal_redacts() {
         let (bridge, root, workspace) = bridge("security");
         let error = bridge.admit_and_wait(request(&workspace)).unwrap_err();
