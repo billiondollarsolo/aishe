@@ -3052,6 +3052,14 @@ fn resume_managed_session(
 ) -> Result<u8> {
     use aishe::agent::{BackendSession, ExecutionScope, Mode};
 
+    let already_in_aishe_shell = std::env::var_os("AISHE_SHELL_ID").is_some();
+    if !already_in_aishe_shell
+        && (!std::io::stdin().is_terminal() || !std::io::stdout().is_terminal())
+    {
+        anyhow::bail!(
+            "`aishe resume {id}` needs an interactive terminal when run outside an active Aishe shell"
+        );
+    }
     let state = aishe::backend::supervisor::ensure_running(config)?;
     let control = aishe::backend::control::SupervisorClient::new(state)?;
     let client = aishe::backend::opencode::OpenCodeClient::new(
@@ -3086,8 +3094,18 @@ fn resume_managed_session(
         .bind(&shell_id, &session, mode, scope)?;
     println!("resumed managed session {id}");
     println!("workspace: {}", session.workspace.display());
-    println!("The next natural-language turn in this shell continues that conversation.");
-    Ok(0)
+    if already_in_aishe_shell {
+        println!("The next natural-language turn in this shell continues that conversation.");
+        return Ok(0);
+    }
+    println!("Opening Aishe; natural-language turns continue that conversation.");
+    std::env::set_current_dir(&session.workspace).with_context(|| {
+        format!(
+            "entering managed session workspace {}",
+            session.workspace.display()
+        )
+    })?;
+    aishe::pty::run_zsh_with_shell_id(config, &history_paths(config).1, &shell_id)
 }
 
 fn profile_command(effective: &Config, value: Option<&str>) -> u8 {

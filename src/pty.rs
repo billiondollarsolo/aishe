@@ -42,6 +42,27 @@ fn random_shell_id() -> String {
 
 /// Run the user's real zsh inside a PTY, returning its exit code.
 pub fn run_zsh(config: &Config, history_log: &std::path::Path) -> Result<u8> {
+    run_zsh_inner(config, history_log, random_shell_id())
+}
+
+/// Start a new interactive shell already bound to a durable managed session.
+/// The caller owns the mapping and passes the exact shell identity used there.
+pub fn run_zsh_with_shell_id(
+    config: &Config,
+    history_log: &std::path::Path,
+    shell_id: &str,
+) -> Result<u8> {
+    if !(16..=128).contains(&shell_id.len())
+        || !shell_id
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
+    {
+        anyhow::bail!("invalid resumed Aishe shell identity");
+    }
+    run_zsh_inner(config, history_log, shell_id.to_string())
+}
+
+fn run_zsh_inner(config: &Config, history_log: &std::path::Path, shell_id: String) -> Result<u8> {
     let zsh = which("zsh").ok_or_else(|| {
         anyhow!("zsh not found on $PATH — the interactive front-end requires zsh (install it, or use `aishe -c …` / the bash hook)")
     })?;
@@ -74,7 +95,6 @@ pub fn run_zsh(config: &Config, history_log: &std::path::Path) -> Result<u8> {
     cmd.env("ZDOTDIR", &zdotdir);
     cmd.env("AISHE_OUR_ZDOTDIR", &zdotdir);
     cmd.env("AISHE_REAL_ZDOTDIR", &real_zdotdir);
-    let shell_id = random_shell_id();
     cmd.env("AISHE_SHELL_ID", &shell_id);
     cmd.env("AISHE_MODE", &config.aishe.mode);
     cmd.env("AISHE_SCOPE", &config.backend.default_scope);
