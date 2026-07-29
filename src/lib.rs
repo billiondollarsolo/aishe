@@ -2,14 +2,17 @@
 //! modules; exposing them here also lets the integration tests in `tests/`
 //! exercise the internals directly.
 
+pub mod agent;
 pub mod audit;
 pub mod auth;
+pub mod backend;
 pub mod cache;
 pub mod capabilities;
 pub mod commands;
 pub mod config;
 pub mod context;
 pub mod credentials;
+pub mod dependencies;
 pub mod diagnostics;
 pub mod dispatcher;
 pub mod executor;

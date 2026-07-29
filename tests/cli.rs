@@ -510,7 +510,10 @@ transport = "responses"
         .assert()
         .success();
     let migrated = std::fs::read_to_string(config_dir.join("config.toml")).unwrap();
-    assert!(migrated.contains("version = 3"));
+    assert!(migrated.contains("version = 4"));
+    assert!(migrated.contains("[backend]"));
+    assert!(migrated.contains("engine = \"opencode\""));
+    assert!(migrated.contains("[sandbox]"));
     assert!(migrated.contains("credential = \"openai\""));
     assert!(!config_dir.join("credentials.toml").exists());
     let backups: Vec<_> = std::fs::read_dir(&config_dir)

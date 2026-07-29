@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
-pub const CONFIG_SCHEMA_VERSION: u32 = 3;
+pub const CONFIG_SCHEMA_VERSION: u32 = 4;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
@@ -22,6 +22,13 @@ pub struct Config {
     pub providers: Providers,
     #[serde(default)]
     pub logging: LoggingConfig,
+    /// Agent-engine lifecycle and rendering policy. Schema-v4 keeps this
+    /// separate from `[aishe]` so backend updates never rewrite shell behavior.
+    #[serde(default)]
+    pub backend: BackendConfig,
+    /// OS-enforced and policy sandbox defaults for agent-owned tool calls.
+    #[serde(default)]
+    pub sandbox: SandboxConfig,
     /// Per-model price overrides (USD per 1M tokens) for cost estimates, keyed by
     /// model name or substring. Falls back to a built-in table; see `usage.rs`.
     #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
@@ -78,6 +85,48 @@ pub struct LoggingConfig {
     /// Redact likely secrets from logged text. On by default.
     #[serde(default = "default_true")]
     pub redact: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BackendConfig {
+    /// `opencode` is the managed default; `native` is the rollout/repair path.
+    #[serde(default = "default_backend_engine")]
+    pub engine: String,
+    /// Compatibility backend used only before an OpenCode prompt is admitted.
+    #[serde(default = "default_backend_fallback")]
+    pub fallback: String,
+    /// Install and launch Aishe's compatibility-pinned private runtime.
+    #[serde(default = "default_true")]
+    pub managed: bool,
+    /// Stop an idle per-user supervisor after this many seconds.
+    #[serde(default = "default_backend_idle_timeout")]
+    pub idle_timeout_secs: u64,
+    /// `workspace` or `host`; yolo acceptance is never persisted here.
+    #[serde(default = "default_execution_scope")]
+    pub default_scope: String,
+    /// `allow` or `deny` for workspace-confined agent tools.
+    #[serde(default = "default_workspace_network")]
+    pub workspace_network: String,
+    /// `compact` or `detailed` inline agent rendering.
+    #[serde(default = "default_backend_output")]
+    pub output: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SandboxConfig {
+    /// Linux isolation implementation. `bwrap` is the supported default.
+    #[serde(default = "default_linux_sandbox")]
+    pub linux_backend: String,
+    /// If true, agent setup/use fails rather than degrading when bwrap cannot
+    /// create the required namespaces.
+    #[serde(default)]
+    pub require_functional: bool,
+    /// Additional canonical roots allowed in workspace scope.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub workspace_roots: Vec<String>,
+    /// Administrators can disable the explicit host-yolo scope.
+    #[serde(default = "default_true")]
+    pub allow_host_yolo: bool,
 }
 
 impl Default for LoggingConfig {
@@ -377,6 +426,27 @@ fn default_status_line_position() -> String {
 fn default_transport() -> String {
     "auto".to_string()
 }
+fn default_backend_engine() -> String {
+    "opencode".to_string()
+}
+fn default_backend_fallback() -> String {
+    "native".to_string()
+}
+fn default_backend_idle_timeout() -> u64 {
+    1800
+}
+fn default_execution_scope() -> String {
+    "workspace".to_string()
+}
+fn default_workspace_network() -> String {
+    "deny".to_string()
+}
+fn default_backend_output() -> String {
+    "compact".to_string()
+}
+fn default_linux_sandbox() -> String {
+    "bwrap".to_string()
+}
 
 fn default_anthropic() -> ProviderConfig {
     ProviderConfig {
@@ -449,6 +519,31 @@ impl Default for AisheConfig {
     }
 }
 
+impl Default for BackendConfig {
+    fn default() -> Self {
+        Self {
+            engine: default_backend_engine(),
+            fallback: default_backend_fallback(),
+            managed: true,
+            idle_timeout_secs: default_backend_idle_timeout(),
+            default_scope: default_execution_scope(),
+            workspace_network: default_workspace_network(),
+            output: default_backend_output(),
+        }
+    }
+}
+
+impl Default for SandboxConfig {
+    fn default() -> Self {
+        Self {
+            linux_backend: default_linux_sandbox(),
+            require_functional: false,
+            workspace_roots: Vec::new(),
+            allow_host_yolo: true,
+        }
+    }
+}
+
 impl Default for ProviderConfig {
     fn default() -> Self {
         default_anthropic()
@@ -462,6 +557,8 @@ impl Default for Config {
             aishe: AisheConfig::default(),
             providers: Providers::default(),
             logging: LoggingConfig::default(),
+            backend: BackendConfig::default(),
+            sandbox: SandboxConfig::default(),
             pricing: std::collections::BTreeMap::new(),
             named_dirs: std::collections::BTreeMap::new(),
             mcp_servers: std::collections::BTreeMap::new(),
@@ -889,7 +986,7 @@ impl Config {
                 applied.push(format!("[{name}]"));
             }
         }
-        for name in ["mcp_servers", "logging"] {
+        for name in ["mcp_servers", "logging", "backend", "sandbox"] {
             if let Some(v) = proj.get(name) {
                 if trusted {
                     overlay.insert(name.into(), v.clone());

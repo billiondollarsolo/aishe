@@ -1,0 +1,36 @@
+{
+  "schema_version": 1,
+  "runtime": "opencode",
+  "version": "1.18.9",
+  "release_url": "https://github.com/anomalyco/opencode/releases/download/v1.18.9",
+  "assets": [
+    {
+      "platform": "linux-x86_64",
+      "name": "opencode-linux-x64-baseline-musl.tar.gz",
+      "format": "tar_gz",
+      "size": 61680081,
+      "sha256": "2420d3369aee94d2317ba07b6643786a0666ac9b3e8d4cd069913397f4d41697"
+    },
+    {
+      "platform": "linux-aarch64",
+      "name": "opencode-linux-arm64-musl.tar.gz",
+      "format": "tar_gz",
+      "size": 61250947,
+      "sha256": "8fe9da991068f9e1524c6cb34dad52806bf5927baaa4d583b6fd4ea7987210f4"
+    },
+    {
+      "platform": "macos-aarch64",
+      "name": "opencode-darwin-arm64.zip",
+      "format": "zip",
+      "size": 44954303,
+      "sha256": "6f998b7dabb9425bb348fd0d88afeb92a14422771231cec9b0f4374b947397e6"
+    },
+    {
+      "platform": "macos-x86_64",
+      "name": "opencode-darwin-x64-baseline.zip",
+      "format": "zip",
+      "size": 47190199,
+      "sha256": "ee8ffb2971db99cc2d4638b9b26218e1e33484c616cc4ca9a41016f4c9424417"
+    }
+  ]
+}

@@ -2,6 +2,7 @@
 //! exact build. Both fall back to "unknown" when unavailable (e.g. a source
 //! tarball without a git checkout), so the build never fails on their account.
 
+use sha2::{Digest, Sha256};
 use std::process::Command;
 
 fn git_output(args: &[&str]) -> Option<String> {
@@ -34,6 +35,13 @@ fn main() {
         .filter(|s| !s.is_empty())
         .unwrap_or_else(|| "unknown".to_string());
     println!("cargo:rustc-env=AISHE_BUILD_DATE={date}");
+
+    let plugin_path = "assets/backend/opencode/aishe-plugin.mjs";
+    let plugin = std::fs::read(plugin_path).expect("reading trusted OpenCode plugin");
+    let plugin_sha = format!("{:x}", Sha256::digest(&plugin));
+    println!("cargo:rustc-env=AISHE_OPENCODE_PLUGIN_SHA256={plugin_sha}");
+    println!("cargo:rerun-if-changed={plugin_path}");
+    println!("cargo:rerun-if-changed=assets/backend/opencode/runtime-manifest.json");
 
     // `.git/HEAD` usually contains only `ref: refs/heads/<branch>`, so committing
     // advances the referenced file without changing HEAD itself. Watch both the

@@ -213,6 +213,11 @@ enum Cmd {
         #[arg(long, value_name = "PATH")]
         bundle: Option<std::path::PathBuf>,
     },
+    /// Manage Aishe's private, compatibility-pinned agent runtime.
+    Backend {
+        #[command(subcommand)]
+        cmd: BackendCmd,
+    },
     /// Print a shell completion script for `aishe` itself (bash/zsh/fish/...).
     Completions {
         /// Shell to generate completions for.
@@ -440,6 +445,60 @@ enum HistoryCmd {
 }
 
 #[derive(Subcommand, Debug)]
+enum BackendCmd {
+    /// Show the managed runtime and supervisor state.
+    Status {
+        /// Emit stable JSON.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Install the exact OpenCode runtime supported by this Aishe build.
+    Install {
+        /// Use a previously downloaded archive instead of the configured mirror.
+        #[arg(long, value_name = "PATH")]
+        from: Option<std::path::PathBuf>,
+        /// Replace an already verified runtime.
+        #[arg(long)]
+        force: bool,
+        /// Emit stable JSON.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Verify runtime identity, checksum metadata, and executable version.
+    Verify {
+        /// Also start the authenticated server and run a health probe.
+        #[arg(long)]
+        live: bool,
+        /// Emit stable JSON.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Reinstall a missing or invalid managed runtime.
+    Repair {
+        /// Use a previously downloaded archive.
+        #[arg(long, value_name = "PATH")]
+        from: Option<std::path::PathBuf>,
+        /// Emit stable JSON.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Select the immediately previous verified runtime when compatible.
+    Rollback,
+    /// Gracefully stop the private backend supervisor.
+    Stop,
+    /// Print the private backend log tail.
+    Logs {
+        #[arg(long, default_value_t = 100)]
+        tail: usize,
+    },
+    /// Remove inactive runtime staging/cache entries.
+    Gc {
+        #[arg(long)]
+        dry_run: bool,
+    },
+}
+
+#[derive(Subcommand, Debug)]
 enum TaskSessionCmd {
     /// Show one task record.
     Show {
@@ -475,6 +534,125 @@ fn main() -> ExitCode {
         Err(e) => {
             eprintln!("{}", format!("aishe: {e}").red());
             ExitCode::from(1)
+        }
+    }
+}
+
+fn backend_command(command: &BackendCmd) -> Result<u8> {
+    use aishe::backend::{InstallSource, RuntimeManager, RuntimeStatus};
+
+    let manager = RuntimeManager::new()?;
+    match command {
+        BackendCmd::Status { json } => {
+            let status = manager.status();
+            if *json {
+                println!("{}", serde_json::to_string_pretty(&status)?);
+            } else {
+                match &status {
+                    RuntimeStatus::Ready {
+                        version,
+                        binary,
+                        sha256,
+                    } => {
+                        println!("agent runtime: OpenCode {version} · ready");
+                        println!("binary: {}", binary.display());
+                        println!("sha256: {sha256}");
+                    }
+                    RuntimeStatus::Missing { expected_version } => {
+                        println!("agent runtime: OpenCode {expected_version} · not installed");
+                        println!("next: aishe backend install");
+                    }
+                    RuntimeStatus::Invalid {
+                        expected_version,
+                        reason,
+                    } => {
+                        println!("agent runtime: OpenCode {expected_version} · invalid");
+                        println!("reason: {reason}");
+                        println!("next: aishe backend repair");
+                    }
+                }
+            }
+            Ok(if matches!(status, RuntimeStatus::Ready { .. }) {
+                0
+            } else {
+                1
+            })
+        }
+        BackendCmd::Install { from, force, json } => {
+            let source = from
+                .clone()
+                .map(InstallSource::Local)
+                .unwrap_or(InstallSource::Default);
+            let status = manager.install(source, *force)?;
+            if *json {
+                println!("{}", serde_json::to_string_pretty(&status)?);
+            } else if let RuntimeStatus::Ready {
+                version, binary, ..
+            } = status
+            {
+                println!("✓ installed OpenCode {version}");
+                println!("  {}", binary.display());
+            }
+            Ok(0)
+        }
+        BackendCmd::Verify { live, json } => {
+            let status = manager.verify()?;
+            if *live {
+                // The supervisor health probe is intentionally distinct from
+                // `--version`; until a provider is needed it starts with no key.
+                aishe::backend::supervisor::smoke_test(&manager)?;
+            }
+            if *json {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&serde_json::json!({
+                        "runtime": status,
+                        "live": live,
+                    }))?
+                );
+            } else {
+                println!(
+                    "✓ managed runtime{} verified",
+                    if *live { " and server" } else { "" }
+                );
+            }
+            Ok(0)
+        }
+        BackendCmd::Repair { from, json } => {
+            let source = from
+                .clone()
+                .map(InstallSource::Local)
+                .unwrap_or(InstallSource::Default);
+            let status = manager.install(source, true)?;
+            if *json {
+                println!("{}", serde_json::to_string_pretty(&status)?);
+            } else {
+                println!("✓ managed OpenCode runtime repaired");
+            }
+            Ok(0)
+        }
+        BackendCmd::Rollback => {
+            eprintln!("aishe: no prior compatible managed runtime is registered with this build");
+            Ok(1)
+        }
+        BackendCmd::Stop => aishe::backend::supervisor::request_stop(),
+        BackendCmd::Logs { tail } => {
+            aishe::backend::supervisor::print_logs(*tail)?;
+            Ok(0)
+        }
+        BackendCmd::Gc { dry_run } => {
+            let removed = manager.garbage_collect(*dry_run)?;
+            for path in &removed {
+                println!(
+                    "{} {}",
+                    if *dry_run { "would remove" } else { "removed" },
+                    path.display()
+                );
+            }
+            if removed.is_empty() {
+                println!("runtime cache is clean");
+            }
+            Ok(0)
         }
     }
 }
@@ -588,6 +766,10 @@ fn run() -> Result<u8> {
             print!("{}", aishe::diagnostics::render_text(&report));
         }
         return Ok(if report.critical_ok() { 0 } else { 1 });
+    }
+
+    if let Some(Cmd::Backend { cmd }) = &args.cmd {
+        return backend_command(cmd);
     }
 
     // `completions <shell>` prints a completion script and exits.
@@ -872,7 +1054,8 @@ fn run() -> Result<u8> {
             | Cmd::Session { .. }
             | Cmd::Log { .. }
             | Cmd::Usage { .. }
-            | Cmd::Runbook { .. },
+            | Cmd::Runbook { .. }
+            | Cmd::Backend { .. },
         ) => {
             unreachable!("handled before config load")
         }
