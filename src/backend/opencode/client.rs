@@ -19,6 +19,36 @@ const MAX_RECONNECT_ATTEMPTS: u32 = 3;
 const MESSAGE_BIND_ATTEMPTS: u32 = 100;
 const MESSAGE_BIND_INTERVAL: Duration = Duration::from_millis(50);
 
+/// A submit failure proven to have happened before `prompt_async` was called.
+/// Callers may safely use their configured compatibility fallback because no
+/// provider request, charge, or model-requested effect was admitted.
+#[derive(Debug)]
+pub struct PromptNotAdmitted {
+    source: anyhow::Error,
+}
+
+impl PromptNotAdmitted {
+    fn new(source: anyhow::Error) -> Self {
+        Self { source }
+    }
+}
+
+impl std::fmt::Display for PromptNotAdmitted {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            formatter,
+            "OpenCode prompt was not admitted: {}",
+            self.source
+        )
+    }
+}
+
+impl std::error::Error for PromptNotAdmitted {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(self.source.as_ref())
+    }
+}
+
 #[derive(Clone)]
 pub struct OpenCodeConnection {
     pub base_url: String,
@@ -110,14 +140,22 @@ impl OpenCodeClient {
         &self,
         request: &PromptRequest,
     ) -> Result<(PromptHandle, Box<dyn BufRead + Send>)> {
-        let stream = self.subscribe()?;
+        let stream = self
+            .subscribe()
+            .map_err(PromptNotAdmitted::new)
+            .context("establishing the pre-admission OpenCode event stream")?;
         // OpenCode compares message IDs lexicographically to determine whether
         // a newly admitted user turn follows the previous assistant turn. Its
         // IDs contain a server-process-local monotonic counter, so a client
         // cannot safely mint a compatible ID. Snapshot the current messages
         // after subscribing, omit messageID on admission, and bind the open
         // stream to the authoritative ID that OpenCode creates.
-        let baseline = message_ids(&self.session_messages(&request.session)?);
+        let baseline = message_ids(
+            &self
+                .session_messages(&request.session)
+                .map_err(PromptNotAdmitted::new)
+                .context("reading the pre-admission OpenCode message baseline")?,
+        );
         let path = format!(
             "/session/{}/prompt_async",
             encode_segment(&request.session.id)
@@ -241,14 +279,22 @@ impl OpenCodeClient {
                 ));
                 // Subscribe first, then reconcile from durable server state so
                 // events occurring during the snapshot remain observable.
-                reader = self.subscribe()?;
-                push_events(
-                    &mut events,
-                    emit,
-                    self.reconcile_events(&session, &mut mapper)?,
-                );
+                let next_reader = match self.subscribe() {
+                    Ok(reader) => reader,
+                    Err(_) => continue,
+                };
+                let busy = match self.session_busy(&session) {
+                    Ok(busy) => busy,
+                    Err(_) => continue,
+                };
+                let reconciled = match self.reconcile_events(&session, &mut mapper) {
+                    Ok(events) => events,
+                    Err(_) => continue,
+                };
+                reader = next_reader;
+                push_events(&mut events, emit, reconciled);
                 push_event(&mut events, emit, AgentEvent::Reconciled);
-                if !self.session_busy(&session)? {
+                if !busy {
                     push_event(
                         &mut events,
                         emit,
@@ -847,6 +893,206 @@ mod tests {
     }
 
     #[test]
+    fn reconnect_reconciles_durable_state_without_duplicate_usage() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let request = read_test_request(&mut stream);
+            assert!(request.starts_with("GET /global/event HTTP/1.1\r\n"));
+            assert!(request.contains("Authorization: Basic "));
+            write!(
+                stream,
+                "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\n"
+            )
+            .unwrap();
+            stream.flush().unwrap();
+
+            let (mut status, _) = listener.accept().unwrap();
+            let request = read_test_request(&mut status);
+            assert!(request.starts_with("GET /session/status?directory="));
+            write_json_response(
+                &mut status,
+                &serde_json::json!({"ses_reconnect":{"type":"idle"}}),
+            );
+
+            let (mut messages, _) = listener.accept().unwrap();
+            let request = read_test_request(&mut messages);
+            assert!(request.starts_with("GET /session/ses_reconnect/message?directory="));
+            write_json_response(
+                &mut messages,
+                &serde_json::json!([{
+                    "info":{
+                        "id":"msg_assistant_recovered",
+                        "role":"assistant",
+                        "parentID":"msg_user_reconnect",
+                        "time":{"completed":2},
+                        "tokens":{"input":21,"output":4,"reasoning":2},
+                        "cost":0.0025
+                    },
+                    "parts":[{
+                        "id":"prt_recovered",
+                        "messageID":"msg_assistant_recovered",
+                        "type":"text",
+                        "text":"Recovered from durable state.",
+                        "time":{"start":1,"end":2}
+                    }]
+                }]),
+            );
+        });
+
+        let client = test_client(port);
+        let handle = PromptHandle {
+            session_id: "ses_reconnect".into(),
+            message_id: "msg_user_reconnect".into(),
+            workspace: std::env::temp_dir(),
+            prompt_text: "recover this".into(),
+            resumed: false,
+            admitted: true,
+        };
+        let initial_eof: Box<dyn BufRead + Send> =
+            Box::new(BufReader::new(std::io::Cursor::new(Vec::<u8>::new())));
+        let events = client.read_events(&handle, initial_eof).unwrap();
+        server.join().unwrap();
+
+        assert!(events
+            .iter()
+            .any(|event| matches!(event, AgentEvent::Reconnecting { attempt: 1 })));
+        assert!(events
+            .iter()
+            .any(|event| matches!(event, AgentEvent::Reconciled)));
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| matches!(
+                    event,
+                    AgentEvent::TextCompleted { text }
+                        if text == "Recovered from durable state."
+                ))
+                .count(),
+            1
+        );
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| matches!(event, AgentEvent::Usage { .. }))
+                .count(),
+            1
+        );
+        assert!(matches!(events.last(), Some(AgentEvent::Completed { .. })));
+    }
+
+    #[test]
+    fn exhausted_reconnects_become_a_retryable_event_not_an_adapter_error() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        drop(listener);
+        let client = test_client(port);
+        let handle = PromptHandle {
+            session_id: "ses_lost".into(),
+            message_id: "msg_user_lost".into(),
+            workspace: std::env::temp_dir(),
+            prompt_text: "lost stream".into(),
+            resumed: false,
+            admitted: true,
+        };
+        let initial_eof: Box<dyn BufRead + Send> =
+            Box::new(BufReader::new(std::io::Cursor::new(Vec::<u8>::new())));
+        let events = client.read_events(&handle, initial_eof).unwrap();
+        assert!(matches!(
+            events.last(),
+            Some(AgentEvent::Failed { error })
+                if error.code == "opencode_stream_lost" && error.retryable
+        ));
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| matches!(event, AgentEvent::Reconnecting { .. }))
+                .count(),
+            usize::try_from(MAX_RECONNECT_ATTEMPTS).unwrap() + 1
+        );
+    }
+
+    #[test]
+    fn submit_errors_are_typed_only_when_no_prompt_was_admitted() {
+        let unavailable = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let unavailable_port = unavailable.local_addr().unwrap().port();
+        drop(unavailable);
+        let request = PromptRequest {
+            session: BackendSession {
+                id: "ses_submit".into(),
+                workspace: std::env::temp_dir(),
+                backend: "opencode".into(),
+            },
+            text: "one request only".into(),
+            mode: Mode::Auto,
+            max_output_tokens: None,
+        };
+        let before_admission = match test_client(unavailable_port).submit(&request) {
+            Ok(_) => panic!("unavailable pre-admission stream unexpectedly succeeded"),
+            Err(error) => error,
+        };
+        assert!(before_admission
+            .downcast_ref::<PromptNotAdmitted>()
+            .is_some());
+
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = std::thread::spawn(move || {
+            let (mut events, _) = listener.accept().unwrap();
+            let _ = read_test_request(&mut events);
+            write!(
+                events,
+                "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\n"
+            )
+            .unwrap();
+            events.flush().unwrap();
+
+            let (mut baseline, _) = listener.accept().unwrap();
+            let _ = read_test_request(&mut baseline);
+            write_json_response(&mut baseline, &serde_json::json!([]));
+
+            let (mut prompt, _) = listener.accept().unwrap();
+            let request = read_test_request(&mut prompt);
+            assert!(request.starts_with("POST /session/ses_submit/prompt_async?directory="));
+            // Drop the connection after reading the complete POST. The server
+            // may have admitted it, so Aishe must never classify this as safe
+            // for automatic replay through a fallback provider.
+        });
+        let after_post = match test_client(port).submit(&request) {
+            Ok(_) => panic!("response-less admitted POST unexpectedly succeeded"),
+            Err(error) => error,
+        };
+        server.join().unwrap();
+        assert!(after_post.downcast_ref::<PromptNotAdmitted>().is_none());
+    }
+
+    #[test]
+    fn abort_uses_the_authenticated_workspace_scoped_endpoint() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = std::thread::spawn(move || {
+            let (mut connection, _) = listener.accept().unwrap();
+            let request = read_test_request(&mut connection);
+            assert!(request.starts_with("POST /session/ses_abort/abort?directory="));
+            assert!(request.contains("Authorization: Basic "));
+            write!(
+                connection,
+                "HTTP/1.1 204 No Content\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+            )
+            .unwrap();
+        });
+        test_client(port)
+            .abort(&BackendSession {
+                id: "ses_abort".into(),
+                workspace: std::env::temp_dir(),
+                backend: "opencode".into(),
+            })
+            .unwrap();
+        server.join().unwrap();
+    }
+
+    #[test]
     fn binds_only_a_new_exact_server_created_user_message() {
         let baseline = ["msg_old".to_string()].into_iter().collect();
         let messages = serde_json::json!([
@@ -903,5 +1149,31 @@ mod tests {
             bytes.extend_from_slice(&chunk[..read]);
         }
         String::from_utf8(bytes).unwrap()
+    }
+
+    fn write_json_response(stream: &mut TcpStream, value: &Value) {
+        let body = value.to_string();
+        write!(
+            stream,
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+            body.len(),
+            body
+        )
+        .unwrap();
+        stream.flush().unwrap();
+    }
+
+    fn test_client(port: u16) -> OpenCodeClient {
+        OpenCodeClient::new(
+            OpenCodeConnection {
+                base_url: format!("http://127.0.0.1:{port}"),
+                username: "aishe".into(),
+                password: "private".into(),
+                version: "1.18.9".into(),
+            },
+            "aishe-openai",
+            "model",
+        )
+        .unwrap()
     }
 }

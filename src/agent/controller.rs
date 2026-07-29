@@ -185,9 +185,10 @@ pub fn run_turn(
     )
     .map_err(TurnFailure::PreAdmission)?;
 
-    // After the subscribed submit attempt begins, transport failure is
-    // conservatively treated as potentially admitted. This prevents native
-    // fallback from issuing a duplicate provider request.
+    // OpenCode marks only subscribe/baseline failures as definitely
+    // pre-admission. Once prompt_async is attempted, every error is
+    // conservatively treated as admitted so fallback cannot duplicate provider
+    // cost or effects.
     let handle = backend
         .submit(PromptRequest {
             session: session.clone(),
@@ -196,7 +197,7 @@ pub fn run_turn(
             max_output_tokens: (config.backend.max_output_tokens > 0)
                 .then_some(config.backend.max_output_tokens),
         })
-        .map_err(TurnFailure::Admitted)?;
+        .map_err(classify_submit_failure)?;
 
     let monitor_done = Arc::new(AtomicBool::new(false));
     let monitor_finished = Arc::clone(&monitor_done);
@@ -278,6 +279,17 @@ pub fn run_turn(
         usage,
         elapsed_ms: started_at.elapsed().as_millis(),
     })
+}
+
+fn classify_submit_failure(error: anyhow::Error) -> TurnFailure {
+    if error
+        .downcast_ref::<crate::backend::opencode::PromptNotAdmitted>()
+        .is_some()
+    {
+        TurnFailure::PreAdmission(error)
+    } else {
+        TurnFailure::Admitted(error)
+    }
 }
 
 fn collect_text(events: &[AgentEvent]) -> String {

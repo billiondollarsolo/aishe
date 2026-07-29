@@ -8,4 +8,4 @@ pub mod session;
 pub mod sse;
 
 pub use adapter::OpenCodeBackend;
-pub use client::{OpenCodeClient, OpenCodeConnection};
+pub use client::{OpenCodeClient, OpenCodeConnection, PromptNotAdmitted};
