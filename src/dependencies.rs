@@ -110,46 +110,46 @@ fn package_install_plan(package: &str) -> Result<InstallPlan> {
     let manager = detect_package_manager().context(
         "no supported package manager found (apt-get, dnf, yum, zypper, pacman, or apk)",
     )?;
+    let binary = crate::executor::which(&manager)
+        .with_context(|| format!("{manager} disappeared while constructing its install plan"))?;
     let is_root = unsafe { libc::geteuid() } == 0;
-    let (manager_name, binary, mut package_args): (&str, PathBuf, Vec<String>) =
-        match manager.as_str() {
-            "apt-get" => (
-                "apt",
-                crate::executor::which("apt-get").unwrap(),
-                vec!["install".into(), "-y".into(), package.into()],
-            ),
-            "dnf" => (
-                "dnf",
-                crate::executor::which("dnf").unwrap(),
-                vec!["install".into(), "-y".into(), package.into()],
-            ),
-            "yum" => (
-                "yum",
-                crate::executor::which("yum").unwrap(),
-                vec!["install".into(), "-y".into(), package.into()],
-            ),
-            "zypper" => (
-                "zypper",
-                crate::executor::which("zypper").unwrap(),
-                vec!["--non-interactive".into(), "install".into(), package.into()],
-            ),
-            "pacman" => (
-                "pacman",
-                crate::executor::which("pacman").unwrap(),
-                vec!["-S".into(), "--noconfirm".into(), package.into()],
-            ),
-            "apk" => (
-                "apk",
-                crate::executor::which("apk").unwrap(),
-                vec!["add".into(), package.into()],
-            ),
-            _ => unreachable!("package-manager detector returned an unknown manager"),
-        };
+    let sudo = if is_root {
+        None
+    } else {
+        Some(crate::executor::which("sudo").context(format!(
+            "{package} installation needs administrator access but sudo is unavailable"
+        ))?)
+    };
+    build_package_install_plan(package, &manager, binary, sudo, is_root)
+}
+
+fn build_package_install_plan(
+    package: &str,
+    manager: &str,
+    binary: PathBuf,
+    sudo: Option<PathBuf>,
+    is_root: bool,
+) -> Result<InstallPlan> {
+    let (manager_name, mut package_args): (&str, Vec<String>) = match manager {
+        "apt-get" => ("apt", vec!["install".into(), "-y".into(), package.into()]),
+        "dnf" => ("dnf", vec!["install".into(), "-y".into(), package.into()]),
+        "yum" => ("yum", vec!["install".into(), "-y".into(), package.into()]),
+        "zypper" => (
+            "zypper",
+            vec!["--non-interactive".into(), "install".into(), package.into()],
+        ),
+        "pacman" => (
+            "pacman",
+            vec!["-S".into(), "--noconfirm".into(), package.into()],
+        ),
+        "apk" => ("apk", vec!["add".into(), package.into()]),
+        _ => anyhow::bail!("unsupported package manager '{manager}'"),
+    };
     let mut args = Vec::new();
     let (program, needs_privilege) = if is_root {
         (binary.display().to_string(), false)
     } else {
-        let sudo = crate::executor::which("sudo").context(format!(
+        let sudo = sudo.context(format!(
             "{package} installation needs administrator access but sudo is unavailable"
         ))?;
         args.push(binary.display().to_string());
@@ -267,5 +267,59 @@ mod tests {
         if !cfg!(target_os = "linux") {
             assert_eq!(bubblewrap_probe(), BubblewrapState::Unsupported);
         }
+    }
+
+    #[test]
+    fn package_manager_plans_use_exact_argv_without_a_shell() {
+        let cases = [
+            ("apt-get", &["install", "-y", "bubblewrap"][..]),
+            ("dnf", &["install", "-y", "bubblewrap"]),
+            ("yum", &["install", "-y", "bubblewrap"]),
+            ("zypper", &["--non-interactive", "install", "bubblewrap"]),
+            ("pacman", &["-S", "--noconfirm", "bubblewrap"]),
+            ("apk", &["add", "bubblewrap"]),
+        ];
+        for (manager, expected) in cases {
+            let binary = PathBuf::from(format!("/private/test/{manager}"));
+            let root =
+                build_package_install_plan("bubblewrap", manager, binary.clone(), None, true)
+                    .unwrap();
+            assert_eq!(root.program, binary.display().to_string());
+            assert_eq!(root.args, expected);
+            assert!(!root.needs_privilege);
+
+            let user = build_package_install_plan(
+                "bubblewrap",
+                manager,
+                binary.clone(),
+                Some(PathBuf::from("/private/test/sudo")),
+                false,
+            )
+            .unwrap();
+            assert_eq!(user.program, "/private/test/sudo");
+            assert_eq!(
+                user.args.first().map(String::as_str),
+                Some(binary.to_str().unwrap())
+            );
+            assert_eq!(
+                &user.args[1..],
+                expected,
+                "package argv changed behind sudo for {manager}"
+            );
+            assert!(user.needs_privilege);
+        }
+    }
+
+    #[test]
+    fn package_install_execution_requires_explicit_consent() {
+        let plan = InstallPlan {
+            manager: "test".into(),
+            program: "/path/that/must/not/be/executed".into(),
+            args: vec!["install".into()],
+            display: "test install".into(),
+            needs_privilege: true,
+        };
+        let error = run_install_plan(&plan, false, "bubblewrap").unwrap_err();
+        assert!(error.to_string().contains("was not authorized"));
     }
 }

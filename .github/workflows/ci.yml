@@ -59,6 +59,9 @@ jobs:
       - name: Test
         run: cargo test --all-targets --verbose --locked
 
+      - name: Installer transaction and fault contract
+        run: sh tests/installer_runtime_transaction.sh
+
   msrv:
     name: MSRV (1.88) build
     runs-on: ubuntu-latest

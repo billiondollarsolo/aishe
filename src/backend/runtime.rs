@@ -685,6 +685,11 @@ mod tests {
 
     #[cfg(unix)]
     fn synthetic_archive(root: &Path) -> PathBuf {
+        synthetic_archive_version(root, "1.18.9")
+    }
+
+    #[cfg(unix)]
+    fn synthetic_archive_version(root: &Path, version: &str) -> PathBuf {
         use flate2::write::GzEncoder;
         use flate2::Compression;
 
@@ -693,13 +698,13 @@ mod tests {
         let file = File::create(&path).unwrap();
         let encoder = GzEncoder::new(file, Compression::default());
         let mut archive = tar::Builder::new(encoder);
-        let script = b"#!/bin/sh\nprintf 'opencode 1.18.9\\n'\n";
+        let script = format!("#!/bin/sh\nprintf 'opencode {version}\\n'\n");
         let mut header = tar::Header::new_gnu();
         header.set_size(script.len() as u64);
         header.set_mode(0o755);
         header.set_cksum();
         archive
-            .append_data(&mut header, "package/opencode", &script[..])
+            .append_data(&mut header, "package/opencode", script.as_bytes())
             .unwrap();
         archive.into_inner().unwrap().finish().unwrap();
         path
@@ -737,6 +742,60 @@ mod tests {
             .install(InstallSource::Local(corrupt), true)
             .unwrap_err();
         assert!(error.to_string().contains("size mismatch"));
+        assert_eq!(fs::read(manager.binary_path()).unwrap(), before);
+        assert!(matches!(
+            manager.verify().unwrap(),
+            RuntimeStatus::Ready { .. }
+        ));
+        assert!(fs::read_dir(manager.root()).unwrap().all(|entry| !entry
+            .unwrap()
+            .file_name()
+            .to_string_lossy()
+            .starts_with(".staging-")));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn checksum_version_and_extraction_faults_never_replace_active_runtime() {
+        let root = temp_root("fault-matrix");
+        let source_root = root.join("source");
+        let archive = synthetic_archive(&source_root.join("valid"));
+        let manager = manager_for_archive(root.join("runtime"), &archive);
+        manager
+            .install(InstallSource::Local(archive.clone()), false)
+            .unwrap();
+        let before = fs::read(manager.binary_path()).unwrap();
+
+        let checksum_fault = source_root.join("checksum.tar.gz");
+        let mut corrupted = fs::read(&archive).unwrap();
+        let last = corrupted.len() - 1;
+        corrupted[last] ^= 0xff;
+        fs::write(&checksum_fault, corrupted).unwrap();
+        let checksum_error = manager
+            .install(InstallSource::Local(checksum_fault), true)
+            .unwrap_err();
+        assert!(checksum_error.to_string().contains("checksum mismatch"));
+        assert_eq!(fs::read(manager.binary_path()).unwrap(), before);
+
+        let wrong_version = synthetic_archive_version(&source_root.join("wrong-version"), "1.18.8");
+        let wrong_manager = manager_for_archive(manager.root().to_path_buf(), &wrong_version);
+        let version_error = wrong_manager
+            .install(InstallSource::Local(wrong_version), true)
+            .unwrap_err();
+        assert!(version_error.to_string().contains("expected"));
+        assert_eq!(fs::read(manager.binary_path()).unwrap(), before);
+
+        let invalid_archive = source_root.join("interrupted.tar.gz");
+        fs::write(&invalid_archive, b"not a complete tar gzip stream").unwrap();
+        let invalid_manager = manager_for_archive(manager.root().to_path_buf(), &invalid_archive);
+        let extraction_error = invalid_manager
+            .install(InstallSource::Local(invalid_archive), true)
+            .unwrap_err();
+        assert!(
+            extraction_error.to_string().contains("archive")
+                || extraction_error.to_string().contains("gzip")
+        );
         assert_eq!(fs::read(manager.binary_path()).unwrap(), before);
         assert!(matches!(
             manager.verify().unwrap(),
