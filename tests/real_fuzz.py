@@ -20,6 +20,7 @@ retry. Configured entirely via the environment; no key is written to the repo:
   AISHE_REALTEST_KEY        the API key value (REQUIRED; SKIPs if unset)
   AISHE_REALTEST_BASE_URL   default https://api.groq.com/openai
   AISHE_REALTEST_MODEL      default openai/gpt-oss-120b
+  AISHE_REALTEST_TIMEOUT    outer process deadline in seconds (default 300)
 
 Usage: real_fuzz.py [path-to-aishe] [scale]   Writes test-results/real-fuzz-<ts>.md
 """
@@ -45,6 +46,7 @@ KEY = os.environ.get("AISHE_REALTEST_KEY", "")
 BASE_URL = os.environ.get("AISHE_REALTEST_BASE_URL", "https://api.groq.com/openai")
 MODEL = os.environ.get("AISHE_REALTEST_MODEL", "openai/gpt-oss-120b")
 SEED = int(os.environ.get("AISHE_REALTEST_SEED", "1234"))
+PROCESS_TIMEOUT = int(os.environ.get("AISHE_REALTEST_TIMEOUT", "300"))
 
 # Seed material for generated inputs.
 QUESTIONS = [
@@ -132,8 +134,15 @@ def run_one(home, prompt):
     # rejections and model classifications are never retried.
     for attempt in range(2):
         try:
-            p = subprocess.run([os.path.abspath(BINARY), "suggest", "--json", prompt],
-                               env=env, capture_output=True, text=True, timeout=60)
+            p = subprocess.run(
+                [BINARY, "suggest", "--json", prompt],
+                env=env,
+                capture_output=True,
+                text=True,
+                # Aishe can make four provider attempts with a 60-second
+                # per-attempt timeout. Stay outside that retry envelope.
+                timeout=PROCESS_TIMEOUT,
+            )
         except subprocess.TimeoutExpired:
             if attempt == 0:
                 time.sleep(2.0)
@@ -170,6 +179,11 @@ def main():
     if not os.path.exists(BINARY):
         sys.stderr.write("FAIL: binary not found: %s\n" % BINARY)
         sys.exit(1)
+    if PROCESS_TIMEOUT < 60:
+        sys.stderr.write(
+            "FAIL: AISHE_REALTEST_TIMEOUT must be at least 60 seconds\n"
+        )
+        return 1
 
     rng = random.Random(SEED)
     home = make_config()

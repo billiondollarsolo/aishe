@@ -46,7 +46,9 @@ cargo fmt --all -- --check
     valid command syntax, risk/exit-code agreement, dangerous suggestions never
     greenlit). Same `AISHE_REALTEST_KEY` gate; scale with a multiplier arg
     (`real_fuzz.py <bin> 2`). Real API calls cost money and hit rate limits —
-    keep the scale modest.
+    keep the scale modest. `AISHE_REALTEST_TIMEOUT` controls the outer
+    per-process deadline (300 seconds by default, outside Aishe's internal retry
+    envelope).
   - `tests/live_release.py`: paid, isolated release-candidate matrix combining
     live provider/Doctor capability checks, answer/command contracts, a real
     yolo function-tool round trip, classification, and scaled fuzz. It defaults

@@ -32,7 +32,7 @@ BASE_URL = os.environ.get("AISHE_REALTEST_BASE_URL", "https://api.openai.com")
 MODEL = os.environ.get("AISHE_REALTEST_MODEL", "gpt-5.6-luna")
 
 
-def run(command, env, cwd=None, timeout=180):
+def run(command, env, cwd=None, timeout=300):
     result = subprocess.run(
         command,
         env=env,
@@ -101,7 +101,7 @@ def isolated_env(root, config_root, data_root):
 
 
 def check_capabilities(command, env, label):
-    result = run(command, env, timeout=240)
+    result = run(command, env, timeout=600)
     require(result.returncode == 0, "%s failed: %s" % (label, result.stderr))
     try:
         payload = json.loads(result.stdout)
@@ -155,7 +155,7 @@ def check_yolo_tool(env, work):
         "`printf LIVE_TOOL_OK > live-tool-marker.txt`. After the tool result, "
         "reply exactly `done`. Do not use another tool."
     )
-    result = run([BINARY, "--yolo-line", prompt], env, cwd=work, timeout=240)
+    result = run([BINARY, "--yolo-line", prompt], env, cwd=work, timeout=600)
     combined = result.stdout + result.stderr
     require(result.returncode == 0, "yolo function-tool request failed: " + combined)
     require(os.path.isfile(marker), "yolo did not create its isolated marker")
@@ -194,7 +194,7 @@ def run_child(script, env, *args):
         [sys.executable, os.path.join(TEST_DIR, script), BINARY, *args],
         env,
         cwd=REPO_ROOT,
-        timeout=3600,
+        timeout=7200,
     )
     require(
         result.returncode == 0,

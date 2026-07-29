@@ -9,6 +9,7 @@ Environment:
   AISHE_REALTEST_KEY        API key value (required; skips when absent)
   AISHE_REALTEST_BASE_URL   default https://api.groq.com/openai
   AISHE_REALTEST_MODEL      default openai/gpt-oss-120b
+  AISHE_REALTEST_TIMEOUT    outer process deadline in seconds (default 300)
 
 Usage: real_model.py [path-to-aishe]
 """
@@ -32,6 +33,7 @@ REPORT_DIR = os.path.join(REPO_ROOT, "test-results")
 KEY = os.environ.get("AISHE_REALTEST_KEY", "")
 BASE_URL = os.environ.get("AISHE_REALTEST_BASE_URL", "https://api.groq.com/openai")
 MODEL = os.environ.get("AISHE_REALTEST_MODEL", "openai/gpt-oss-120b")
+PROCESS_TIMEOUT = int(os.environ.get("AISHE_REALTEST_TIMEOUT", "300"))
 
 CORPUS = [
     ("what is the capital of France", "answer"),
@@ -99,7 +101,9 @@ def run_one(home, prompt):
                 env=env,
                 capture_output=True,
                 text=True,
-                timeout=60,
+                # Aishe can make four provider attempts with a 60-second
+                # per-attempt timeout. Stay outside that retry envelope.
+                timeout=PROCESS_TIMEOUT,
             )
         except subprocess.TimeoutExpired:
             if attempt == 0:
@@ -133,6 +137,12 @@ def main():
         return 0
     if not os.path.exists(BINARY):
         print("FAIL: binary not found: %s" % BINARY, file=sys.stderr)
+        return 1
+    if PROCESS_TIMEOUT < 60:
+        print(
+            "FAIL: AISHE_REALTEST_TIMEOUT must be at least 60 seconds",
+            file=sys.stderr,
+        )
         return 1
 
     home = make_home()

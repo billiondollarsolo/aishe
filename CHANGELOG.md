@@ -100,6 +100,9 @@ breaking changes can land in any release.
 - Added an isolated paid release matrix for GPT-5.6 text, structured output,
   streaming, tools, repeated routing, answer/command classification, and
   adversarial fuzz.
+- Real-model subprocess deadlines now sit outside Aishe's four-attempt provider
+  retry envelope, preventing the release harness from killing a valid retry at
+  the first 60-second provider timeout.
 
 ## [0.2.30] - 2026-07-28
 
