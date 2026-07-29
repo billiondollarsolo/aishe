@@ -13,6 +13,12 @@ fast-syntax-highlighting, fzf-tab, powerlevel10k, oh-my-zsh, and your
 completions. Nothing is forked or reimplemented, so plugin behavior, job control,
 and key bindings are identical to your normal shell.
 
+Your configured zsh/Oh My Zsh `HISTFILE` is preserved. If the account has no
+persistent zsh history configured, Aishe uses its timestamped history log as the
+native zsh history fallback, so Up-arrow and `Ctrl-R` persist across sessions and
+binary upgrades. With the default `share_history = true`, concurrently running
+Aishe shells also exchange history entries.
+
 **It requires zsh.** If zsh is not installed, aishe tells you to install it
 (rather than falling back to a lesser editor). Without zsh you can still use the
 non-interactive paths (`aishe -c …`, piped stdin) and the bash hook below.

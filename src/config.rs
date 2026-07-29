@@ -220,9 +220,10 @@ pub struct AisheConfig {
     /// Extra base directories searched by `cd <name>` (`CDPATH`).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub cdpath: Vec<String>,
-    /// Share one timestamped history across sessions (zsh `SHARE_HISTORY`): the
-    /// `history` builtin sees commands from other sessions. When off, history is
-    /// per-session (pid-suffixed files). On by default.
+    /// Share one timestamped history across concurrent and future sessions. When
+    /// Aishe supplies the native-zsh history fallback, this also enables zsh
+    /// `SHARE_HISTORY`. When off, Aishe history is per-session (pid-suffixed
+    /// files). On by default.
     #[serde(default = "default_true")]
     pub share_history: bool,
     /// Structured-output strategy for suggest mode: "schema" (strict JSON schema,

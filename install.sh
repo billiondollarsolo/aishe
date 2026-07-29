@@ -196,4 +196,11 @@ done
 # Ensure zsh for the robust front-end (best effort; opt out with AISHE_SKIP_ZSH=1).
 ensure_zsh
 
+# Bubblewrap is Linux-only and optional: the core shell works without it, while
+# `aishe dry-run` and the bwrap yolo sandbox need it for OS isolation. Keep the
+# tarball installer non-invasive and explain the missing capability.
+if [ "$os" = "Linux" ] && ! command -v bwrap >/dev/null 2>&1; then
+  note "optional bubblewrap not found; core aishe works, but install bubblewrap to enable 'aishe dry-run' and the bwrap sandbox."
+fi
+
 "$bindir/aishe" --version || true

@@ -58,7 +58,7 @@ brevity. Read `~/.config/aishe/...` as `<config>/...` and
 | `web_tool` | bool | `true` | Offer the built-in `fetch_url` tool to yolo (read web pages/docs; HTML stripped to text, size-capped). |
 | `auto_pushd` | bool | `false` | zsh `AUTO_PUSHD`: every `cd` pushes the previous dir (`cd -N`/`cd +N`, `dirs -v`). |
 | `cdpath` | array | `[]` | Extra base dirs searched by `cd <name>` (`CDPATH`); falls back to `$CDPATH`. |
-| `share_history` | bool | `true` | Share one timestamped history across sessions (zsh `SHARE_HISTORY`); off makes history per-session. Backs the `history` builtin. |
+| `share_history` | bool | `true` | Share Aishe's timestamped history across concurrent and future sessions (zsh `SHARE_HISTORY` when Aishe supplies the native-history fallback); off makes Aishe history per-session. |
 | `structured` | string | `schema` | Suggest output format: `schema`, `json`, or `prompt`. |
 | `stream` | bool | `false` | Stream answers token-by-token (suggest and auto). |
 | `show_usage` | bool | `true` | Print a per-session token and cost line after each interaction. |

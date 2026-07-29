@@ -137,17 +137,26 @@ anything you want available there in `.aishrc`.
 ## History and completion
 
 In the zsh-PTY shell and the native hook, history, `Ctrl-R` search, history
-expansion (`!!`, `!$`, ...), and tab completion are all your real shell's own —
-unmodified, with every plugin.
+expansion (`!!`, `!$`, ...), and tab completion use your real shell and remain
+compatible with its plugins. If your zsh/Oh My Zsh configuration sets
+`HISTFILE`, Aishe preserves it unchanged.
 
-Separately, aishe keeps its own timestamped history log at
+Separately, Aishe keeps its own timestamped history log at
 `~/.local/share/aishe/history.ext` (zsh `EXTENDED_HISTORY` format). The
 interactive zsh front-end records each command there via a `preexec` hook, and
 the `-c`/hook paths record through aishe's executor, so `aishe history` and
-semantic search have real data (history-management commands like `history`/`fc`
-are not recorded). The log is capped on exit so it can't grow without bound.
-`share_history` (default on) shares it across sessions; turn it off for
-per-session (pid-suffixed) files.
+semantic search have real data. The semantic-history index filters out
+history-management commands such as `history` and `fc`. The log is capped on
+exit so it can't grow without bound. `share_history` (default on) shares it
+across sessions; turn it off for per-session (pid-suffixed) files.
+
+On a minimal account where zsh starts with `HISTFILE` unset (and typically
+`SAVEHIST=0`), the PTY wrapper adopts this same Aishe log as zsh's native history
+file and enables `EXTENDED_HISTORY`, `APPEND_HISTORY`, and—when
+`share_history=true`—`SHARE_HISTORY`. Native Up-arrow, `Ctrl-R`, and history
+expansion therefore survive shell restarts and exchange entries with concurrent
+Aishe sessions. The log lives in Aishe's user data directory; installers and
+package upgrades replace only the binary and do not remove it.
 
 ### Semantic history search (opt-in)
 

@@ -6,6 +6,19 @@ breaking changes can land in any release.
 
 ## [Unreleased]
 
+## [0.2.29] - 2026-07-28
+
+### Fixed
+- Model-backed commands now name the active provider's missing API-key
+  environment variable instead of reporting only `LLM not configured`.
+- Linux `.deb` and `.rpm` packages now recommend optional `bubblewrap`, and the
+  installer, doctor output, and installation guide clarify that it is required
+  only for isolated dry-run and `bwrap` sandbox features.
+- Minimal zsh accounts with no configured `HISTFILE` now use Aishe's persistent
+  `history.ext` log for native Up-arrow, `Ctrl-R`, and history expansion. The
+  default `share_history = true` shares entries across concurrent and future
+  Aishe sessions, while existing zsh/Oh My Zsh history settings still win.
+
 ## [0.2.28] - 2026-07-28
 
 ### Fixed

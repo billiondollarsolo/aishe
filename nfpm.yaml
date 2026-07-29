@@ -27,9 +27,11 @@ homepage: https://github.com/billiondollarsolo/aishe
 license: MIT
 
 # aishe delegates command execution to zsh (preferred) or bash. bash is present
-# on essentially every Linux box, so we only recommend zsh.
+# on essentially every Linux box, so we recommend zsh. Bubblewrap is optional:
+# the core shell works without it, but `aishe dry-run` needs it for isolation.
 recommends:
   - zsh
+  - bubblewrap
 
 contents:
   - src: ${BINARY}

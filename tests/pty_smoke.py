@@ -132,6 +132,11 @@ def make_env():
     # Pre-write a config so the first-run wizard never blocks the PTY.
     with open(os.path.join(cfgdir, "config.toml"), "w") as f:
         f.write("[aishe]\n" 'mode = "suggest"\n' 'provider = "anthropic"\n')
+    # Explicitly model a minimal Linux root account. macOS sets HISTFILE from
+    # its global /etc/zshrc even with an empty HOME, which would correctly make
+    # aishe preserve that system history instead of exercising the fallback.
+    with open(os.path.join(home, ".zshrc"), "w") as f:
+        f.write("unset HISTFILE\nHISTSIZE=30\nSAVEHIST=0\n")
     env = dict(os.environ)
     env.update(
         {
@@ -147,6 +152,10 @@ def make_env():
             # a keystroke and desynchronises every later expect().
             "ZSH_DISABLE_COMPFIX": "true",
             "TERM": "xterm-256color",
+            # Used indirectly by the history assertions so the probe command
+            # itself does not contain (and therefore match) the marker.
+            "AISHE_TEST_HISTORY_NEEDLE": "PTY_OK_42",
+            "AISHE_TEST_PEER_NEEDLE": "PTY_PEER_42",
             # Make sure no stray key is picked up; the hook must not need one.
             "ANTHROPIC_API_KEY": "",
             "OPENAI_API_KEY": "",
@@ -172,14 +181,16 @@ def main():
 
     home, env = make_env()
     sh = Pty([os.path.abspath(BINARY), "zsh"], env)
+    second = None
+    peer = None
     try:
         if not sh.wait_ready():
             fail("wrapped zsh never became ready for input", sh)
-        # 1) native command runs through the wrapped zsh. The typed text contains
-        #    the expression literally; only the *output* contains the sum, so we
-        #    match the result to avoid matching zsh's input echo.
-        sh.send("echo PTY_OK_$((19 + 23))")
-        if not sh.expect("PTY_OK_42"):
+        # 1) native command runs through the wrapped zsh. Consume both the typed
+        #    echo and command output. Keeping a literal marker in the command is
+        #    important for the on-disk history assertions below.
+        sh.send("print -r -- PTY_OK_42")
+        if not sh.expect("PTY_OK_42") or not sh.expect("PTY_OK_42"):
             fail("native command did not run through wrapped zsh", sh)
 
         # 2) the AI hook is installed.
@@ -213,24 +224,92 @@ def main():
         if not sh.expect("aishe-recall"):
             fail("semantic-recall key not bound", sh)
 
-        # 4c) interactive commands are persisted to aishe's history log (so
-        #     `aishe history` and semantic search have data). The very first
-        #     command above should now be recorded there.
-        sh.send("print -r -- HISTLOGGED=$(grep -c PTY_OK_42 \"$AISHE_HISTFILE\")")
+        # 4c) With no user .zshrc/HISTFILE, aishe's persistent log becomes the
+        #     native zsh history too. That preserves Up-arrow/Ctrl-R across
+        #     sessions and enables concurrent-session sharing.
+        sh.send(
+            "print -r -- HISTMANAGED=$([[ -n \"$AISHE_MANAGED_HISTFILE\" "
+            "&& \"$HISTFILE\" == \"$AISHE_HISTFILE\" ]] && echo 1 || echo 0)"
+        )
+        if not sh.expect("HISTMANAGED=1"):
+            fail("minimal zsh did not adopt AISHE_HISTFILE", sh)
+        sh.send(
+            "print -r -- HISTOPTS=$([[ -o extendedhistory && -o appendhistory "
+            "&& -o sharehistory ]] && echo 1 || echo 0)"
+        )
+        if not sh.expect("HISTOPTS=1"):
+            fail("managed zsh history options are not enabled", sh)
+        # Use an environment-held needle: putting PTY_OK_42 literally in this
+        # command would make the current history entry match itself.
+        sh.send(
+            "print -r -- HISTLOGGED=$(grep -c "
+            "\"$AISHE_TEST_HISTORY_NEEDLE\" \"$AISHE_HISTFILE\")"
+        )
         if not sh.expect("HISTLOGGED=1"):
             fail("interactive command not recorded to AISHE_HISTFILE", sh)
 
-        # 5) clean exit: zsh should terminate on its own after `exit`.
+        # 5) Clean exit, then launch a new aishe process against the same HOME.
+        #    The prior marker must appear in native `fc` history exactly once:
+        #    persisted across processes, with no duplicate from the old manual
+        #    preexec writer plus zsh's own history writer.
         sh.send("exit")
         code = sh.wait_exit(timeout=10)
         if code is None:
             fail("zsh did not exit after `exit`", sh)
         if code != 0:
             sys.stderr.write("WARN: zsh exited with code %r\n" % code)
+
+        histfile = os.path.join(home, ".local", "share", "aishe", "history.ext")
+        with open(histfile, encoding="utf-8") as f:
+            occurrences = f.read().count(env["AISHE_TEST_HISTORY_NEEDLE"])
+        if occurrences != 1:
+            fail(
+                "history marker written %d times instead of once" % occurrences,
+                sh,
+            )
+
+        second = Pty([os.path.abspath(BINARY), "zsh"], env)
+        if not second.wait_ready():
+            fail("second wrapped zsh never became ready for input", second)
+        second.send(
+            "print -r -- HISTRESTORED=$(fc -l 1 | grep -c "
+            "\"$AISHE_TEST_HISTORY_NEEDLE\")"
+        )
+        if not second.expect("HISTRESTORED=1"):
+            fail("native history did not survive a new aishe session", second)
+
+        # 6) Start another shell before writing a new marker. SHARE_HISTORY must
+        #    make the entry visible to this already-running peer, not merely to
+        #    shells launched later.
+        peer = Pty([os.path.abspath(BINARY), "zsh"], env)
+        if not peer.wait_ready():
+            fail("concurrent wrapped zsh never became ready for input", peer)
+        second.send("print -r -- PTY_PEER_42")
+        if not second.expect("PTY_PEER_42") or not second.expect("PTY_PEER_42"):
+            fail("concurrent history marker command did not run", second)
+        peer.send(
+            "print -r -- PEERSEEN=$(fc -l 1 | grep -c "
+            "\"$AISHE_TEST_PEER_NEEDLE\")"
+        )
+        if not peer.expect("PEERSEEN=1"):
+            fail("concurrent aishe session did not import shared history", peer)
+
+        peer.send("exit")
+        peer_code = peer.wait_exit(timeout=10)
+        if peer_code is None:
+            fail("concurrent zsh did not exit after `exit`", peer)
+        second.send("exit")
+        second_code = second.wait_exit(timeout=10)
+        if second_code is None:
+            fail("second zsh did not exit after `exit`", second)
         print("PASS: aishe zsh PTY smoke test")
         sys.exit(0)
     finally:
         sh.close()
+        if second is not None:
+            second.close()
+        if peer is not None:
+            peer.close()
         shutil.rmtree(home, ignore_errors=True)
 
 

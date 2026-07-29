@@ -216,6 +216,17 @@ def main():
         sh.expect("ZP> ")  # first prompt
         sh.wait_ready()
 
+        # A user's existing zsh/Oh My Zsh history configuration must win over
+        # aishe's fallback.
+        sh.send("print -r -- USERHIST=$HISTFILE")
+        check(
+            sh,
+            "user-configured HISTFILE is preserved",
+            sh.expect("USERHIST=%s" % os.path.join(home, ".zsh_history")),
+        )
+        sh.send("print -r -- HISTMANAGED=${AISHE_MANAGED_HISTFILE:-0}")
+        check(sh, "user history is not marked aishe-managed", sh.expect("HISTMANAGED=0"))
+
         # 1. A plain shell command runs normally.
         sh.send("echo SCEN1_$((20 + 22))")
         check(sh, "plain command runs", sh.expect("SCEN1_42"))

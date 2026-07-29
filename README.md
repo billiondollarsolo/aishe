@@ -72,6 +72,10 @@ of a shell. Prefix it with `?` to force the natural-language route
   `ollama pull nomic-embed-text` plus `embedding_model = "nomic-embed-text"`
   keeps the whole feature on your machine. The index is a local file either way.
   See [docs/providers.md](docs/providers.md#embeddings-fully-offline-semantic-history).
+- 🕘 **Persistent shell history.** Aishe preserves your existing zsh/Oh My Zsh
+  history setup. On minimal accounts without one, its own timestamped history
+  log backs native Up-arrow, `Ctrl-R`, and history expansion across concurrent
+  sessions, restarts, and binary upgrades.
 - 🩹 **Fix-the-last-command.** When a command fails, **Ctrl-X Ctrl-F** asks the
   model for a correction (optionally re-running the failed read-only command to
   read its real error) and pre-fills it for review.

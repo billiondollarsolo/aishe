@@ -12,6 +12,11 @@ source with Cargo.
   installer ensures it; on a manual install add it with your package manager
   (`apt install zsh`, etc.). `bash` is enough for the non-interactive paths
   (`aishe -c …` and piped input).
+- **`bubblewrap`** is an optional Linux dependency for isolated command previews
+  (`aishe dry-run`) and the `bwrap` yolo sandbox backend. The core shell and LLM
+  features work without it. The `.deb` and `.rpm` packages recommend it; for a
+  tarball/install-script setup, install it with your package manager when you
+  want those features (`apt install bubblewrap`, `dnf install bubblewrap`, etc.).
 - A network-reachable LLM endpoint and an API key, set in an environment
   variable. See [Providers](providers.md).
 - Platforms: macOS (arm64 and x86_64) and Linux (x86_64 and arm64). Windows is
@@ -32,6 +37,9 @@ The script also ensures **zsh** is installed (best effort, via your system
 package manager), because aishe's interactive shell drives your real zsh in a
 PTY. Without zsh you can still use `aishe -c …`, piped input, and the bash hook
 (`aishe init bash`). Opt out of the zsh step with `AISHE_SKIP_ZSH=1`.
+On Linux it also reports when optional **bubblewrap** is absent; it does not
+install it automatically because only the dry-run and `bwrap` sandbox features
+need it.
 
 It installs to `/usr/local/bin` when writable, otherwise `~/.local/bin`. Override
 with environment variables:
@@ -45,7 +53,8 @@ AISHE_VERSION=v0.1.5 AISHE_BIN_DIR="$HOME/.local/bin" \
 
 Each tagged release attaches Debian and RPM packages for `amd64` and `arm64`.
 They install the binary to `/usr/bin/aishe` plus shell completions (bash, zsh,
-fish) and the `aishe(1)` man page into the standard system locations.
+fish) and the `aishe(1)` man page into the standard system locations. They also
+declare `zsh` and `bubblewrap` as recommended dependencies.
 
 Debian / Ubuntu:
 

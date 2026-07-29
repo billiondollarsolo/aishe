@@ -134,10 +134,11 @@ auto_pushd = false
 # Extra base directories searched by `cd <name>` (like zsh cdpath / $CDPATH).
 # cdpath = ["/home/me/projects", "/srv"]
 
-# Share one timestamped history across sessions (zsh SHARE_HISTORY), so commands
-# from other running/past sessions are visible to the `history` builtin. Off makes
-# history per-session (pid-suffixed files). History is stored in zsh
-# EXTENDED_HISTORY format (`: <epoch>:0;<command>`), which zsh can also read.
+# Share one timestamped history across concurrent and future sessions. When the
+# account has no zsh HISTFILE of its own, aishe uses this log as native zsh
+# history and enables SHARE_HISTORY. Off makes aishe history per-session
+# (pid-suffixed files). The log uses zsh EXTENDED_HISTORY format
+# (`: <epoch>:0;<command>`).
 share_history = true
 
 # Output-format strategy for suggest mode.

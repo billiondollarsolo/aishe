@@ -92,11 +92,28 @@ pub fn run_zsh(config: &Config, history_log: &std::path::Path) -> Result<u8> {
     let _usage_guard = FileGuard(usage_file.clone());
     // Persist interactive commands to aishe's timestamped history log (via a zsh
     // preexec hook), so `aishe history` and semantic search have data — the PTY's
-    // commands run in real zsh, not through aishe's executor.
+    // commands run in real zsh, not through aishe's executor. When the user's
+    // zsh config has no HISTFILE, the wrapper also adopts this file as zsh's
+    // native history so Up-arrow/Ctrl-R survive sessions and binary upgrades.
     if let Some(parent) = history_log.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
+    // zsh's SHARE_HISTORY appender expects the history file to exist. Create it
+    // privately on first use; the mode only applies to a new file and never
+    // changes permissions on an existing user's log.
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        let _ = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .mode(0o600)
+            .open(history_log);
+    }
     cmd.env("AISHE_HISTFILE", history_log);
+    cmd.env(
+        "AISHE_SHARE_HISTORY",
+        if config.aishe.share_history { "1" } else { "0" },
+    );
     if let Ok(cwd) = std::env::current_dir() {
         cmd.cwd(cwd);
     }

@@ -248,6 +248,28 @@ fn doctor_reports_environment() {
 }
 
 #[test]
+fn missing_openai_key_names_the_exact_environment_variable() {
+    let home = temp_config_home();
+    Command::cargo_bin("aishe")
+        .unwrap()
+        .env("XDG_CONFIG_HOME", &home)
+        .env("XDG_DATA_HOME", home.join("data"))
+        .env("AISHE_CONFIG_DIR", &home)
+        .env("AISHE_DATA_DIR", home.join("data"))
+        .env_remove("OPENAI_API_KEY")
+        .env_remove("AISHE_FAKE_LLM")
+        .args([
+            "--provider",
+            "openai",
+            "-c",
+            "?what is the capital of France",
+        ])
+        .assert()
+        .code(1)
+        .stderr(contains("API key $OPENAI_API_KEY not set").and(contains("LLM not configured")));
+}
+
+#[test]
 fn doctor_probe_runs_reachability_section() {
     // `--probe` adds the reachability section. Point the provider at a dead local
     // port so the probe deterministically reports unreachable without real

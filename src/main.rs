@@ -799,7 +799,10 @@ fn doctor(probe: bool) -> u8 {
     if aishe::overlay::available() {
         println!("{ok} dry-run: available (bubblewrap)");
     } else {
-        println!("{warn} dry-run: needs bubblewrap (install it to use `aishe dry-run`)");
+        println!(
+            "{warn} optional dry-run: bubblewrap not installed \
+             (core shell works; install it to enable `aishe dry-run`)"
+        );
     }
     let key_set = std::env::var(key_env)
         .map(|v| !v.trim().is_empty())
@@ -867,15 +870,12 @@ fn doctor(probe: bool) -> u8 {
         );
     }
     let (_, hist_log) = history_paths(&cfg);
-    println!(
-        "{ok} history: {} ({})",
-        hist_log.display(),
-        if cfg.aishe.share_history {
-            "shared"
-        } else {
-            "per-session"
-        }
-    );
+    let history_status = if cfg.aishe.share_history {
+        "shared across sessions; persistent across upgrades"
+    } else {
+        "per-session (sharing disabled)"
+    };
+    println!("{ok} history: {} ({history_status})", hist_log.display(),);
 
     println!();
     if critical_ok {
@@ -920,6 +920,31 @@ fn shell_syntax_ok(executor: &Executor, cmd: &str) -> bool {
         .unwrap_or(true)
 }
 
+/// Explain why model-backed features are unavailable without hiding the useful
+/// provider detail. Provider construction is intentionally non-fatal so local
+/// shell commands still work; when the active provider's key is absent, name
+/// the exact environment variable at the point an LLM feature is requested.
+fn print_llm_unavailable(config: &Config) {
+    let key_env = match config.aishe.provider.as_str() {
+        "anthropic" => Some(config.providers.anthropic.api_key_env.as_str()),
+        "openai" => Some(config.providers.openai.api_key_env.as_str()),
+        _ => None,
+    };
+    if let Some(key_env) = key_env {
+        let key_set = std::env::var(key_env)
+            .map(|value| !value.trim().is_empty())
+            .unwrap_or(false);
+        if !key_set {
+            eprintln!(
+                "aishe: API key ${key_env} not set — LLM not configured; \
+                 export it (and add it to your shell startup file)"
+            );
+            return;
+        }
+    }
+    eprintln!("aishe: LLM not configured — run `aishe doctor` for details");
+}
+
 fn suggest_line(
     line: &str,
     executor: &mut Executor,
@@ -927,7 +952,7 @@ fn suggest_line(
     config: &Config,
 ) -> Result<u8> {
     let Some(p) = provider else {
-        eprintln!("aishe: LLM not configured");
+        print_llm_unavailable(config);
         return Ok(1);
     };
     // Bound the blocking LLM call so a dead/slow network can't freeze the prompt.
@@ -1002,7 +1027,7 @@ fn fix_line(
     config: &Config,
 ) -> Result<u8> {
     let Some(p) = provider else {
-        eprintln!("aishe: LLM not configured");
+        print_llm_unavailable(config);
         return Ok(1);
     };
     let exit = std::env::var("AISHE_LAST_EXIT").unwrap_or_else(|_| "unknown".to_string());
@@ -1057,7 +1082,7 @@ fn yolo_line(
     mcp: &aishe::mcp::McpRegistry,
 ) -> Result<u8> {
     let Some(p) = provider else {
-        eprintln!("aishe: LLM not configured");
+        print_llm_unavailable(config);
         return Ok(1);
     };
     let mem = hook_session_path(config);
@@ -1100,7 +1125,7 @@ fn auto_line(
     config: &Config,
 ) -> Result<u8> {
     let Some(p) = provider else {
-        eprintln!("aishe: LLM not configured");
+        print_llm_unavailable(config);
         return Ok(1);
     };
     // Bound the blocking LLM call so a dead/slow network can't freeze the prompt.
@@ -1205,7 +1230,7 @@ fn suggest_command(
         return Ok(1);
     }
     let Some(p) = provider else {
-        eprintln!("aishe: LLM not configured");
+        print_llm_unavailable(config);
         return Ok(1);
     };
     arm_hook_budget();
@@ -1400,7 +1425,7 @@ fn one_shot(
                 Ok(0)
             }
             None => {
-                eprintln!("aishe: LLM not configured");
+                print_llm_unavailable(config);
                 Ok(1)
             }
         },
@@ -1567,10 +1592,7 @@ fn run_nl(
     session: &mut Session,
 ) -> Result<()> {
     let Some(p) = provider else {
-        eprintln!(
-            "{}",
-            "aishe: LLM not configured — set your API key env var".dim()
-        );
+        print_llm_unavailable(config);
         return Ok(());
     };
     match mode {
@@ -1723,8 +1745,8 @@ fn semhist_path() -> std::path::PathBuf {
 fn dry_run_command(command: &str, apply: bool) -> Result<u8> {
     if !aishe::overlay::available() {
         eprintln!(
-            "aishe: dry-run needs bubblewrap (bwrap) for safe isolation — install it \
-             (apt install bubblewrap | dnf install bubblewrap | brew install bubblewrap)."
+            "aishe: dry-run needs Linux bubblewrap (bwrap) for safe isolation — install it \
+             (apt install bubblewrap | dnf install bubblewrap | pacman -S bubblewrap)."
         );
         return Ok(1);
     }

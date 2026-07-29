@@ -168,8 +168,10 @@ _aishe_capture_cmd() {
   # Persist each interactive command to aishe's timestamped history log (zsh
   # EXTENDED_HISTORY format) so `aishe history` and semantic search have data;
   # the PTY's commands run in real zsh, not through aishe's executor. Newlines
-  # are flattened so each entry stays on one line. Best-effort.
-  if [[ -n "$AISHE_HISTFILE" ]]; then
+  # are flattened so each entry stays on one line. Best-effort. When the wrapper
+  # adopted AISHE_HISTFILE as zsh's native HISTFILE, zsh writes the entry itself;
+  # do not append a second copy here.
+  if [[ -n "$AISHE_HISTFILE" && -z "$AISHE_MANAGED_HISTFILE" ]]; then
     # Don't record history-management commands (they only read the log).
     case "${1%%[ 	]*}" in
       history|fc) ;;
@@ -320,6 +322,26 @@ pub fn wrapper_zshrc() -> String {
         r#"# aishe PTY wrapper (.zshrc) — generated
 [ -f "${{AISHE_REAL_ZDOTDIR}}/.zshrc" ] && source "${{AISHE_REAL_ZDOTDIR}}/.zshrc"
 export ZDOTDIR="${{AISHE_REAL_ZDOTDIR}}"
+
+# Preserve the user's zsh/Oh My Zsh history configuration when it exists. On a
+# minimal account zsh defaults to HISTFILE unset and SAVEHIST=0, which otherwise
+# makes Up-arrow/Ctrl-R history disappear whenever the aishe session exits. In
+# that case, use aishe's existing timestamped log as zsh's native history file.
+# It lives in the user data directory, so replacing the aishe binary never
+# removes it. SHARE_HISTORY makes concurrent sessions exchange entries.
+if [[ -z "${{HISTFILE:-}}" && -n "${{AISHE_HISTFILE:-}}" ]]; then
+  HISTFILE="${{AISHE_HISTFILE}}"
+  HISTSIZE=20000
+  SAVEHIST=10000
+  setopt EXTENDED_HISTORY APPEND_HISTORY
+  if [[ "${{AISHE_SHARE_HISTORY:-1}}" == 1 ]]; then
+    setopt SHARE_HISTORY
+  else
+    unsetopt SHARE_HISTORY
+  fi
+  AISHE_MANAGED_HISTFILE=1
+fi
+
 # --- aishe AI hook (added last) ---
 {ZSH_HOOK}
 {PTY_PROMPT}"#
@@ -661,7 +683,23 @@ mod tests {
         assert!(rc.contains("print -z"));
         assert!(rc.contains("AISHE_MODEL_FILE"));
         assert!(rc.contains("read -r AISHE_MODEL"));
+        // A user-configured HISTFILE wins. Minimal zsh accounts get aishe's
+        // persistent log as their native Up-arrow/Ctrl-R history, with sharing
+        // controlled by the existing config flag.
+        assert!(rc.contains(r#"if [[ -z "${HISTFILE:-}" && -n "${AISHE_HISTFILE:-}" ]]"#));
+        assert!(rc.contains(r#"HISTFILE="${AISHE_HISTFILE}""#));
+        assert!(rc.contains("HISTSIZE=20000"));
+        assert!(rc.contains("SAVEHIST=10000"));
+        assert!(rc.contains("setopt EXTENDED_HISTORY APPEND_HISTORY"));
+        assert!(rc.contains("setopt SHARE_HISTORY"));
+        assert!(rc.contains("AISHE_MANAGED_HISTFILE=1"));
         // The wrapper gets the force-NL widget too (shared ZSH_HOOK).
         assert!(rc.contains("aishe-nl-widget"));
+    }
+
+    #[test]
+    fn managed_zsh_history_is_not_double_appended_by_the_hook() {
+        let s = wrapper_zshrc();
+        assert!(s.contains(r#"[[ -n "$AISHE_HISTFILE" && -z "$AISHE_MANAGED_HISTFILE" ]]"#));
     }
 }
