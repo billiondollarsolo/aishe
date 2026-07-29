@@ -49,7 +49,8 @@ breaking changes can land in any release.
   checksum is missing, malformed, or mismatched.
 - Tagged builds validate tag/manifest/changelog version parity, use the lockfile,
   and keep the GitHub release in draft until every binary, checksum, and Linux
-  package has uploaded successfully.
+  package has uploaded successfully. Official GitHub workflow actions use their
+  Node 24 releases instead of deprecated Node 20 runtimes.
 - OpenAI provider requests retain model-native Responses state, use
   `max_output_tokens`, send reasoning effort through the Responses shape, and
   set `store: false`. Compatible Chat endpoints retain the learned token-limit
