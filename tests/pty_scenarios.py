@@ -18,6 +18,7 @@ Exit 0 on success, non-zero on the first failure. Skips if zsh is absent.
 import os
 import sys
 import pty
+import re
 import time
 import select
 import signal
@@ -37,6 +38,26 @@ FORBIDDEN = [
     "command not found: #",
     "command not found: ?",
 ]
+
+SGR = re.compile(r"\x1b\[[0-9;]*m")
+CSI = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]")
+
+
+def submitted_line_remains_visible(segment, line):
+    """The final ZLE redraw before accept must contain the submitted NL line.
+
+    Raw PTY output contains every intermediate edit, including text that ZLE
+    later erases. Strip color and inspect the display immediately before ZLE
+    disables bracketed paste: the submitted line must be the final rendered
+    content, not an earlier terminal echo followed by an erase-to-spaces redraw.
+    """
+    plain = SGR.sub("", segment)
+    before_accept = plain.rsplit("\x1b[?2004l", 1)[0]
+    if line not in before_accept:
+        return False
+    after_final_copy = before_accept.rsplit(line, 1)[1]
+    after_final_copy = CSI.sub("", after_final_copy).replace("\r", "").replace("\n", "")
+    return after_final_copy == ""
 
 
 class Pty:
@@ -312,11 +333,20 @@ def main():
         # assertion: a valid `what` command must not run once the full line is a
         # recognizable question.
         set_fake(sh, answer("ANSWER_COLLISION_42"))
-        sh.send("what is the capital of France")
+        collision_line = "what is the capital of France"
+        collision_start = len(sh.transcript)
+        sh.send(collision_line)
         check(
             sh,
             "question collision routes consistently with its color",
             sh.expect("ANSWER_COLLISION_42"),
+        )
+        check(
+            sh,
+            "auto-routed question remains visible after Enter",
+            submitted_line_remains_visible(
+                sh.transcript[collision_start:], collision_line
+            ),
         )
 
         # Keep later assertions about literal terminal echoes independent of
@@ -331,8 +361,35 @@ def main():
         # 2. `?` sigil routes a question to the AI (and the trailing text with a
         #    glob char does not reach zsh's globber).
         set_fake(sh, answer("ANSWER_MOON_42"))
-        sh.send("? what is the moon?")
+        sigil_line = "? what is the moon?"
+        sigil_start = len(sh.transcript)
+        sh.send(sigil_line)
         check(sh, "? sigil routes question (trailing ?)", sh.expect("ANSWER_MOON_42"))
+        check(
+            sh,
+            "? sigil request remains visible after Enter",
+            submitted_line_remains_visible(sh.transcript[sigil_start:], sigil_line),
+        )
+
+        # Alt-Enter forces even a valid shell-looking line through Aishe. It
+        # uses a separate ZLE widget and must preserve the submitted line too.
+        sh.expect("ZP> ")
+        set_fake(sh, answer("ANSWER_FORCE_NL_42"))
+        sh.expect("ZP> ")
+        forced_line = "echo this is a natural-language request"
+        forced_start = len(sh.transcript)
+        sh.raw(forced_line.encode("utf-8"))
+        sh.raw(b"\x1b\r")
+        check(
+            sh,
+            "Alt-Enter forces a valid-command-shaped request",
+            sh.expect("ANSWER_FORCE_NL_42"),
+        )
+        check(
+            sh,
+            "Alt-Enter request remains visible after submission",
+            submitted_line_remains_visible(sh.transcript[forced_start:], forced_line),
+        )
 
         # 3. `#` sigil, also with a trailing `?`.
         set_fake(sh, answer("ANSWER_HASH_42"))

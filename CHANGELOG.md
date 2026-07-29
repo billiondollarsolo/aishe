@@ -6,6 +6,11 @@ breaking changes can land in any release.
 
 ## [Unreleased]
 
+### Fixed
+- Natural-language requests submitted through automatic question routing, the
+  `?`/`#` sigils, or Alt-Enter now remain visible in terminal scrollback. Aishe
+  still accepts an empty executable buffer so zsh cannot run the request.
+
 ## [0.4.1] - 2026-07-29
 
 ### Changed

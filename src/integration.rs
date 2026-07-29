@@ -156,9 +156,15 @@ aishe_zshexit() {
 aishe-nl-widget() {
   emulate -L zsh
   [[ -z "$BUFFER" ]] && return
-  print -s -- "$BUFFER"   # keep the NL line in history (up-arrow recall)
-  _aishe_force_nl "$BUFFER"
+  local submitted="$BUFFER"
+  print -s -- "$submitted"   # keep the NL line in history (up-arrow recall)
+  _aishe_force_nl "$submitted"
+  # The shell must accept an empty buffer so it never executes the request.
+  # Keep a non-editable copy on screen: without POSTDISPLAY, ZLE redraws the
+  # newly empty BUFFER before accepting it and erases the submitted request
+  # from terminal scrollback even though history and the LLM still receive it.
   BUFFER=""
+  POSTDISPLAY="$submitted"
   zle .accept-line
 }
 
@@ -391,17 +397,21 @@ _aishe_should_route_question() {
 aishe-accept-line() {
   emulate -L zsh
   if [[ "$BUFFER" == [#?]* ]]; then
-    print -s -- "$BUFFER"   # keep the NL line in history (up-arrow recall)
-    local body="${BUFFER#[#?]}"
+    local submitted="$BUFFER"
+    print -s -- "$submitted"   # keep the NL line in history (up-arrow recall)
+    local body="${submitted#[#?]}"
     body="${body# }"
     if [[ -n "$body" ]]; then
       _aishe_force_nl "$body"
       BUFFER=""
+      POSTDISPLAY="$submitted"
     fi
   elif _aishe_should_route_question "$BUFFER"; then
-    print -s -- "$BUFFER"
-    _aishe_force_nl "$BUFFER"
+    local submitted="$BUFFER"
+    print -s -- "$submitted"
+    _aishe_force_nl "$submitted"
     BUFFER=""
+    POSTDISPLAY="$submitted"
   fi
   zle "${_aishe_orig_accept_line:-.accept-line}"
 }
@@ -941,6 +951,7 @@ mod tests {
         assert!(s.contains("aishe-nl-widget"));
         assert!(s.contains("zle -N aishe-nl-widget"));
         assert!(s.contains("AISHE_NL_KEY"));
+        assert!(s.contains(r#"POSTDISPLAY="$submitted""#));
         // zle/bindkey must be guarded so sourcing non-interactively is safe.
         assert!(s.contains("[[ -o interactive ]]"));
     }

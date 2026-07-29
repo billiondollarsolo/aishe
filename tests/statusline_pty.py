@@ -4,6 +4,7 @@
 import fcntl
 import os
 import pty
+import re
 import select
 import shutil
 import signal
@@ -17,6 +18,18 @@ import time
 BINARY = os.path.abspath(
     sys.argv[1] if len(sys.argv) > 1 else "target/release/aishe"
 )
+SGR = re.compile(r"\x1b\[[0-9;]*m")
+CSI = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]")
+
+
+def submitted_line_remains_visible(segment, line):
+    plain = SGR.sub("", segment)
+    before_accept = plain.rsplit("\x1b[?2004l", 1)[0]
+    if line not in before_accept:
+        return False
+    after_final_copy = before_accept.rsplit(line, 1)[1]
+    after_final_copy = CSI.sub("", after_final_copy).replace("\r", "").replace("\n", "")
+    return after_final_copy == ""
 
 
 class Pty:
@@ -161,9 +174,18 @@ def run_case(position, cols):
         shell.send("print -r -- POSITION=$AISHE_STATUS_POSITION")
         if not shell.expect("POSITION=" + position):
             raise AssertionError("%s placement was not passed to zsh" % position)
-        shell.send("? print the status test marker")
+        submitted = "? print the status test marker"
+        submitted_start = len(shell.transcript)
+        shell.send(submitted)
         if not shell.expect("STATUS_CALL_OK"):
             raise AssertionError("%s AI call did not complete" % position)
+        if not submitted_line_remains_visible(
+            shell.transcript[submitted_start:], submitted
+        ):
+            raise AssertionError(
+                "%s statusline erased the submitted request:\n%s"
+                % (position, shell.transcript[-2500:])
+            )
         shell.drain(0.8)
         dynamic = ["last 123/45 tok", "session 123/45 tok", "1 req"]
         if position == "off":
