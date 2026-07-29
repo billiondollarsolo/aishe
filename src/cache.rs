@@ -93,7 +93,13 @@ fn request_key(model: &str, system: &str, messages: &[Msg], format: &ResponseFor
             call_id.hash(&mut h);
             content.hash(&mut h);
         }
-        None => 3u8.hash(&mut h),
+        Some(Msg::ProviderItems { items, .. }) => {
+            3u8.hash(&mut h);
+            serde_json::to_string(items)
+                .unwrap_or_default()
+                .hash(&mut h);
+        }
+        None => 4u8.hash(&mut h),
     }
     match format {
         ResponseFormat::Text => 0u8.hash(&mut h),

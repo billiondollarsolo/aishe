@@ -40,7 +40,7 @@ impl AnthropicProvider {
         for m in messages {
             match m {
                 Msg::User(text) => out.push(json!({"role": "user", "content": text})),
-                Msg::Assistant(a) => {
+                Msg::Assistant(a) | Msg::ProviderItems { assistant: a, .. } => {
                     let mut blocks: Vec<Value> = Vec::new();
                     if let Some(t) = &a.text {
                         if !t.is_empty() {
@@ -144,7 +144,11 @@ impl AnthropicProvider {
         } else {
             Some(text_parts.join(""))
         };
-        Ok(Completion { text, tool_calls })
+        Ok(Completion {
+            text,
+            tool_calls,
+            provider_items: Vec::new(),
+        })
     }
 }
 
@@ -277,6 +281,7 @@ impl Provider for AnthropicProvider {
         Ok(Completion {
             text: (!text.is_empty()).then_some(text),
             tool_calls,
+            provider_items: Vec::new(),
         })
     }
 

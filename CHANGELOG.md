@@ -6,6 +6,23 @@ breaking changes can land in any release.
 
 ## [Unreleased]
 
+## [0.2.30] - 2026-07-28
+
+### Fixed
+- Official OpenAI requests now use the Responses API, including structured
+  output, streaming, and yolo tool loops. This supports reasoning models such as
+  GPT-5.6 with function tools and replays the response's reasoning items on each
+  tool continuation. Custom OpenAI-compatible endpoints continue to use Chat
+  Completions.
+- In zsh, an unknown natural-language question ending in `?` is routed before
+  `NOMATCH` can reject the punctuation as an unmatched glob. Real commands and
+  explicit paths retain native zsh glob behavior.
+- Minimal zsh accounts without a syntax-highlighting plugin now color a
+  recognized first command word green. Existing zsh-syntax-highlighting and
+  fast-syntax-highlighting installations still take precedence.
+- Suggest mode now classifies informational questions by intent instead of
+  wrapping factual answers in commands such as `echo`, `python`, or `man`.
+
 ## [0.2.29] - 2026-07-28
 
 ### Fixed

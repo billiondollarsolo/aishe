@@ -76,6 +76,23 @@ harness reads `GROQ_API_KEY` or a local secrets file it documents at the top).
 The deterministic suites are the pass gate; the natural-language suite is
 informational because model output varies.
 
+For live official-OpenAI coverage, the opt-in classification and robustness
+suites accept the endpoint and model explicitly:
+
+```sh
+export AISHE_REALTEST_KEY="$OPENAI_API_KEY"
+export AISHE_REALTEST_BASE_URL="https://api.openai.com"
+export AISHE_REALTEST_MODEL="gpt-5.6-luna"
+
+python3 tests/real_model.py target/release/aishe
+python3 tests/real_fuzz.py target/release/aishe 10  # hundreds of paid API calls
+```
+
+Run a high-scale live fuzz only on a disposable test node, with a cost/rate-limit
+budget. The deterministic PTY fuzzer remains the preferred high-volume gate;
+live requests add provider-contract and model-behavior coverage, not perfectly
+repeatable assertions.
+
 ## CI
 
 GitHub Actions runs the cross-platform Rust tests plus the deterministic

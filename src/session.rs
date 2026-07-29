@@ -177,6 +177,10 @@ fn msg_len(m: &Msg) -> usize {
         Msg::User(s) => s.len(),
         Msg::Assistant(a) => a.text.as_deref().map(str::len).unwrap_or(0),
         Msg::ToolResult { content, .. } => content.len(),
+        Msg::ProviderItems { items, assistant } => {
+            let text_len = assistant.text.as_deref().map_or(0, str::len);
+            text_len + serde_json::to_string(items).map_or(0, |json| json.len())
+        }
     }
 }
 

@@ -312,11 +312,24 @@ fn run_loop(
             println!();
         }
 
-        // Record the assistant turn (text + tool calls) before tool results.
-        messages.push(Msg::Assistant(AssistantMsg {
-            text: completion.text.clone(),
-            tool_calls: completion.tool_calls.clone(),
-        }));
+        // Record the assistant turn before tool results. OpenAI Responses
+        // returns provider-native reasoning/function-call items that must be
+        // replayed verbatim on the continuation; other providers use the
+        // canonical assistant message.
+        if completion.provider_items.is_empty() {
+            messages.push(Msg::Assistant(AssistantMsg {
+                text: completion.text.clone(),
+                tool_calls: completion.tool_calls.clone(),
+            }));
+        } else {
+            messages.push(Msg::ProviderItems {
+                items: completion.provider_items.clone(),
+                assistant: AssistantMsg {
+                    text: completion.text.clone(),
+                    tool_calls: completion.tool_calls.clone(),
+                },
+            });
+        }
 
         for call in &completion.tool_calls {
             if interrupt.load(Ordering::SeqCst) {

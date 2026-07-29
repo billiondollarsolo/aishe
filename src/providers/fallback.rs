@@ -182,6 +182,7 @@ mod tests {
             Ok(Completion {
                 text: Some(self.out.clone()),
                 tool_calls: Vec::new(),
+                provider_items: Vec::new(),
             })
         }
         fn meter(&self) -> Arc<UsageMeter> {

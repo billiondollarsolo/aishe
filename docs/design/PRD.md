@@ -11,8 +11,9 @@
 
 `aishe` is an interactive shell REPL that behaves like zsh for valid shell
 commands, but treats anything that is *not* a recognizable command as a
-natural-language request, interpreted by an LLM (Anthropic Messages API or any
-OpenAI-compatible Chat Completions API). The LLM either **suggests** a command
+natural-language request, interpreted by an LLM (Anthropic Messages API,
+OpenAI Responses API, or an OpenAI-compatible Chat Completions API). The LLM
+either **suggests** a command
 for confirmation, or **executes autonomously** ("yolo mode") via a tool-use
 loop.
 
@@ -97,9 +98,9 @@ See the inline module documentation for the authoritative behavior. Highlights:
 - **Safety gate** screens each operator-split segment against a table of
   conservative regexes; dangerous commands require typing `yes`.
 - **Providers** expose a small `Provider` trait with `complete` and
-  `complete_with_tools`, implemented for the Anthropic Messages API and any
-  OpenAI-compatible Chat Completions API. 60s timeout, one retry on 429/5xx,
-  clear 401 messages.
+  `complete_with_tools`, implemented for the Anthropic Messages API, official
+  OpenAI Responses API, and custom OpenAI-compatible Chat Completions APIs. 60s
+  timeout, one retry on 429/5xx, clear 401 messages.
 
 ## 5. Non-Goals (v0.1)
 

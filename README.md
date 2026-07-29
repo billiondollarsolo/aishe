@@ -205,7 +205,9 @@ There are three ways to use aishe. Details in
    use (zsh-autosuggestions, zsh-syntax-highlighting, fzf-tab, powerlevel10k,
    oh-my-zsh, completions) work unmodified, including job control. A
    `command_not_found_handler` routes natural language to the LLM. **This requires
-   zsh**; without it, aishe tells you to install it.
+   zsh**; without it, aishe tells you to install it. On a minimal account with no
+   syntax-highlighting plugin, aishe colors a recognized first command word green;
+   a real zsh highlighting plugin automatically takes precedence.
 
    ```sh
    aishe        # launch your zsh under aishe
@@ -222,9 +224,10 @@ There are three ways to use aishe. Details in
 
 ## Providers
 
-aishe talks to two provider shapes: the **Anthropic Messages API** and any
-**OpenAI-compatible Chat Completions API**. The OpenAI shape covers OpenAI,
-Groq, Ollama, OpenRouter, Together, and similar services through `base_url`.
+aishe talks to the **Anthropic Messages API**, OpenAI's **Responses API**, and
+**OpenAI-compatible Chat Completions APIs**. The official OpenAI URL uses
+Responses (including reasoning-model tool loops); Groq, Ollama, OpenRouter,
+Together, and other custom `base_url` values use Chat Completions.
 
 ```toml
 [providers.openai]

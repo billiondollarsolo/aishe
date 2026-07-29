@@ -25,6 +25,17 @@ with:
 export AISHE_MODE=suggest    # suggest | auto | yolo
 ```
 
+The zsh hook also catches an unknown plain-language question ending in `?`
+before zsh's `NOMATCH` glob check runs. The check is deliberately narrow: if the
+first word is a real command or an explicit path, zsh still handles `?`, `*`,
+and other glob syntax normally.
+
+If the account has no syntax-highlighting plugin, the hook colors a recognized
+first command word green as a minimal fallback. Full syntax highlighting remains
+the job of zsh-syntax-highlighting or fast-syntax-highlighting, and either plugin
+automatically takes precedence. Set `AISHE_COMMAND_HIGHLIGHT=0` to turn the
+fallback off.
+
 ### Behavior by mode
 
 - **suggest**: zsh pre-fills your next prompt so you can confirm or edit; bash

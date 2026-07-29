@@ -45,6 +45,12 @@ own prompt, set `pty_prompt = false`. This is recommended for powerlevel10k user
 in particular, since p10k's instant-prompt and transient-prompt can otherwise
 conflict with the branded prompt.
 
+On a minimal account with no syntax-highlighting plugin, aishe supplies a narrow
+fallback: a recognized first command word is colored green. It does not attempt
+to parse full shell syntax, and automatically gets out of the way when
+zsh-syntax-highlighting or fast-syntax-highlighting is loaded. Set
+`AISHE_COMMAND_HIGHLIGHT=0` to disable the fallback.
+
 Because routing is by command name, a question whose first word is a real command
 (`who`, `which`, `find`, `time`, `test`, `make`) would otherwise run that command.
 To force a line to the AI, **start it with `?` or `#`** (e.g. `? who was the first

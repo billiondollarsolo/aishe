@@ -19,6 +19,7 @@ use serde_json::json;
 struct MockProvider {
     completions: Mutex<VecDeque<Completion>>,
     texts: Mutex<VecDeque<String>>,
+    seen_messages: Mutex<Vec<Vec<Msg>>>,
     repeat_last: bool,
     meter: Arc<UsageMeter>,
 }
@@ -28,6 +29,7 @@ impl MockProvider {
         Self {
             completions: Mutex::new(items.into()),
             texts: Mutex::new(VecDeque::new()),
+            seen_messages: Mutex::new(Vec::new()),
             repeat_last,
             meter: Arc::new(UsageMeter::default()),
         }
@@ -38,6 +40,7 @@ impl MockProvider {
         Self {
             completions: Mutex::new(VecDeque::new()),
             texts: Mutex::new(q),
+            seen_messages: Mutex::new(Vec::new()),
             repeat_last: false,
             meter: Arc::new(UsageMeter::default()),
         }
@@ -52,10 +55,11 @@ impl Provider for MockProvider {
     fn complete_with_tools(
         &self,
         _s: &str,
-        _m: &[Msg],
+        messages: &[Msg],
         _t: &[aishe::providers::ToolDef],
     ) -> Result<Completion, ProviderError> {
         self.meter.record(10, 5);
+        self.seen_messages.lock().unwrap().push(messages.to_vec());
         let mut q = self.completions.lock().unwrap();
         if self.repeat_last && q.len() == 1 {
             return Ok(q.front().unwrap().clone());
@@ -97,6 +101,7 @@ fn yolo_file_tools_write_and_read() {
                     "write_file",
                     json!({"path": target.to_str().unwrap(), "content": "exact-content-42"}),
                 )],
+                provider_items: vec![],
             },
             Completion {
                 text: None,
@@ -104,10 +109,12 @@ fn yolo_file_tools_write_and_read() {
                     "read_file",
                     json!({"path": target.to_str().unwrap()}),
                 )],
+                provider_items: vec![],
             },
             Completion {
                 text: Some("done".into()),
                 tool_calls: vec![],
+                provider_items: vec![],
             },
         ],
         false,
@@ -151,10 +158,12 @@ fn yolo_web_tool_dispatch() {
                     "fetch_url",
                     json!({"url": "file:///etc/passwd"}),
                 )],
+                provider_items: vec![],
             },
             Completion {
                 text: Some("could not fetch".into()),
                 tool_calls: vec![],
+                provider_items: vec![],
             },
         ],
         false,
@@ -195,10 +204,12 @@ fn yolo_plan_skipped_without_tty() {
             Completion {
                 text: None,
                 tool_calls: vec![tool_call("echo planned")],
+                provider_items: vec![],
             },
             Completion {
                 text: Some("done".into()),
                 tool_calls: vec![],
+                provider_items: vec![],
             },
         ],
         false,
@@ -234,10 +245,12 @@ fn yolo_runs_tool_then_finishes() {
             Completion {
                 text: None,
                 tool_calls: vec![tool_call("echo yolo-ran")],
+                provider_items: vec![],
             },
             Completion {
                 text: Some("all done".into()),
                 tool_calls: vec![],
+                provider_items: vec![],
             },
         ],
         false,
@@ -280,10 +293,12 @@ fn yolo_streaming_runs_tool_then_finishes() {
             Completion {
                 text: Some("let me run it".into()),
                 tool_calls: vec![tool_call("echo streamed-yolo")],
+                provider_items: vec![],
             },
             Completion {
                 text: Some("# Done\n\nAll good.".into()),
                 tool_calls: vec![],
+                provider_items: vec![],
             },
         ],
         false,
@@ -315,11 +330,68 @@ fn yolo_streaming_runs_tool_then_finishes() {
 }
 
 #[test]
+fn yolo_replays_provider_items_before_tool_results() {
+    let provider_items = vec![
+        json!({"type":"reasoning","id":"rs_1","summary":[]}),
+        json!({
+            "type":"function_call",
+            "id":"fc_1",
+            "call_id":"call",
+            "name":"run_command",
+            "arguments":"{\"command\":\"echo replayed\"}",
+            "status":"completed"
+        }),
+    ];
+    let provider = MockProvider::with_completions(
+        vec![
+            Completion {
+                text: None,
+                tool_calls: vec![tool_call("echo replayed")],
+                provider_items: provider_items.clone(),
+            },
+            Completion {
+                text: Some("done".into()),
+                tool_calls: vec![],
+                provider_items: vec![],
+            },
+        ],
+        false,
+    );
+    let mut exec = Executor::new().unwrap();
+    let config = Config::default();
+    let flag = AtomicBool::new(false);
+
+    yolo::run(
+        "run it",
+        &provider,
+        &mut exec,
+        &config,
+        &flag,
+        &SkillRegistry::default(),
+        &McpRegistry::default(),
+        &mut Session::new(true),
+    )
+    .unwrap();
+
+    let seen = provider.seen_messages.lock().unwrap();
+    let continuation = &seen[1];
+    assert!(matches!(
+        &continuation[1],
+        Msg::ProviderItems { items, .. } if items == &provider_items
+    ));
+    assert!(matches!(
+        &continuation[2],
+        Msg::ToolResult { call_id, .. } if call_id == "call"
+    ));
+}
+
+#[test]
 fn yolo_respects_iteration_cap() {
     let provider = MockProvider::with_completions(
         vec![Completion {
             text: None,
             tool_calls: vec![tool_call("true")],
+            provider_items: vec![],
         }],
         true, // never finishes
     );

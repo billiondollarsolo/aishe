@@ -1,5 +1,6 @@
 //! Provider abstraction: a thin, synchronous HTTP layer over the Anthropic
-//! Messages API and any OpenAI-compatible Chat Completions API.
+//! Messages API, OpenAI's Responses API, and OpenAI-compatible Chat
+//! Completions APIs.
 //!
 //! We deliberately own this layer (no vendor SDK crates) to keep the binary
 //! small and the request/response shapes fully under our control.
@@ -25,6 +26,15 @@ pub enum Msg {
     Assistant(AssistantMsg),
     /// The result of executing a tool call, fed back to the model.
     ToolResult { call_id: String, content: String },
+    /// Opaque output items that must be replayed to the provider on a tool-loop
+    /// continuation. OpenAI reasoning models require their reasoning items to
+    /// accompany the function-call output on the next Responses API request.
+    ProviderItems {
+        items: Vec<Value>,
+        /// Canonical equivalent used if a fallback switches providers in the
+        /// middle of the tool loop.
+        assistant: AssistantMsg,
+    },
 }
 
 /// An assistant message: optional prose plus zero or more tool calls.
@@ -56,6 +66,9 @@ pub struct ToolDef {
 pub struct Completion {
     pub text: Option<String>,
     pub tool_calls: Vec<ToolCall>,
+    /// Provider-native output items needed to continue this tool turn. Empty
+    /// for providers whose canonical assistant/tool messages are sufficient.
+    pub provider_items: Vec<Value>,
 }
 
 /// Errors that can arise while talking to a provider.

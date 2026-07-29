@@ -25,9 +25,10 @@ Already shipped and validated:
   zsh; the non-interactive paths (`aishe -c …`, piped stdin) and the bash hook
   work without it. The former opt-in reedline editor was removed (the
   architectural decision, section 2, resolved as Option B and shipped).
-- **Providers.** Anthropic Messages API and any OpenAI-compatible Chat
-  Completions API, with SSE streaming, tool use, token/cost metering, a budget
-  cap, and (new) retry with exponential backoff + jitter + `Retry-After`.
+- **Providers.** Anthropic Messages API, official OpenAI Responses API, and
+  custom OpenAI-compatible Chat Completions APIs, with SSE streaming, tool use,
+  token/cost metering, a budget cap, and retry with exponential backoff + jitter
+  + `Retry-After`.
 - **Agentic yolo loop.** `run_command` plus built-in file tools, a `fetch_url`
   web tool, MCP tools, skills (progressive disclosure), plan-first dry run, and
   policy sandbox / confirmation tiers.

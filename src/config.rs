@@ -789,8 +789,9 @@ fn deep_merge(base: &mut toml::Table, overlay: &toml::Table) {
 }
 
 /// Known OpenAI-compatible services: (key, label, base_url, default_model,
-/// key_env). `base_url` is the host root; aishe appends `/v1/chat/completions`,
-/// so it must not include `/v1`. "other" is the escape hatch for any endpoint.
+/// key_env). `base_url` is the host root; aishe appends `/v1/responses` for
+/// official OpenAI and `/v1/chat/completions` for custom services, so it must
+/// not include `/v1`. "other" is the escape hatch for any endpoint.
 const OPENAI_PRESETS: &[(&str, &str, &str, &str, &str)] = &[
     (
         "openai",

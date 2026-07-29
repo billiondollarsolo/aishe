@@ -97,6 +97,7 @@ impl Provider for FakeProvider {
                         name: "run_command".to_string(),
                         arguments: serde_json::json!({"command": cmd, "reason": "fake"}),
                     }],
+                    provider_items: Vec::new(),
                 });
             }
         }
@@ -104,6 +105,7 @@ impl Provider for FakeProvider {
         Ok(Completion {
             text: Some(self.body()),
             tool_calls: Vec::new(),
+            provider_items: Vec::new(),
         })
     }
 

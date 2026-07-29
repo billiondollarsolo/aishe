@@ -228,10 +228,72 @@ aishe-recall() {
   fi
 }
 
-# accept-line wrapper: a line starting with `?` or `#` is natural language. Strip
-# the sigil here (before zsh parses it, so the shell's comment/glob rules never
-# apply) and force it to the AI; otherwise behave as before, chaining whatever
-# accept-line widget was already installed so plugins keep working.
+# Minimal command-name highlighting for accounts that do not load
+# zsh-syntax-highlighting or fast-syntax-highlighting. It colors only a
+# recognized first word green; full shell grammar highlighting remains the
+# external plugin's job. The exact prior region is removed on every redraw so
+# edits never leave stale color behind, while regions owned by other widgets are
+# preserved.
+typeset -g _AISHE_COMMAND_HIGHLIGHT_SPEC=""
+_aishe_clear_command_highlight() {
+  [[ -n "$_AISHE_COMMAND_HIGHLIGHT_SPEC" ]] || return
+  local -a kept
+  local spec
+  for spec in "${region_highlight[@]}"; do
+    [[ "$spec" == "$_AISHE_COMMAND_HIGHLIGHT_SPEC" ]] || kept+=("$spec")
+  done
+  region_highlight=("${kept[@]}")
+  _AISHE_COMMAND_HIGHLIGHT_SPEC=""
+}
+
+_aishe_highlight_command() {
+  emulate -L zsh
+  setopt extendedglob
+  _aishe_clear_command_highlight
+  [[ "${AISHE_COMMAND_HIGHLIGHT:-1}" != 0 && -n "$BUFFER" ]] || return
+
+  # Never compete with a real syntax-highlighting plugin, regardless of whether
+  # it was loaded before or after the aishe hook.
+  if (( $+functions[_zsh_highlight] || $+functions[_zsh_highlight_main] ||
+        $+functions[_fast_highlight] || $+functions[_fast_main] )); then
+    return
+  fi
+
+  local leading="${BUFFER%%[^[:space:]]*}"
+  local rest="${BUFFER#$leading}"
+  local head="${rest%%[[:space:]]*}"
+  [[ "$head" == [[:alnum:]_./+-]## ]] || return
+  whence -w -- "$head" >/dev/null 2>&1 || return
+
+  local start=${#leading}
+  local end=$(( start + ${#head} ))
+  _AISHE_COMMAND_HIGHLIGHT_SPEC="$start $end fg=green"
+  region_highlight+=("$_AISHE_COMMAND_HIGHLIGHT_SPEC")
+}
+
+# A plain-language question ending in `?` never reaches
+# command_not_found_handler when NOMATCH is enabled: zsh rejects the unmatched
+# `?` glob first. Pre-route only when the first word is an unknown, non-glob
+# command name. Real commands and explicit paths keep zsh's native glob behavior.
+_aishe_should_route_question() {
+  emulate -L zsh
+  setopt extendedglob
+  local line="${1##[[:space:]]#}"
+  line="${line%%[[:space:]]#}"
+  [[ "$line" == *'?' ]] || return 1
+  local head="${line%%[[:space:]]*}"
+  # A shell operator, quote, expansion, assignment, or path in the first token
+  # makes this shell syntax, not the bare unknown-command shape we can pre-route
+  # safely. In particular, this keeps `false; echo rc=$?` in zsh.
+  [[ "$head" == [[:alnum:]_.+-]## ]] || return 1
+  [[ "$head" != *'?'* && "$head" != *'*'* && "$head" != *'['* ]] || return 1
+  ! whence -w -- "$head" >/dev/null 2>&1
+}
+
+# accept-line wrapper: a line starting with `?` or `#`, or a plain-language
+# question identified above, is natural language. Route it before zsh parses it,
+# then chain whatever accept-line widget was already installed so plugins keep
+# working.
 aishe-accept-line() {
   emulate -L zsh
   if [[ "$BUFFER" == [#?]* ]]; then
@@ -242,6 +304,10 @@ aishe-accept-line() {
       _aishe_force_nl "$body"
       BUFFER=""
     fi
+  elif _aishe_should_route_question "$BUFFER"; then
+    print -s -- "$BUFFER"
+    _aishe_force_nl "$BUFFER"
+    BUFFER=""
   fi
   zle "${_aishe_orig_accept_line:-.accept-line}"
 }
@@ -281,6 +347,12 @@ if [[ -o interactive ]]; then
   bindkey "${AISHE_FIX_KEY:-^X^F}" aishe-fix-command
   zle -N aishe-recall
   bindkey "${AISHE_RECALL_KEY:-^X^R}" aishe-recall
+  # Supply a small green valid-command cue on minimal accounts. A full syntax
+  # highlighter, when present, takes precedence dynamically.
+  autoload -Uz add-zle-hook-widget
+  if [[ -z "${zle_line_pre_redraw_functions[(r)_aishe_highlight_command]}" ]]; then
+    add-zle-hook-widget line-pre-redraw _aishe_highlight_command
+  fi
   # Wrap accept-line once, chaining any existing widget (plugin-friendly).
   if [[ "${widgets[accept-line]}" != "user:aishe-accept-line" ]]; then
     case "${widgets[accept-line]}" in
@@ -641,6 +713,27 @@ mod tests {
         assert!(s.contains("_aishe_handle_nl"));
         // accept-line is wrapped plugin-friendly (chains the prior widget).
         assert!(s.contains("zle -N accept-line aishe-accept-line"));
+    }
+
+    #[test]
+    fn zsh_script_pre_routes_unknown_questions_before_nomatch() {
+        let s = script("zsh").unwrap();
+        assert!(s.contains("_aishe_should_route_question"));
+        assert!(s.contains(r#"[[ "$line" == *'?' ]]"#));
+        assert!(s.contains(r#"[[ "$head" == [[:alnum:]_.+-]## ]]"#));
+        assert!(s.contains(r#"! whence -w -- "$head""#));
+        assert!(s.contains(r#"elif _aishe_should_route_question "$BUFFER"; then"#));
+    }
+
+    #[test]
+    fn zsh_script_has_fallback_command_highlighting() {
+        let s = script("zsh").unwrap();
+        assert!(s.contains("_aishe_highlight_command"));
+        assert!(s.contains(r#"whence -w -- "$head""#));
+        assert!(s.contains(r#"region_highlight+=("$_AISHE_COMMAND_HIGHLIGHT_SPEC")"#));
+        assert!(s.contains("add-zle-hook-widget line-pre-redraw _aishe_highlight_command"));
+        assert!(s.contains("$+functions[_zsh_highlight]"));
+        assert!(s.contains("AISHE_COMMAND_HIGHLIGHT"));
     }
 
     #[test]

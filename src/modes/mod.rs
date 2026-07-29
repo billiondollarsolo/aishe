@@ -69,7 +69,14 @@ a command:\n\n\
 {{\"type\": \"answer\", \"command\": null, \"explanation\": \"<concise answer, markdown ok>\"}}\n\n\
 Rules: prefer safe, idiomatic, non-interactive flags; never invent paths not\n\
 implied by the context; one line only (use && or ; if needed); no sudo unless\n\
-clearly required."
+clearly required.\n\
+\n\
+Classify by the user's intent, not by whether an answer could be wrapped in a\n\
+shell command. Informational questions (for example who/what/why/when,\n\
+define/explain, or what a command does) MUST use type \"answer\". Do not turn a\n\
+fact into echo/printf/python, and do not substitute man for an explanation.\n\
+Use type \"command\" only when the user wants to inspect or change the current\n\
+machine, filesystem, processes, network, or other local state."
     )
 }
 
@@ -89,7 +96,14 @@ environment context, respond in ONE of two ways:\n\n\
    (markdown allowed). Do NOT use the CMD: prefix in that case.\n\n\
 Rules: prefer safe, idiomatic, non-interactive flags; never invent paths not\n\
 implied by the context; one command line only (use && or ; if needed); no sudo\n\
-unless clearly required."
+unless clearly required.\n\
+\n\
+Classify by the user's intent, not by whether an answer could be wrapped in a\n\
+shell command. Informational questions (for example who/what/why/when,\n\
+define/explain, or what a command does) must be answered directly in prose.\n\
+Never turn a fact into echo/printf/python, and do not substitute man for an\n\
+explanation. Use CMD only when the user wants to inspect or change the current\n\
+machine, filesystem, processes, network, or other local state."
     )
 }
 
@@ -432,5 +446,17 @@ mod tests {
     #[test]
     fn extract_json_garbage_returns_none() {
         assert!(extract_json("no json here at all").is_none());
+    }
+
+    #[test]
+    fn suggest_prompts_keep_informational_answers_out_of_shell_commands() {
+        let structured = suggest_system_prompt("zsh", "linux");
+        assert!(structured.contains("Classify by the user's intent"));
+        assert!(structured.contains("MUST use type \"answer\""));
+        assert!(structured.contains("Do not turn a\nfact into echo/printf/python"));
+
+        let streaming = suggest_stream_system_prompt("zsh", "linux");
+        assert!(streaming.contains("answered directly in prose"));
+        assert!(streaming.contains("Never turn a fact into echo/printf/python"));
     }
 }

@@ -231,6 +231,34 @@ def main():
         sh.send("echo SCEN1_$((20 + 22))")
         check(sh, "plain command runs", sh.expect("SCEN1_42"))
 
+        # A minimal account has no syntax-highlighting plugin. Aishe supplies a
+        # narrow fallback that marks a recognized first command word green.
+        sh.send(
+            "_aishe_test_highlight_dump() { "
+            'zle -M "AISHE_RH=${(j:|:)region_highlight}"; }; '
+            "zle -N _aishe_test_highlight_dump; "
+            "bindkey '^X^H' _aishe_test_highlight_dump"
+        )
+        sh.expect("ZP> ")
+        sh.buf = ""
+        sh.raw(b"echo")
+        sh.settle(0.3)
+        sh.raw(b"\x18\x08")  # Ctrl-X Ctrl-H: dump region_highlight via zle -M
+        check(
+            sh,
+            "recognized command is highlighted green",
+            sh.expect("AISHE_RH=0 4 fg=green"),
+        )
+        sh.raw(b"\x03")
+        # Keep later assertions about literal terminal echoes independent of
+        # ANSI color sequences; the fallback itself has now been verified. Wait
+        # for Ctrl-C to finish before sending the assignment, and put the marker
+        # in the same command so observing it proves the assignment ran.
+        sh.expect("ZP> ")
+        sh.send("export AISHE_COMMAND_HIGHLIGHT=0; print -r -- HIGHLIGHT_TEST_DONE")
+        sh.expect("HIGHLIGHT_TEST_DONE")
+        sh.expect("HIGHLIGHT_TEST_DONE")
+
         # 2. `?` sigil routes a question to the AI (and the trailing text with a
         #    glob char does not reach zsh's globber).
         set_fake(sh, answer("ANSWER_MOON_42"))
@@ -248,18 +276,42 @@ def main():
         sh.send("? who is the president")
         check(sh, "sigil beats command-name collision", sh.expect("ANSWER_PRES_42"))
 
-        # 5. THE reported bug: in auto mode the model answers a question with a
+        # 5. A natural-language line ending in `?` must be intercepted before
+        #    zsh's NOMATCH option treats the punctuation as an unmatched glob.
+        set_fake(sh, answer("ANSWER_UNSIGILED_42"))
+        sh.send("cna you add a new admin using the same ssh key as root?")
+        check(
+            sh,
+            "unknown question bypasses zsh NOMATCH",
+            sh.expect("ANSWER_UNSIGILED_42"),
+        )
+
+        # A real command keeps native glob behavior; the pre-route is deliberately
+        # limited to an unknown first word.
+        native_match = os.path.join(home, "native1")
+        sh.send("touch %s" % native_match)
+        sh.expect("ZP> ")
+        set_fake(sh, answer("MUST_NOT_ROUTE_42"))
+        sh.send("print -r -- %s" % os.path.join(home, "native?"))
+        check(sh, "real commands keep native glob expansion", sh.expect(native_match))
+
+        # Shell syntax that happens to end in the special `$?` parameter is not
+        # an English question and must remain in zsh.
+        sh.send("false; print -r -- STATUS_$?")
+        check(sh, "trailing shell status parameter stays native", sh.expect("STATUS_1"))
+
+        # 6. THE reported bug: in auto mode the model answers a question with a
         #    malformed "command". It must be surfaced as an answer, never eval'd.
         set_fake(sh, command("the sun is a star > ", "PROSE_SUN_42"))
         sh.send("? tell me about the sun")
         check(sh, "auto mode shows prose, not a parse error", sh.expect("PROSE_SUN_42"))
 
-        # 6. Auto mode runs a *valid* safe command the model returns.
+        # 7. Auto mode runs a *valid* safe command the model returns.
         set_fake(sh, command("echo RANCMD_42", "prints a marker"))
         sh.send("? print the marker")
         check(sh, "auto mode runs a valid command", sh.expect("RANCMD_42"))
 
-        # 7. Up-arrow recalls the previous real command.
+        # 8. Up-arrow recalls the previous real command.
         sh.send("export AISHE_FAKE_LLM=")  # stop faking; back to plain shell
         sh.settle(0.3)
         sh.send("echo HISTMARK_42")
@@ -269,7 +321,7 @@ def main():
         check(sh, "up-arrow recalls previous command", sh.expect("echo HISTMARK_42"))
         sh.raw(b"\x03")    # Ctrl-C to clear the recalled line
 
-        # 8. Shift-Tab cycles the interaction mode for the session (the config
+        # 9. Shift-Tab cycles the interaction mode for the session (the config
         #    starts in auto, so one press lands on yolo). The widget reports the
         #    new mode via `zle -M`.
         sh.settle(0.3)

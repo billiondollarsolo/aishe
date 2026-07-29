@@ -1,13 +1,15 @@
 # Providers
 
-aishe talks to two provider shapes:
+aishe talks to three provider shapes:
 
 - the **Anthropic Messages API**, and
-- any **OpenAI-compatible Chat Completions API**.
+- the official OpenAI **Responses API**, and
+- any custom **OpenAI-compatible Chat Completions API**.
 
-The OpenAI shape covers OpenAI itself plus Groq, Ollama, OpenRouter, Together,
-and similar services through `base_url`. You configure both blocks and select one
-with `provider`.
+The `[providers.openai]` block selects the wire format from `base_url`.
+`https://api.openai.com` uses Responses, including reasoning-model tool calls
+and their continuation items. Groq, Ollama, OpenRouter, Together, and other
+custom URLs use Chat Completions for broad compatibility.
 
 API keys are read only from the environment variable named by `api_key_env`. They
 are never written to the config file.
@@ -45,6 +47,11 @@ model = "gpt-4o"
 export OPENAI_API_KEY=sk-...
 aishe
 ```
+
+Official OpenAI requests use `/v1/responses` for normal, structured, streaming,
+and tool-use calls. In a multi-step yolo run, aishe sends the response's native
+reasoning and function-call items back with each tool result, as required by
+reasoning models.
 
 ## Groq
 
@@ -145,7 +152,7 @@ aishe model gpt-4o-mini
 the config. In the zsh PTY front-end, the right-prompt model label refreshes on
 the next prompt after this command.
 
-For OpenAI-compatible Chat Completions endpoints, aishe supports both
+For custom OpenAI-compatible Chat Completions endpoints, aishe supports both
 `max_tokens` and `max_completion_tokens`. It records the spelling accepted by
 each endpoint/model pair in the aishe state directory and reuses it in later
 processes, so a compatibility retry happens at most once unless the endpoint's

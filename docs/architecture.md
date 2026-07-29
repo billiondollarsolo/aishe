@@ -144,12 +144,13 @@ When `dispatch` returns `NaturalLanguage`, a mode handles it.
 
 `Provider` is a small `Send + Sync` trait: `complete`, `complete_stream`,
 `complete_with_tools`, `complete_with_tools_stream`, and `meter`. Messages are
-provider-neutral (`Msg::User/Assistant/ToolResult`); each implementation maps them
-to its wire format.
+provider-neutral (`Msg::User/Assistant/ToolResult`); Responses tool turns also
+carry opaque provider items so reasoning state can be replayed. Each
+implementation maps messages to its wire format.
 
 - `anthropic.rs`: Anthropic Messages API.
-- `openai_compat.rs`: any OpenAI-compatible Chat Completions API (OpenAI, Groq,
-  Ollama, OpenRouter, ...).
+- `openai_compat.rs`: OpenAI Responses for the official API URL; Chat
+  Completions for custom compatible URLs (Groq, Ollama, OpenRouter, ...).
 - `fake.rs`: a deterministic provider (no network/key) selected when
   `AISHE_FAKE_LLM[_FILE]` is set; the backbone of the deterministic PTY suites.
 
