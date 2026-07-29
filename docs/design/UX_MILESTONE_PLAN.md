@@ -969,8 +969,13 @@ existing config and data roots.
   redacted reports were copied to the ignored local test-artifacts directory
   and independently scanned. The credential was supplied only through hidden
   standard input to the isolated test process, was unset when the process
-  exited, and did not appear in command arguments, config, history, logs,
+  exited, and added nothing to command arguments, config, history, logs,
   reports, evidence, or the repository. No API-key file remained on the node.
+- The final credential audit found four pre-existing key export records from
+  earlier ad hoc testing in both the 53-line shared history and its 06:00 UTC
+  safety backup. Only the token text was atomically replaced with a redaction
+  marker in both copies; every line and unrelated history entry was retained.
+  A recursive rescan of config, data, shell history, and the backup was clean.
 - All 18 SSH scenarios passed. The exact-code GitHub Actions run passed Ubuntu,
   macOS, the Rust 1.88 minimum-version build, and the full Linux PTY job.
 
