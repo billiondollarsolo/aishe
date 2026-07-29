@@ -7,7 +7,7 @@ use base64::Engine;
 use serde_json::Value;
 
 use crate::agent::{
-    AgentEvent, BackendSession, ExecutionScope, NetworkPolicy, PromptHandle, PromptRequest,
+    AgentEvent, BackendSession, ExecutionScope, Mode, NetworkPolicy, PromptHandle, PromptRequest,
     SessionSnapshot, SessionSummary, UsageDelta,
 };
 
@@ -71,19 +71,17 @@ impl OpenCodeClient {
         scope: ExecutionScope,
         network: NetworkPolicy,
     ) -> Result<BackendSession> {
-        let permissions = session_permissions();
         let value = self.post_json(
             "/session",
             Some(workspace),
             &serde_json::json!({
                 "title": title,
-                "agent": "build",
+                "agent": "aishe-suggest",
                 "model": {"id": self.model_id, "providerID": self.provider_id},
                 "metadata": {
                     "aishe_scope": match scope { ExecutionScope::Workspace => "workspace", ExecutionScope::Host => "host" },
                     "aishe_network": match network { NetworkPolicy::Deny => "deny", NetworkPolicy::Allow => "allow" }
-                },
-                "permission": permissions
+                }
             }),
         )?;
         let id = value
@@ -115,16 +113,17 @@ impl OpenCodeClient {
             "/session/{}/prompt_async",
             encode_segment(&request.session.id)
         );
-        self.post_no_content(
-            &path,
-            Some(&request.session.workspace),
-            &serde_json::json!({
-                "messageID": message_id,
-                "model": {"providerID": self.provider_id, "modelID": self.model_id},
-                "agent": "build",
-                "parts": [{"type":"text","text":request.text}]
-            }),
-        )?;
+        let agent = agent_for_mode(request.mode);
+        let mut body = serde_json::json!({
+            "messageID": message_id,
+            "model": {"providerID": self.provider_id, "modelID": self.model_id},
+            "agent": agent,
+            "parts": [{"type":"text","text":request.text}]
+        });
+        if request.mode == Mode::Suggest {
+            body["format"] = suggest_output_format();
+        }
+        self.post_no_content(&path, Some(&request.session.workspace), &body)?;
         Ok((
             PromptHandle {
                 session_id: request.session.id.clone(),
@@ -166,16 +165,30 @@ impl OpenCodeClient {
     pub fn read_events(
         &self,
         handle: &PromptHandle,
+        reader: Box<dyn BufRead + Send>,
+    ) -> Result<Vec<AgentEvent>> {
+        self.read_events_with(handle, reader, &mut |_| {})
+    }
+
+    pub fn read_events_with(
+        &self,
+        handle: &PromptHandle,
         mut reader: Box<dyn BufRead + Send>,
+        emit: &mut dyn FnMut(&AgentEvent),
     ) -> Result<Vec<AgentEvent>> {
         let mut mapper = EventMapper::new(&handle.session_id, &handle.message_id);
-        let mut events = vec![AgentEvent::Connected];
+        let mut events = Vec::new();
+        push_event(&mut events, emit, AgentEvent::Connected);
         if handle.resumed {
-            events.push(AgentEvent::Reconciled);
+            push_event(&mut events, emit, AgentEvent::Reconciled);
         } else {
-            events.push(AgentEvent::UserPromptAccepted {
-                text: handle.prompt_text.clone(),
-            });
+            push_event(
+                &mut events,
+                emit,
+                AgentEvent::UserPromptAccepted {
+                    text: handle.prompt_text.clone(),
+                },
+            );
         }
         let session = BackendSession {
             id: handle.session_id.clone(),
@@ -186,19 +199,27 @@ impl OpenCodeClient {
         loop {
             let Some(value) = super::sse::next_json(reader.as_mut())? else {
                 reconnect_attempt += 1;
-                events.push(AgentEvent::Reconnecting {
-                    attempt: reconnect_attempt,
-                });
+                push_event(
+                    &mut events,
+                    emit,
+                    AgentEvent::Reconnecting {
+                        attempt: reconnect_attempt,
+                    },
+                );
                 if reconnect_attempt > MAX_RECONNECT_ATTEMPTS {
-                    events.push(AgentEvent::Failed {
-                        error: crate::agent::UserFacingError {
-                            code: "opencode_stream_lost".into(),
-                            message:
-                                "The agent event stream disconnected and could not be restored."
-                                    .into(),
-                            retryable: true,
+                    push_event(
+                        &mut events,
+                        emit,
+                        AgentEvent::Failed {
+                            error: crate::agent::UserFacingError {
+                                code: "opencode_stream_lost".into(),
+                                message:
+                                    "The agent event stream disconnected and could not be restored."
+                                        .into(),
+                                retryable: true,
+                            },
                         },
-                    });
+                    );
                     break;
                 }
                 std::thread::sleep(Duration::from_millis(
@@ -207,12 +228,20 @@ impl OpenCodeClient {
                 // Subscribe first, then reconcile from durable server state so
                 // events occurring during the snapshot remain observable.
                 reader = self.subscribe()?;
-                events.extend(self.reconcile_events(&session, &mut mapper)?);
-                events.push(AgentEvent::Reconciled);
+                push_events(
+                    &mut events,
+                    emit,
+                    self.reconcile_events(&session, &mut mapper)?,
+                );
+                push_event(&mut events, emit, AgentEvent::Reconciled);
                 if !self.session_busy(&session)? {
-                    events.push(AgentEvent::Completed {
-                        summary: String::new(),
-                    });
+                    push_event(
+                        &mut events,
+                        emit,
+                        AgentEvent::Completed {
+                            summary: String::new(),
+                        },
+                    );
                     break;
                 }
                 continue;
@@ -225,7 +254,7 @@ impl OpenCodeClient {
                     AgentEvent::Completed { .. } | AgentEvent::Failed { .. } | AgentEvent::Aborted
                 )
             });
-            events.extend(mapped);
+            push_events(&mut events, emit, mapped);
             if done {
                 break;
             }
@@ -460,12 +489,44 @@ impl OpenCodeClient {
     }
 }
 
-fn session_permissions() -> Vec<Value> {
-    vec![
-        serde_json::json!({"permission":"*","pattern":"*","action":"deny"}),
-        serde_json::json!({"permission":"aishe_*","pattern":"*","action":"allow"}),
-        serde_json::json!({"permission":"task","pattern":"*","action":"allow"}),
-    ]
+fn push_event(events: &mut Vec<AgentEvent>, emit: &mut dyn FnMut(&AgentEvent), event: AgentEvent) {
+    emit(&event);
+    events.push(event);
+}
+
+fn push_events(
+    events: &mut Vec<AgentEvent>,
+    emit: &mut dyn FnMut(&AgentEvent),
+    incoming: Vec<AgentEvent>,
+) {
+    for event in incoming {
+        push_event(events, emit, event);
+    }
+}
+
+fn agent_for_mode(mode: Mode) -> &'static str {
+    match mode {
+        Mode::Suggest => "aishe-suggest",
+        Mode::Auto => "aishe-auto",
+        Mode::Yolo => "aishe-yolo",
+    }
+}
+
+fn suggest_output_format() -> Value {
+    serde_json::json!({
+        "type":"json_schema",
+        "retryCount":1,
+        "schema":{
+            "type":"object",
+            "additionalProperties":false,
+            "properties":{
+                "type":{"type":"string","enum":["answer","command"]},
+                "command":{"type":"string"},
+                "explanation":{"type":"string"}
+            },
+            "required":["type","command","explanation"]
+        }
+    })
 }
 
 fn read_json_bounded(response: ureq::Response) -> Result<Value> {
@@ -532,11 +593,11 @@ mod tests {
     }
 
     #[test]
-    fn session_permissions_default_deny() {
-        let rules = session_permissions();
-        assert_eq!(rules[0]["action"], "deny");
-        assert_eq!(rules[1]["permission"], "aishe_*");
-        assert!(rules.iter().all(|rule| rule["action"] != "ask"));
+    fn modes_map_only_to_aishe_owned_agents() {
+        assert_eq!(agent_for_mode(Mode::Suggest), "aishe-suggest");
+        assert_eq!(agent_for_mode(Mode::Auto), "aishe-auto");
+        assert_eq!(agent_for_mode(Mode::Yolo), "aishe-yolo");
+        assert_eq!(suggest_output_format()["type"], "json_schema");
     }
 
     #[test]
@@ -606,6 +667,7 @@ mod tests {
                     backend: "opencode".into(),
                 },
                 text: "capital of France?".into(),
+                mode: Mode::Suggest,
                 max_output_tokens: None,
             })
             .unwrap();

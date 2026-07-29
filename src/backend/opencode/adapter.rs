@@ -38,6 +38,33 @@ impl OpenCodeBackend {
             sessions,
         }
     }
+
+    pub fn events_with(
+        &self,
+        handle: &PromptHandle,
+        emit: &mut dyn FnMut(&AgentEvent),
+    ) -> Result<Vec<AgentEvent>> {
+        if self
+            .resume_idle
+            .lock()
+            .map_err(|_| anyhow::anyhow!("OpenCode resume registry is poisoned"))?
+            .remove(&handle.message_id)
+            .is_some()
+        {
+            let events = self.client.reconciled_events(handle)?;
+            for event in &events {
+                emit(event);
+            }
+            return Ok(events);
+        }
+        let stream = self
+            .streams
+            .lock()
+            .map_err(|_| anyhow::anyhow!("OpenCode stream registry is poisoned"))?
+            .remove(&handle.message_id)
+            .context("OpenCode prompt has no subscribed event stream")?;
+        self.client.read_events_with(handle, stream, emit)
+    }
 }
 
 impl AgentBackend for OpenCodeBackend {
@@ -104,22 +131,7 @@ impl AgentBackend for OpenCodeBackend {
     }
 
     fn events(&self, handle: &PromptHandle) -> Result<Vec<AgentEvent>> {
-        if self
-            .resume_idle
-            .lock()
-            .map_err(|_| anyhow::anyhow!("OpenCode resume registry is poisoned"))?
-            .remove(&handle.message_id)
-            .is_some()
-        {
-            return self.client.reconciled_events(handle);
-        }
-        let stream = self
-            .streams
-            .lock()
-            .map_err(|_| anyhow::anyhow!("OpenCode stream registry is poisoned"))?
-            .remove(&handle.message_id)
-            .context("OpenCode prompt has no subscribed event stream")?;
-        self.client.read_events(handle, stream)
+        self.events_with(handle, &mut |_| {})
     }
 
     fn snapshot(&self, session: &BackendSession) -> Result<SessionSnapshot> {

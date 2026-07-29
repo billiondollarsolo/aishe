@@ -5,8 +5,10 @@
 //! on this module so a protocol upgrade cannot leak into the zsh interface.
 
 pub mod backend;
+pub mod controller;
 pub mod events;
 pub mod policy;
+pub mod renderer;
 pub mod tool_worker;
 
 pub use backend::{

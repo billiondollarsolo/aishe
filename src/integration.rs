@@ -62,10 +62,13 @@ if [[ -z "${AISHE_SHELL_ID:-}" ]]; then
   [[ -n "$AISHE_SHELL_ID" ]] || AISHE_SHELL_ID="shell-${$}-${EPOCHREALTIME:-$RANDOM$RANDOM}"
 fi
 export AISHE_SHELL_ID
+# Yolo acceptance is deliberately scoped to this random live-shell identity
+# and removed at exit.
+: ${AISHE_ACCEPTANCE_FILE:=${TMPDIR:-/tmp}/aishe-yolo-accept-${AISHE_SHELL_ID}}
+export AISHE_ACCEPTANCE_FILE
 
-# Route one natural-language line according to AISHE_MODE. suggest/auto stage a
-# command in AISHE_PENDING_FILE (acted on by aishe_precmd in the MAIN shell,
-# where print -z / cd / export work); yolo runs its loop inline.
+# Route one natural-language line according to AISHE_MODE. Suggest stages one
+# command for review. Auto and yolo run their managed agent loops inline.
 _aishe_handle_nl() {
   local line="$1"
   [[ -z "$line" ]] && return
@@ -74,17 +77,7 @@ _aishe_handle_nl() {
       command aishe --yolo-line "$line" < /dev/tty > /dev/tty 2>&1
       ;;
     auto)
-      local cmd rc
-      cmd="$(command aishe --auto-line "$line" 2> /dev/tty)"
-      rc=$?
-      if [[ -n "$cmd" ]]; then
-        # exit 0 => safe (run it); non-zero => dangerous (pre-fill for review)
-        if (( rc == 0 )); then
-          printf 'run\n%s\n' "$cmd" > "$AISHE_PENDING_FILE"
-        else
-          printf 'fill\n%s\n' "$cmd" > "$AISHE_PENDING_FILE"
-        fi
-      fi
+      command aishe --auto-line "$line" < /dev/tty > /dev/tty 2>&1
       ;;
     *)
       local cmd
@@ -147,7 +140,7 @@ aishe_precmd() {
 # they don't accumulate in $TMPDIR. Registered as a zshexit hook below. Also caps
 # the aishe history log so it can't grow without bound across many sessions.
 aishe_zshexit() {
-  command rm -f "$AISHE_PENDING_FILE" "$AISHE_FORCE_FILE" "$AISHE_SESSION_FILE"
+  command rm -f "$AISHE_PENDING_FILE" "$AISHE_FORCE_FILE" "$AISHE_SESSION_FILE" "$AISHE_ACCEPTANCE_FILE"
   if [[ -n "$AISHE_HISTFILE" && -f "$AISHE_HISTFILE" ]]; then
     local _n
     _n=$(command wc -l < "$AISHE_HISTFILE" 2>/dev/null) || _n=0
@@ -431,7 +424,13 @@ aishe-cycle-mode() {
   emulate -L zsh
   case "${AISHE_MODE:-suggest}" in
     suggest) AISHE_MODE=auto ;;
-    auto)    AISHE_MODE=yolo ;;
+    auto)
+      if command aishe --accept-yolo < /dev/tty > /dev/tty 2>&1; then
+        AISHE_MODE=yolo
+      else
+        AISHE_MODE=auto
+      fi
+      ;;
     *)       AISHE_MODE=suggest ;;
   esac
   export AISHE_MODE
@@ -541,7 +540,7 @@ const PTY_PROMPT: &str = r#"# --- aishe branded prompt (PTY front-end; pty_promp
 if [[ -o interactive && "${AISHE_PTY_PROMPT:-1}" == 1 ]]; then
   autoload -Uz add-zsh-hook
   aishe_set_prompt() {
-    local glyph model mode status_text status_prompt base_prompt key value item
+    local glyph model mode scope status_text status_prompt base_prompt key value item
     local -A metrics
     local -a status_items
     if [[ -n "${AISHE_MODEL_FILE:-}" && -r "${AISHE_MODEL_FILE}" ]]; then
@@ -554,6 +553,7 @@ if [[ -o interactive && "${AISHE_PTY_PROMPT:-1}" == 1 ]]; then
     esac
     model="${AISHE_MODEL}"
     mode="${AISHE_MODE:-suggest}"
+    scope="${AISHE_SCOPE:-workspace}"
     metrics=()
     if [[ -n "${AISHE_STATUS_FILE:-}" && -r "${AISHE_STATUS_FILE}" ]]; then
       while IFS=$'\t' read -r key value; do
@@ -561,12 +561,13 @@ if [[ -o interactive && "${AISHE_PTY_PROMPT:-1}" == 1 ]]; then
       done < "${AISHE_STATUS_FILE}"
     fi
     status_text=""
-    status_items=("${(@s:,:)${AISHE_STATUS_ITEMS:-model,mode,session_cost,requests}}")
+    status_items=("${(@s:,:)${AISHE_STATUS_ITEMS:-model,mode,scope,session_cost,requests}}")
     for item in "${status_items[@]}"; do
       value=""
       case "$item" in
         model) value="$model" ;;
         mode) value="$mode" ;;
+        scope) value="$scope" ;;
         *) value="${metrics[$item]:-}" ;;
       esac
       [[ -n "$value" ]] && status_text="${status_text:+${status_text} · }${value}"
@@ -617,6 +618,8 @@ if [[ -z "${AISHE_SHELL_ID:-}" ]]; then
   [[ -n "$AISHE_SHELL_ID" ]] || AISHE_SHELL_ID="shell-${$}-${RANDOM}${RANDOM}"
 fi
 export AISHE_SHELL_ID
+: ${AISHE_ACCEPTANCE_FILE:=${TMPDIR:-/tmp}/aishe-yolo-accept-${AISHE_SHELL_ID}}
+export AISHE_ACCEPTANCE_FILE
 command_not_found_handle() {
   local line="$*"
   case "${AISHE_MODE:-suggest}" in
@@ -625,13 +628,7 @@ command_not_found_handle() {
       return 0
       ;;
     auto)
-      local cmd rc
-      cmd="$(command aishe --auto-line "$line" 2> /dev/tty)"
-      rc=$?
-      if [ -n "$cmd" ]; then
-        if [ "$rc" -eq 0 ]; then printf 'run\n%s\n' "$cmd" > "$AISHE_PENDING_FILE"
-        else printf 'fill\n%s\n' "$cmd" > "$AISHE_PENDING_FILE"; fi
-      fi
+      command aishe --auto-line "$line" < /dev/tty > /dev/tty 2>&1
       return 0
       ;;
     *)
@@ -692,7 +689,7 @@ esac
 # $TMPDIR. Chain onto any existing EXIT trap (don't clobber it), and only install
 # once so sourcing twice is safe.
 __aishe_cleanup() {
-  command rm -f "$AISHE_PENDING_FILE" "$AISHE_FORCE_FILE" "$AISHE_SESSION_FILE"
+  command rm -f "$AISHE_PENDING_FILE" "$AISHE_FORCE_FILE" "$AISHE_SESSION_FILE" "$AISHE_ACCEPTANCE_FILE"
 }
 __aishe_existing_exit_trap="$(trap -p EXIT)"
 case "$__aishe_existing_exit_trap" in
@@ -745,7 +742,13 @@ bind -x '"\C-x\C-f": __aishe_fix' 2>/dev/null
 __aishe_cycle_mode() {
   case "${AISHE_MODE:-suggest}" in
     suggest) export AISHE_MODE=auto ;;
-    auto)    export AISHE_MODE=yolo ;;
+    auto)
+      if command aishe --accept-yolo < /dev/tty > /dev/tty 2>&1; then
+        export AISHE_MODE=yolo
+      else
+        export AISHE_MODE=auto
+      fi
+      ;;
     *)       export AISHE_MODE=suggest ;;
   esac
   printf '\naishe mode: %s\n' "$AISHE_MODE"

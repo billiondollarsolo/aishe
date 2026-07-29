@@ -20,6 +20,9 @@ fn temp_config_home() -> std::path::PathBuf {
 mode = "suggest"
 provider = "anthropic"
 
+[backend]
+engine = "native"
+
 [providers.anthropic]
 base_url = "https://api.anthropic.com"
 api_key_env = "ANTHROPIC_API_KEY"

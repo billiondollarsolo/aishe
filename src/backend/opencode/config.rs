@@ -84,7 +84,6 @@ impl ProviderSpec {
 pub fn generated_config(plugin_path: &Path, provider: Option<&ProviderSpec>) -> Result<Value> {
     let plugin_url = url::Url::from_file_path(plugin_path)
         .map_err(|_| anyhow::anyhow!("trusted plugin path cannot be represented as a file URL"))?;
-    let permissions = permission_policy();
     let disabled_tools = disabled_builtin_tools();
     let mut config = serde_json::json!({
         "$schema": "https://opencode.ai/config.json",
@@ -97,24 +96,59 @@ pub fn generated_config(plugin_path: &Path, provider: Option<&ProviderSpec>) -> 
         "instructions": [],
         "skills": {"paths":[]},
         "plugin": [plugin_url.as_str()],
-        "permission": permissions,
+        "permission": {"*":"deny"},
         "tools": disabled_tools,
-        "default_agent": "build",
+        "default_agent": "aishe-suggest",
         "subagent_depth": 1,
         "agent": {},
         "compaction": {"auto":true,"prune":true},
         "tool_output": {"max_lines":2000,"max_bytes":524288}
     });
 
-    let agents = ["build", "plan", "general", "explore"];
     let mut agent_config = Map::new();
-    for name in agents {
+    agent_config.insert(
+        "aishe-suggest".into(),
+        serde_json::json!({
+            "description":"Aishe one-turn answer and shell-command suggestion agent.",
+            "mode":"primary",
+            "prompt":SUGGEST_PROMPT,
+            "permission":{"*":"deny"},
+            "tools":disabled_builtin_tools(),
+            "steps":1
+        }),
+    );
+    agent_config.insert(
+        "aishe-auto".into(),
+        serde_json::json!({
+            "description":"Aishe approval-gated command-line agent.",
+            "mode":"primary",
+            "prompt":AUTO_PROMPT,
+            "permission":bridge_permissions(true),
+            "tools":disabled_builtin_tools(),
+            "steps":50
+        }),
+    );
+    agent_config.insert(
+        "aishe-yolo".into(),
+        serde_json::json!({
+            "description":"Aishe scope-authorized autonomous command-line agent.",
+            "mode":"primary",
+            "prompt":YOLO_PROMPT,
+            "permission":bridge_permissions(true),
+            "tools":disabled_builtin_tools(),
+            "steps":100
+        }),
+    );
+    for name in ["general", "explore"] {
         agent_config.insert(
             name.into(),
             serde_json::json!({
-                "permission": permission_policy(),
-                "tools": disabled_builtin_tools(),
-                "steps": 100
+                "description":"Aishe child agent. All host effects remain behind the foreground Aishe bridge.",
+                "mode":"subagent",
+                "prompt":CHILD_PROMPT,
+                "permission":bridge_permissions(false),
+                "tools":disabled_builtin_tools(),
+                "steps":50
             }),
         );
     }
@@ -144,7 +178,13 @@ pub fn generated_config(plugin_path: &Path, provider: Option<&ProviderSpec>) -> 
         let model = format!("{}/{}", provider.provider_id, provider.model_id);
         config["model"] = Value::String(model.clone());
         config["small_model"] = Value::String(model.clone());
-        for name in agents {
+        for name in [
+            "aishe-suggest",
+            "aishe-auto",
+            "aishe-yolo",
+            "general",
+            "explore",
+        ] {
             config["agent"][name]["model"] = Value::String(model.clone());
         }
     }
@@ -163,15 +203,42 @@ fn append_v1(base: &str) -> String {
     format!("{}/v1", base.trim_end_matches('/'))
 }
 
-fn permission_policy() -> Value {
-    serde_json::json!({
+fn bridge_permissions(subagents: bool) -> Value {
+    let mut permissions = serde_json::json!({
         "*": "deny",
         "aishe_*": "allow",
-        "task": "allow",
         "todowrite": "allow",
         "todoread": "allow"
-    })
+    });
+    if subagents {
+        permissions["task"] = Value::String("allow".into());
+    }
+    permissions
 }
+
+const SUGGEST_PROMPT: &str = r#"You are Aishe's concise command-line assistant.
+Answer the user's full request. If the best response is one runnable shell command,
+return type=command and put only that command in command. Otherwise return
+type=answer, leave command empty, and put the answer in explanation. Never invent
+a command for a factual or conversational question. The required JSON schema is
+the authoritative output contract."#;
+
+const AUTO_PROMPT: &str = r#"You are Aishe's approval-gated command-line agent.
+Work to completion using only aishe_* proxy tools. Safe read-only actions may run
+immediately; Aishe decides whether any other action needs approval. Never request
+OpenCode built-in host tools or claim an action happened without a successful tool
+result. Keep terminal-facing explanations concise."#;
+
+const YOLO_PROMPT: &str = r#"You are Aishe's autonomous command-line agent.
+Work to completion using only aishe_* proxy tools and optional child agents.
+Aishe has already obtained the user's session-scoped authorization and enforces
+workspace/host/network boundaries outside the model. Never ask for per-action
+approval, never attempt to widen scope, and never claim an action happened without
+a successful tool result. Inspect, edit, test, and verify your work."#;
+
+const CHILD_PROMPT: &str = r#"You are an Aishe child agent. Complete the delegated
+subtask using only aishe_* proxy tools. You inherit the parent Aishe lease and may
+not widen its workspace, host, or network authority. Report concise evidence."#;
 
 fn disabled_builtin_tools() -> Value {
     serde_json::json!({
@@ -298,7 +365,7 @@ mod tests {
         let spec = spec_for("openai", "https://api.openai.com/v1", "responses", true);
         let config = generated_config(Path::new("/private/aishe-plugin.mjs"), Some(&spec)).unwrap();
         assert_eq!(config["permission"]["*"], "deny");
-        assert_eq!(config["permission"]["aishe_*"], "allow");
+        assert!(config["permission"].get("aishe_*").is_none());
         assert_eq!(config["tools"]["bash"], false);
         assert_eq!(config["mcp"], serde_json::json!({}));
         assert_eq!(config["share"], "disabled");
@@ -306,10 +373,24 @@ mod tests {
             config["provider"]["aishe-openai"]["options"]["apiKey"],
             "{env:AISHE_PROVIDER_API_KEY}"
         );
-        for agent in ["build", "plan", "general", "explore"] {
+        for agent in [
+            "aishe-suggest",
+            "aishe-auto",
+            "aishe-yolo",
+            "general",
+            "explore",
+        ] {
             assert_eq!(config["agent"][agent]["permission"]["*"], "deny");
             assert_eq!(config["agent"][agent]["tools"]["read"], false);
             assert_eq!(config["agent"][agent]["model"], "aishe-openai/model/test");
         }
+        assert!(config["agent"]["aishe-suggest"]["permission"]
+            .get("aishe_*")
+            .is_none());
+        assert_eq!(
+            config["agent"]["aishe-auto"]["permission"]["aishe_*"],
+            "allow"
+        );
+        assert_eq!(config["agent"]["aishe-yolo"]["permission"]["task"], "allow");
     }
 }

@@ -34,6 +34,7 @@ pub struct BackendSession {
 pub struct PromptRequest {
     pub session: BackendSession,
     pub text: String,
+    pub mode: Mode,
     pub max_output_tokens: Option<u64>,
 }
 

@@ -15,6 +15,9 @@ pub struct EventMapper {
     completed_parts: HashSet<String>,
     tool_statuses: HashMap<String, String>,
     emitted_usage_messages: HashSet<String>,
+    emitted_structured_messages: HashSet<String>,
+    child_sessions: HashSet<String>,
+    completed_children: HashSet<String>,
     reasoning_active: bool,
 }
 
@@ -48,6 +51,7 @@ impl EventMapper {
                         .and_then(Value::as_str)
                         == Some(self.session_id.as_str())
                 {
+                    self.child_sessions.insert(session.to_string());
                     return vec![AgentEvent::SubagentStarted {
                         parent: self.session_id.clone(),
                         child: session.to_string(),
@@ -58,6 +62,22 @@ impl EventMapper {
                             .unwrap_or("subagent")
                             .to_string(),
                     }];
+                }
+                if self.child_sessions.contains(session) {
+                    return match kind {
+                        "message.updated" => self.child_message_updated(properties),
+                        "session.idle" => self.child_completed(session),
+                        "session.status"
+                            if properties
+                                .get("status")
+                                .and_then(|status| status.get("type"))
+                                .and_then(Value::as_str)
+                                == Some("idle") =>
+                        {
+                            self.child_completed(session)
+                        }
+                        _ => Vec::new(),
+                    };
                 }
                 return Vec::new();
             }
@@ -138,6 +158,37 @@ impl EventMapper {
         }
     }
 
+    fn child_message_updated(&mut self, properties: &Value) -> Vec<AgentEvent> {
+        let info = properties.get("info").unwrap_or(&Value::Null);
+        if info.get("role").and_then(Value::as_str) != Some("assistant")
+            || info
+                .get("time")
+                .and_then(|time| time.get("completed"))
+                .is_none()
+        {
+            return Vec::new();
+        }
+        let Some(message_id) = info.get("id").and_then(Value::as_str) else {
+            return Vec::new();
+        };
+        if !self.emitted_usage_messages.insert(message_id.to_string()) {
+            return Vec::new();
+        }
+        vec![AgentEvent::Usage {
+            usage: usage_from(info),
+        }]
+    }
+
+    fn child_completed(&mut self, child: &str) -> Vec<AgentEvent> {
+        if !self.completed_children.insert(child.to_string()) {
+            return Vec::new();
+        }
+        vec![AgentEvent::SubagentCompleted {
+            child: child.to_string(),
+            result: String::new(),
+        }]
+    }
+
     fn message_updated(&mut self, properties: &Value) -> Vec<AgentEvent> {
         let info = properties.get("info").unwrap_or(&Value::Null);
         if info.get("role").and_then(Value::as_str) != Some("assistant") {
@@ -153,13 +204,27 @@ impl EventMapper {
             .get("time")
             .and_then(|time| time.get("completed"))
             .is_none()
-            || !self.emitted_usage_messages.insert(message_id.to_string())
         {
             return Vec::new();
         }
-        vec![AgentEvent::Usage {
-            usage: usage_from(info),
-        }]
+        let mut events = Vec::new();
+        if let Some(structured) = info.get("structured") {
+            if !structured.is_null()
+                && self
+                    .emitted_structured_messages
+                    .insert(message_id.to_string())
+            {
+                events.push(AgentEvent::TextCompleted {
+                    text: serde_json::to_string(structured).unwrap_or_default(),
+                });
+            }
+        }
+        if self.emitted_usage_messages.insert(message_id.to_string()) {
+            events.push(AgentEvent::Usage {
+                usage: usage_from(info),
+            });
+        }
+        events
     }
 
     fn part_delta(&mut self, properties: &Value) -> Vec<AgentEvent> {
@@ -507,5 +572,65 @@ mod tests {
             mapper.map(&permission).as_slice(),
             [AgentEvent::Failed { error }] if error.code == "opencode_permission_escape"
         ));
+    }
+
+    #[test]
+    fn structured_output_and_child_usage_are_authoritative_once() {
+        let mut mapper = EventMapper::new("ses_parent", "msg_user");
+        let structured = envelope(
+            "message.updated",
+            serde_json::json!({
+                "sessionID":"ses_parent",
+                "info":{
+                    "id":"msg_answer","role":"assistant","parentID":"msg_user",
+                    "time":{"completed":2},
+                    "structured":{"type":"answer","command":"","explanation":"Paris"},
+                    "tokens":{"input":9,"output":3},"cost":0.01
+                }
+            }),
+        );
+        let mapped = mapper.map(&structured);
+        assert!(matches!(
+            mapped.as_slice(),
+            [AgentEvent::TextCompleted { text }, AgentEvent::Usage { .. }]
+                if text.contains("\"explanation\":\"Paris\"")
+        ));
+        assert!(mapper.map(&structured).is_empty());
+
+        let child = envelope(
+            "session.created",
+            serde_json::json!({
+                "sessionID":"ses_child",
+                "info":{"parentID":"ses_parent","agent":"explore"}
+            }),
+        );
+        assert!(matches!(
+            mapper.map(&child).as_slice(),
+            [AgentEvent::SubagentStarted { .. }]
+        ));
+        let child_usage = envelope(
+            "message.updated",
+            serde_json::json!({
+                "sessionID":"ses_child",
+                "info":{
+                    "id":"msg_child_answer","role":"assistant","parentID":"msg_child_user",
+                    "time":{"completed":3},"tokens":{"input":4,"output":2},"cost":0.005
+                }
+            }),
+        );
+        assert!(matches!(
+            mapper.map(&child_usage).as_slice(),
+            [AgentEvent::Usage { usage }] if usage.input_tokens == 4
+        ));
+        assert!(mapper.map(&child_usage).is_empty());
+        let idle = envelope(
+            "session.status",
+            serde_json::json!({"sessionID":"ses_child","status":{"type":"idle"}}),
+        );
+        assert!(matches!(
+            mapper.map(&idle).as_slice(),
+            [AgentEvent::SubagentCompleted { .. }]
+        ));
+        assert!(mapper.map(&idle).is_empty());
     }
 }

@@ -74,8 +74,14 @@ pub fn run_zsh(config: &Config, history_log: &std::path::Path) -> Result<u8> {
     cmd.env("ZDOTDIR", &zdotdir);
     cmd.env("AISHE_OUR_ZDOTDIR", &zdotdir);
     cmd.env("AISHE_REAL_ZDOTDIR", &real_zdotdir);
-    cmd.env("AISHE_SHELL_ID", random_shell_id());
+    let shell_id = random_shell_id();
+    cmd.env("AISHE_SHELL_ID", &shell_id);
     cmd.env("AISHE_MODE", &config.aishe.mode);
+    cmd.env("AISHE_SCOPE", &config.backend.default_scope);
+    let acceptance_file = std::env::temp_dir().join(format!("aishe-yolo-accept-{shell_id}"));
+    std::fs::remove_file(&acceptance_file).ok();
+    cmd.env("AISHE_ACCEPTANCE_FILE", &acceptance_file);
+    let _acceptance_guard = FileGuard(acceptance_file);
     let display_model = crate::commands::display_safe(config.active_model());
     cmd.env("AISHE_MODEL", &display_model);
     cmd.env(

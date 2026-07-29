@@ -509,7 +509,7 @@ fn agent_executor(work: &ToolWork, cwd: &Path) -> Result<Executor> {
                     &work.workspace,
                     cwd,
                     work.network,
-                ));
+                )?);
             }
             state => {
                 anyhow::bail!(

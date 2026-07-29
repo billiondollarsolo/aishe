@@ -94,7 +94,29 @@ pub fn agent_bwrap_argv(
     workspace: &std::path::Path,
     cwd: &std::path::Path,
     network: crate::agent::NetworkPolicy,
-) -> Vec<String> {
+) -> anyhow::Result<Vec<String>> {
+    let workspace = workspace
+        .canonicalize()
+        .map_err(|error| anyhow::anyhow!("invalid sandbox workspace: {error}"))?;
+    let cwd = cwd
+        .canonicalize()
+        .map_err(|error| anyhow::anyhow!("invalid sandbox cwd: {error}"))?;
+    if !cwd.starts_with(&workspace) {
+        anyhow::bail!("sandbox cwd escapes the workspace");
+    }
+    let home = dirs::home_dir()
+        .and_then(|path| path.canonicalize().ok())
+        .filter(|path| path != std::path::Path::new("/"));
+    if home
+        .as_ref()
+        .is_some_and(|home| home.starts_with(&workspace))
+    {
+        anyhow::bail!(
+            "workspace scope cannot be the home directory or one of its parents; \
+             use a project directory or explicitly authorize host scope"
+        );
+    }
+
     let workspace = workspace.display().to_string();
     let cwd = cwd.display().to_string();
     let mut args = [
@@ -108,20 +130,46 @@ pub fn agent_bwrap_argv(
         "/dev",
         "--proc",
         "/proc",
-        "--bind",
-        &workspace,
-        &workspace,
-        "--chdir",
-        &cwd,
     ]
     .iter()
     .map(|value| value.to_string())
     .collect::<Vec<_>>();
+
+    if let Some(home) = home {
+        let home = home.display().to_string();
+        if std::path::Path::new(&workspace).starts_with(&home) {
+            // Keep a private reference to the real project before masking the
+            // entire home directory, then remount only that project at its
+            // original path. Credentials and sibling files remain invisible.
+            args.extend([
+                "--tmpfs".into(),
+                "/run/aishe".into(),
+                "--dir".into(),
+                "/run/aishe/workspace".into(),
+                "--bind".into(),
+                workspace.clone(),
+                "/run/aishe/workspace".into(),
+                "--tmpfs".into(),
+                home,
+                "--dir".into(),
+                workspace.clone(),
+                "--bind".into(),
+                "/run/aishe/workspace".into(),
+                workspace.clone(),
+            ]);
+        } else {
+            args.extend(["--tmpfs".into(), home]);
+            args.extend(["--bind".into(), workspace.clone(), workspace.clone()]);
+        }
+    } else {
+        args.extend(["--bind".into(), workspace.clone(), workspace.clone()]);
+    }
+    args.extend(["--chdir".into(), cwd]);
     if network == crate::agent::NetworkPolicy::Deny {
         args.push("--unshare-net".into());
     }
     args.extend(["--die-with-parent".into(), "--".into()]);
-    args
+    Ok(args)
 }
 
 /// When the yolo loop pauses to confirm a `run_command` call.
@@ -623,17 +671,22 @@ mod tests {
 
     #[test]
     fn agent_bwrap_profile_has_private_tmp_and_optional_network() {
-        let workspace = std::path::Path::new("/tmp/project");
-        let denied = agent_bwrap_argv(workspace, workspace, crate::agent::NetworkPolicy::Deny);
+        let workspace =
+            std::env::temp_dir().join(format!("aishe-agent-bwrap-test-{}", std::process::id()));
+        std::fs::create_dir_all(&workspace).unwrap();
+        let denied =
+            agent_bwrap_argv(&workspace, &workspace, crate::agent::NetworkPolicy::Deny).unwrap();
         assert!(denied
             .windows(2)
             .any(|values| values == ["--tmpfs", "/tmp"]));
         assert!(denied.iter().any(|value| value == "--unshare-net"));
         assert!(denied
             .windows(3)
-            .any(|values| values == ["--bind", "/tmp/project", "/tmp/project"]));
-        let allowed = agent_bwrap_argv(workspace, workspace, crate::agent::NetworkPolicy::Allow);
+            .any(|values| values[0] == "--bind" && values[1] == values[2]));
+        let allowed =
+            agent_bwrap_argv(&workspace, &workspace, crate::agent::NetworkPolicy::Allow).unwrap();
         assert!(!allowed.iter().any(|value| value == "--unshare-net"));
+        std::fs::remove_dir_all(workspace).unwrap();
     }
 
     fn cfg_with(confirm: &str, dangerous: bool) -> Config {

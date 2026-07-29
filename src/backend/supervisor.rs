@@ -118,6 +118,7 @@ pub fn ensure_running(config: &crate::config::Config) -> Result<SupervisorState>
     let launch = ProviderLaunch::from_aishe(config)?;
     if let Some(state) = super::control::verified_state()? {
         if state.runtime_version == manager.manifest().version
+            && state.plugin_sha256 == env!("AISHE_OPENCODE_PLUGIN_SHA256")
             && state.provider_id == launch.spec.provider_id
             && state.model_id == launch.spec.model_id
         {
@@ -146,6 +147,7 @@ pub fn ensure_running(config: &crate::config::Config) -> Result<SupervisorState>
     loop {
         if let Some(state) = super::control::verified_state()? {
             if state.runtime_version != manager.manifest().version
+                || state.plugin_sha256 != env!("AISHE_OPENCODE_PLUGIN_SHA256")
                 || state.provider_id != bootstrap.provider.provider_id
                 || state.model_id != bootstrap.provider.model_id
             {
@@ -234,6 +236,7 @@ pub fn run_supervisor() -> Result<u8> {
         control_url,
         opencode_url,
         manager.manifest().version.clone(),
+        env!("AISHE_OPENCODE_PLUGIN_SHA256").into(),
         bootstrap.provider.provider_id,
         bootstrap.provider.model_id,
         startup_nonce,
@@ -723,9 +726,10 @@ mod tests {
         .unwrap();
         let permission = config.get("permission").unwrap();
         assert_eq!(permission.get("*").and_then(|v| v.as_str()), Some("deny"));
+        assert!(permission.get("aishe_*").is_none());
         assert_eq!(
-            permission.get("aishe_*").and_then(|v| v.as_str()),
-            Some("allow")
+            config["agent"]["aishe-auto"]["permission"]["aishe_*"],
+            "allow"
         );
         for builtin in ["bash", "read", "edit", "glob", "grep", "webfetch", "skill"] {
             assert_ne!(

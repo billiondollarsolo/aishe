@@ -416,6 +416,7 @@ fn default_status_line_items() -> Vec<String> {
     vec![
         "model".to_string(),
         "mode".to_string(),
+        "scope".to_string(),
         "session_cost".to_string(),
         "requests".to_string(),
     ]

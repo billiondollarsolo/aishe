@@ -834,9 +834,9 @@ fn prompt_rate(label: &str) -> Result<PromptResult<f64>> {
 
 fn choose_status_items(draft: &mut Draft) -> Result<bool> {
     let choices = vec![
-        "Compact — model, mode, session cost, requests".into(),
-        "Detailed — model, mode, last/session tokens and costs, requests".into(),
-        "Identity — model and mode only".into(),
+        "Compact — model, mode, scope, session cost, requests".into(),
+        "Detailed — model, mode, scope, last/session tokens and costs, requests".into(),
+        "Identity — model, mode, and scope only".into(),
         "Custom ordered fields…".into(),
     ];
     match promptui::menu(
@@ -844,10 +844,11 @@ fn choose_status_items(draft: &mut Draft) -> Result<bool> {
         &choices,
         0,
         true,
-        "Fields: model, mode, last_tokens, last_cost, session_tokens, session_cost, requests.",
+        "Fields: model, mode, scope, last_tokens, last_cost, session_tokens, session_cost, requests.",
     )? {
         MenuResult::Selected(0) => {
-            draft.config.aishe.status_line_items = ["model", "mode", "session_cost", "requests"]
+            draft.config.aishe.status_line_items =
+                ["model", "mode", "scope", "session_cost", "requests"]
                 .into_iter()
                 .map(str::to_string)
                 .collect();
@@ -856,6 +857,7 @@ fn choose_status_items(draft: &mut Draft) -> Result<bool> {
             draft.config.aishe.status_line_items = [
                 "model",
                 "mode",
+                "scope",
                 "last_tokens",
                 "last_cost",
                 "session_tokens",
@@ -868,7 +870,10 @@ fn choose_status_items(draft: &mut Draft) -> Result<bool> {
         }
         MenuResult::Selected(2) => {
             draft.config.aishe.status_line_items =
-                ["model", "mode"].into_iter().map(str::to_string).collect();
+                ["model", "mode", "scope"]
+                    .into_iter()
+                    .map(str::to_string)
+                    .collect();
         }
         MenuResult::Selected(3) => {
             let default = draft.config.aishe.status_line_items.join(",");
@@ -901,6 +906,7 @@ fn validate_status_items(items: &[String]) -> Result<()> {
     const ALLOWED: &[&str] = &[
         "model",
         "mode",
+        "scope",
         "last_tokens",
         "last_cost",
         "session_tokens",
@@ -924,6 +930,7 @@ fn print_status_preview(config: &Config) {
         .map(|item| match item.as_str() {
             "model" => config.active_model().to_string(),
             "mode" => config.aishe.mode.clone(),
+            "scope" => config.backend.default_scope.clone(),
             "last_tokens" => "last 1,697/374 tok".into(),
             "last_cost" => "last ~$0.0012".into(),
             "session_tokens" => "session 8,421/1,904 tok".into(),

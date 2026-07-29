@@ -12,6 +12,8 @@ use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use crossterm::style::Stylize;
 
+use aishe::agent::controller::{TurnFailure, TurnOptions, TurnOutcome};
+use aishe::agent::Mode as AgentMode;
 use aishe::commands::CommandRegistry;
 use aishe::config::Config;
 use aishe::dispatcher::{self, CommandCache, Dispatch};
@@ -116,6 +118,9 @@ struct Args {
     /// corrected one. Reads the exit status from `$AISHE_LAST_EXIT`.
     #[arg(long, hide = true)]
     fix_line: Option<String>,
+    /// (shell hook) Accept the configured yolo scope for this live shell.
+    #[arg(long, hide = true)]
+    accept_yolo: bool,
     #[command(subcommand)]
     cmd: Option<Cmd>,
 }
@@ -894,6 +899,16 @@ fn run() -> Result<u8> {
         args.provider.as_deref(),
         args.model.as_deref(),
     );
+    if args.accept_yolo {
+        init_audit(&config);
+        return match ensure_yolo_acceptance(&config) {
+            Ok(()) => Ok(0),
+            Err(error) => {
+                eprintln!("aishe: {}", aishe::redact::redact(&error.to_string()));
+                Ok(1)
+            }
+        };
+    }
 
     // First-class inspection / settings subcommands. They print (or persist a
     // setting) and exit, so they work the same in the zsh-PTY, a bare shell, or a
@@ -1076,6 +1091,7 @@ fn run() -> Result<u8> {
         && args.yolo_line.is_none()
         && args.auto_line.is_none()
         && args.fix_line.is_none()
+        && !args.accept_yolo
         && std::io::stdin().is_terminal();
     if interactive_entry {
         notify_project_overlay(&project_overlay);
@@ -1092,6 +1108,7 @@ fn run() -> Result<u8> {
         || args.yolo_line.is_some()
         || args.auto_line.is_some()
         || args.fix_line.is_some()
+        || args.accept_yolo
         || matches!(args.cmd, Some(Cmd::Suggest { .. }));
 
     // The interactive shell is the zsh-PTY front-end: it drives the user's real
@@ -1310,12 +1327,307 @@ fn print_llm_unavailable(config: &Config) {
     eprintln!("aishe: LLM not configured — run `aishe doctor` for details");
 }
 
+static YOLO_WORKSPACE_ACCEPTED: AtomicBool = AtomicBool::new(false);
+static YOLO_HOST_ACCEPTED: AtomicBool = AtomicBool::new(false);
+
+fn ensure_yolo_acceptance(config: &Config) -> Result<()> {
+    use aishe::agent::ExecutionScope;
+    use std::io::Write;
+
+    let scope = ExecutionScope::parse(&config.backend.default_scope)
+        .context("backend.default_scope must be workspace or host")?;
+    let in_process = match scope {
+        ExecutionScope::Workspace => &YOLO_WORKSPACE_ACCEPTED,
+        ExecutionScope::Host => &YOLO_HOST_ACCEPTED,
+    };
+    if in_process.load(Ordering::SeqCst) || acceptance_file_contains(scope) {
+        in_process.store(true, Ordering::SeqCst);
+        return Ok(());
+    }
+    if !std::io::stdin().is_terminal() || !std::io::stdout().is_terminal() {
+        anyhow::bail!(
+            "yolo {:?} requires one interactive acceptance in each Aishe shell",
+            scope
+        );
+    }
+
+    let workspace = std::env::current_dir()
+        .context("resolving yolo workspace")
+        .and_then(|path| {
+            aishe::backend::opencode::session::SessionStore::resolve_workspace(&path)
+        })?;
+    println!();
+    match scope {
+        ExecutionScope::Workspace => {
+            #[cfg(target_os = "linux")]
+            let sandbox = match aishe::dependencies::bubblewrap_probe() {
+                aishe::dependencies::BubblewrapState::Usable { .. } => "bubblewrap verified",
+                state => {
+                    anyhow::bail!(
+                        "yolo workspace requires functional bubblewrap; current state: {state:?}. \
+                         Install it with your system package manager or rerun `aishe setup`"
+                    )
+                }
+            };
+            #[cfg(not(target_os = "linux"))]
+            let sandbox = "policy checks only — no supported OS sandbox";
+            println!("{}", "Enter yolo · workspace?".yellow().bold());
+            println!();
+            println!(
+                "The agent may run commands and change files without asking again in this shell session."
+            );
+            println!("Actions are confined to:");
+            println!("  {}", workspace.display());
+            println!("Network: {}", config.backend.workspace_network);
+            println!("Sandbox: {sandbox}");
+            #[cfg(target_os = "macos")]
+            println!(
+                "{}",
+                "Warning: macOS workspace mode is not kernel-isolated.".yellow()
+            );
+            print!("\nType yolo to continue: ");
+        }
+        ExecutionScope::Host => {
+            if !config.sandbox.allow_host_yolo {
+                anyhow::bail!("yolo host scope is disabled by policy");
+            }
+            println!("{}", "Enter yolo · host?".red().bold());
+            println!();
+            println!(
+                "The agent may execute any command available to your user, use sudo, modify system files, access the network, and make irreversible changes without asking again in this shell session."
+            );
+            #[cfg(target_os = "macos")]
+            println!(
+                "{}",
+                "Warning: actions execute without a supported OS sandbox.".yellow()
+            );
+            print!("\nType yolo-host to continue: ");
+        }
+    }
+    std::io::stdout().flush().ok();
+    let mut answer = String::new();
+    std::io::stdin()
+        .read_line(&mut answer)
+        .context("reading yolo acceptance")?;
+    let expected = match scope {
+        ExecutionScope::Workspace => "yolo",
+        ExecutionScope::Host => "yolo-host",
+    };
+    if answer.trim() != expected {
+        anyhow::bail!("yolo scope was not accepted");
+    }
+    persist_acceptance(scope)?;
+    in_process.store(true, Ordering::SeqCst);
+    aishe::audit::action(
+        "agent:yolo_accept",
+        &format!("scope={scope:?} workspace={}", workspace.display()),
+        Some(0),
+    );
+    Ok(())
+}
+
+fn acceptance_file_contains(scope: aishe::agent::ExecutionScope) -> bool {
+    let Ok(Some(path)) = acceptance_path() else {
+        return false;
+    };
+    let Ok(metadata) = std::fs::symlink_metadata(&path) else {
+        return false;
+    };
+    if metadata.file_type().is_symlink() || !metadata.is_file() || metadata.len() > 1024 {
+        return false;
+    }
+    let marker = match scope {
+        aishe::agent::ExecutionScope::Workspace => "workspace",
+        aishe::agent::ExecutionScope::Host => "host",
+    };
+    std::fs::read_to_string(path)
+        .ok()
+        .is_some_and(|text| text.lines().any(|line| line == marker))
+}
+
+fn persist_acceptance(scope: aishe::agent::ExecutionScope) -> Result<()> {
+    use std::io::Write;
+
+    let Some(path) = acceptance_path()? else {
+        // Direct single-process invocations need no durable marker.
+        return Ok(());
+    };
+    if path.exists() {
+        let metadata = std::fs::symlink_metadata(&path)?;
+        if metadata.file_type().is_symlink() || !metadata.is_file() || metadata.len() > 1024 {
+            anyhow::bail!("AISHE_ACCEPTANCE_FILE is not a bounded regular file");
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::{MetadataExt, PermissionsExt};
+            if metadata.uid() != unsafe { libc::geteuid() }
+                || metadata.permissions().mode() & 0o077 != 0
+            {
+                anyhow::bail!("AISHE_ACCEPTANCE_FILE has unsafe ownership or permissions");
+            }
+        }
+    }
+    let mut options = std::fs::OpenOptions::new();
+    options.create(true).append(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600).custom_flags(libc::O_NOFOLLOW);
+    }
+    let mut file = options
+        .open(&path)
+        .with_context(|| format!("opening per-shell acceptance {}", path.display()))?;
+    let marker = match scope {
+        aishe::agent::ExecutionScope::Workspace => "workspace",
+        aishe::agent::ExecutionScope::Host => "host",
+    };
+    writeln!(file, "{marker}")?;
+    file.sync_all()?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))?;
+    }
+    Ok(())
+}
+
+fn acceptance_path() -> Result<Option<std::path::PathBuf>> {
+    let Some(path) = std::env::var_os("AISHE_ACCEPTANCE_FILE")
+        .filter(|value| !value.is_empty())
+        .map(std::path::PathBuf::from)
+    else {
+        return Ok(None);
+    };
+    let shell_id =
+        std::env::var("AISHE_SHELL_ID").context("AISHE_ACCEPTANCE_FILE requires AISHE_SHELL_ID")?;
+    if !(16..=128).contains(&shell_id.len())
+        || !shell_id
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
+    {
+        anyhow::bail!("AISHE_SHELL_ID is invalid");
+    }
+    let expected = format!("aishe-yolo-accept-{shell_id}");
+    if path.file_name().and_then(|value| value.to_str()) != Some(expected.as_str()) {
+        anyhow::bail!("AISHE_ACCEPTANCE_FILE does not match this shell identity");
+    }
+    let expected_parent = std::env::temp_dir()
+        .canonicalize()
+        .context("resolving the temporary directory")?;
+    let parent = path
+        .parent()
+        .context("AISHE_ACCEPTANCE_FILE has no parent")?
+        .canonicalize()
+        .context("resolving AISHE_ACCEPTANCE_FILE parent")?;
+    if parent != expected_parent {
+        anyhow::bail!("AISHE_ACCEPTANCE_FILE must be in the private shell temporary directory");
+    }
+    Ok(Some(path))
+}
+
+/// Try the managed agent engine. `Ok(None)` is the only compatibility-fallback
+/// signal and is returned solely before prompt admission.
+fn managed_turn(
+    config: &Config,
+    prompt: &str,
+    mode: AgentMode,
+    render: bool,
+) -> Result<Option<TurnOutcome>> {
+    if config.backend.engine != "opencode" {
+        return Ok(None);
+    }
+    if mode == AgentMode::Yolo {
+        ensure_yolo_acceptance(config)?;
+    }
+    let options = TurnOptions::from_config(config, mode, render)?;
+    match aishe::agent::controller::run_turn(config, prompt, options) {
+        Ok(outcome) => {
+            record_managed_usage(&outcome, config);
+            Ok(Some(outcome))
+        }
+        Err(TurnFailure::PreAdmission(error))
+            if config.backend.fallback == "native" && mode != AgentMode::Yolo =>
+        {
+            eprintln!(
+                "{}",
+                "aishe: agent engine unavailable; using native fallback".yellow()
+            );
+            aishe::audit::action(
+                "backend:fallback",
+                &aishe::redact::redact(&error.to_string()),
+                None,
+            );
+            Ok(None)
+        }
+        Err(error) => {
+            let admitted = error.admitted();
+            let detail = aishe::redact::redact(&error.into_error().to_string());
+            if admitted {
+                anyhow::bail!(
+                    "managed agent turn failed after admission; it was not retried: {detail}"
+                );
+            }
+            anyhow::bail!("managed agent engine unavailable: {detail} (run `aishe backend status`)")
+        }
+    }
+}
+
+fn record_managed_usage(outcome: &TurnOutcome, config: &Config) {
+    let usage = aishe::usage::Usage {
+        input: outcome.usage.input_tokens,
+        output: outcome.usage.output_tokens,
+        requests: outcome
+            .events
+            .iter()
+            .filter(|event| matches!(event, aishe::agent::AgentEvent::Usage { .. }))
+            .count() as u64,
+    };
+    if usage.is_empty() {
+        return;
+    }
+    let Ok(path) = std::env::var("AISHE_USAGE_FILE") else {
+        return;
+    };
+    if path.is_empty() {
+        return;
+    }
+    aishe::usagelog::append(std::path::Path::new(&path), usage, config.active_model());
+    if let Ok(status_path) = std::env::var("AISHE_STATUS_FILE") {
+        if !status_path.is_empty() {
+            aishe::usagelog::write_status(
+                std::path::Path::new(&status_path),
+                std::path::Path::new(&path),
+                &config.pricing,
+                Some((usage, config.active_model())),
+                &config.aishe.status_line_items,
+            );
+        }
+    }
+}
+
 fn suggest_line(
     line: &str,
     executor: &mut Executor,
     provider: Option<&dyn Provider>,
     config: &Config,
 ) -> Result<u8> {
+    if config.backend.engine == "opencode" {
+        arm_hook_budget(config);
+        let managed = managed_turn(config, line, AgentMode::Suggest, false);
+        cancel_hook_budget();
+        match managed {
+            Ok(Some(outcome)) => {
+                let suggestion = modes::suggest::parse_suggestion(&outcome.text);
+                emit_suggest_hook(&suggestion, executor);
+                return Ok(0);
+            }
+            Ok(None) => {}
+            Err(error) => {
+                eprintln!("aishe: {}", aishe::redact::redact(&error.to_string()));
+                return Ok(1);
+            }
+        }
+    }
     let Some(p) = provider else {
         print_llm_unavailable(config);
         return Ok(1);
@@ -1332,7 +1644,17 @@ fn suggest_line(
     let suggestion = modes::suggest::request(line, p, executor, config, session.history())?;
     // The blocking network work is done; let the rest run unbounded.
     cancel_hook_budget();
-    let reply = match &suggestion {
+    let reply = emit_suggest_hook(&suggestion, executor);
+    if let Some(path) = &mem {
+        session.record_user(line);
+        session.record_assistant(&reply);
+        session.save_persisted(path);
+    }
+    Ok(0)
+}
+
+fn emit_suggest_hook(suggestion: &modes::suggest::Suggestion, executor: &Executor) -> String {
+    match suggestion {
         modes::suggest::Suggestion::Command {
             command,
             explanation,
@@ -1372,13 +1694,7 @@ fn suggest_line(
             }
             explanation.clone()
         }
-    };
-    if let Some(path) = &mem {
-        session.record_user(line);
-        session.record_assistant(&reply);
-        session.save_persisted(path);
     }
-    Ok(0)
 }
 
 /// Shell-hook helper for the fix-the-last-command key: given the failed command
@@ -1391,14 +1707,30 @@ fn fix_line(
     provider: Option<&dyn Provider>,
     config: &Config,
 ) -> Result<u8> {
-    let Some(p) = provider else {
-        print_llm_unavailable(config);
-        return Ok(1);
-    };
     let exit = std::env::var("AISHE_LAST_EXIT").unwrap_or_else(|_| "unknown".to_string());
     let ctx = aishe::fix::error_context(cmd, config.aishe.fix_capture_stderr);
     let prompt = aishe::fix::build_prompt(cmd, &exit, ctx.as_deref());
 
+    if config.backend.engine == "opencode" {
+        arm_hook_budget(config);
+        let managed = managed_turn(config, &prompt, AgentMode::Suggest, false);
+        cancel_hook_budget();
+        match managed {
+            Ok(Some(outcome)) => {
+                emit_suggest_hook(&modes::suggest::parse_suggestion(&outcome.text), executor);
+                return Ok(0);
+            }
+            Ok(None) => {}
+            Err(error) => {
+                eprintln!("aishe: {}", aishe::redact::redact(&error.to_string()));
+                return Ok(1);
+            }
+        }
+    }
+    let Some(p) = provider else {
+        print_llm_unavailable(config);
+        return Ok(1);
+    };
     arm_hook_budget(config);
     let suggestion = modes::suggest::request(&prompt, p, executor, config, Vec::new())?;
     cancel_hook_budget();
@@ -1446,6 +1778,16 @@ fn yolo_line(
     skills: &SkillRegistry,
     mcp: &aishe::mcp::McpRegistry,
 ) -> Result<u8> {
+    if config.backend.engine == "opencode" {
+        match managed_turn(config, line, AgentMode::Yolo, true) {
+            Ok(Some(_)) => return Ok(0),
+            Ok(None) => {}
+            Err(error) => {
+                eprintln!("aishe: {}", aishe::redact::redact(&error.to_string()));
+                return Ok(1);
+            }
+        }
+    }
     let Some(p) = provider else {
         print_llm_unavailable(config);
         return Ok(1);
@@ -1489,6 +1831,16 @@ fn auto_line(
     provider: Option<&dyn Provider>,
     config: &Config,
 ) -> Result<u8> {
+    if config.backend.engine == "opencode" {
+        match managed_turn(config, line, AgentMode::Auto, true) {
+            Ok(Some(_)) => return Ok(0),
+            Ok(None) => {}
+            Err(error) => {
+                eprintln!("aishe: {}", aishe::redact::redact(&error.to_string()));
+                return Ok(1);
+            }
+        }
+    }
     let Some(p) = provider else {
         print_llm_unavailable(config);
         return Ok(1);
@@ -1594,18 +1946,45 @@ fn suggest_command(
         eprintln!("aishe: suggest needs a request, e.g. aishe suggest \"list files by size\"");
         return Ok(1);
     }
-    let Some(p) = provider else {
-        print_llm_unavailable(config);
-        return Ok(1);
-    };
-    let suggestion = match modes::suggest::request_strict(query, p, executor, config, Vec::new()) {
-        Ok(suggestion) => suggestion,
-        Err(error) => {
-            eprintln!(
-                "{}",
-                format!("aishe: {}", crate::providers::actionable_error(&error)).red()
-            );
+    let suggestion = if config.backend.engine == "opencode" {
+        match managed_turn(config, query, AgentMode::Suggest, false) {
+            Ok(Some(outcome)) => modes::suggest::parse_suggestion(&outcome.text),
+            Ok(None) => {
+                let Some(provider) = provider else {
+                    print_llm_unavailable(config);
+                    return Ok(1);
+                };
+                match modes::suggest::request_strict(query, provider, executor, config, Vec::new())
+                {
+                    Ok(suggestion) => suggestion,
+                    Err(error) => {
+                        eprintln!(
+                            "{}",
+                            format!("aishe: {}", crate::providers::actionable_error(&error)).red()
+                        );
+                        return Ok(1);
+                    }
+                }
+            }
+            Err(error) => {
+                eprintln!("aishe: {}", aishe::redact::redact(&error.to_string()));
+                return Ok(1);
+            }
+        }
+    } else {
+        let Some(provider) = provider else {
+            print_llm_unavailable(config);
             return Ok(1);
+        };
+        match modes::suggest::request_strict(query, provider, executor, config, Vec::new()) {
+            Ok(suggestion) => suggestion,
+            Err(error) => {
+                eprintln!(
+                    "{}",
+                    format!("aishe: {}", crate::providers::actionable_error(&error)).red()
+                );
+                return Ok(1);
+            }
         }
     };
 
@@ -1769,38 +2148,60 @@ fn one_shot(
             }
             Ok(executor.run_builtin(&tokens) as u8)
         }
-        Dispatch::NaturalLanguage(nl) => match provider {
-            Some(p) => {
-                if config.aishe.mode == "yolo" {
-                    modes::yolo::run(
-                        &nl,
-                        p.as_ref(),
-                        executor,
-                        config,
-                        &INTERRUPTED,
-                        skills,
-                        mcp,
-                        &mut session,
-                    )?;
-                } else {
-                    // -c + NL in suggest/auto mode: print suggested command, don't run.
-                    modes::suggest::run(
-                        &nl,
-                        p.as_ref(),
-                        executor,
-                        config,
-                        true,
-                        false,
-                        &mut session,
-                    )?;
+        Dispatch::NaturalLanguage(nl) => {
+            let agent_mode = AgentMode::parse(&config.aishe.mode).unwrap_or(AgentMode::Suggest);
+            if config.backend.engine == "opencode" {
+                let render = agent_mode != AgentMode::Suggest;
+                match managed_turn(config, &nl, agent_mode, render) {
+                    Ok(Some(outcome)) => {
+                        if agent_mode == AgentMode::Suggest {
+                            emit_suggest_hook(
+                                &modes::suggest::parse_suggestion(&outcome.text),
+                                executor,
+                            );
+                        }
+                        return Ok(0);
+                    }
+                    Ok(None) => {}
+                    Err(error) => {
+                        eprintln!("aishe: {}", aishe::redact::redact(&error.to_string()));
+                        return Ok(1);
+                    }
                 }
-                Ok(0)
             }
-            None => {
-                print_llm_unavailable(config);
-                Ok(1)
+            match provider {
+                Some(p) => {
+                    if config.aishe.mode == "yolo" {
+                        modes::yolo::run(
+                            &nl,
+                            p.as_ref(),
+                            executor,
+                            config,
+                            &INTERRUPTED,
+                            skills,
+                            mcp,
+                            &mut session,
+                        )?;
+                    } else {
+                        // -c + NL in suggest/auto mode: print suggested command, don't run.
+                        modes::suggest::run(
+                            &nl,
+                            p.as_ref(),
+                            executor,
+                            config,
+                            true,
+                            false,
+                            &mut session,
+                        )?;
+                    }
+                    Ok(0)
+                }
+                None => {
+                    print_llm_unavailable(config);
+                    Ok(1)
+                }
             }
-        },
+        }
     }
 }
 
@@ -1963,6 +2364,16 @@ fn run_nl(
     mcp: &aishe::mcp::McpRegistry,
     session: &mut Session,
 ) -> Result<()> {
+    let agent_mode = AgentMode::parse(mode).unwrap_or(AgentMode::Suggest);
+    if config.backend.engine == "opencode" {
+        let render = agent_mode != AgentMode::Suggest;
+        if let Some(outcome) = managed_turn(config, nl, agent_mode, render)? {
+            if agent_mode == AgentMode::Suggest {
+                emit_suggest_hook(&modes::suggest::parse_suggestion(&outcome.text), executor);
+            }
+            return Ok(());
+        }
+    }
     let Some(p) = provider else {
         print_llm_unavailable(config);
         return Ok(());

@@ -20,8 +20,8 @@ use crate::backend::bridge::{
 };
 use crate::backend::opencode::OpenCodeConnection;
 
-pub const SUPERVISOR_PROTOCOL_VERSION: u32 = 1;
-const STATE_SCHEMA_VERSION: u32 = 1;
+pub const SUPERVISOR_PROTOCOL_VERSION: u32 = 2;
+const STATE_SCHEMA_VERSION: u32 = 2;
 const MAX_HEADER_BYTES: usize = 32 * 1024;
 const MAX_BODY_BYTES: usize = 1024 * 1024;
 
@@ -34,6 +34,7 @@ pub struct SupervisorState {
     pub control_url: String,
     pub opencode_url: String,
     pub runtime_version: String,
+    pub plugin_sha256: String,
     pub provider_id: String,
     pub model_id: String,
     pub startup_nonce: String,
@@ -50,6 +51,7 @@ impl SupervisorState {
         control_url: String,
         opencode_url: String,
         runtime_version: String,
+        plugin_sha256: String,
         provider_id: String,
         model_id: String,
         startup_nonce: String,
@@ -65,6 +67,7 @@ impl SupervisorState {
             control_url,
             opencode_url,
             runtime_version,
+            plugin_sha256,
             provider_id,
             model_id,
             startup_nonce,
@@ -86,6 +89,7 @@ impl SupervisorState {
         if self.control_token.len() != 64
             || self.opencode_password.len() != 64
             || self.startup_nonce.len() != 64
+            || self.plugin_sha256.len() != 64
         {
             anyhow::bail!("backend state contains invalid private identities");
         }
@@ -197,6 +201,7 @@ struct HealthResponse {
     healthy: bool,
     protocol_version: u32,
     runtime_version: String,
+    plugin_sha256: String,
     startup_nonce: String,
     supervisor_pid: u32,
     opencode_pid: u32,
@@ -295,6 +300,7 @@ pub fn verified_state() -> Result<Option<SupervisorState>> {
     if !health.healthy
         || health.protocol_version != SUPERVISOR_PROTOCOL_VERSION
         || health.runtime_version != state.runtime_version
+        || health.plugin_sha256 != state.plugin_sha256
         || health.supervisor_pid != state.supervisor_pid
         || health.opencode_pid != state.opencode_pid
         || !constant_time_eq(
@@ -372,6 +378,7 @@ pub fn serve_connection(mut stream: TcpStream, context: &ServerContext) -> Resul
                 healthy: true,
                 protocol_version: SUPERVISOR_PROTOCOL_VERSION,
                 runtime_version: context.state.runtime_version.clone(),
+                plugin_sha256: context.state.plugin_sha256.clone(),
                 startup_nonce: context.state.startup_nonce.clone(),
                 supervisor_pid: context.state.supervisor_pid,
                 opencode_pid: context.state.opencode_pid,
@@ -428,7 +435,7 @@ pub fn serve_connection(mut stream: TcpStream, context: &ServerContext) -> Resul
                 Ok(value) => value,
                 Err(()) => return write_bridge_failure(&mut stream, &invalid_bridge_request()),
             };
-            match context.bridge.next(&identity, Duration::from_secs(20)) {
+            match context.bridge.next(&identity, Duration::from_secs(1)) {
                 Ok(work) => write_json(&mut stream, 200, &work),
                 Err(error) => write_bridge_failure(&mut stream, &error),
             }
@@ -730,6 +737,7 @@ mod tests {
             format!("http://127.0.0.1:{port}"),
             "http://127.0.0.1:2345".into(),
             "1.18.9".into(),
+            "e".repeat(64),
             "aishe-openai".into(),
             "model".into(),
             "a".repeat(64),
@@ -818,6 +826,7 @@ mod tests {
             "http://127.0.0.1:1234".into(),
             "http://127.0.0.1:2345".into(),
             "1.18.9".into(),
+            "e".repeat(64),
             "aishe-openai".into(),
             "model".into(),
             "a".repeat(64),
