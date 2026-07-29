@@ -30,6 +30,13 @@ cargo fmt --all -- --check
     execution.
   - `tests/installer_upgrade.sh`: hermetic replacement install that hashes
     config, shared history, tasks, and unrelated state before/after.
+  - `tests/opencode_runtime_contract.py`: launches the exact pinned OpenCode
+    runtime against a deterministic fake provider, real trusted plugin, real
+    authenticated foreground bridge, and isolated environment. It proves
+    multi-turn continuity, suggest/auto tool policy, usage, idempotency journal,
+    and credential non-leakage/non-persistence.
+  - `tests/fixtures/opencode/v1.18.9/`: frozen OpenAPI endpoint and normalized
+    event fixtures for the supported compatibility surface.
   - `tests/provider_unauthenticated.py`: real local HTTP endpoint proving
     loopback providers can list/validate models with no dummy API key.
   - `tests/pty_smoke.py`: PTY smoke test for the zsh-PTY front-end.
@@ -88,6 +95,8 @@ Run it:
 ```sh
 cargo build --release --locked
 python3 tests/admin_validation.py            # deterministic suites need no key
+AISHE_RUNTIME_DIR=/path/to/test-runtime \
+  python3 tests/opencode_runtime_contract.py target/release/aishe
 ```
 
 To run the natural-language suite, provide an API key in the environment (the
@@ -115,11 +124,13 @@ repeatable assertions.
 
 ## CI
 
-GitHub Actions runs the cross-platform Rust tests plus the deterministic
+GitHub Actions runs the cross-platform Rust tests, the pinned OpenCode runtime
+contract, plus the deterministic
 pseudo-terminal suites (`pty_scenarios.py`, `pty_fuzz.py`, `zsh_features.py`)
 with the fake provider on every push and PR; `real_model.py` runs only when the
 `AISHE_REALTEST_KEY` secret is present. Tagged releases build the binaries,
-`.deb`/`.rpm` packages, and the man page (see `.github/workflows/release.yml`).
+`.deb`/`.rpm` packages, man page, pinned runtime assets, license/notices, SBOM,
+checksums, and provenance (see `.github/workflows/release.yml`).
 
 For a contributor's map of the codebase, see [architecture.md](architecture.md).
 

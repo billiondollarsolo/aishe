@@ -35,6 +35,10 @@ Inside them:
 - Semantic-history index: `<data>/history.vec`
 - Durable AI tasks: `<data>/tasks/*.json` (private and redacted; stateless
   reasoning resumes may retain opaque encrypted provider continuation data)
+- Managed runtime: `<data>/runtime/opencode/<version>/`
+- Isolated backend state: `<data>/backend/opencode/`
+- Managed session map: `<data>/backend/sessions/index.json`
+- Tool idempotency/usage journal: `<data>/backend/journal/tool-calls.json`
 - Provider capability cache: `<data>/capabilities/*.json`
 - Resumable setup draft: `<data>/setup-draft.json`
 
@@ -56,8 +60,9 @@ brevity. Read `~/.config/aishe/...` as `<config>/...` and
 | `safety_profile` | string | `custom` | Named settings bundle: `conservative`, `balanced`, `autonomous`, or `custom`. |
 | `mode` | string | `suggest` | Interaction mode: `suggest`, `auto`, or `yolo`. |
 | `provider` | string | `anthropic` | Which provider block to use: `anthropic` or `openai`. |
-| `yolo_confirm_dangerous` | bool | `true` | In yolo, confirm commands the safety gate flags. Honored only when `yolo_confirm` is unset. |
-| `yolo_confirm` | string | `dangerous` | When the yolo loop confirms a command: `never`, `dangerous`, `writes`, or `all`. See [Safety gate](safety.md). |
+| `provider_fallback` | array | `[]` | Native compatibility-provider fallback chain. Managed turns do not start a second provider request after prompt admission or any effect. |
+| `yolo_confirm_dangerous` | bool | `true` | Deprecated native compatibility behavior; managed yolo uses one per-shell scope acceptance. |
+| `yolo_confirm` | string | `dangerous` | Native compatibility confirmation tier: `never`, `dangerous`, `writes`, or `all`. Managed yolo has no per-action prompts after scope acceptance. |
 | `yolo_sandbox` | bool | `false` | Policy sandbox: refuse yolo commands that reach the network or write outside the working tree. Toggle at the aishe prompt with `sandbox on`/`off`. |
 | `max_yolo_iterations` | integer | `10` | Maximum tool-use steps for one yolo request. |
 | `yolo_plan` | bool | `false` | Plan-first dry run: the model shows its intended steps and you approve before the loop runs (interactive only). Toggle at the aishe prompt with `plan on`/`off`. |
@@ -76,7 +81,7 @@ brevity. Read `~/.config/aishe/...` as `<config>/...` and
 | `show_usage` | bool | `true` | Record and display model-call usage in the interactive session. |
 | `status_line` | bool | `true` | Enable the branded prompt's live status display. |
 | `status_line_position` | string | `right` | Status placement: `right`, `below`, or `off`. |
-| `status_line_items` | array | `["model","mode","session_cost","requests"]` | Ordered fields; also supports `last_tokens`, `last_cost`, and `session_tokens`. |
+| `status_line_items` | array | `["model","mode","backend","scope","session_cost","requests"]` | Ordered fields. Also supports `network`, `sandbox`, `task`, `elapsed`, `context`, `last_tokens`, `last_cost`, and `session_tokens`. |
 | `budget_usd` | float | `0.0` | Stop calling the model past this session cost. `0` = unlimited. |
 | `memory` | bool | `true` | Remember recent natural-language turns so follow-ups have context. Clear at the aishe prompt with `reset`. |
 | `cache` | bool | `true` | Cache identical suggest-mode responses briefly so repeats are instant and free. Toggle at the aishe prompt with `cache on`/`off`. |
@@ -89,6 +94,58 @@ subcommands: type them inside the interactive shell (bare, or with a leading `/`
 as `/sandbox`). Running `aishe sandbox` from a terminal fails with
 `error: unrecognized subcommand`. See
 [Commands: prompt-only meta commands](commands.md#prompt-only-meta-commands).
+
+## `[backend]` section
+
+The agent orchestrator is separately configured from shell behavior. Runtime
+version/hash are deliberately absent: the Aishe build's embedded compatibility
+manifest owns them.
+
+| Field | Type | Default | Meaning |
+|-------|------|---------|---------|
+| `engine` | string | `opencode` | Managed agent engine. `native` is a temporary repair/legacy compatibility override. |
+| `fallback` | string | `native` | Compatibility engine allowed only when OpenCode fails before prompt admission. |
+| `managed` | bool | `true` | Install and launch Aishe's private compatibility-pinned runtime. |
+| `idle_timeout_secs` | integer | `1800` | Stop the private per-user supervisor after this idle period (30–86400). |
+| `default_scope` | string | `workspace` | Default `workspace` or `host` selection. Yolo acceptance itself is never persisted. |
+| `workspace_network` | string | `deny` | `allow` or `deny` network capability for workspace agent tools. |
+| `output` | string | `compact` | `compact` or `detailed` normalized inline event rendering. |
+| `max_output_tokens` | integer | `0` | Hard provider output cap; `0` delegates to backend/model unless organization policy caps it. |
+
+```toml
+[backend]
+engine = "opencode"
+fallback = "native"
+managed = true
+idle_timeout_secs = 1800
+default_scope = "workspace"
+workspace_network = "deny"
+output = "compact"
+max_output_tokens = 0
+```
+
+Fallback is one-way and pre-admission only. Aishe never duplicates a prompt
+after OpenCode has accepted it, emitted partial output, or requested a tool.
+
+## `[sandbox]` section
+
+```toml
+[sandbox]
+linux_backend = "bwrap"
+require_functional = false
+workspace_roots = []
+allow_host_yolo = true
+```
+
+| Field | Type | Default | Meaning |
+|-------|------|---------|---------|
+| `linux_backend` | string | `bwrap` | Linux agent isolation implementation; `policy` explicitly selects best-effort policy-only behavior. |
+| `require_functional` | bool | `false` | Fail setup/use instead of degrading when bubblewrap cannot pass its namespace self-test. |
+| `workspace_roots` | array | `[]` | Additional canonical roots permitted in workspace scope. |
+| `allow_host_yolo` | bool | `true` | Whether a user may explicitly accept host-wide yolo scope. Organization policy can only narrow this. |
+
+On macOS, `linux_backend` cannot create an OS sandbox; Setup and Doctor report
+policy-only behavior.
 
 ## `[named_dirs]` section (optional)
 
@@ -220,6 +277,11 @@ server launched from `command`. List connected tools with `aishe mcp`. See
   optional per-process override for the matching saved profile.
 - `AISHE_CREDENTIALS_FILE`: override only the shared credentials path (useful
   for a mounted private volume or isolated test).
+- `AISHE_RUNTIME_DIR`: relocate the managed runtime root (deployment/testing).
+- `AISHE_RUNTIME_BASE_URL`: approved pinned-runtime mirror base URL. The
+  embedded checksum and exact asset size remain mandatory.
+- `AISHE_POLICY_FILE`: alternate organization-policy path for managed
+  deployment/testing.
 - `AISHE_MODE`: mode used by the native shell hook (`suggest`, `auto`, `yolo`).
 - `AISHE_NL_KEY`: override the force-NL keybinding for the zsh hook (a `bindkey`
   sequence, for example `^o`).
@@ -252,6 +314,8 @@ aishe zsh                 launch your real zsh under aishe (zsh-PTY), explicitly
 aishe setup               guided/resumable setup (`--non-interactive` for CI)
 aishe settings            transactional interactive settings editor
 aishe auth <command>      set/status/list/remove/path for saved API keys
+aishe backend <command>   managed runtime status/install/verify/repair/recovery
+aishe uninstall           state-preserving category-based removal
 aishe init <zsh|bash>     print a shell integration snippet
 aishe doctor              diagnostics; add --probe/--live/--json/--fix/--bundle
 ```
@@ -266,7 +330,25 @@ silently replace it with defaults. Repair it with `aishe settings`, restore a
 `.bak` file, or use `aishe setup --restart` to discard only a setup draft.
 
 Schema upgrades are automatic and transactional: aishe writes a private backup,
-then atomically writes the migrated v2 config. A pre-rename
+then atomically writes the migrated schema-v4 config. Backend/sandbox defaults
+preserve or reduce authority; credentials and user state are never migrated
+into backend data. A pre-rename
 `llmsh/config.toml` in the same config directory is migrated on first run.
 Installers and package upgrades replace the binary only; they do not delete the
 config, history, tasks, trust store, or other user data.
+
+## Organization policy
+
+Administrators can install a read-only constraint file at
+`/etc/aishe/policy.toml` on Linux or `/Library/Application
+Support/Aishe/policy.toml` on macOS. `AISHE_POLICY_FILE` is the explicit
+deployment/test override. Policy schema 1 may require/disable OpenCode, specify
+a runtime mirror and approved hashes, require functional bubblewrap, disable
+host yolo or network, restrict provider hosts/models, require audit/redaction,
+disable user MCP/skills, cap budgets/output, and exclude support-bundle fields.
+
+Policy never contains credentials and never grants more authority. Effective
+precedence is organization constraints, then CLI request, trusted project
+overlay, user config, and defaults. Setup and Settings label constrained values
+as managed and fail with setup exit code 7 when a requested configuration
+violates policy.

@@ -5,6 +5,13 @@ tool to a stable, installable, trustworthy "AI shell". This is the long-form
 companion to [ROADMAP.md](ROADMAP.md): the roadmap is the checklist, this is the
 reasoning, sequencing, and acceptance criteria behind it.
 
+> **Current agent architecture:** the managed OpenCode milestone is specified
+> and tracked in
+> [OPENCODE_BACKEND_IMPLEMENTATION_PLAN.md](OPENCODE_BACKEND_IMPLEMENTATION_PLAN.md).
+> That document supersedes this older plan anywhere it discusses a single
+> process, direct provider/tool loops, setup, packaging, or agent-session
+> behavior. Direct shell execution remains service-free and lazy.
+
 Each work item lists: **Goal**, **Why**, **Approach** (files to touch),
 **Acceptance** (how we know it is done), **Effort** (S/M/L/XL), **Priority**
 (P0 ship-blocking, P1 high, P2 normal, P3 nice-to-have), and **Status**.

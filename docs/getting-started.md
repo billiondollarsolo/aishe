@@ -37,6 +37,11 @@ their Linux form for brevity.
 
 It asks for:
 
+- existing-install discovery and organization-policy constraints,
+- the backing shell and platform capabilities,
+- installation and live verification of Aishe's exact managed OpenCode runtime,
+- on Linux, a bubblewrap functional check and an explicit offer to install the
+  package when it is missing,
 - the provider/service and safety profile,
 - for an OpenAI-compatible provider, the **service** (OpenAI, Groq, OpenRouter,
   Together, Ollama, or a custom endpoint) and the **API endpoint (base URL)**,
@@ -44,8 +49,10 @@ It asks for:
 - a saved credential profile, hidden key entry, or environment-only workflow,
 - a current model catalog from the endpoint and a validated model selection,
 - per-million-token input/output prices when that exact model has no known price,
-- status-line position and contents, and
-- optional live verification and a configuration review before saving.
+- suggest/auto/yolo behavior, workspace/host scope, and workspace network policy,
+- status-line position, density, and ordered contents, and
+- end-to-end backend/provider/tool/sandbox validation plus a configuration
+  review before saving.
 
 The endpoint prompt is what lets you point at Groq, Ollama, or any other
 OpenAI-compatible service instead of OpenAI; pick the service and the base URL
@@ -56,6 +63,20 @@ Setup checks the full returned catalog, then makes one clearly disclosed
 minimal generation request only when the ID was not listed. Credential,
 permission, network, and model-not-found failures stay in Setup with retry/back
 choices instead of silently accepting an unverified value.
+
+OpenCode is entirely managed by Aishe. Setup downloads the exact version pinned
+by this Aishe build, verifies its size/checksum/version/notices, launches it with
+private HOME/XDG directories on authenticated loopback ports, and verifies the
+trusted Aishe plugin and tool restrictions. It never reuses an arbitrary
+`opencode` on `PATH` and never opens a second TUI. Ordinary zsh commands remain
+independent of this runtime.
+
+On Linux, selecting isolated workspace-agent behavior requires a bubblewrap
+self-test, not just the presence of a `bwrap` executable. Setup shows the exact
+package-manager command and asks before sudo. If namespaces are unavailable in a
+container/kernel, Setup labels that condition accurately and lets you choose a
+compatible policy where organization rules allow. macOS is clearly labeled
+policy-only.
 
 Setup writes nothing until you apply the review. If interrupted, rerun `aishe
 setup --resume`; use `--restart` to discard only its draft. In a pipe or CI,
@@ -74,8 +95,8 @@ That launches your real interactive zsh under aishe. Alternatively, install the
 native hook printed by `aishe init zsh`. You can revisit settings with `aishe
 settings`, rerun setup, or edit the non-secret config file directly. Use
 `aishe auth` for keys. Existing config, credentials, history, task records, and
-other state are preserved by binary upgrades. A fully annotated example config is at
-[examples/config.toml](../examples/config.toml).
+other state are preserved by binary/runtime upgrades. A fully annotated example
+config is at [examples/config.toml](../examples/config.toml).
 
 ## 3. Run real commands
 
@@ -117,6 +138,14 @@ straight away, one it flags as dangerous stops and makes you type the full word
 panel and a plain `[y/N]`. Nothing unverified ever runs on its own. See
 [Safety gate](safety.md#three-outcomes).
 
+The managed agent adds a separate execution **scope**. `workspace` confines
+agent effects to the selected project (with bubblewrap on supported Linux
+systems); `host` grants host-wide agent authority. Entering yolo asks once for
+the scope in each new shell. After acceptance, yolo runs without per-action
+approval prompts; a new shell asks again because acceptance is never persisted.
+Use `aishe scope workspace|host` and `aishe network allow|deny` to change the
+next turn's selection.
+
 Or set the mode for a single session at launch:
 
 ```sh
@@ -148,15 +177,19 @@ diagnose the error.
 aishe doctor --probe
 ```
 
-This reports your backing shell, config path, resolved front-end, provider, and
-whether the API key is set. Add `--live` for minimal text, structured-output,
-tool, and streaming calls; `--json` for automation; `--fix` for safe local
-repairs; or `--bundle PATH` for a redacted support bundle.
+This reports your backing shell, config path, resolved front-end, provider,
+credential source, managed runtime version/hash, authenticated server, trusted
+plugin/tool restrictions, credential isolation, session journals, and sandbox
+state. Add `--live` for the pinned runtime/server and minimal provider feature
+probes; `--json` for automation; `--fix` for safe local repairs; or `--bundle
+PATH` for a redacted support bundle.
 
 ## Where to go next
 
 - [Modes](modes.md) for streaming and structured output.
 - [Front-ends](front-ends.md) for the zsh-PTY shell, the native hook, and `-c`.
+- [Managed agent backend](managed-agent-backend.md) for runtime, sessions,
+  security ownership, offline installs, and recovery.
 - [Custom commands and skills](custom-commands-and-skills.md) to add your own
   `/commands`.
 - [Configuration reference](configuration.md) for every setting.

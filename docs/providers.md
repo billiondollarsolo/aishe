@@ -1,10 +1,16 @@
 # Providers
 
-aishe talks to three provider shapes:
+Aishe configures three provider shapes:
 
 - the **Anthropic Messages API**, and
 - the official OpenAI **Responses API**, and
 - any custom **OpenAI-compatible Chat Completions API**.
+
+For normal AI turns, Aishe generates a private provider definition for its
+managed OpenCode engine. Aishe remains authoritative for the endpoint, model,
+credential profile, prices, budget, and organization restrictions. The managed
+runtime receives the resolved secret only in its provider process environment;
+model-controlled tools do not inherit it.
 
 The `[providers.openai]` block's `transport = "auto"` selects the wire format
 from `base_url`. `https://api.openai.com` uses Responses, including
@@ -16,7 +22,8 @@ needs an explicit choice.
 API keys are resolved from the profile named by `credential` in Aishe's private
 `credentials.toml`. The variable named by `api_key_env` is an optional
 higher-precedence override for CI, containers, and temporary testing. Keys are
-never written to ordinary `config.toml`.
+never written to ordinary `config.toml`, generated backend config, session
+mappings, tool journals, or support bundles.
 
 During interactive Setup, Aishe calls `GET /v1/models` immediately after the
 credential step. This is a token-free credential/endpoint check and the source
@@ -64,22 +71,16 @@ aishe auth set openai
 aishe
 ```
 
-Official OpenAI requests use `/v1/responses` for normal, structured, streaming,
-and tool-use calls. In a multi-step yolo run, aishe sends the response's native
-reasoning and function-call items back with each tool result, as required by
-reasoning models. It uses Responses-native `max_output_tokens`,
-`reasoning = { effort = ... }`, and `store = false`; this avoids the
-Chat-Completions incompatibility between reasoning effort and function tools on
-models such as GPT-5.6.
+The managed engine uses OpenAI Responses for reasoning and tools, avoiding the
+Chat Completions incompatibility between reasoning effort and function tools on
+models such as GPT-5.6. OpenCode owns provider-native reasoning continuation and
+conversation compaction; Aishe owns the durable session mapping, tool effects,
+usage authorization, and budget.
 
-With `store = false`, current Responses reasoning items contain opaque
-`encrypted_content` by default. Aishe replays every returned provider item in
-memory and retains encrypted reasoning plus provider routing IDs exactly in
-private durable checkpoints; plaintext checkpoint fields remain redacted. This
-follows OpenAI's
-[stateless reasoning guidance](https://developers.openai.com/api/docs/guides/reasoning#preserve-reasoning-without-stored-responses);
-the legacy `include = ["reasoning.encrypted_content"]` request field is no
-longer required.
+The native compatibility backend also uses `/v1/responses` with
+Responses-native `max_output_tokens`, reasoning items, and stateless
+continuation. It remains available for legacy task resume and failures that
+occur before the managed engine admits a prompt.
 
 `base_url` is the service root. Aishe also accepts the commonly copied
 `https://api.openai.com/v1` form and canonicalizes the trailing `/v1` before
@@ -192,19 +193,15 @@ aishe model gpt-4o-mini
 the config. In the zsh PTY front-end, the right-prompt model label refreshes on
 the next prompt after this command.
 
-For custom OpenAI-compatible Chat Completions endpoints, aishe supports both
-`max_tokens` and `max_completion_tokens`. It records the spelling accepted by
-each endpoint/model pair in the aishe state directory and reuses it in later
-processes, so a compatibility retry happens at most once unless the endpoint's
-behavior changes.
+The native compatibility/provider-probe layer supports both `max_tokens` and
+`max_completion_tokens` for custom Chat Completions endpoints and caches the
+accepted spelling. Managed OpenCode turns use the endpoint's provider adapter.
 
-## Fallback chain (resilience and offline)
+## Fallback and offline behavior
 
-`provider_fallback` lists providers (by block name) to try, in order, when the
-primary `provider` fails *after its own retries* — a dead endpoint, a hard auth
-error, or a blown budget degrades to the next provider instead of failing the
-call. It's how you keep working when your main API is down, or fall back to a
-**local** model for offline use:
+`provider_fallback` is retained for the native compatibility backend. It lists
+provider blocks to try when that native call fails before any effect. It is
+useful for legacy tasks and repair-mode suggest/chat/auto:
 
 ```toml
 [aishe]
@@ -219,13 +216,17 @@ transport = "chat"
 auth_required = false
 ```
 
-Each authenticated block must have its API-key env set or it is skipped (so a
-missing key in a fallback never breaks the primary); local blocks with
-`auth_required = false` need none. `aishe doctor` shows the resolved chain.
-When a fallback is used, a one-line notice is printed once. Note: configuring a
-chain serves answers non-streamed (resilience over live token streaming); a
-single provider streams as usual. The setting is treated as sensitive, so a
-project overlay needs `aishe trust` to apply it.
+Each authenticated native block must resolve a credential or it is skipped;
+local blocks with `auth_required = false` need none. The setting is sensitive,
+so a project overlay needs `aishe trust` to apply it.
+
+Managed-turn safety takes precedence over transparent provider fallback. Once
+OpenCode admits a prompt, emits partial output, or requests a tool, Aishe never
+starts the turn again against another provider or backend. An outage marks the
+durable conversation interrupted and offers resume. This prevents duplicated
+commands and spend. To work fully offline, select the local Ollama endpoint as
+the active provider before the managed turn rather than relying on a mid-turn
+fallback.
 
 To verify the chain is actually reachable — especially the "offline-capable"
 claim for a local Ollama — run:
@@ -234,7 +235,7 @@ claim for a local Ollama — run:
 aishe doctor --probe
 ```
 
-It sends one short, read-only `GET /v1/models` to each chain member (no
+For native compatibility it sends one short, read-only `GET /v1/models` to each chain member (no
 completion, so it costs no tokens) and reports each as **reachable**, **reachable
 but key rejected** (a 401/403 — the endpoint is up but the key is wrong), or
 **unreachable** (connection refused / timeout). An unreachable member is a

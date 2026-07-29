@@ -15,12 +15,16 @@ aishe auth ...         manage private named credential profiles
 aishe tour             resumable guided first-session tour
 aishe init zsh|bash    print the shell-hook snippet (for ~/.zshrc / ~/.bashrc)
 aishe doctor           diagnostics; --probe/--live/--json/--fix/--bundle
+aishe backend ...      status/install/verify/repair/rollback/stop/logs/gc
+aishe uninstall        category-based removal; state preserved by default
 aishe completions ...  print a shell completion script for aishe itself
 aishe trust [PATH]     trust this repo's .aishe/config.toml, or one project file
 aishe trust --list     list every trusted file
 aishe untrust [PATH]   drop trust for this repo (or one file); --all for every one
 
 aishe mode [suggest|auto|yolo]      show or set the interaction mode
+aishe scope [workspace|host]        show or set the next agent execution scope
+aishe network [allow|deny]          show or set workspace-agent network access
 aishe model [NAME]                  show or set the model (for the active provider)
 aishe provider [anthropic|openai]   show or set the provider
 aishe provider test [--live] [--json]  validate the active provider
@@ -37,13 +41,45 @@ aishe log [filters]                 show the audit log of AI calls and actions
 aishe usage [--by model|day|session]  token/cost totals from the audit log
 aishe context                       print the context block sent to the model
 aishe runbook [--session ID|-o DIR|--replay]  export a session as a script + runbook
-aishe sessions                      list durable AI task records
-aishe session show|rename|delete    inspect/manage exactly one task
-aishe resume [ID]                   resume an interrupted task
+aishe sessions [--json]             list managed conversations and legacy tasks
+aishe session show|rename|delete    inspect/manage exactly one session/task
+aishe resume [ID] [--cwd PATH]      resume/bind a durable conversation or task
 ```
 
 These are real subcommands, so they work the same in the interactive zsh-PTY
 shell, a plain shell, or a script.
+
+Managed runtime operations:
+
+```sh
+aishe backend status --json
+aishe backend install [--from ARCHIVE] [--force]
+aishe backend verify --live
+aishe backend repair [--from ARCHIVE]
+aishe backend rollback
+aishe backend stop
+aishe backend logs --tail 200
+aishe backend gc --dry-run
+```
+
+They always operate on the exact OpenCode version embedded in this Aishe build.
+`--from` supports offline installation but does not bypass checksum, archive
+size, executable-version, or license/notices verification.
+
+Uninstall is previewable and category-based:
+
+```sh
+aishe uninstall --dry-run
+aishe uninstall                         # replaceable binary/runtime layers
+aishe uninstall --sessions --dry-run
+aishe uninstall --config --history --audit-undo
+aishe uninstall --all --dry-run
+```
+
+Plain uninstall preserves config, credentials, history, sessions, audit, and
+undo. Any selected user-state category is marked permanent and requires
+targeted confirmation; use `--yes` only after reviewing the same plan with
+`--dry-run`.
 
 Credential commands follow the AWS CLI-style shared-file workflow:
 
@@ -98,14 +134,17 @@ to its original state. The journal lives at `undo.jsonl` in aishe's
 
 ## Changing settings
 
-`aishe mode`, `aishe model`, and `aishe provider` show the current value with no
-argument, or save a new one to your user config with an argument
+`aishe mode`, `aishe scope`, `aishe network`, `aishe model`, and `aishe
+provider` show the current value with no argument, or save a new one to your
+user config with an argument
 (`~/.config/aishe/config.toml` on Linux, `~/Library/Application
 Support/aishe/config.toml` on macOS — `aishe doctor` prints the resolved path;
 see [File locations](configuration.md#file-locations)):
 
 ```sh
 aishe mode auto         # persist the default mode
+aishe scope workspace   # confine the next managed agent turn
+aishe network deny      # no workspace-agent network capability
 aishe provider openai   # switch provider...
 aishe model gpt-4o      # ...then set that provider's model
 ```
@@ -120,6 +159,21 @@ per session with the `--mode`/`--model`/`--provider` flags or `$AISHE_MODE`, and
 in the interactive shell **Shift-Tab** (or `$AISHE_MODE_KEY`) cycles the mode
 `suggest -> auto -> yolo`. Every field is in
 [Configuration reference](configuration.md).
+
+Yolo **acceptance** is different from the saved default scope. Each new shell
+asks once before granting workspace or host agent authority. Acceptance is
+never written to config. Once accepted, yolo does not show per-action approval
+prompts; auto remains action-gated.
+
+## Durable managed sessions
+
+Each shell/workspace pair maps to one OpenCode conversation, so follow-ups keep
+context across prompt processes, supervisor restarts, and Aishe upgrades.
+`aishe sessions` presents those mappings together with legacy native task
+records. `aishe resume ses_...` inside Aishe rebinds the live shell. When run
+from a normal TTY, it changes to the recorded workspace and launches the real
+zsh already bound to that conversation. It never blindly repeats an effect with
+an unknown outcome.
 
 ## Inspecting things
 

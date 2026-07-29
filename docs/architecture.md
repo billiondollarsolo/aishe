@@ -15,10 +15,14 @@ behavior see [front-ends.md](front-ends.md), [modes.md](modes.md), and
 2. **The model is never trusted to decide what runs.** Every command the model
    proposes passes a separate, deterministic safety gate before it can execute
    (`src/safety.rs`). Model output is untrusted input, not authorization.
-3. **Single binary, no services.** No daemon, no database, minimal C deps. The
-   provider HTTP layer is hand-rolled (no vendor SDKs) to keep request/response
-   shapes under our control.
-4. **Best-effort, never blocking.** Anything that hits the network or a slow
+3. **Shell path stays direct and service-free.** A valid shell line never starts
+   the agent backend or performs network work. AI turns lazy-start a private,
+   exact-version-pinned OpenCode process behind an Aishe-owned supervisor and
+   authenticated foreground tool bridge.
+4. **OpenCode orchestrates; Aishe authorizes.** OpenCode owns conversation and
+   provider orchestration. It never receives direct host-effecting tools.
+   Aishe owns scope, policy, tools, sandbox, credentials, budget, audit, and UI.
+5. **Best-effort, never blocking.** Anything that hits the network or a slow
    subprocess (git status, `--help` parsing, the command cache) runs
    off the hot path or under a timeout. The prompt never hangs.
 
@@ -37,16 +41,23 @@ tests in `tests/` can exercise internals directly.
 | `setup` / `promptui` | Resumable setup state machine and reusable interactive menus/text prompts. |
 | `config` / `credentials` / `auth` | Schema/versioned ordinary config, the separate private shared store/resolver, and credential-management CLI. |
 | `settings` / `profiles` | Transactional settings with provenance; named safety bundles and readiness checks. |
+| `agent` | Backend-neutral session/prompt/event/scope/usage contract plus the foreground turn controller/renderer. |
+| `backend::runtime` / `manifest` | Exact-version platform manifest, bounded download/extraction, SHA/version verification, atomic install/repair/rollback/GC. |
+| `backend::supervisor` / `control` | Private loopback process lifecycle, isolated HOME/XDG layout, authenticated control protocol, and health/reconciliation. |
+| `backend::opencode` | Narrow OpenCode v1 REST/SSE adapter, event normalization, session mapping, prompt abort/snapshot recovery. |
+| `backend::bridge` | Foreground leases, child ancestry, provider budget authorization, durable call idempotency, and usage deduplication. |
+| `policy` / `dependencies` | Administrator constraints and consent-gated zsh/bubblewrap discovery, installation plans, and functional self-tests. |
 | `provider_catalog` / `capabilities` | Service presets, transport/auth policy, model listing, live validation, and capability cache. |
 | `diagnostics` | Structured Doctor checks, safe repairs, JSON, and redacted support bundles. |
-| `providers` | The `Provider` trait and its Anthropic / OpenAI-compatible / fake implementations; retries, streaming, usage metering. |
-| `modes` | `suggest` and `yolo` (agentic) modes, the safety gate wrapper, markdown rendering. |
+| `providers` | Native compatibility provider trait/implementations plus setup/model/capability helpers. Managed AI turns route provider work through OpenCode. |
+| `modes` | Native compatibility suggest/yolo loops and shared output/safety helpers. |
 | `tools` | Built-in agentic tools (`read_file`/`write_file`/`edit_file`/`list_dir`, `fetch_url`). |
 | `mcp` | Minimal MCP client (stdio + Streamable HTTP); exposes server tools to yolo as `mcp__<server>__<tool>`. |
 | `safety` / `sandbox` | Destructive-command gate; best-effort policy sandbox (network / out-of-tree writes) for yolo. |
 | `context` | The environment context block (cwd, dir listing, recent history, project context) prepended to LLM requests. |
 | `tasks` | Private durable yolo checkpoints, interrupted-task lifecycle, and safe resume. |
 | `tour` | Resumable guided first-session lessons in an isolated workspace. |
+| `uninstall` | Exact category/path uninstall planning with state-preserving defaults. |
 | `usagelog` | Cross-process PTY usage aggregation and live status rendering data. |
 | `session` | In-session conversation memory, persisted to a per-session file for the hook front-ends (whose NL calls are separate processes). |
 | `config` | Versioned config schema, atomic migration/save, CLI override and project-overlay precedence. |
@@ -147,89 +158,114 @@ use aishe interactively without zsh).
 These share the engine with the shell hooks; they never touch an interactive
 front-end.
 
-## The LLM path
+## The managed AI path
 
-When `dispatch` returns `NaturalLanguage`, a mode handles it.
+When `dispatch` returns `NaturalLanguage`, `agent::controller` resolves a
+backend-neutral `PromptRequest` containing the shell/workspace identity, mode,
+scope, network capability, model configuration, context, output policy, and
+budget. OpenCode is the default `AgentBackend`; the native provider/mode path is
+available only as a pre-admission repair and legacy-resume compatibility layer.
 
-### Providers (`src/providers/`)
+### Runtime and supervisor
 
-`Provider` is a small `Send + Sync` trait: `complete`, `complete_stream`,
-`complete_with_tools`, `complete_with_tools_stream`, and `meter`. Messages are
-provider-neutral (`Msg::User/Assistant/ToolResult`); Responses tool turns also
-carry opaque provider items so reasoning state can be replayed. Each
-implementation maps messages to its wire format.
+`backend::manifest` embeds the exact OpenCode version, per-platform asset names,
+archive sizes, and SHA-256 values. `backend::runtime` performs bounded
+download/copy, safe tar/zip extraction (entry count, expanded bytes, traversal,
+link/special-file rejection), executable version verification, private license
+and metadata installation, atomic activation, compatible rollback, and bounded
+staging GC.
 
-- `anthropic.rs`: Anthropic Messages API.
-- `openai_compat.rs`: OpenAI Responses for the official API URL; Chat
-  Completions for custom compatible URLs (Groq, Ollama, OpenRouter, ...).
-- `fake.rs`: a deterministic provider (no network/key) selected when
-  `AISHE_FAKE_LLM[_FILE]` is set; the backbone of the deterministic PTY suites.
+`backend::supervisor` owns one private per-user topology:
 
-`providers::make(config)` builds the configured provider, returns the fake when
-the env hook is set, and optionally wraps it in `cache::CachingProvider`. Retries
-(429/5xx/connection) use shared backoff-with-jitter that honors `Retry-After`.
-Provider errors are typed (auth/model/capability/rate/network/server/request), so
-the CLI can name the failing setting and suggest the right recovery command.
-`capabilities.rs` validates text/schema/tools/streaming and caches the result per
-endpoint/model/transport.
+```text
+foreground Aishe
+  -> authenticated control server (random 127.0.0.1 port)
+     -> OpenCode server (separate random 127.0.0.1 port + Basic Auth)
+     -> durable bridge/session journals
+```
 
-**Structured-output step-down.** `ResponseFormat` is `Text` / `Json` /
-`JsonSchema`. Strict schema is best-effort: if an OpenAI-compatible server rejects
-`json_schema` (or `json_object`) with a format-shaped 400, `complete` steps the
-format down (`schema -> json -> text`) and retries, terminating if even text is
-rejected so the loop can't spin. Callers always parse defensively regardless. See
-`step_down`/`is_format_error` and the chain tests in `tests/providers.rs`.
+It launches OpenCode with an isolated HOME/XDG tree, explicit environment, one
+embedded hash-verified plugin, and the exact verified executable. State files
+carry schema/protocol/runtime/plugin identity and private startup credentials;
+clients validate all of them and the owning processes before connecting.
+Supervisor state, control requests, SSE frames, outputs, and logs are bounded.
+The process exits after a configurable idle timeout.
 
-### Context and memory
+### OpenCode adapter and event recovery
 
-`context.rs` builds typed sections for cwd/shell, a capped directory listing,
-recent command history, project instructions/tasks, git, and host profile. The
-runtime prompt and `aishe context --explain/--json` use the same section objects;
-the JSON form includes metadata but intentionally omits section text.
-Short-lived PTY children merge their in-memory queue with the newest entries in
-the persistent Aishe history log, so context does not reset between prompts.
-`redact.rs` scrubs likely secrets before runtime and preview output.
-`session.rs` keeps a rolling transcript so follow-ups have context, persisted to
-a per-session file by hook front-ends whose NL calls are separate processes.
+`backend::opencode::client` implements only the pinned v1 REST/SSE surface. It
+subscribes before posting a prompt, snapshots message IDs, lets OpenCode assign
+its monotonic user-message ID, and binds events to the exact new user/assistant
+turn. `mapper` normalizes text, reasoning, tool lifecycle, todo, diff, child
+session, compaction, usage, error, and idle events into `AgentEvent`.
 
-### Modes (`src/modes/`)
+Early part events are buffered until the assistant ID is proven; stale idle and
+unrelated-session events are ignored. A disconnect is repaired with bounded
+message/session snapshots rather than assuming replay. Prompt abort is a
+first-class backend operation. The fixture suite freezes the v1.18.9 endpoints
+and every normalized event class.
 
-- **suggest** (`suggest.rs`): one constrained completion, parsed into a
-  command-or-answer. A dangerous command is flagged before you confirm. `auto` is
-  the same classification but safe commands run immediately.
-- **yolo** (`yolo.rs`): an agentic loop. The model is offered `run_command` plus
-  (per config) the built-in file/web tools, MCP tools, and skills. Each tool call
-  is gated, run, and its result fed back as a `Msg::ToolResult` until the model
-  stops or `max_yolo_iterations` is hit. `tasks.rs` atomically checkpoints the
-  canonical/provider-native state before and after calls, enabling safe resume.
-  Plaintext content and arguments are redacted. Provider-generated item/call IDs
-  and opaque encrypted reasoning continuation data are retained exactly in the
-  private task file so a stateless `store: false` Responses session can resume;
-  support bundles never include task contents.
+`backend::opencode::session` atomically maps `(aishe shell ID, canonical
+workspace)` to the durable OpenCode session. That is why separate hook processes
+and supervisor restarts share conversation context. Managed mappings and legacy
+native task records appear in one `aishe sessions` view.
 
-### The safety gate and sandbox
+### Trusted plugin and foreground bridge
 
-`safety.rs` is a deterministic, pattern-based classifier (`Risk`). It normalizes a
-line, splits on operators, strips privilege/wrapper prefixes (`sudo`, `env`,
-`time`, ...) so they can't smuggle a command past the anchored patterns, and is
-path-aware for `rm -rf` (an in-tree relative target is allowed). `modes::safety_gate`
-wraps it; `sandbox.rs` adds the optional yolo policy sandbox (refuse network /
-out-of-tree writes), fed back to the model as a tool error. Neither is a kernel
-sandbox; both are documented as best-effort in [SECURITY.md](../SECURITY.md).
+The dependency-free plugin in `assets/backend/opencode/aishe-plugin.mjs`
+generates provider configuration from Aishe's active provider/model/credential,
+requires Aishe authorization before each provider turn, reports authoritative
+usage, hides/denies OpenCode built-in host tools, and exposes only proxy tools.
+Suggest explicitly disables every tool because permission denial alone does not
+remove schemas from some OpenCode/provider requests.
 
-### Tools, MCP, and skills
+`backend::bridge` registers a short-lived lease for the foreground process.
+Every plugin request must match its session/message/call/agent/directory/worktree
+identity and a registered parent/child ancestry. Tool state is persisted before
+dispatch (`admitted -> dispatched -> started -> completed`); completed calls
+replay the prior result, while an interrupted started call becomes
+`outcome_unknown`. Provider usage is deduplicated by message ID. Budget
+reservations expire if a provider never reports a failed turn, preventing
+permanent budget lockout without permitting unbounded spend.
 
-`tools.rs` defines the built-in tools as `ToolDef`s (name + description + JSON
-schema) and executes them, with the same out-of-tree write confirmation as the
-command gate. `mcp.rs` is a minimal MCP client: it connects to `[mcp_servers]`
-over stdio or Streamable HTTP, does the JSON-RPC handshake, lists tools, and
-proxies `tools/call`, namespacing each tool `mcp__<server>__<tool>` so the whole
-ecosystem plugs in alongside the built-ins. `skills.rs` loads progressive-disclosure
-skills in the Claude-Code-compatible format.
+The foreground `ToolWorker` adapts Aishe's command/file/web/MCP/skill tools.
+Model-controlled child processes receive an explicit sanitized environment:
+provider variables, all `AISHE_*`/`OPENCODE_*`, and likely secret names are
+removed. Tool output is redacted and bounded before it crosses the bridge.
+
+### Modes, scope, and rendering
+
+- **Suggest** provides no tools and normalizes the final answer/command for
+  review.
+- **Auto** exposes Aishe proxy tools but keeps Aishe's action approval policy.
+- **Yolo** requires a one-time workspace/host acceptance for each shell, then
+  has no per-action Aishe or OpenCode approvals. Acceptance is in-memory and
+  cannot leak into a new shell.
+
+On Linux, `sandbox.linux_backend = "bwrap"` applies a read-only host, writable
+canonical workspace/private `/tmp`, and explicit network profile. The functional
+self-test distinguishes a missing binary from unusable namespaces. macOS is
+explicitly policy-only. `safety.rs` remains a deterministic defense-in-depth
+screen for suggest/auto and native compatibility; it is not represented as the
+OS boundary.
+
+`agent::renderer` presents normalized events inline in compact or detailed form,
+honors width/color/redirected output, and keeps OpenCode implementation details
+out of the UI. `usagelog` merges authoritative usage, backend/scope/network,
+task, elapsed time, and context-token state into the right/below/off statusline.
+
+### Provider and native compatibility layer
+
+`providers` still supplies provider catalog/model discovery, setup probes,
+embedding support, the deterministic fake provider, and the temporary native
+compatibility engine. Its Anthropic/OpenAI wire implementations and structured
+output step-down remain tested for legacy resume and pre-admission fallback.
+Once OpenCode has admitted a prompt, emitted output, or requested an effect,
+Aishe never falls through to native or starts a second provider request.
 
 ## Cross-cutting concerns
 
-- **Config and credentials (`config.rs`, `credentials.rs`).** Schema-v3 config
+- **Config and credentials (`config.rs`, `credentials.rs`).** Schema-v4 config
   migration creates a private backup and atomically adds non-secret credential
   profile references. API keys live in a separate mode-`0600`, versioned,
   atomically written shared file; one resolver applies environment > staged
@@ -243,14 +279,21 @@ skills in the Claude-Code-compatible format.
   never creates guessed defaults; guided setup is explicit and resumable. A
   pre-rename `llmsh` config is migrated on first run. All precedence is unit/E2E
   tested.
+- **Organization policy (`policy.rs`).** A root/admin file can require or
+  disable the managed backend, pin a mirror/hash set, require functional
+  bubblewrap, restrict scope/network/provider/model/MCP/skills, require
+  audit/redaction, and cap budget/output. It only narrows authority and is
+  validated before Apply and use.
 - **Project trust (`trust.rs`).** A small JSON store under the data dir mapping a
   project config's absolute path to a content hash, so editing a trusted file
   drops trust. Managed with `aishe trust` / `aishe untrust`. See
   [project-config.md](project-config.md).
-- **Usage and budget (`usage.rs`).** A shared `UsageMeter` per provider records
-  tokens; cost is estimated from a pricing table (overridable in config) and
-  enforced against `budget_usd`. `usagelog.rs` combines the short-lived PTY child
-  calls into ordered live right/below status metrics.
+- **Usage and budget (`usage.rs`, `backend::bridge`).** OpenCode reports
+  authoritative per-message usage through the trusted plugin. The bridge
+  deduplicates it, reserves estimated cost before provider turns, caps output,
+  expires abandoned reservations, and denies the next call before budget
+  overrun. `usagelog.rs` combines short-lived PTY child results into ordered
+  live right/below status metrics.
 - **Audit and redaction.** Off by default. When on, prompts/responses/actions are
   written as JSONL; redaction applies to both the context block and the log.
 
@@ -270,6 +313,15 @@ See [development.md](development.md) for commands. The shape:
   `tests/setup_pty.py`, `tests/statusline_pty.py`, and
   `tests/durable_task_resume.py`. These prove setup cancellation, route-aware
   highlighting, prompt status, and interrupted-task recovery through real PTYs.
+- **Pinned OpenCode runtime contract:** `tests/opencode_runtime_contract.py`
+  launches the exact v1.18.9 runtime with a deterministic local provider and the
+  real trusted plugin/bridge. It proves two-turn session continuity,
+  suggest-tool absence, Aishe-only auto tools, foreground command execution,
+  provider credential isolation, exact usage, durable journals, and secret
+  non-persistence.
+- **Frozen OpenCode fixtures:** `tests/fixtures/opencode/v1.18.9/` locks the
+  supported OpenAPI endpoints and representative text/reasoning/tool/todo/diff/
+  compaction/usage/idle event mapping.
 - **Opt-in real-model suite:** `tests/real_model.py` runs a classification corpus
   against a live endpoint when `AISHE_REALTEST_KEY` is set.
 - **Validation harness:** `tests/admin_validation.py` exercises a broad surface

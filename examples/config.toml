@@ -12,6 +12,8 @@
 # about. API keys are NEVER stored here. `credential` selects a profile in the
 # private credentials file; `api_key_env` is an optional process override.
 
+version = 4
+
 [aishe]
 # Named setup bundle: conservative | balanced | autonomous | custom. Applying a
 # profile prints every setting it changes; hand edits make it custom.
@@ -26,11 +28,9 @@ mode = "suggest"
 # Which provider block below to use: "anthropic" or "openai".
 provider = "anthropic"
 
-# Optional fallback chain: providers (by block name) tried in turn when the one
-# above fails after its own retries — a dead endpoint or hard error degrades to
-# the next instead of failing. Each named block must resolve a credential unless
-# authentication is disabled. Example: fall back to a local Ollama configured with
-# auth_required = false in [providers.openai].
+# Optional native-compatibility fallback chain. Managed OpenCode turns never
+# start a second provider request after prompt admission, partial output, or a
+# tool effect; interrupted managed turns remain resumable instead.
 # provider_fallback = ["openai"]
 
 # In the zsh-PTY front-end, show aishe's branded prompt (`<cwd> <glyph>`, with the
@@ -43,8 +43,8 @@ provider = "anthropic"
 # regardless; only the prompt is overridden.
 pty_prompt = true
 
-# In yolo mode, confirm commands the safety gate flags as dangerous.
-# (Honored only when `yolo_confirm` below is left at its default.)
+# Deprecated native-backend compatibility settings. Managed yolo asks once for
+# workspace/host scope in each new shell, then does not prompt per action.
 yolo_confirm_dangerous = true
 
 # When the yolo loop pauses to confirm a command:
@@ -169,8 +169,9 @@ show_usage = true
 # read below the prompt on narrow terminals.
 status_line = true
 status_line_position = "right"
-status_line_items = ["model", "mode", "session_cost", "requests"]
-# Other fields: last_tokens, last_cost, session_tokens.
+status_line_items = ["model", "mode", "backend", "scope", "session_cost", "requests"]
+# Other fields: network, sandbox, task, elapsed, context, last_tokens,
+# last_cost, session_tokens.
 
 # Stop calling the model once the estimated session cost reaches this many USD.
 # 0 = unlimited. Only enforced when the model's price is known.
@@ -220,6 +221,27 @@ host_profile = true
 # after you run `aishe trust` in that repo. A project skill or `shell: true`
 # command is trusted per file: `aishe trust .aishe/skills/<name>/SKILL.md`.
 # See docs/project-config.md.
+
+# ---------------------------------------------------------------------------
+# Managed agent engine. Aishe owns the exact OpenCode version and hash; those
+# are not editable config. The backend starts lazily only for AI turns.
+# ---------------------------------------------------------------------------
+
+[backend]
+engine = "opencode"             # native is a temporary repair/legacy override
+fallback = "native"             # allowed only before OpenCode admits a prompt
+managed = true
+idle_timeout_secs = 1800
+default_scope = "workspace"     # workspace | host; yolo acceptance is not saved
+workspace_network = "deny"      # allow | deny
+output = "compact"              # compact | detailed
+max_output_tokens = 0           # 0 = backend/model default
+
+[sandbox]
+linux_backend = "bwrap"         # bwrap | policy
+require_functional = false      # true = fail rather than policy-degrade
+workspace_roots = []
+allow_host_yolo = true
 
 # ---------------------------------------------------------------------------
 # Optional: audit logging of AI calls, responses, and AI-initiated actions.

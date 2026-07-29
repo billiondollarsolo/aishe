@@ -29,7 +29,9 @@ aishe zsh    # the same, explicitly
 ```
 
 aishe injects a `command_not_found_handler` so natural-language input is routed
-to the LLM. Suggested commands pre-fill your next prompt. Set `AISHE_MODE` to
+to the managed agent engine. OpenCode stays behind Aishe's private loopback
+supervisor; no second process UI or TUI appears. Suggested commands pre-fill
+your next prompt. Set `AISHE_MODE` to
 `suggest`, `auto`, or `yolo` to control behavior (`pty_prompt = true` shows a
 branded prompt whose glyph reflects the mode). The hook ergonomics described in
 [Shell integration](shell-integration.md) apply here, since the PTY wrapper
@@ -56,7 +58,9 @@ Set `AISHE_COMMAND_HIGHLIGHT=0` to disable the fallback.
 The branded prompt also has a configurable live status display. `right` keeps
 the current shell-like layout, `below` gives detailed metrics room in narrow
 terminals, and `off` hides it. Choose the position and ordered fields during
-setup or in `aishe settings`.
+setup or in `aishe settings`. Fields include model, mode, backend, scope,
+network, sandbox, task, elapsed time, latest context tokens, call/session
+tokens/cost, budget, and request count.
 
 The router recognizes a conservative set of full-line question forms beginning
 with collision-prone commands such as `what`, `where`, and `who`. Ambiguous
@@ -89,7 +93,9 @@ eval "$(aishe init bash)"
 This installs a not-found handler that routes anything that is not a command to
 aishe, while your shell's line editor and every native plugin stay untouched. It
 is the same hook the zsh-PTY wrapper injects, so the `?`/`#` sigils, the force-NL
-key, and the Shift-Tab mode cycle all work here too. The bash hook is the way to
+key, and the Shift-Tab mode cycle all work here too. Separate hook processes
+share one durable managed conversation through the shell/workspace mapping. The
+bash hook is the way to
 use aishe interactively without zsh. Full details, including how state changes
 persist across the subshell handoff, are in
 [Shell integration](shell-integration.md).
@@ -100,4 +106,5 @@ persist across the subshell handoff, are in
 aishe`) runs each line like a `-c` invocation. These use aishe's in-process
 executor and dispatcher (zsh, falling back to bash), so they work without an
 interactive terminal and without zsh present. Natural-language lines are answered
-or, in suggest mode, printed as a proposed command.
+or, in suggest mode, printed as a proposed command. A natural-language turn may
+lazy-start the managed backend; a direct shell line never does.

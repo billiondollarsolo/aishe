@@ -7,10 +7,53 @@ aishe doctor
 ```
 
 It reports your backing shell, config and credentials paths, resolved front-end,
-provider, and the active credential source. Most setup problems show up here.
+provider, active credential source, managed runtime/version/hash, authenticated
+loopback server, trusted plugin/tool restrictions, credential isolation,
+session/journal state, and sandbox self-test. Most setup problems show up here.
 Add `--probe` for reachability, `--live` for minimal feature calls,
 `--json` for automation, `--fix` for safe local repairs, or `--bundle PATH` for
 a redacted support bundle.
+
+## "Managed agent engine unavailable"
+
+Inspect the runtime separately from the provider:
+
+```sh
+aishe backend status
+aishe backend verify --live
+aishe backend logs --tail 200
+```
+
+If the runtime is missing, use `aishe backend install`; if its metadata,
+checksum, executable version, or plugin health is invalid, use `aishe backend
+repair`. `aishe backend rollback` selects the immediately previous compatible
+verified install. Aishe may use native suggest/chat/auto compatibility only when
+the failure occurs before OpenCode admits the prompt. It never retries a turn
+through another engine after partial output or a tool effect.
+
+An interrupted admitted turn remains visible:
+
+```sh
+aishe sessions
+aishe session show ses_...
+aishe resume ses_...
+```
+
+This avoids blindly repeating a command whose outcome may be unknown.
+
+## Bubblewrap is installed but Doctor says unusable
+
+Aishe tests namespace creation, a read-only host, writable workspace/private
+`/tmp`, and the network profile. Finding `bwrap` on `PATH` is not enough. A
+container, kernel, or security profile can disable the required user
+namespaces. Run `aishe doctor --json` for the exact state, then either enable
+the host capability, choose explicit policy-only behavior where allowed, or ask
+the administrator to change organization policy. Aishe never labels an
+unusable bubblewrap install as sandboxed.
+
+Setup can install bubblewrap on supported Linux package managers, but only after
+showing the exact command and receiving consent. Doctor `--fix` deliberately
+does not install system packages.
 
 ## A config file, custom command, or skill is ignored
 
@@ -53,6 +96,11 @@ An `api_key_env` value remains a higher-precedence override when set. If Doctor
 reports insecure permissions, run `aishe doctor --fix` or `chmod 600` on the
 exact credentials path it prints. For a local server such as Ollama, use
 `auth_required = false`; no dummy key is needed.
+
+The managed-backend error names the missing Aishe credential profile and
+configured environment override. The secret is passed only to the provider
+server process; it is removed from model-controlled command/tool environments
+and never written to backend config, session mappings, or tool journals.
 
 ## A natural-language request ran as a command
 
@@ -138,5 +186,11 @@ A malformed config is never silently replaced with defaults. Aishe reports the
 parse error so you can fix the file or restore one of its private `.bak` files.
 Schema migrations also create a backup before an atomic rewrite.
 
-Upgrades replace only the executable. They do not remove configuration,
-`history.ext`, durable task records, audit data, or the trust store.
+Upgrades replace the executable and add/activate only a verified compatible
+runtime when needed. They do not remove configuration, credentials,
+`history.ext`, managed sessions, durable legacy tasks, tool journals, audit
+data, undo data, or the trust store.
+
+For removal, preview `aishe uninstall --dry-run`. Plain uninstall selects only
+replaceable binary/runtime components; state deletion is separated by category
+and requires explicit confirmation.

@@ -2,16 +2,16 @@
   <img src="assets/aishe-logo.png" alt="aishe" width="420">
 </p>
 
-# Use At Your Own Risk
-
-This is current being coded using only Claude Code on my phone. It's not fully baked yet, but it's a fun experiment both to build this interesting tool as well as only try to do it from my phone. Let's see where this goes.
-
 # aishe - AI Shell
 
 **It's your shell, with an AI built in.** `aishe` runs real commands exactly like
 zsh, and treats anything that isn't a command as a plain-English request for an
 LLM — which either **suggests** a command for you to confirm or **runs
 autonomously** until the task is done.
+
+> Aishe is pre-1.0. Autonomous host access can make irreversible changes; use
+> workspace scope and functional Linux isolation for untrusted work, review
+> [the safety model](docs/safety.md), and keep backups.
 
 ```
 ~/projects/app ❯ git status            # runs exactly like zsh
@@ -54,6 +54,10 @@ of a shell. Prefix it with `?` to force the natural-language route
 - 🐚 **Your real zsh, untouched.** aishe wraps your actual interactive zsh, so
   your plugins, completions, prompt, aliases, key bindings, and job control all
   work unmodified — it's not a shell reimplementation.
+- 🧠 **A real agent engine, still one shell.** Every AI turn uses Aishe's
+  private, exact-version-pinned OpenCode backend for durable conversations,
+  reasoning, compaction, and subagents. It starts lazily on authenticated
+  loopback, never opens another TUI, and never touches direct zsh commands.
 - 🗣️ **Plain English → commands.** Anything that isn't a real command is routed to
   the model. A leading `?` forces a question; a leading `!` forces a raw command.
 - 🎚️ **Three modes.** `suggest` (propose, you confirm), `auto` (run safe commands,
@@ -84,9 +88,10 @@ of a shell. Prefix it with `?` to force the natural-language route
 - 🩹 **Fix-the-last-command.** When a command fails, **Ctrl-X Ctrl-F** asks the
   model for a correction (optionally re-running the failed read-only command to
   read its real error) and pre-fills it for review.
-- 🔌 **Any provider, resilient.** Anthropic and any OpenAI-compatible endpoint —
-  OpenAI, Groq, Ollama (local), OpenRouter, Together — with an optional fallback
-  chain; `aishe doctor --probe` checks each is reachable.
+- 🔌 **Any provider, validated.** Anthropic and OpenAI-compatible endpoints —
+  OpenAI, Groq, Ollama (local), OpenRouter, Together — with live model discovery
+  and capability checks. A managed turn is never duplicated after admission or
+  a side effect; interruption is durable and resumable.
 - 🧰 **Agentic tools.** In yolo, the model edits files precisely, fetches web pages,
   and calls your [MCP servers](docs/mcp.md) and [skills](docs/custom-commands-and-skills.md).
 - 💸 **Cost-aware.** Per-call and whole-session token/cost metering with an optional
@@ -95,6 +100,10 @@ of a shell. Prefix it with `?` to force the natural-language route
 - 💾 **Durable AI tasks.** Agentic sessions checkpoint before and after tool calls,
   so `aishe sessions` and `aishe resume` can recover interrupted work without
   blindly repeating a command that may already have run.
+- 📦 **Managed and recoverable.** Setup installs the exact checksum-pinned
+  OpenCode runtime, offers consent-gated bubblewrap installation on Linux, and
+  verifies the whole path end to end. Runtime repair/rollback and a
+  state-preserving category-based uninstaller are built in.
 - 🧭 **Guided setup and diagnostics.** `aishe setup`, `aishe settings`, and
   `aishe tour` are resumable interactive flows; `aishe doctor --json`,
   `--fix`, `--bundle`, and `--live` make problems actionable.
@@ -106,8 +115,8 @@ of a shell. Prefix it with `?` to force the natural-language route
 
 ## Install
 
-**One line on Linux or macOS** (downloads the right prebuilt binary, verifies its
-checksum, installs it, and ensures `zsh` is present):
+**One line on Linux or macOS** (downloads and verifies the right Aishe binary
+and exact managed agent runtime, then ensures `zsh` is present):
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/billiondollarsolo/aishe/main/install.sh | sh
@@ -132,9 +141,11 @@ plus `.deb`/`.rpm` packages and the Homebrew formula in
 </details>
 
 **Requirements:** `zsh` on your `PATH` for the interactive shell (the installer
-adds it); `bash` is enough for `aishe -c …` and piped input. Prebuilt binaries
-target macOS (arm64 / x86_64) and Linux (x86_64 / arm64) — no Rust toolchain
-needed.
+can add it); `bash` is enough for `aishe -c …` and piped input. On Linux,
+functional `bubblewrap` is the supported OS-isolation boundary for autonomous
+workspace actions; Setup detects it and asks before installing a system
+package. Prebuilt binaries target macOS (arm64 / x86_64) and Linux (x86_64 /
+arm64) — no Rust toolchain or separate OpenCode installation is needed.
 
 ## Quickstart
 
@@ -242,10 +253,12 @@ There are three ways to use aishe. Details in
 
 ## Providers
 
-aishe talks to the **Anthropic Messages API**, OpenAI's **Responses API**, and
-**OpenAI-compatible Chat Completions APIs**. The official OpenAI URL uses
-Responses (including reasoning-model tool loops); Groq, Ollama, OpenRouter,
-Together, and other custom `base_url` values use Chat Completions.
+Aishe remains the source of truth for provider, model, credential profile,
+prices, and budgets, then generates an isolated provider configuration for its
+managed agent engine. It supports the **Anthropic Messages API**, OpenAI's
+**Responses API**, and **OpenAI-compatible Chat Completions APIs**. The official
+OpenAI URL uses Responses; Groq, Ollama, OpenRouter, Together, and other custom
+`base_url` values use Chat Completions.
 
 ```toml
 [providers.openai]
@@ -257,7 +270,10 @@ model = "openai/gpt-oss-120b"
 
 API keys are read from the named private credential profile; the environment
 variable remains a higher-precedence override. They are never stored in
-`config.toml`. See [docs/providers.md](docs/providers.md) for per-provider setup.
+`config.toml`, backend config, session files, tool journals, or model-controlled
+tool environments. See [docs/providers.md](docs/providers.md) for per-provider
+setup and [managed agent backend](docs/managed-agent-backend.md) for the process
+boundary.
 
 ## Commands and settings
 
@@ -273,6 +289,8 @@ aishe auth ...         save/status/list/remove private credential profiles
 aishe tour             resumable first-session walkthrough
 aishe init zsh|bash    print the shell-hook snippet (for ~/.zshrc / ~/.bashrc)
 aishe doctor           diagnostics; --probe/--live/--json/--fix/--bundle
+aishe backend ...      managed runtime status/install/verify/repair/rollback/logs
+aishe uninstall        previewable removal; user state preserved by default
 aishe completions ...  print a shell completion script for aishe itself
 aishe trust [PATH]     trust this repo's .aishe/config.toml, or one project file
 aishe trust --list     list every trusted file
@@ -288,6 +306,8 @@ aishe resume [ID]                    safely resume an interrupted task
 aishe price list|set|remove          manage exact per-model price overrides
 aishe profile [VALUE] | readiness    inspect safety profile/autonomy readiness
 aishe models [--provider NAME]       list endpoint models
+aishe scope [workspace|host]         set the next agent execution scope
+aishe network [allow|deny]           set workspace-agent network capability
 
 aishe mode|model|provider [VALUE]   show or set (and persist) a setting
 aishe config|mcp|commands|skills    print the active config / registries
@@ -317,10 +337,13 @@ AISHE_CONFIG_DIR=/tmp/try AISHE_DATA_DIR=/tmp/try aishe doctor
 
 ## Conversation memory
 
-aishe remembers recent natural-language turns so follow-ups have context: after
+aishe remembers natural-language turns so follow-ups have context: after
 "create alpha.txt containing apple", a follow-up "now do the same for beta.txt"
-knows what "the same" means. Memory lives only for the session (never written to
-disk), is capped in size, and is on by default. Turn it off with
+knows what "the same" means. Managed conversations are durable per
+shell/workspace and survive backend restarts and Aishe upgrades; private session
+records are never included in support bundles. `aishe sessions` lists them,
+`aishe resume ses_...` reconnects one, and the prompt-only `reset` starts fresh.
+The native compatibility memory remains capped and can be disabled with
 `memory = false`. See [docs/modes.md](docs/modes.md).
 
 ## Custom commands and skills
@@ -383,8 +406,8 @@ More in [docs/usage-and-cost.md](docs/usage-and-cost.md).
 
 ## Safety gate
 
-Before running an LLM-proposed command (in suggest and auto, and for yolo tool
-calls per the `yolo_confirm` tier), aishe screens for irreversible operations:
+Before running an LLM-proposed command in suggest or auto, Aishe screens for
+irreversible operations:
 `rm -rf`, `dd of=/dev/...`, `mkfs`, fork bombs, `curl ... | sh`, `git push --force`
 to main, `shutdown` and `reboot`, and more. Dangerous commands print a red panel
 and require you to type the full word `yes`.
@@ -406,12 +429,13 @@ on another machine, a payload handed to a non-shell interpreter, and content pip
 into a shell from a source it cannot read. Those classes, and why they are hard,
 are in [docs/safety.md](docs/safety.md#what-the-gate-does-not-catch).
 
-The real control for autonomous or untrusted work is isolation, not the gate: on
-Linux set `sandbox_backend = "bwrap"` for OS-enforced confinement, and use `aishe
-dry-run` / `yolo_dry_run` to preview changes you can apply or discard (`aishe undo`
-reverts any AI edit). macOS has no sandbox backend, so yolo there falls back to the
-gate alone — `aishe doctor` shows what is active. The gate does not apply to
-commands you type yourself or to `!`-forced lines. Details in
+The real control for autonomous or untrusted work is isolation, not the gate:
+managed yolo asks once per new shell for `workspace` or `host` scope, then does
+not interrupt with per-action approvals. On Linux, `[sandbox]
+linux_backend = "bwrap"` provides the OS boundary for workspace scope; use
+`aishe dry-run` / `yolo_dry_run` to preview changes you can apply or discard
+(`aishe undo` reverts any AI edit). macOS is explicitly policy-only. The gate
+does not apply to commands you type yourself or to `!`-forced lines. Details in
 [docs/safety.md](docs/safety.md).
 
 ## Logging and privacy
@@ -476,6 +500,17 @@ base_url = "https://api.openai.com"
 credential = "openai"
 api_key_env = "OPENAI_API_KEY"
 model = "gpt-4o"
+
+[backend]
+engine = "opencode"
+fallback = "native"             # only before prompt admission
+default_scope = "workspace"
+workspace_network = "deny"
+
+[sandbox]
+linux_backend = "bwrap"
+require_functional = false
+allow_host_yolo = true
 ```
 
 ## Documentation
@@ -487,6 +522,7 @@ The [docs/](docs/) directory has the full user guide:
 - [Modes](docs/modes.md)
 - [Front-ends](docs/front-ends.md)
 - [Providers](docs/providers.md)
+- [Managed agent backend](docs/managed-agent-backend.md)
 - [Configuration reference](docs/configuration.md)
 - [Commands and slash-commands](docs/commands.md)
 - [Custom commands and skills](docs/custom-commands-and-skills.md)

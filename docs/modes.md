@@ -52,81 +52,73 @@ destructive operations. See [Safety gate](safety.md#three-outcomes).
 
 ## yolo
 
-yolo is an agentic loop. The model is given tools, calls one, reads the result,
-and decides what to do next, repeating until the task is done or it hits
-`max_yolo_iterations`. Key points:
+Yolo uses Aishe's managed OpenCode engine to plan, call tools, inspect results,
+compact context, create subagents where appropriate, and continue until the task
+is done. OpenCode never executes a host tool directly: its built-ins are
+hidden/denied and every effect crosses Aishe's authenticated foreground bridge.
 
-- The core tool is `run_command`: it runs a shell command with stdin closed
-  (non-interactive flags), the captured output is shown to you and truncated for
-  the model, and each command times out after a fixed limit.
-- **File tools** (`file_tools = true`, on by default): the model can also call
-  `read_file`, `write_file`, `edit_file`, and `list_dir` to work with files
-  precisely, instead of round-tripping through `cat`/`sed`/heredocs (which it
-  gets wrong more often). A write or edit to a path outside the working tree
-  (absolute, `~`, or `..`-escaping) is confirmed whenever the confirmation tier
-  is not `"never"` (see `yolo_confirm` below). Every such edit is shown as a diff
-  and is **reversible** — see [Reversible edits](#reversible-edits).
-- **Web tool** (`web_tool = true`, on by default): the model can call `fetch_url`
-  to read a page or docs (HTTP GET over http/https only; HTML is stripped to
-  readable text, the body is byte-capped while reading and char-capped before it
-  goes to the model). Use this instead of `curl`/`wget` for reading the web.
-- **MCP tools**: if you configure [MCP servers](mcp.md), their tools are offered
-  too, namespaced `mcp__<server>__<tool>`, and proxied to the server when called.
-- **Plan-first (dry run)** (`yolo_plan = true`, off by default): before the loop
-  runs anything, the model lays out its intended steps and you approve them
-  (`Proceed with this plan? [Y/n]`). Costs one extra planning call and applies
-  only interactively (a piped/`-c` run has no one to approve, so it proceeds).
-  Toggle live by typing `plan on` at the aishe prompt (a
-  [prompt-only meta command](commands.md#prompt-only-meta-commands)).
-- **Preview-first file edits** (`yolo_preview = true`, off by default): when the
-  loop uses a built-in `write_file` or `edit_file`, show the diff and ask
-  `apply this write/edit to <path>? [y/N]` before touching the file, instead of
-  writing first and showing the diff after. Applies to the file tools only (use
-  `yolo_confirm` / `yolo_sandbox` for arbitrary `run_command` side effects). As
-  elsewhere, a piped/`-c` run has no one to answer, so it applies automatically.
-  Every applied change is still journaled for `aishe undo`.
-- **Confirmation tiers** (`yolo_confirm`): control when the loop pauses to
-  confirm a `run_command` call:
-  - `"never"` runs everything without asking.
-  - `"dangerous"` (the default) confirms only commands the
-    [safety gate](safety.md) flags.
-  - `"writes"` confirms dangerous commands and any command that modifies state
-    (anything not recognized as a read-only command such as `ls`/`cat`/`grep`/
-    `git status`).
-  - `"all"` confirms every command.
-  The older `yolo_confirm_dangerous` boolean still works: it only takes effect
-  when `yolo_confirm` is left at its default, where `yolo_confirm_dangerous =
-  false` means the same as `"never"`. Otherwise `yolo_confirm` wins. As with the
-  rest of aishe, a piped/`-c` run has no one to answer, so a confirm proceeds
-  automatically there.
-- **Sandbox** (`yolo_sandbox = true`, off by default): a policy-based restricted
-  exec. When on, a `run_command` that reaches the network or writes outside the
-  working tree is refused before it runs (the reason is fed back to the model so
-  it can adapt), rather than executed. It is best-effort, not a kernel sandbox;
-  see [Safety](safety.md#sandbox-policy-based-best-effort). Toggle live by typing
-  `sandbox on` at the aishe prompt (a
-  [prompt-only meta command](commands.md#prompt-only-meta-commands)).
-- **Reversible session** (`yolo_dry_run = true`, off by default): run the *whole*
-  session against a throwaway copy of the working tree (under bubblewrap — a
-  read-only root with the network disabled), then show the cumulative file diff
-  and apply or discard it at the end. Interactive runs prompt; non-interactive
-  (`-c`) runs auto-apply, journaled so `aishe undo` reverts the batch. Needs
-  bubblewrap (Linux); degrades to a normal run when absent. This makes an entire
-  autonomous session reversible, not just the built-in file tools.
-- If skills are present, the model can pull a skill's instructions into context
-  on demand. See [Custom commands and skills](custom-commands-and-skills.md).
-- Every tool call is recorded in the [audit log](logging.md) (`run_command` as an
-  `action`, the built-in tools as `yolo:read_file` / `yolo:fetch_url` etc.).
-- The task is checkpointed privately and atomically before and after each tool
-  call. If the terminal, process, or connection dies, inspect it with `aishe
-  sessions` and continue with `aishe resume [ID]`. If interruption happened
-  after a tool might have started but before its result was saved, resume asks
-  what happened instead of silently executing it again.
+### One acceptance, not approval spam
+
+The first yolo turn in every new shell asks you to accept one scope:
+
+- **workspace** — effects are confined to the canonical workspace and any
+  explicitly configured roots. Workspace network is separately `allow` or
+  `deny`. On Linux, bubblewrap is the supported OS boundary.
+- **host** — explicit host-wide agent authority for this shell. The warning
+  names the consequences; organization policy may disable this choice.
+
+After acceptance, yolo does not ask again for each command or edit. That is the
+mode's contract. Acceptance is in memory only, never config, so opening another
+shell asks again. `aishe scope workspace|host` changes the default selection;
+`aishe network allow|deny` changes the workspace network capability.
+
+`yolo_confirm` and `yolo_confirm_dangerous` remain readable for the temporary
+native compatibility backend and legacy tasks. They do not reintroduce
+per-action approval into an accepted managed yolo session.
+
+### Tools and ownership
+
+- `run_command` executes through Aishe with bounded output, timeout/process-group
+  cancellation, scope checks, sandbox policy, redaction, and audit.
+- `read_file`, `write_file`, `edit_file`, and `list_dir` stay path-confined;
+  writes produce diffs and undo records.
+- `fetch_url` obeys the workspace network capability and bounded response rules.
+- Configured [MCP servers](mcp.md) remain namespaced
+  `mcp__<server>__<tool>` and are invoked by Aishe.
+- [Skills](custom-commands-and-skills.md) are progressively disclosed by Aishe;
+  project trust and organization policy still apply.
+
+Provider keys are available only to the managed provider process. Every
+model-controlled command/tool environment starts from an explicit sanitized
+snapshot with provider variables, `AISHE_*`, `OPENCODE_*`, and likely secret
+names removed.
+
+### Isolation, durability, and budget
+
+On Linux, `[sandbox] linux_backend = "bwrap"` gives workspace tools a read-only
+host, writable project/private `/tmp`, and explicit network profile. Setup and
+Doctor run a functional namespace test; merely finding the executable is not
+enough. macOS is clearly labeled policy-only. `aishe dry-run` and legacy
+`yolo_dry_run` remain available for throwaway-copy previews.
+
+Every provider turn is authorized against Aishe's exact price/budget before the
+request. Usage is accepted once per provider message, including child sessions,
+and updates the statusline. An exhausted budget denies the next turn without
+destroying the conversation.
+
+Every tool call is durably journaled before execution. A duplicate completed
+call replays its result; a call interrupted after start is marked
+outcome-unknown and is never silently repeated. Use:
+
+```sh
+aishe sessions
+aishe session show ses_...
+aishe resume ses_...
+```
 
 Use `aishe profile conservative|balanced|autonomous` to apply a transparent
-bundle of mode, confirmation, preview, planning, sandbox, and iteration
-settings. `aishe readiness` reports whether provider tools, OS isolation, and
-the other autonomous prerequisites have actually been validated.
+settings bundle. `aishe readiness` reports the provider, runtime, tool,
+sandbox, and policy prerequisites that have actually been validated.
 
 ## Reversible edits
 
@@ -146,8 +138,8 @@ original bytes. Reverting marks the batch done, so a second `aishe undo` moves o
 the previous run.
 
 This is a safety net, not a sandbox: it covers the built-in **file tools** only,
-not arbitrary `run_command` side effects (use `yolo_confirm` / `yolo_sandbox` for
-those — see [Safety gate](safety.md)). The journal is JSONL at `undo.jsonl` in
+not arbitrary `run_command` side effects (use workspace scope/bubblewrap or
+`aishe dry-run` for those — see [Safety gate](safety.md)). The journal is JSONL at `undo.jsonl` in
 aishe's [data directory](configuration.md#file-locations) (override with
 `$AISHE_UNDO_JOURNAL`); journaling is best-effort and never blocks or fails a
 write.
@@ -216,24 +208,26 @@ runs. The model's output is never trusted to be safe.
 
 ## Conversation memory
 
-In the interactive REPL, aishe remembers recent natural-language turns so
-follow-ups have context. After "create a file alpha.txt containing apple", a
-follow-up like "now do the same for beta.txt" knows that "the same" means
-"containing apple".
+Managed suggest, auto, and yolo turns use one durable OpenCode conversation per
+Aishe shell/canonical workspace. A follow-up from the hook's next short-lived
+process therefore retains the same request, response, tool, and compaction
+context. It also survives an idle supervisor exit and an Aishe binary/runtime
+upgrade.
 
-- Memory applies across suggest, auto, and yolo turns in one session.
-- It stores your requests and the assistant's replies (a suggested command or
-  answer, or a yolo run's final summary), not the full tool-by-tool transcript,
-  so it stays small. It is capped by an approximate size budget and is never
-  written to disk.
-- It lives only for the interactive process. One-shot `-c` runs and the shell
-  hook do not carry memory between invocations.
-- Clear it any time by typing `reset` (or `/reset`) at the aishe prompt. It is a
-  [prompt-only meta command](commands.md#prompt-only-meta-commands), so
-  `aishe reset` in a terminal is not a thing — and would be pointless anyway,
-  since memory lives only inside the interactive process.
-- Turn it off with `memory = false` in config. Note that more history means more
-  input tokens per request; see [Token usage and cost](usage-and-cost.md).
+- `aishe sessions` lists managed mappings and legacy native task records.
+- `aishe resume ses_...` rebinds the current Aishe shell; from a normal TTY it
+  opens the real zsh in the recorded workspace already bound to that session.
+- A changed workspace gets a different conversation by default.
+- The prompt-only `reset`/`/reset` starts fresh for the current shell; it is not
+  an `aishe reset` subcommand.
+- Private backend/session contents are excluded from support bundles.
+- `memory = false` controls the capped native compatibility transcript during
+  the transition; managed conversation durability is part of the backend
+  session contract.
+
+Long conversations are compacted by the agent engine. The `context` statusline
+field reports the latest authoritative input-token count rather than inventing a
+percentage. See [Token usage and cost](usage-and-cost.md).
 
 ## Input prefixes
 

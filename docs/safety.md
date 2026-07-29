@@ -16,7 +16,7 @@ corpus of ordinary commands, it asks about fewer than one in two hundred. What i
 structurally cannot see is in
 [What the gate does not catch](#what-the-gate-does-not-catch), and the layer
 you actually rely on for isolation is the
-[sandbox](#a-real-sandbox-sandbox_backend--bwrap).
+[sandbox](#a-real-sandbox-sandboxlinux_backend--bwrap).
 
 ## When the gate applies
 
@@ -24,10 +24,11 @@ you actually rely on for isolation is the
 - **auto**: safe commands run immediately; dangerous ones stop and require you to
   type the full word `yes`, and unresolvable ones stop with the milder `[y/N]`
   prompt (see [Three outcomes](#three-outcomes) — nothing unverified auto-runs).
-- **yolo**: the loop pauses for tool calls according to the `yolo_confirm` tier
-  (`"never"` / `"dangerous"` / `"writes"` / `"all"`; default `"dangerous"`). The
-  legacy `yolo_confirm_dangerous` boolean is still honored when `yolo_confirm` is
-  left at its default. See [Modes: yolo](modes.md#yolo).
+- **managed yolo**: you accept workspace or host authority once in each new
+  shell; there are no per-action prompts afterward. Scope, bubblewrap, network
+  policy, path checks, and the Aishe tool bridge are the boundary. The
+  `yolo_confirm` fields remain only for native compatibility/legacy tasks. See
+  [Modes: yolo](modes.md#yolo).
 
 The gate does not apply to commands you type yourself, nor to `!`-forced lines.
 It is a shell, not a nanny: if you type a destructive command directly, it runs.
@@ -79,7 +80,7 @@ fragment, or an expansion the gate can't evaluate (`$(which rm)`, `${RM:-rm}`).
 The gate used to treat those as safe. It now reports them as **unknown** and every
 caller fails closed:
 
-- **suggest / auto / yolo**: a yellow "could not verify" panel, same confirmation
+- **suggest / auto / native compatibility yolo**: a yellow "could not verify" panel, same confirmation
   as a flagged command; nothing auto-runs.
 - **`aishe suggest --json`**: `risk` is `"unknown"` (alongside the existing
   `"safe"`, `"dangerous"`, `"n/a"`), with the reason in `reason`. The exit code is
@@ -141,7 +142,8 @@ narrows these holes but does not close them: someone who picks the spelling can 
 resolvable one. Second, the gate is aimed at *mistakes* — a model proposing something
 destructive by accident — and it is not a defense against an adversary who is choosing
 their input, whether that adversary is a person or prompt-injected content steering the
-model. For autonomous or untrusted use the real control is `sandbox_backend = "bwrap"`
+model. For autonomous or untrusted use the real control is `[sandbox]
+linux_backend = "bwrap"`
 or `aishe dry-run`, not this gate — see
 [Defense-in-depth, not a sandbox](#defense-in-depth-not-a-sandbox).
 
@@ -176,7 +178,8 @@ model proposed.
 
 ## Sandbox (policy-based, best-effort)
 
-yolo mode has an optional sandbox (`yolo_sandbox = true`, off by default; toggle
+The native compatibility backend has an optional policy screen
+(`yolo_sandbox = true`, off by default; toggle
 by typing `sandbox on` at the aishe prompt — a
 [prompt-only meta command](commands.md#prompt-only-meta-commands), not an `aishe`
 subcommand). When on, before a `run_command` runs, aishe classifies
@@ -202,22 +205,24 @@ does not look like the patterns above. It also does **not** affect the zsh-PTY /
 real-shell front-end paths (those run your own typed commands, not model tool
 calls). It is one more guardrail for an autonomous loop, not a security boundary.
 
-### A real sandbox: `sandbox_backend = "bwrap"`
+Managed agent turns express the equivalent constraint through
+`backend.default_scope`, `backend.workspace_network`, and the `[sandbox]`
+section; Aishe enforces it at the foreground tool bridge.
 
-For genuine isolation, set `sandbox_backend = "bwrap"` (with `yolo_sandbox =
-true`). When [bubblewrap](https://github.com/containers/bubblewrap) (`bwrap`) is
-installed, every `run_command` then runs with a **read-only root** and only the
-**working tree** and `/tmp` writable — so a yolo command *physically cannot*
-modify the system (`/etc`, `/usr`, your home), no matter how it's written. This
-replaces the advisory policy check above with OS-enforced isolation. Network is
-left intact (reads and lookups still work); the guarantee is that **writes can't
-escape the working tree**, which is the damage that matters.
+### A real sandbox: `[sandbox].linux_backend = "bwrap"`
 
-If `bwrap` isn't installed, aishe degrades to the policy gate and says so (`aishe
-doctor` shows which backend is active). The bwrap backend is Linux-only; on macOS,
-use the policy backend. (Because the root is read-only, commands that install
-system packages will fail inside it — that's the point; run those outside the
-sandbox or with the policy backend.)
+For genuine workspace isolation, set `[sandbox] linux_backend = "bwrap"`.
+[bubblewrap](https://github.com/containers/bubblewrap) gives model-controlled
+commands a **read-only host**, the canonical **workspace** and private `/tmp` as
+the only writable roots, and the configured `backend.workspace_network`
+capability (`allow` or `deny`). A command cannot modify `/etc`, `/usr`, the rest
+of the home directory, or a symlink escape merely by changing its spelling.
+
+Setup and Doctor run a functional namespace/writable/read-only/network
+self-test; finding the executable is not enough. If bwrap is missing or unusable,
+Aishe says so and either fails (when `require_functional = true` or organization
+policy requires it) or labels the selected alternative policy-only. It never
+silently claims OS isolation. The backend is Linux-only; macOS is policy-only.
 
 ## Reversible preview: `aishe dry-run`
 
@@ -258,32 +263,26 @@ that look for the obvious shapes. Treat it as defense-in-depth, not a sandbox.
 
 Defense in depth here means three layers, and they are not equal:
 
-1. **The sandbox** (`sandbox_backend = "bwrap"`, Linux) — the only layer enforced by
+1. **The sandbox** (`[sandbox] linux_backend = "bwrap"`, Linux) — the only layer enforced by
    the OS rather than by aishe's opinion of a string. Writes cannot leave the working
    tree regardless of how a command is spelled. This is the real boundary.
-2. **Confirmation** (`yolo_confirm`, and `suggest`/`auto` prompts) — a human reading
-   the command before it runs. Independent of whether the gate understood it, which is
-   exactly why `unknown` routes here.
+2. **Authority** — suggest/auto use per-action review where applicable; managed
+   yolo uses one explicit per-shell workspace/host acceptance and then no
+   per-action prompts. That acceptance is never persisted.
 3. **The safety gate** — the weakest of the three, and the only one that can be wrong
    silently. It sees text, matches shapes it was taught, and has the blind spots listed
    [above](#what-the-gate-does-not-catch).
 
-Note the platform asymmetry: **macOS has no sandbox backend**, so on macOS layer 1
-does not exist and `yolo` falls back to the gate plus whatever confirmation tier you
-set. `aishe doctor` shows which backend is actually active — check it rather than
-assuming.
+Note the platform asymmetry: **macOS has no bubblewrap backend**, so on macOS
+layer 1 does not exist and managed yolo is explicitly policy-only. `aishe
+doctor` shows which backend is actually active — check it rather than assuming.
 
 This matters most in `auto` and `yolo`, where commands can run without a
 per-command confirmation. In `suggest` mode nothing runs until you explicitly
 confirm it, so the gate is only an extra warning. For untrusted input or a
-fully-autonomous loop, do not rely on the gate alone — raise the confirmation tier
-and/or turn on the sandbox:
-
-- Raise [`yolo_confirm`](configuration.md#aishe-section) to `"writes"` (confirm
-  any state-modifying command) or `"all"` (confirm every command).
-- Enable [`yolo_sandbox`](configuration.md#aishe-section) (`= true`), the
-  policy sandbox that refuses network access and out-of-tree writes (see the
-  previous section; toggle live by typing `sandbox on` at the aishe prompt).
+fully-autonomous loop, select workspace scope, require functional bubblewrap,
+deny network unless needed, and use host scope only when the task truly requires
+it. Organization policy can enforce each of those constraints.
 
 The gate will keep improving — new shapes get rules and a corpus entry as they are
 found — but the guidance is evergreen: it is a backstop, and for autonomous or

@@ -46,7 +46,8 @@ fast-syntax-highlighting, and either plugin automatically takes precedence. Set
 - **auto**: a command the safety gate deems safe runs in your real shell, so `cd`
   and `export` persist and it lands in your history. A dangerous command is
   offered for review instead.
-- **yolo**: the agentic loop runs directly.
+- **yolo**: the managed agent runs inline. The first yolo turn in each new shell
+  asks once for workspace/host scope; accepted yolo does not prompt per action.
 
 ### force-NL keybinding
 
@@ -66,8 +67,8 @@ Press **Shift-Tab** to rotate the interaction mode for the session
 updates (`❯` suggest, `»` auto, `⚡` yolo) and the new mode is shown. In zsh,
 Shift-Tab still navigates an open completion menu first; it only cycles the mode
 when no menu is showing. This changes how the *next* natural-language line routes;
-the safety gate and `yolo_confirm` tier always still apply, so it never bypasses a
-confirmation. Override the key:
+changing mode does not grant authority: the first yolo turn still requires
+per-shell scope acceptance. Override the key:
 
 ```sh
 export AISHE_MODE_KEY='^[[Z'   # zsh bindkey sequence (default Shift-Tab)
@@ -169,16 +170,17 @@ On a minimal account where zsh starts with `HISTFILE` unset (and typically
 file and enables `EXTENDED_HISTORY`, `APPEND_HISTORY`, and—when
 `share_history=true`—`SHARE_HISTORY`. Native Up-arrow, `Ctrl-R`, and history
 expansion therefore survive shell restarts and exchange entries with concurrent
-Aishe sessions. The log lives in Aishe's user data directory; installers and
-package upgrades replace only the binary and do not remove it.
+Aishe sessions. The log lives in Aishe's user data directory; binary/managed
+runtime installers and package upgrades do not remove it.
 
 ## Branded prompt status line
 
 With `pty_prompt = true`, aishe can render its live status in the right prompt,
 on a separate line above the input prompt, or nowhere. Configure it in `aishe
 setup` / `aishe settings`, or set `status_line_position = "right"`, `"below"`,
-or `"off"`. Ordered fields can include `model`, `mode`, `last_tokens`,
-`last_cost`, `session_tokens`, `session_cost`, and `requests`. The below-prompt
+or `"off"`. Ordered fields can include `model`, `mode`, `backend`, `scope`,
+`network`, `sandbox`, `task`, `elapsed`, `context`, `last_tokens`, `last_cost`,
+`session_tokens`, `session_cost`, `budget`, and `requests`. The below-prompt
 layout is usually more readable when you select the detailed metrics. Status
 text is passed through zsh's non-recursive `psvar` prompt escape, so even with a
 theme's `PROMPT_SUBST` option enabled, model names and provider text cannot

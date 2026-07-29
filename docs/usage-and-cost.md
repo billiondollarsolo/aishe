@@ -5,7 +5,8 @@ aishe meters every model call so you can see what a session costs and cap it.
 ## What you see
 
 The interactive shell keeps a live status display. By default it appears in the
-right prompt and shows the model, mode, session cost, and request count. You can
+right prompt and shows model, mode, backend, scope, session cost, and request
+count. You can
 place it under the prompt or turn it off, and choose its ordered fields during
 setup or in `aishe settings`.
 
@@ -13,12 +14,14 @@ setup or in `aishe settings`.
   436 in · 119 out · 1 req · ~$0.0001
 ```
 
-Available fields are `model`, `mode`, `last_tokens`, `last_cost`,
-`session_tokens`, `session_cost`, and `requests`. A detailed status can render:
+Available fields are `model`, `mode`, `backend`, `scope`, `network`, `sandbox`,
+`task`, `elapsed`, `context`, `last_tokens`, `last_cost`, `session_tokens`,
+`session_cost`, `budget`, and `requests`. `context` is the latest provider-turn
+input-token count, not a guessed percentage. A detailed status can render:
 
 ```
-gpt-5.6-luna · suggest · last 1,697/374 tok · last cost n/a ·
-session 3,400/712 tok · session cost n/a · 2 reqs
+gpt-5.6-luna · auto · opencode · workspace · context 8.4K tok ·
+last 1,697/374 tok · session cost ~$0.0112 · 2 reqs
 ```
 
 The display refreshes after each call. `right` preserves the compact shell-like
@@ -58,8 +61,9 @@ Both work in the non-interactive `-c` form too:
 aishe -c "/usage"
 ```
 
-A fresh process starts at zero, so `aishe usage` reflects the current session
-only.
+When audit logging is enabled, `aishe usage --by model|day|session` reads
+persisted totals. The prompt/statusline aggregation remains scoped to the live
+Aishe shell.
 
 ## How cost is estimated
 
@@ -105,10 +109,15 @@ budget_usd = 0.50      # 0 = unlimited
 
 Behavior:
 
-- Checked before each model call. When the accrued cost reaches the budget, aishe
-  prints a notice and stops rather than making another call.
-- A single in-flight call is never interrupted mid-request. The check happens
-  between calls (for example between yolo iterations).
+- The trusted plugin must obtain Aishe authorization before every managed
+  provider turn. The bridge reserves the maximum estimated turn cost, caps
+  output tokens to the remaining amount, and denies the request before it is
+  sent when no safe allowance remains.
+- Authoritative provider usage is accepted once per message, including child
+  sessions, then replaces the reservation. An abandoned reservation expires
+  after a bounded interval so a failed provider cannot lock the session forever.
+- A single admitted provider request is not retried through another backend or
+  provider after partial output or a tool effect.
 - Only enforced when the model's price is known.
 
 Example of a budget stopping a yolo run:
@@ -121,7 +130,7 @@ Example of a budget stopping a yolo run:
 
 ## Response caching
 
-To cut latency and cost on repeats, suggest-mode responses are cached in memory
+The native compatibility suggest path can cache responses in memory
 for a short window (`cache`, on by default; `cache_ttl_secs`, default 300). Ask
 the same thing twice in a row and the second answer is instant and adds no tokens
 (a cache hit never calls the model, so the usage line and budget are unchanged).
@@ -129,8 +138,9 @@ the same thing twice in a row and the second answer is instant and adds no token
 The cache key includes the freshly-built environment context (cwd, recent
 commands, git state), so running anything between two otherwise-identical
 requests changes the key and misses the cache — you never get a stale suggestion
-after the situation has moved on. Streaming answers and the yolo tool loop are
-never cached. Toggle by typing `cache on` / `cache off` at the aishe prompt — a
+after the situation has moved on. Managed conversations rely on their durable
+session rather than this native response cache; tool loops are never cached.
+Toggle by typing `cache on` / `cache off` at the aishe prompt — a
 [prompt-only meta command](commands.md#prompt-only-meta-commands), not an `aishe`
 subcommand — or set `cache` in your config.
 
