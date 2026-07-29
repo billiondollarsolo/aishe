@@ -263,6 +263,36 @@ enum Cmd {
     },
     /// Print a roff man page for `aishe` (e.g. `aishe man > /usr/share/man/man1/aishe.1`).
     Man,
+    /// Remove Aishe components by category; user state is preserved by default.
+    Uninstall {
+        /// Remove the running Aishe binary plus known completion/man artifacts.
+        #[arg(long)]
+        binary: bool,
+        /// Remove managed OpenCode runtimes and disposable runtime caches.
+        #[arg(long)]
+        runtime: bool,
+        /// Permanently remove AI sessions and tool journals.
+        #[arg(long)]
+        sessions: bool,
+        /// Permanently remove config, credentials, commands, and skills.
+        #[arg(long)]
+        config: bool,
+        /// Permanently remove shell and semantic history.
+        #[arg(long)]
+        history: bool,
+        /// Permanently remove audit and undo journals.
+        #[arg(long)]
+        audit_undo: bool,
+        /// Select every category, including all user state.
+        #[arg(long)]
+        all: bool,
+        /// Show the exact removal plan without changing anything.
+        #[arg(long)]
+        dry_run: bool,
+        /// Confirm the displayed plan non-interactively.
+        #[arg(long)]
+        yes: bool,
+    },
     /// Trust the current project's `.aishe/config.toml` so its sensitive keys
     /// (provider/endpoint, MCP servers, audit logging, safety toggles, `yolo`)
     /// apply. Safe cosmetic keys apply without trust.
@@ -713,6 +743,97 @@ fn backend_command(command: &BackendCmd) -> Result<u8> {
     }
 }
 
+fn uninstall_command(
+    selection: aishe::uninstall::Selection,
+    dry_run: bool,
+    yes: bool,
+) -> Result<u8> {
+    let plan = aishe::uninstall::Plan::discover(selection)?;
+    let existing = plan.existing_targets();
+    println!(
+        "{}",
+        if dry_run {
+            "Aishe uninstall preview"
+        } else {
+            "Aishe uninstall plan"
+        }
+    );
+    println!("User state is preserved unless its category was explicitly selected.");
+    let selected_categories = [
+        (plan.selection.binary, "binary/completions/man"),
+        (plan.selection.runtime, "managed runtime/cache"),
+        (plan.selection.sessions, "AI sessions/tool journals"),
+        (plan.selection.config, "config/credentials"),
+        (plan.selection.history, "shell history"),
+        (plan.selection.audit_undo, "audit/undo data"),
+    ]
+    .into_iter()
+    .filter_map(|(selected, name)| selected.then_some(name))
+    .collect::<Vec<_>>();
+    println!("Selected: {}", selected_categories.join(", "));
+    if existing.is_empty() {
+        println!("Nothing selected is currently installed.");
+        return Ok(0);
+    }
+    let mut previous = "";
+    for target in &existing {
+        if target.category != previous {
+            println!("\n{}:", target.category);
+            previous = target.category;
+        }
+        println!(
+            "  {} {}",
+            if target.recoverable {
+                "replaceable"
+            } else {
+                "permanent"
+            },
+            target.path.display()
+        );
+    }
+    if dry_run {
+        println!("\nNo files were changed.");
+        return Ok(0);
+    }
+
+    if !yes {
+        if !std::io::stdin().is_terminal() || !std::io::stdout().is_terminal() {
+            anyhow::bail!(
+                "confirmation required; review `aishe uninstall --dry-run` and rerun with --yes"
+            );
+        }
+        use std::io::Write;
+        if plan.selection.includes_user_state() {
+            print!(
+                "\nSelected user state cannot be recovered by Aishe. Type `delete` to continue: "
+            );
+        } else {
+            print!("\nRemove the selected replaceable components? [y/N] ");
+        }
+        std::io::stdout().flush()?;
+        let mut answer = String::new();
+        std::io::stdin().read_line(&mut answer)?;
+        let confirmed = if plan.selection.includes_user_state() {
+            answer.trim() == "delete"
+        } else {
+            matches!(answer.trim().to_ascii_lowercase().as_str(), "y" | "yes")
+        };
+        if !confirmed {
+            println!("Cancelled; no files were changed.");
+            return Ok(2);
+        }
+    }
+
+    let removed = plan.apply()?;
+    println!("\nRemoved {} selected path(s).", removed.len());
+    if plan.selection.includes_user_state() {
+        println!("Selected user state was permanently removed and is not recoverable by Aishe.");
+    } else {
+        println!("Config, credentials, history, sessions, audit, and undo data were preserved.");
+    }
+    Ok(0)
+}
+
 fn run() -> Result<u8> {
     let args = Args::parse();
 
@@ -855,6 +976,32 @@ fn run() -> Result<u8> {
         use std::io::Write;
         let _ = std::io::stdout().write_all(&out);
         return Ok(0);
+    }
+
+    if let Some(Cmd::Uninstall {
+        binary,
+        runtime,
+        sessions,
+        config,
+        history,
+        audit_undo,
+        all,
+        dry_run,
+        yes,
+    }) = &args.cmd
+    {
+        return uninstall_command(
+            aishe::uninstall::Selection {
+                binary: *binary || *all,
+                runtime: *runtime || *all,
+                sessions: *sessions || *all,
+                config: *config || *all,
+                history: *history || *all,
+                audit_undo: *audit_undo || *all,
+            },
+            *dry_run,
+            *yes,
+        );
     }
 
     // `trust` / `untrust` manage the project-config trust store; no config load.

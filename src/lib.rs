@@ -43,5 +43,6 @@ pub mod tools;
 pub mod tour;
 pub mod trust;
 pub mod undo;
+pub mod uninstall;
 pub mod usage;
 pub mod usagelog;

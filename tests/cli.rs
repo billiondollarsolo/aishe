@@ -1605,3 +1605,76 @@ auth_required = false
     server.join().unwrap();
     std::fs::remove_dir_all(dir).ok();
 }
+
+#[test]
+fn uninstall_preview_defaults_to_replaceable_components_and_preserves_state() {
+    let dir = temp_root("uninstall");
+    let config_dir = dir.join("config").join("aishe");
+    let data_dir = dir.join("data").join("aishe");
+    std::fs::create_dir_all(data_dir.join("runtime/opencode/test")).unwrap();
+    std::fs::create_dir_all(data_dir.join("tasks")).unwrap();
+    std::fs::create_dir_all(&config_dir).unwrap();
+    std::fs::write(
+        config_dir.join("config.toml"),
+        "[aishe]\nmode = \"suggest\"\n",
+    )
+    .unwrap();
+    std::fs::write(config_dir.join("credentials.toml"), "version = 1\n").unwrap();
+    std::fs::write(data_dir.join("history.ext"), ": 1:0;echo preserved\n").unwrap();
+    std::fs::write(data_dir.join("tasks/task.json"), "{}").unwrap();
+
+    let run = |args: &[&str]| {
+        let mut command = Command::cargo_bin("aishe").unwrap();
+        command
+            .env("AISHE_CONFIG_DIR", dir.join("config"))
+            .env("AISHE_DATA_DIR", dir.join("data"))
+            .args(args);
+        command
+    };
+
+    run(&["uninstall", "--dry-run"]).assert().success().stdout(
+        contains("managed runtime/cache")
+            .and(contains("No files were changed"))
+            .and(predicates::str::is_match("shell history").unwrap().not()),
+    );
+    for path in [
+        config_dir.join("config.toml"),
+        config_dir.join("credentials.toml"),
+        data_dir.join("history.ext"),
+        data_dir.join("tasks/task.json"),
+        data_dir.join("runtime/opencode/test"),
+    ] {
+        assert!(path.exists(), "{} was changed by dry-run", path.display());
+    }
+
+    run(&["uninstall", "--history"])
+        .assert()
+        .failure()
+        .stderr(contains("confirmation required"));
+    assert!(data_dir.join("history.ext").exists());
+
+    run(&["uninstall", "--runtime", "--yes"])
+        .assert()
+        .success()
+        .stdout(contains("User state").and(contains("preserved")));
+    assert!(!data_dir.join("runtime").exists());
+    for path in [
+        config_dir.join("config.toml"),
+        config_dir.join("credentials.toml"),
+        data_dir.join("history.ext"),
+        data_dir.join("tasks/task.json"),
+    ] {
+        assert!(path.exists(), "{} was not preserved", path.display());
+    }
+
+    run(&["uninstall", "--all", "--dry-run"])
+        .assert()
+        .success()
+        .stdout(
+            contains("config/credentials")
+                .and(contains("shell history"))
+                .and(contains("AI sessions/tool journals"))
+                .and(contains("audit/undo data")),
+        );
+    std::fs::remove_dir_all(dir).ok();
+}
