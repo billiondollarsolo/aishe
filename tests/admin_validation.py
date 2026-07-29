@@ -698,6 +698,9 @@ base_url = "https://api.groq.com/openai"
 api_key_env = "GROQ_API_KEY"
 model = "openai/gpt-oss-120b"
 
+[backend]
+engine = "native"
+
 [mcp_servers.remote]
 url = "https://mcp.example.com/mcp"
 
@@ -1032,6 +1035,7 @@ def main():
         'proj = "/home/me/projects"',
         "[mcp_servers.remote]",
         'url = "https://mcp.example.com/mcp"',
+        'engine = "native"',
     ]
     for token in expected:
         add(f"config: {token}", token in out, "" if token in out else f"(missing from /config)")

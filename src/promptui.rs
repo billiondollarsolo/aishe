@@ -183,8 +183,12 @@ pub fn menu(
     );
     print_wrapped("  ", &instructions, Some(MUTED));
     let mut selected = default.min(options.len() - 1);
-    print_selection(selected, &options[selected], terminal_columns);
+    // Enter raw mode before advertising an active focus row. Otherwise a fast
+    // typist (or PTY automation) can submit a numeric choice while the terminal
+    // is still in canonical mode; the buffered digit/newline can then be
+    // observed out of order when crossterm starts reading events.
     let guard = RawGuard::enter()?;
+    print_selection(selected, &options[selected], terminal_columns);
     let mut number_buffer = String::new();
     loop {
         let Event::Key(KeyEvent {

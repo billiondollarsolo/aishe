@@ -117,7 +117,8 @@ def make_env(binary):
     os.makedirs(cfgdir, exist_ok=True)
     with open(os.path.join(cfgdir, "config.toml"), "w") as f:
         f.write('[aishe]\nmode = "auto"\nprovider = "anthropic"\n'
-                'front_end = "zsh-pty"\npty_prompt = false\n')
+                'front_end = "zsh-pty"\npty_prompt = false\n'
+                '\n[backend]\nengine = "native"\n')
     with open(os.path.join(home, ".zshrc"), "w") as f:
         f.write("HISTFILE=~/.zsh_history\nHISTSIZE=2000\nSAVEHIST=2000\n"
                 "setopt INTERACTIVE_COMMENTS\nPROMPT='ZP> '\nPROMPT2='> '\n")

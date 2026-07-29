@@ -125,7 +125,9 @@ def environment(position):
             'model = "%s"\n\n'
             '[pricing."%s"]\n'
             "input = 1.0\n"
-            "output = 2.0\n"
+            "output = 2.0\n\n"
+            "[backend]\n"
+            'engine = "native"\n'
             % (enabled, position, model, model)
         )
     with open(os.path.join(home, ".zshrc"), "w", encoding="utf-8") as file:

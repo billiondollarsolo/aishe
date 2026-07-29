@@ -44,6 +44,8 @@ def main():
                 'api_key_env = "UNUSED_FAKE_KEY"\n'
                 'model = "fake-resume-model"\n'
                 'transport = "responses"\n'
+                "\n[backend]\n"
+                'engine = "native"\n'
             )
         marker = os.path.join(work, "tool-ran.txt")
         env = dict(os.environ)

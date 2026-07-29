@@ -134,7 +134,13 @@ def make_env():
     os.makedirs(cfgdir, exist_ok=True)
     # Pre-write a config so the first-run wizard never blocks the PTY.
     with open(os.path.join(cfgdir, "config.toml"), "w") as f:
-        f.write("[aishe]\n" 'mode = "suggest"\n' 'provider = "anthropic"\n')
+        f.write(
+            "[aishe]\n"
+            'mode = "suggest"\n'
+            'provider = "anthropic"\n'
+            '\n[backend]\n'
+            'engine = "native"\n'
+        )
     # Explicitly model a minimal Linux root account. macOS sets HISTFILE from
     # its global /etc/zshrc even with an empty HOME, which would correctly make
     # aishe preserve that system history instead of exercising the fallback.

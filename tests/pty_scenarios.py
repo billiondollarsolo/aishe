@@ -153,6 +153,8 @@ def make_env(binary):
             'provider = "anthropic"\n'
             'front_end = "zsh-pty"\n'
             "pty_prompt = false\n"         # use the plain zsh prompt for stable matching
+            '\n[backend]\n'
+            'engine = "native"\n'
         )
     # A minimal, deterministic zsh config with working history.
     with open(os.path.join(home, ".zshrc"), "w") as f:
@@ -448,11 +450,18 @@ def main():
         sh.raw(b"\x03")    # Ctrl-C to clear the recalled line
 
         # 9. Shift-Tab cycles the interaction mode for the session (the config
-        #    starts in auto, so one press lands on yolo). The widget reports the
-        #    new mode via `zle -M`.
+        #    starts in auto, so one press lands on yolo). Entering yolo requires
+        #    one explicit scope acceptance per shell; after that, the widget
+        #    reports the new mode via `zle -M`.
         sh.settle(0.3)
         sh.buf = ""
         sh.raw(b"\x1b[Z")  # Shift-Tab
+        check(
+            sh,
+            "Shift-Tab requests one yolo scope acceptance",
+            sh.expect("Type yolo to continue:"),
+        )
+        sh.send("yolo")
         check(sh, "Shift-Tab cycles the mode", sh.expect("aishe mode: yolo"))
         sh.raw(b"\x03")
 

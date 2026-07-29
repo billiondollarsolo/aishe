@@ -122,6 +122,8 @@ def make_env(binary):
             'provider = "anthropic"\n'
             'front_end = "zsh-pty"\n'
             "pty_prompt = false\n"   # plain prompt for stable matching
+            '\n[backend]\n'
+            'engine = "native"\n'
         )
     # Deterministic, minimal zsh: a fixed prompt and a fixed continuation prompt.
     with open(os.path.join(home, ".zshrc"), "w") as f:
