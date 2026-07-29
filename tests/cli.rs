@@ -336,7 +336,7 @@ fn doctor_reports_environment() {
         .stdout(contains("backing shell"))
         .stdout(contains("front-end"))
         .stdout(contains("provider: anthropic"))
-        .stdout(contains("$ANTHROPIC_API_KEY is set"));
+        .stdout(contains("environment:$ANTHROPIC_API_KEY"));
 }
 
 #[test]
@@ -358,7 +358,264 @@ fn missing_openai_key_names_the_exact_environment_variable() {
         ])
         .assert()
         .code(1)
-        .stderr(contains("API key $OPENAI_API_KEY not set").and(contains("LLM not configured")));
+        .stderr(
+            contains("API key missing for credential profile 'openai'")
+                .and(contains("aishe auth set openai"))
+                .and(contains("$OPENAI_API_KEY")),
+        );
+}
+
+#[test]
+fn shared_credentials_power_real_provider_paths_and_env_wins() {
+    fn serve_once() -> (String, std::thread::JoinHandle<String>) {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let handle = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = [0u8; 4096];
+            let count = stream.read(&mut request).unwrap();
+            let request = String::from_utf8_lossy(&request[..count]).into_owned();
+            let body = r#"{"data":[{"id":"credential-test-model"}]}"#;
+            write!(
+                stream,
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            )
+            .unwrap();
+            request
+        });
+        (format!("http://{address}"), handle)
+    }
+
+    let dir = temp_root("shared-credentials");
+    let config_dir = dir.join("aishe");
+    std::fs::create_dir_all(&config_dir).unwrap();
+    let (first_endpoint, first_server) = serve_once();
+    std::fs::write(
+        config_dir.join("config.toml"),
+        format!(
+            r#"version = 3
+
+[aishe]
+mode = "suggest"
+provider = "openai"
+
+[providers.openai]
+base_url = "{first_endpoint}"
+credential = "openai"
+api_key_env = "AISHE_CREDENTIAL_TEST_ENV"
+model = "credential-test-model"
+transport = "chat"
+auth_required = true
+"#
+        ),
+    )
+    .unwrap();
+    let run = |args: &[&str]| {
+        let mut command = Command::cargo_bin("aishe").unwrap();
+        command
+            .env("AISHE_CONFIG_DIR", &dir)
+            .env("AISHE_DATA_DIR", dir.join("data"))
+            .env_remove("AISHE_CREDENTIAL_TEST_ENV")
+            .args(args);
+        command
+    };
+    let stored_secret = "stored-test-key-never-print";
+    run(&["auth", "set", "openai", "--stdin"])
+        .write_stdin(format!("{stored_secret}\n"))
+        .assert()
+        .success()
+        .stdout(contains(stored_secret).not());
+
+    let credentials_path = config_dir.join("credentials.toml");
+    let credentials_before = std::fs::read(&credentials_path).unwrap();
+    assert!(String::from_utf8_lossy(&credentials_before).contains(stored_secret));
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        assert_eq!(
+            std::fs::metadata(&credentials_path)
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o600
+        );
+    }
+
+    run(&["auth", "status", "openai", "--json"])
+        .assert()
+        .success()
+        .stdout(contains("\"type\": \"credentials_file\""))
+        .stdout(contains(stored_secret).not());
+    run(&["models", "--provider", "openai", "--json"])
+        .assert()
+        .success()
+        .stdout(contains("credential-test-model"));
+    let first_request = first_server.join().unwrap();
+    assert!(first_request.contains(&format!("Authorization: Bearer {stored_secret}")));
+
+    let (second_endpoint, second_server) = serve_once();
+    let config_text = std::fs::read_to_string(config_dir.join("config.toml"))
+        .unwrap()
+        .replace(&first_endpoint, &second_endpoint);
+    std::fs::write(config_dir.join("config.toml"), config_text).unwrap();
+    let environment_secret = "environment-test-key-never-print";
+    let mut overridden = run(&["models", "--provider", "openai", "--json"]);
+    overridden.env("AISHE_CREDENTIAL_TEST_ENV", environment_secret);
+    overridden.assert().success();
+    let second_request = second_server.join().unwrap();
+    assert!(second_request.contains(&format!("Authorization: Bearer {environment_secret}")));
+    assert_eq!(
+        std::fs::read(&credentials_path).unwrap(),
+        credentials_before
+    );
+
+    run(&["auth", "remove", "openai", "--yes"])
+        .assert()
+        .success()
+        .stdout(contains(stored_secret).not());
+    run(&["auth", "status", "openai", "--json"])
+        .assert()
+        .failure()
+        .stdout(contains("\"available\": false"))
+        .stdout(contains(stored_secret).not());
+    std::fs::remove_dir_all(dir).ok();
+}
+
+#[test]
+fn schema_two_migration_adds_profile_without_importing_environment_secret() {
+    let dir = temp_root("credential-migration");
+    let config_dir = dir.join("aishe");
+    std::fs::create_dir_all(&config_dir).unwrap();
+    let original = br#"version = 2
+
+[aishe]
+provider = "openai"
+
+[providers.openai]
+base_url = "https://api.openai.com"
+api_key_env = "OPENAI_API_KEY"
+model = "gpt-test"
+transport = "responses"
+"#;
+    std::fs::write(config_dir.join("config.toml"), original).unwrap();
+    Command::cargo_bin("aishe")
+        .unwrap()
+        .env("AISHE_CONFIG_DIR", &dir)
+        .env("AISHE_DATA_DIR", dir.join("data"))
+        .env("OPENAI_API_KEY", "migration-secret-must-not-be-imported")
+        .arg("config")
+        .assert()
+        .success();
+    let migrated = std::fs::read_to_string(config_dir.join("config.toml")).unwrap();
+    assert!(migrated.contains("version = 3"));
+    assert!(migrated.contains("credential = \"openai\""));
+    assert!(!config_dir.join("credentials.toml").exists());
+    let backups: Vec<_> = std::fs::read_dir(&config_dir)
+        .unwrap()
+        .flatten()
+        .filter(|entry| entry.file_name().to_string_lossy().contains(".v2."))
+        .collect();
+    assert_eq!(backups.len(), 1);
+    assert_eq!(std::fs::read(backups[0].path()).unwrap(), original);
+    std::fs::remove_dir_all(dir).ok();
+}
+
+#[cfg(unix)]
+#[test]
+fn doctor_repairs_credential_permissions_without_exposing_or_changing_key() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = temp_config_home();
+    let credentials = dir.join("aishe").join("credentials.toml");
+    let secret = "doctor-permission-test-key";
+    std::fs::write(
+        &credentials,
+        format!("version = 1\n[profiles.anthropic]\napi_key = \"{secret}\"\n"),
+    )
+    .unwrap();
+    std::fs::set_permissions(&credentials, std::fs::Permissions::from_mode(0o644)).unwrap();
+    let before = std::fs::read(&credentials).unwrap();
+    Command::cargo_bin("aishe")
+        .unwrap()
+        .env("AISHE_CONFIG_DIR", &dir)
+        .env("AISHE_DATA_DIR", dir.join("data"))
+        .env_remove("ANTHROPIC_API_KEY")
+        .args(["doctor", "--fix", "--json"])
+        .assert()
+        .success()
+        .stdout(contains("\"id\": \"credentials.file\""))
+        .stdout(contains(secret).not());
+    assert_eq!(
+        std::fs::metadata(&credentials)
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777,
+        0o600
+    );
+    assert_eq!(std::fs::read(&credentials).unwrap(), before);
+    Command::cargo_bin("aishe")
+        .unwrap()
+        .env("AISHE_CONFIG_DIR", &dir)
+        .env("AISHE_DATA_DIR", dir.join("data"))
+        .env_remove("ANTHROPIC_API_KEY")
+        .args(["auth", "status", "anthropic", "--json"])
+        .assert()
+        .success()
+        .stdout(contains("\"type\": \"credentials_file\""))
+        .stdout(contains(secret).not());
+    std::fs::remove_dir_all(dir).ok();
+}
+
+#[test]
+fn credentials_path_override_is_honored_without_touching_default_file() {
+    let dir = temp_root("credentials-path-override");
+    let external_parent = dir.join("mounted-private");
+    std::fs::create_dir_all(&external_parent).unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&external_parent, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    let custom = external_parent.join("shared.toml");
+    Command::cargo_bin("aishe")
+        .unwrap()
+        .env("AISHE_CONFIG_DIR", &dir)
+        .env("AISHE_DATA_DIR", dir.join("data"))
+        .env("AISHE_CREDENTIALS_FILE", &custom)
+        .args(["auth", "set", "openai", "--stdin"])
+        .write_stdin("override-path-test-key\n")
+        .assert()
+        .success()
+        .stdout(contains("override-path-test-key").not());
+    assert!(custom.is_file());
+    assert!(!dir.join("aishe").join("credentials.toml").exists());
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        assert_eq!(
+            std::fs::metadata(&external_parent)
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o755,
+            "Aishe changed an existing override parent directory"
+        );
+    }
+    Command::cargo_bin("aishe")
+        .unwrap()
+        .env("AISHE_CONFIG_DIR", &dir)
+        .env("AISHE_DATA_DIR", dir.join("data"))
+        .env("AISHE_CREDENTIALS_FILE", &custom)
+        .args(["auth", "path"])
+        .assert()
+        .success()
+        .stdout(contains(custom.display().to_string()));
+    std::fs::remove_dir_all(dir).ok();
 }
 
 #[test]

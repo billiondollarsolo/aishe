@@ -35,6 +35,7 @@ tests in `tests/` can exercise internals directly.
 | `pty` | The flagship front-end: run the user's real interactive zsh inside a PTY. |
 | `integration` | The zsh/bash hook scripts (`aishe init zsh`) injected as `command_not_found_handler` + `precmd` + ZLE widgets. |
 | `setup` / `promptui` | Resumable setup state machine and reusable interactive menus/text prompts. |
+| `config` / `credentials` / `auth` | Schema/versioned ordinary config, the separate private shared store/resolver, and credential-management CLI. |
 | `settings` / `profiles` | Transactional settings with provenance; named safety bundles and readiness checks. |
 | `provider_catalog` / `capabilities` | Service presets, transport/auth policy, model listing, live validation, and capability cache. |
 | `diagnostics` | Structured Doctor checks, safe repairs, JSON, and redacted support bundles. |
@@ -228,9 +229,13 @@ skills in the Claude-Code-compatible format.
 
 ## Cross-cutting concerns
 
-- **Config (`config.rs`).** Schema v2 migration creates a private backup and
-  atomically rewrites the config. Precedence is `CLI flags > project overlay > user
-  config > compiled defaults`. `Config::apply_overrides` applies the flag layer;
+- **Config and credentials (`config.rs`, `credentials.rs`).** Schema-v3 config
+  migration creates a private backup and atomically adds non-secret credential
+  profile references. API keys live in a separate mode-`0600`, versioned,
+  atomically written shared file; one resolver applies environment > staged
+  setup value > saved profile precedence for every provider path. Ordinary
+  config rewrites remain atomic. Precedence is `CLI flags > project overlay >
+  user config > compiled defaults`. `Config::apply_overrides` applies the flag layer;
   `Config::apply_project_overlay` merges a repo's `.aishe/config.toml` under the
   tiered trust rules (safe keys always, sensitive keys only when `trust::is_trusted`),
   walking up from cwd. Audit logging resolves `AISHE_LOG`/`AISHE_LOG_FILE` over the

@@ -145,6 +145,65 @@ pub fn text(
     }
 }
 
+/// Read a secret from an interactive terminal without echoing its characters.
+/// Returns `None` for Esc/Ctrl-C/Ctrl-D. The buffer is bounded before any
+/// validation so an accidental paste cannot grow memory without limit.
+pub fn secret(label: &str, max_bytes: usize) -> Result<Option<String>> {
+    if !std::io::stdin().is_terminal() || !std::io::stdout().is_terminal() {
+        anyhow::bail!("hidden secret input requires a terminal");
+    }
+    print!(
+        "  {} (hidden; Esc cancels): ",
+        crate::commands::display_safe(label)
+    );
+    std::io::stdout().flush().ok();
+    let guard = RawGuard::enter()?;
+    let mut value = String::new();
+    loop {
+        match event::read().context("reading hidden terminal input")? {
+            Event::Key(KeyEvent {
+                code: KeyCode::Enter,
+                ..
+            }) => {
+                drop(guard);
+                println!();
+                return Ok(Some(value));
+            }
+            Event::Key(KeyEvent {
+                code: KeyCode::Backspace,
+                ..
+            }) => {
+                value.pop();
+            }
+            Event::Key(KeyEvent {
+                code: KeyCode::Esc, ..
+            })
+            | Event::Key(KeyEvent {
+                code: KeyCode::Char('c' | 'd'),
+                modifiers: KeyModifiers::CONTROL,
+                ..
+            }) => {
+                drop(guard);
+                println!();
+                return Ok(None);
+            }
+            Event::Key(KeyEvent {
+                code: KeyCode::Char(character),
+                modifiers,
+                ..
+            }) if !modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) => {
+                if value.len() + character.len_utf8() <= max_bytes {
+                    value.push(character);
+                }
+            }
+            Event::Paste(pasted) if value.len() + pasted.len() <= max_bytes => {
+                value.push_str(&pasted);
+            }
+            _ => {}
+        }
+    }
+}
+
 pub fn confirm(label: &str, default: bool) -> Result<Option<bool>> {
     let suffix = if default { "[Y/n]" } else { "[y/N]" };
     loop {

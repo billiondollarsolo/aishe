@@ -434,10 +434,21 @@ SMOKE_CASES = [
 ]
 
 # ----- dispatch classification (no key): assert routing, not output ------------
-# A line that must run as SHELL must NOT hit the model (no "LLM not configured").
-# A line that must be NATURAL LANGUAGE must hit the model (with no key, that
-# surfaces as the "LLM not configured" notice). This catches mis-routing
+# A line that must run as SHELL must NOT hit the model. A line that must be
+# NATURAL LANGUAGE must hit the model (with no key, that surfaces as an
+# actionable missing-credential notice). This catches mis-routing
 # independent of whether the command's output is deterministic.
+LLM_UNAVAILABLE_NOTES = (
+    "LLM not configured",
+    "API key missing for credential profile",
+    "credential store unavailable",
+)
+
+
+def reached_model_path(stderr):
+    return any(note in stderr for note in LLM_UNAVAILABLE_NOTES)
+
+
 DISPATCH_SHELL = [
     "ls -la",
     "git status",
@@ -977,16 +988,15 @@ def main():
 
     # ---- Suite 5: dispatch classification (no key; routing only) ----
     section("Suite 5 — Dispatch classification (shell vs natural language)")
-    NL_NOTE = "LLM not configured"
     report.append("\n**Must route to SHELL (must NOT call the model):**\n")
     for cmd in DISPATCH_SHELL:
         _, out, err = run([BIN, "-c", cmd], env_local, cwd=fixture)
-        ok = NL_NOTE not in err
+        ok = not reached_model_path(err)
         add(f"route-shell: {cmd}", ok, "→ ran as shell" if ok else "**misrouted to NL**")
     report.append("\n**Must route to NATURAL LANGUAGE (must reach the model path):**\n")
     for cmd in DISPATCH_NL:
         _, out, err = run([BIN, "-c", cmd], env_local, cwd=fixture)
-        ok = NL_NOTE in err
+        ok = reached_model_path(err)
         add(
             f"route-nl: {cmd}",
             ok,
@@ -1047,7 +1057,7 @@ def main():
     report.append("\n**New meta commands (`-c`):**\n")
     for meta in ["/usage", "/reset", "/ghost", "/plan", "/cache", "/sandbox", "/help"]:
         rc, out, err = run([BIN, "-c", meta], env_local, cwd=fixture)
-        ok = rc == 0 and "LLM not configured" not in err
+        ok = rc == 0 and not reached_model_path(err)
         add(f"meta: {meta}", ok, "" if ok else f"(rc={rc} err={err.strip()[:60]!r})")
     # `/usage` with no calls reports an empty session rather than erroring.
     rc, out, err = run([BIN, "-c", "/usage"], env_local, cwd=fixture)
@@ -1221,7 +1231,7 @@ def main():
         for nl in NL_SUGGEST:
             rc, out, err = run_nl([BIN, "-c", nl], env_llm, cwd=fixture, timeout=60)
             cmd = strip_ansi(out.strip().splitlines()[-1].strip()) if out.strip() else ""
-            ok = bool(cmd) and "LLM not configured" not in err
+            ok = bool(cmd) and not reached_model_path(err)
             add(f"nl-suggest: {nl}", ok, f"→ `{trunc(cmd, 200)}`" if ok else f"(err={trunc(repr(err.strip()))})")
         # questions: show the model's full answer as a blockquote.
         report.append("\n**Questions (`?`) - NL to answer (model output shown):**\n")
@@ -1264,7 +1274,7 @@ def main():
         report.append("\n**Custom NL command (`/bigfiles`, expands $ARGUMENTS):**\n")
         rc, out, err = run_nl([BIN, "-c", "/bigfiles src"], env_llm, cwd=fixture, timeout=60)
         cmd = strip_ansi(out.strip().splitlines()[-1].strip()) if out.strip() else ""
-        add("plugin-nl: /bigfiles src", bool(cmd) and "LLM not configured" not in err,
+        add("plugin-nl: /bigfiles src", bool(cmd) and not reached_model_path(err),
             f"→ `{trunc(cmd, 200)}`" if cmd else f"(err={trunc(repr(err.strip()))})")
 
         # Model-invoked skill (progressive disclosure): a request matching the

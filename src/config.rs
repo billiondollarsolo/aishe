@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
-pub const CONFIG_SCHEMA_VERSION: u32 = 2;
+pub const CONFIG_SCHEMA_VERSION: u32 = 3;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
@@ -308,6 +308,10 @@ impl Default for Providers {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProviderConfig {
     pub base_url: String,
+    /// Named entry in Aishe's private credentials file. An empty value (as
+    /// found in schema-2 configs) is derived from `api_key_env` in memory.
+    #[serde(default)]
+    pub credential: String,
     pub api_key_env: String,
     pub model: String,
     /// `auto`, `responses`, or `chat`. Auto selects Responses for official
@@ -377,6 +381,7 @@ fn default_transport() -> String {
 fn default_anthropic() -> ProviderConfig {
     ProviderConfig {
         base_url: "https://api.anthropic.com".to_string(),
+        credential: "anthropic".to_string(),
         api_key_env: "ANTHROPIC_API_KEY".to_string(),
         model: "claude-sonnet-4-20250514".to_string(),
         transport: "auto".to_string(),
@@ -387,6 +392,7 @@ fn default_anthropic() -> ProviderConfig {
 fn default_openai() -> ProviderConfig {
     ProviderConfig {
         base_url: "https://api.openai.com".to_string(),
+        credential: "openai".to_string(),
         api_key_env: "OPENAI_API_KEY".to_string(),
         model: "gpt-4o".to_string(),
         transport: "auto".to_string(),
@@ -469,6 +475,17 @@ impl ProviderConfig {
     pub fn requires_auth(&self) -> bool {
         self.auth_required
             .unwrap_or_else(|| !is_loopback_url(&self.base_url))
+    }
+
+    /// Effective credential profile, including a stable compatibility mapping
+    /// for schema-2 files that predate the explicit field.
+    pub fn credential_profile(&self) -> String {
+        let configured = self.credential.trim();
+        if !configured.is_empty() {
+            configured.to_ascii_lowercase()
+        } else {
+            crate::credentials::profile_from_env(&self.api_key_env)
+        }
     }
 }
 
@@ -609,7 +626,9 @@ impl Config {
                  ({CONFIG_SCHEMA_VERSION})"
             );
         }
-        Ok(Some(toml::from_str::<Config>(&text)?))
+        let mut config = toml::from_str::<Config>(&text)?;
+        config.fill_credential_profiles();
+        Ok(Some(config))
     }
 
     /// Return the schema version actually stored in the active config.
@@ -644,6 +663,7 @@ impl Config {
                     std::fs::copy(path, &backup)
                         .with_context(|| format!("backing up to {}", backup.display()))?;
                     set_private_file(&backup);
+                    cfg.fill_credential_profiles();
                     cfg.version = CONFIG_SCHEMA_VERSION;
                     let serialized =
                         toml::to_string_pretty(&cfg).context("serializing migrated config")?;
@@ -655,6 +675,7 @@ impl Config {
                         backup.display()
                     );
                 }
+                cfg.fill_credential_profiles();
                 Ok(cfg)
             }
             Err(e) => {
@@ -689,6 +710,7 @@ impl Config {
             set_private_dir(parent);
         }
         let mut persisted = self.clone();
+        persisted.fill_credential_profiles();
         persisted.version = CONFIG_SCHEMA_VERSION;
         let text = toml::to_string_pretty(&persisted).context("serializing config")?;
         write_atomic(&path, text.as_bytes())
@@ -702,6 +724,20 @@ impl Config {
         match self.aishe.provider.as_str() {
             "openai" => &self.providers.openai.model,
             _ => &self.providers.anthropic.model,
+        }
+    }
+
+    /// Populate credential profile names introduced by schema 3. This is
+    /// intentionally non-secret: migration never reads or imports environment
+    /// values and never creates the credentials file.
+    fn fill_credential_profiles(&mut self) {
+        if self.providers.anthropic.credential.trim().is_empty() {
+            self.providers.anthropic.credential =
+                crate::credentials::profile_from_env(&self.providers.anthropic.api_key_env);
+        }
+        if self.providers.openai.credential.trim().is_empty() {
+            self.providers.openai.credential =
+                crate::credentials::profile_from_env(&self.providers.openai.api_key_env);
         }
     }
 
@@ -819,8 +855,9 @@ impl Config {
             }
         }
 
-        // [providers.*]: per-provider `model` is safe; `base_url`/`api_key_env`
-        // are sensitive (an endpoint swap can exfiltrate prompts).
+        // [providers.*]: per-provider `model` is safe; `base_url`,
+        // `api_key_env`, and `credential` are sensitive (an endpoint or
+        // credential-profile swap can exfiltrate prompts).
         if let Some(provs) = proj.get("providers").and_then(toml::Value::as_table) {
             let mut po = toml::Table::new();
             for (pname, pval) in provs {
@@ -972,22 +1009,22 @@ pub(crate) fn write_atomic(dest: &Path, bytes: &[u8]) -> std::io::Result<()> {
 }
 
 #[cfg(unix)]
-fn set_private_file(path: &Path) {
+pub(crate) fn set_private_file(path: &Path) {
     use std::os::unix::fs::PermissionsExt;
     let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
 }
 
 #[cfg(not(unix))]
-fn set_private_file(_path: &Path) {}
+pub(crate) fn set_private_file(_path: &Path) {}
 
 #[cfg(unix)]
-fn set_private_dir(path: &Path) {
+pub(crate) fn set_private_dir(path: &Path) {
     use std::os::unix::fs::PermissionsExt;
     let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700));
 }
 
 #[cfg(not(unix))]
-fn set_private_dir(_path: &Path) {}
+pub(crate) fn set_private_dir(_path: &Path) {}
 
 /// Recursively merge `overlay` into `base`: nested tables are merged key by key;
 /// any other value replaces the one in `base`.

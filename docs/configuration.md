@@ -25,6 +25,7 @@ the wrong directory is not read and produces no error — it simply never appear
 Inside them:
 
 - Config file: `<config>/config.toml`
+- Shared credentials: `<config>/credentials.toml` (private mode `0600`)
 - Custom commands: `<config>/commands/` and `<project>/.aishe/commands/`
 - Skills: `<config>/skills/` and `<project>/.aishe/skills/`
 - Startup file: `~/.aishrc` and `<config>/aishrc`
@@ -118,7 +119,8 @@ See [Logging and privacy](logging.md) for the event shapes and examples.
 | Field | Type | Meaning |
 |-------|------|---------|
 | `base_url` | string | API root. For OpenAI-compatible services, point this at the service. |
-| `api_key_env` | string | Name of the environment variable that holds the API key. |
+| `credential` | string | Named profile in `credentials.toml`; service presets keep this aligned with the endpoint owner. |
+| `api_key_env` | string | Optional environment override. A non-empty value wins over the saved profile without changing it. |
 | `model` | string | Model identifier sent with each request. |
 | `transport` | string | `auto`, `responses`, or `chat`. Auto uses Responses for official OpenAI and Chat Completions for compatible endpoints. |
 | `auth_required` | bool | Optional explicit auth policy. When absent, loopback endpoints need no key; non-loopback endpoints do. |
@@ -128,6 +130,7 @@ Defaults:
 ```toml
 [providers.anthropic]
 base_url = "https://api.anthropic.com"
+credential = "anthropic"
 api_key_env = "ANTHROPIC_API_KEY"
 model = "claude-sonnet-4-20250514"
 transport = "auto"
@@ -135,6 +138,7 @@ auth_required = true
 
 [providers.openai]
 base_url = "https://api.openai.com"
+credential = "openai"
 api_key_env = "OPENAI_API_KEY"
 model = "gpt-4o"
 transport = "auto"
@@ -142,6 +146,36 @@ auth_required = true
 ```
 
 See [Providers](providers.md) for Groq, Ollama, and others.
+
+## Shared credentials
+
+Aishe follows the AWS CLI pattern: ordinary settings and secrets are separate,
+and the matching profile names are combined at runtime. Save a key without
+putting it in shell history:
+
+```sh
+aishe auth set openai                 # hidden terminal prompt
+aishe auth status openai
+aishe auth list
+```
+
+For automation, use `aishe auth set openai --stdin` or
+`--from-env VARIABLE`. A key is intentionally never accepted as a command-line
+argument. `credentials.toml` is versioned TOML:
+
+```toml
+version = 1
+
+[profiles.openai]
+api_key = "..."
+```
+
+Resolution order is the configured non-empty environment variable, an
+in-memory setup value, then the saved profile. Environment overrides never
+overwrite the file. New files and atomic temporary files are mode `0600`, and
+the containing config directory is mode `0700`. Aishe rejects symlinked,
+non-regular, oversized, malformed, or group/world-readable credential files;
+`aishe doctor --fix` can repair permissions without printing or changing a key.
 
 ## `[pricing."<model>"]` (optional)
 
@@ -182,8 +216,10 @@ server launched from `command`. List connected tools with `aishe mcp`. See
 
 ## Environment variables
 
-- `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, or whatever `api_key_env` names: your
-  API key.
+- `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, or whatever `api_key_env` names:
+  optional per-process override for the matching saved profile.
+- `AISHE_CREDENTIALS_FILE`: override only the shared credentials path (useful
+  for a mounted private volume or isolated test).
 - `AISHE_MODE`: mode used by the native shell hook (`suggest`, `auto`, `yolo`).
 - `AISHE_NL_KEY`: override the force-NL keybinding for the zsh hook (a `bindkey`
   sequence, for example `^o`).
@@ -215,6 +251,7 @@ aishe [--mode suggest|auto|yolo] [--model NAME] [--provider anthropic|openai] [-
 aishe zsh                 launch your real zsh under aishe (zsh-PTY), explicitly
 aishe setup               guided/resumable setup (`--non-interactive` for CI)
 aishe settings            transactional interactive settings editor
+aishe auth <command>      set/status/list/remove/path for saved API keys
 aishe init <zsh|bash>     print a shell integration snippet
 aishe doctor              diagnostics; add --probe/--live/--json/--fix/--bundle
 ```

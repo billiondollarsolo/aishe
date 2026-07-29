@@ -9,8 +9,8 @@
 # docs/configuration.md#file-locations.
 #
 # Every field has a sensible default, so you can delete any line you do not care
-# about. API keys are NEVER stored here; they are read from the environment
-# variable named by `api_key_env`.
+# about. API keys are NEVER stored here. `credential` selects a profile in the
+# private credentials file; `api_key_env` is an optional process override.
 
 [aishe]
 # Named setup bundle: conservative | balanced | autonomous | custom. Applying a
@@ -28,8 +28,8 @@ provider = "anthropic"
 
 # Optional fallback chain: providers (by block name) tried in turn when the one
 # above fails after its own retries — a dead endpoint or hard error degrades to
-# the next instead of failing. Each named block must have its API-key env set or
-# it is skipped. Example: fall back to a local Ollama configured with
+# the next instead of failing. Each named block must resolve a credential unless
+# authentication is disabled. Example: fall back to a local Ollama configured with
 # auth_required = false in [providers.openai].
 # provider_fallback = ["openai"]
 
@@ -241,6 +241,7 @@ host_profile = true
 
 [providers.anthropic]
 base_url = "https://api.anthropic.com"
+credential = "anthropic"
 api_key_env = "ANTHROPIC_API_KEY"
 model = "claude-sonnet-4-20250514"
 transport = "auto"
@@ -253,6 +254,7 @@ auth_required = true
 #   Ollama:     http://localhost:11434
 #   OpenRouter: https://openrouter.ai/api
 base_url = "https://api.openai.com"
+credential = "openai"
 api_key_env = "OPENAI_API_KEY"
 model = "gpt-4o"
 transport = "auto"    # official OpenAI => Responses; custom endpoints => Chat

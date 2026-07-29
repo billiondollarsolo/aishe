@@ -24,8 +24,8 @@ autonomously** until the task is done.
 # 1. Install (Linux/macOS; downloads the right prebuilt binary + verifies it)
 curl -fsSL https://raw.githubusercontent.com/billiondollarsolo/aishe/main/install.sh | sh
 
-# 2. Point it at a provider (the key stays in your environment)
-export ANTHROPIC_API_KEY=sk-...            # or OPENAI_API_KEY / a local Ollama
+# 2. Save a provider key through a hidden prompt (or let setup ask)
+aishe auth set anthropic                   # or: aishe auth set openai
 
 # 3. Configure, validate, and take the optional guided tour
 aishe setup
@@ -98,9 +98,9 @@ of a shell. Prefix it with `?` to force the natural-language route
 - 🧭 **Guided setup and diagnostics.** `aishe setup`, `aishe settings`, and
   `aishe tour` are resumable interactive flows; `aishe doctor --json`,
   `--fix`, `--bundle`, and `--live` make problems actionable.
-- 🔒 **Private by default.** API keys are read from the environment (never written
-  to disk), secrets are redacted from the model context, and there's an optional
-  local audit log (`aishe log` / `aishe usage`).
+- 🔒 **Private by default.** API keys live in a separate mode-`0600` shared
+  credentials file (or a higher-precedence environment override), never in
+  ordinary config; secret entry is hidden and context/log output is redacted.
 - ⚡ **Works anywhere.** `aishe -c '<line>'`, piped stdin, and a bash hook
   (`aishe init bash`) all work without launching the interactive shell.
 
@@ -139,7 +139,7 @@ needed.
 ## Quickstart
 
 ```sh
-export ANTHROPIC_API_KEY=sk-ant-...   # or OPENAI_API_KEY=...  (never written to disk)
+aishe auth set anthropic              # or openai; hidden, saved privately
 aishe setup                           # guided, resumable configuration
 aishe                                 # launch your real zsh with aishe active
 ```
@@ -250,12 +250,14 @@ Together, and other custom `base_url` values use Chat Completions.
 ```toml
 [providers.openai]
 base_url = "https://api.groq.com/openai"   # or http://localhost:11434 for Ollama
+credential = "groq"
 api_key_env = "GROQ_API_KEY"
 model = "openai/gpt-oss-120b"
 ```
 
-API keys are read only from the named environment variable, never stored in the
-config. See [docs/providers.md](docs/providers.md) for per-provider setup.
+API keys are read from the named private credential profile; the environment
+variable remains a higher-precedence override. They are never stored in
+`config.toml`. See [docs/providers.md](docs/providers.md) for per-provider setup.
 
 ## Commands and settings
 
@@ -267,6 +269,7 @@ aishe zsh              the same, explicitly
 aishe -c '<line>'      run one line non-interactively and exit
 aishe setup            guided/resumable configuration; --verify checks only
 aishe settings         interactive settings hub with source/provenance
+aishe auth ...         save/status/list/remove private credential profiles
 aishe tour             resumable first-session walkthrough
 aishe init zsh|bash    print the shell-hook snippet (for ~/.zshrc / ~/.bashrc)
 aishe doctor           diagnostics; --probe/--live/--json/--fix/--bundle
@@ -464,11 +467,13 @@ auto_pushd = false             # zsh AUTO_PUSHD for in-process cd
 
 [providers.anthropic]
 base_url = "https://api.anthropic.com"
+credential = "anthropic"
 api_key_env = "ANTHROPIC_API_KEY"
 model = "claude-sonnet-4-20250514"
 
 [providers.openai]
 base_url = "https://api.openai.com"
+credential = "openai"
 api_key_env = "OPENAI_API_KEY"
 model = "gpt-4o"
 ```

@@ -11,6 +11,7 @@ aishe zsh              the same, explicitly
 aishe -c '<line>'      run one line non-interactively and exit
 aishe setup            guided/resumable configuration and verification
 aishe settings         interactive settings hub with value provenance
+aishe auth ...         manage private named credential profiles
 aishe tour             resumable guided first-session tour
 aishe init zsh|bash    print the shell-hook snippet (for ~/.zshrc / ~/.bashrc)
 aishe doctor           diagnostics; --probe/--live/--json/--fix/--bundle
@@ -43,6 +44,20 @@ aishe resume [ID]                   resume an interrupted task
 
 These are real subcommands, so they work the same in the interactive zsh-PTY
 shell, a plain shell, or a script.
+
+Credential commands follow the AWS CLI-style shared-file workflow:
+
+```sh
+aishe auth set openai              # hidden prompt; no key in shell history
+printf '%s\n' "$KEY" | aishe auth set openai --stdin
+aishe auth status openai [--json]  # source/provenance, never the value
+aishe auth list [--json]
+aishe auth remove openai [--yes]
+aishe auth path
+```
+
+When the profile is omitted, the active provider's user-config profile is used.
+Project overlays never choose a credential-writing target.
 
 ## Prompt-only meta commands
 

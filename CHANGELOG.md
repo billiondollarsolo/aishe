@@ -6,6 +6,30 @@ breaking changes can land in any release.
 
 ## [Unreleased]
 
+### Added
+- AWS CLI-style shared credentials: `config.toml` now keeps only a named
+  credential profile while private API keys live in a separate versioned
+  `credentials.toml`. `aishe auth set|status|list|remove|path` manages profiles;
+  hidden input, stdin, and environment-copy workflows never require a key as a
+  command-line argument.
+- Interactive setup can stage a hidden key entirely in memory, use it for model
+  discovery/validation, and save it only on Apply. Cancelled and resumed drafts
+  contain no secret material.
+
+### Changed
+- Every provider path now shares environment > setup-memory > credentials-file
+  resolution and safe provenance reporting. Environment values remain supported
+  as temporary/automation overrides and never modify the saved profile.
+- Config schema 3 adds non-secret provider `credential` fields. Migration
+  creates the normal byte-preserving backup, derives service profile names, and
+  never imports an environment value or creates a credentials file.
+
+### Security
+- Credential reads reject symlinks, non-regular or oversized files, malformed
+  schemas, invalid profiles/keys, and group/world-readable modes. Writes use
+  mode `0600`, bounded input, `fsync`, and atomic rename; Doctor can repair
+  permissions without showing or changing credential contents.
+
 ## [0.3.0] - 2026-07-29
 
 ### Added

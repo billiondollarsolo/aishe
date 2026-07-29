@@ -2,18 +2,22 @@
 
 This page walks through your first session with aishe.
 
-## 1. Set an API key
+## 1. Save an API key
 
-aishe reads your API key only from an environment variable, never from the config
-file. Pick the provider you want and export its key:
+Aishe keeps API keys out of ordinary config using an AWS CLI-style private
+credentials file. Pick the provider you want and enter its key through the
+hidden prompt:
 
 ```sh
-export ANTHROPIC_API_KEY=sk-ant-...      # Anthropic
+aishe auth set anthropic
 # or
-export OPENAI_API_KEY=sk-...             # OpenAI (or any OpenAI-compatible key)
+aishe auth set openai
 ```
 
-For Groq, Ollama, OpenRouter, and others, see [Providers](providers.md).
+`aishe setup` can do this step for you. Environment variables remain supported
+for CI and one-process overrides and take precedence without overwriting the
+saved key. For Groq, Ollama, OpenRouter, and others, see
+[Providers](providers.md).
 
 ## 2. Run guided setup
 
@@ -37,7 +41,7 @@ It asks for:
 - for an OpenAI-compatible provider, the **service** (OpenAI, Groq, OpenRouter,
   Together, Ollama, or a custom endpoint) and the **API endpoint (base URL)**,
   pre-filled from the chosen service,
-- the environment variable that holds your API key,
+- a saved credential profile, hidden key entry, or environment-only workflow,
 - the model and API transport,
 - per-million-token input/output prices when that exact model has no known price,
 - status-line position and contents, and
@@ -59,9 +63,9 @@ aishe
 
 That launches your real interactive zsh under aishe. Alternatively, install the
 native hook printed by `aishe init zsh`. You can revisit settings with `aishe
-settings`, rerun setup, or edit the config file directly. Existing configs,
-history, task records, and other state are preserved by binary upgrades. A fully
-annotated example config is at
+settings`, rerun setup, or edit the non-secret config file directly. Use
+`aishe auth` for keys. Existing config, credentials, history, task records, and
+other state are preserved by binary upgrades. A fully annotated example config is at
 [examples/config.toml](../examples/config.toml).
 
 ## 3. Run real commands

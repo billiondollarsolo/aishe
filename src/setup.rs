@@ -83,6 +83,7 @@ pub struct Options {
     pub service: Option<String>,
     pub base_url: Option<String>,
     pub key_env: Option<String>,
+    pub credential_profile: Option<String>,
     pub model: Option<String>,
     pub transport: Option<String>,
     pub profile: Option<Profile>,
@@ -187,6 +188,28 @@ fn run_interactive(options: Options) -> Result<Outcome> {
         fresh_draft(baseline.clone())
     };
 
+    // Secret material is intentionally process-local. A resumed draft that had
+    // advanced past Credential must return there when no saved/environment
+    // source now exists.
+    let mut pending_credential: Option<(String, String)> = None;
+    if matches!(
+        draft.step,
+        Step::Model
+            | Step::Profile
+            | Step::Pricing
+            | Step::Status
+            | Step::Validation
+            | Step::Review
+    ) && active_provider(&draft.config).requires_auth()
+        && crate::credentials::resolve(active_provider(&draft.config))
+            .map(|resolved| resolved.secret().is_none())
+            .unwrap_or(true)
+    {
+        println!("  The resumed draft contains no credential; returning to the Credential step.");
+        draft.step = Step::Credential;
+        save_draft(&draft)?;
+    }
+
     let mut report = None;
     loop {
         match draft.step {
@@ -208,6 +231,7 @@ fn run_interactive(options: Options) -> Result<Outcome> {
                 )? {
                     MenuResult::Selected(index) => {
                         let service = &provider_catalog::SERVICES[index];
+                        pending_credential = None;
                         apply_service(&mut draft.config, service);
                         draft.service = service.key.to_string();
                         advance(&mut draft)?;
@@ -231,32 +255,98 @@ fn run_interactive(options: Options) -> Result<Outcome> {
                 }
             }
             Step::Credential => {
-                let provider = active_provider_mut(&mut draft.config);
+                let provider = active_provider(&draft.config).clone();
                 if !provider.requires_auth() {
                     println!(
                         "\n  Credential: not required for local endpoint {}",
                         provider.base_url
                     );
+                    pending_credential = None;
                     advance(&mut draft)?;
                     continue;
                 }
-                match promptui::text(
-                    "Environment variable containing the API key",
-                    &provider.api_key_env,
-                    validate_env_name,
+                let profile = provider.credential_profile();
+                let existing = crate::credentials::resolve(&provider);
+                if let Err(error) = &existing {
+                    println!(
+                        "  ! Credential store unavailable: {}",
+                        crate::commands::display_safe(&crate::redact::redact(&error.to_string()))
+                    );
+                    println!(
+                        "    Repair it with `aishe doctor --fix`, then retry saved-key entry."
+                    );
+                }
+                let mut choices = Vec::new();
+                let existing_index = if let Ok(resolved) = &existing {
+                    if resolved.secret().is_some() {
+                        choices.push(format!(
+                            "Use existing credential ({})",
+                            resolved.source.label()
+                        ));
+                        Some(0)
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                };
+                choices.push("Enter and save an API key locally (recommended)".into());
+                choices.push(format!(
+                    "Use environment variable only (${env})",
+                    env = provider.api_key_env
+                ));
+                match promptui::menu(
+                    &format!("Credential profile '{profile}'"),
+                    &choices,
+                    existing_index.unwrap_or(0),
+                    true,
+                    "Saved keys live in a private credentials file; environment variables remain available for automation and overrides.",
                 )? {
-                    Some(value) if value == ":back" => draft.step = draft.step.previous(),
-                    Some(value) => {
-                        provider.api_key_env = value;
+                    MenuResult::Selected(index) if Some(index) == existing_index => {
+                        pending_credential = None;
                         advance(&mut draft)?;
                     }
-                    None => return cancel(draft),
+                    MenuResult::Selected(index)
+                        if index == usize::from(existing_index.is_some()) =>
+                    {
+                        let Some(secret) = promptui::secret(
+                            &format!("API key for '{profile}'"),
+                            crate::credentials::MAX_SECRET_BYTES,
+                        )?
+                        else {
+                            return cancel(draft);
+                        };
+                        crate::credentials::validate_secret(&secret)?;
+                        pending_credential = Some((profile, secret));
+                        advance(&mut draft)?;
+                    }
+                    MenuResult::Selected(_) => {
+                        let provider = active_provider_mut(&mut draft.config);
+                        match promptui::text(
+                            "Environment override variable",
+                            &provider.api_key_env,
+                            validate_env_name,
+                        )? {
+                            Some(value) if value == ":back" => {}
+                            Some(value) => {
+                                provider.api_key_env = value;
+                                pending_credential = None;
+                                advance(&mut draft)?;
+                            }
+                            None => return cancel(draft),
+                        }
+                    }
+                    MenuResult::Back => draft.step = draft.step.previous(),
+                    MenuResult::Cancel => return cancel(draft),
                 }
             }
             Step::Model => {
                 let provider_name = draft.config.aishe.provider.clone();
                 let current = active_provider(&draft.config).model.clone();
-                let models = capabilities::list_models(&draft.config, &provider_name).ok();
+                let models = with_pending(&pending_credential, || {
+                    capabilities::list_models(&draft.config, &provider_name)
+                })?
+                .ok();
                 if let Some(models) = models {
                     let mut options: Vec<String> =
                         std::iter::once(current.clone()).chain(models).collect();
@@ -410,13 +500,20 @@ fn run_interactive(options: Options) -> Result<Outcome> {
                 else {
                     return cancel(draft);
                 };
-                let checked = capabilities::validate(&draft.config, live);
+                let checked = with_pending(&pending_credential, || {
+                    capabilities::validate(&draft.config, live)
+                })?;
                 print_report(&checked);
                 report = Some(checked);
                 advance(&mut draft)?;
             }
             Step::Review => {
-                print_review(&baseline, &draft.config, report.as_ref())?;
+                print_review(
+                    &baseline,
+                    &draft.config,
+                    report.as_ref(),
+                    pending_credential.as_ref(),
+                )?;
                 let Some(apply) = promptui::confirm("Apply this configuration", true)? else {
                     return cancel(draft);
                 };
@@ -426,10 +523,11 @@ fn run_interactive(options: Options) -> Result<Outcome> {
                     continue;
                 }
                 validate_config(&draft.config)?;
-                let backup = save_applied(&draft.config)?;
+                let backup = save_with_pending(&draft.config, pending_credential.take())?;
                 discard_draft()?;
                 println!("\n  Setup complete");
                 println!("  config: {}", Config::path().display());
+                println!("  credentials: {}", crate::credentials::path().display());
                 if let Some(path) = &backup {
                     println!("  backup: {}", path.display());
                 }
@@ -482,6 +580,9 @@ fn apply_overrides(config: &mut Config, options: &Options) -> Result<()> {
     if let Some(key_env) = &options.key_env {
         validate_env_name(key_env)?;
         provider.api_key_env = key_env.clone();
+    }
+    if let Some(profile) = &options.credential_profile {
+        provider.credential = crate::credentials::normalize_profile(profile)?;
     }
     if let Some(model) = &options.model {
         if model.trim().is_empty() {
@@ -743,6 +844,7 @@ pub(crate) fn validate_config(config: &Config) -> Result<()> {
     }
     let provider = active_provider(config);
     validate_url(&provider.base_url)?;
+    crate::credentials::normalize_profile(&provider.credential_profile())?;
     validate_env_name(&provider.api_key_env)?;
     if provider.model.trim().is_empty() {
         anyhow::bail!("model cannot be empty");
@@ -800,7 +902,12 @@ fn print_report(report: &Report) {
     }
 }
 
-fn print_review(baseline: &Config, configured: &Config, report: Option<&Report>) -> Result<()> {
+fn print_review(
+    baseline: &Config,
+    configured: &Config,
+    report: Option<&Report>,
+    pending_credential: Option<&(String, String)>,
+) -> Result<()> {
     let before = toml::to_string_pretty(baseline)?;
     let after = toml::to_string_pretty(configured)?;
     println!("\n  Review");
@@ -817,13 +924,21 @@ fn print_review(baseline: &Config, configured: &Config, report: Option<&Report>)
         crate::commands::display_safe(configured.active_model())
     );
     println!(
-        "    API key: ${} ({})",
-        crate::commands::display_safe(&active_provider(configured).api_key_env),
-        if active_provider(configured).requires_auth() {
-            "required"
+        "    credential: {} ({})",
+        crate::commands::display_safe(&active_provider(configured).credential_profile()),
+        if pending_credential.is_some() {
+            "will save locally on Apply".to_string()
+        } else if active_provider(configured).requires_auth() {
+            crate::credentials::resolve(active_provider(configured))
+                .map(|resolved| resolved.source.label())
+                .unwrap_or_else(|_| "unavailable".into())
         } else {
-            "not required"
+            "not required".to_string()
         }
+    );
+    println!(
+        "    environment override: ${}",
+        crate::commands::display_safe(&active_provider(configured).api_key_env)
     );
     println!(
         "    profile: {}",
@@ -850,6 +965,50 @@ fn print_review(baseline: &Config, configured: &Config, report: Option<&Report>)
         println!("\n{diff}");
     }
     Ok(())
+}
+
+fn with_pending<T>(pending: &Option<(String, String)>, operation: impl FnOnce() -> T) -> Result<T> {
+    match pending {
+        Some((profile, secret)) => {
+            crate::credentials::with_staged(profile, secret.clone(), operation)
+        }
+        None => Ok(operation()),
+    }
+}
+
+fn save_with_pending(
+    config: &Config,
+    pending: Option<(String, String)>,
+) -> Result<Option<PathBuf>> {
+    let Some((profile, secret)) = pending else {
+        return save_applied(config);
+    };
+    let previous = crate::credentials::Store::load()?;
+    let mut updated = previous.clone().unwrap_or_default();
+    updated.set(&profile, secret)?;
+    updated.save()?;
+    match save_applied(config) {
+        Ok(backup) => Ok(backup),
+        Err(error) => {
+            let rollback = match previous {
+                Some(store) => store.save(),
+                None => match std::fs::remove_file(crate::credentials::path()) {
+                    Ok(()) => Ok(()),
+                    Err(remove_error) if remove_error.kind() == std::io::ErrorKind::NotFound => {
+                        Ok(())
+                    }
+                    Err(remove_error) => Err(remove_error.into()),
+                },
+            };
+            if let Err(rollback_error) = rollback {
+                anyhow::bail!(
+                    "{error}; additionally failed to roll back the credential write: \
+                     {rollback_error}"
+                );
+            }
+            Err(error)
+        }
+    }
 }
 
 pub(crate) fn save_applied(config: &Config) -> Result<Option<PathBuf>> {

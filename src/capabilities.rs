@@ -74,6 +74,10 @@ pub struct Report {
     pub model: String,
     pub transport: String,
     pub credential_env: String,
+    #[serde(default)]
+    pub credential_profile: String,
+    #[serde(default)]
+    pub credential_source: String,
     pub credential_required: bool,
     pub credential: Check,
     pub reachability: Check,
@@ -108,24 +112,14 @@ impl Report {
 }
 
 pub fn list_models(config: &Config, provider_name: &str) -> Result<Vec<String>, ProviderError> {
-    let (base, key_env, key_required, anthropic) = match provider_name {
+    let (provider, anthropic) = match provider_name {
         "openai" => {
             let provider = &config.providers.openai;
-            (
-                provider.base_url.as_str(),
-                provider.api_key_env.as_str(),
-                provider.requires_auth(),
-                false,
-            )
+            (provider, false)
         }
         "anthropic" => {
             let provider = &config.providers.anthropic;
-            (
-                provider.base_url.as_str(),
-                provider.api_key_env.as_str(),
-                provider.requires_auth(),
-                true,
-            )
+            (provider, true)
         }
         other => {
             return Err(ProviderError::Api {
@@ -134,17 +128,24 @@ pub fn list_models(config: &Config, provider_name: &str) -> Result<Vec<String>, 
             })
         }
     };
-    let key = std::env::var(key_env)
-        .ok()
-        .filter(|value| !value.trim().is_empty());
-    if key_required && key.is_none() {
+    let resolved = crate::credentials::resolve(provider).map_err(|error| ProviderError::Api {
+        status: 0,
+        message: crate::redact::redact(&error.to_string()),
+    })?;
+    let key = resolved.into_secret();
+    if provider.requires_auth() && key.is_none() {
+        let profile = provider.credential_profile();
         return Err(ProviderError::Api {
             status: 0,
-            message: format!("API key not found — ${key_env} is not set"),
+            message: format!(
+                "API key missing for credential profile '{profile}' — run \
+                 `aishe auth set {profile}` or set ${}",
+                provider.api_key_env
+            ),
         });
     }
 
-    let base = crate::provider_catalog::normalize_base_url(base);
+    let base = crate::provider_catalog::normalize_base_url(&provider.base_url);
     let endpoint = format!("{base}/v1/models");
     let agent = ureq::AgentBuilder::new()
         .timeout_connect(std::time::Duration::from_secs(3))
@@ -198,18 +199,33 @@ pub fn validate(config: &Config, live: bool) -> Report {
     } else {
         (&config.providers.anthropic, "messages".to_string())
     };
-    let credential_value = std::env::var(&provider.api_key_env)
-        .ok()
-        .filter(|value| !value.trim().is_empty());
-    let credential = if credential_value.is_some() {
-        Check::pass(format!("${} is set", provider.api_key_env))
-    } else if provider.requires_auth() {
-        Check::fail(
-            format!("${} is not set", provider.api_key_env),
+    let profile = provider.credential_profile();
+    let resolution = crate::credentials::resolve(provider);
+    let credential_source = resolution
+        .as_ref()
+        .map(|resolved| resolved.source.label())
+        .unwrap_or_else(|_| "error".to_string());
+    let credential = match &resolution {
+        Ok(resolved) if resolved.secret().is_some() => Check::pass(format!(
+            "credential available from {}",
+            resolved.source.label()
+        )),
+        Ok(_) if provider.requires_auth() => Check::fail(
+            format!(
+                "credential profile '{profile}' is missing; run `aishe auth set {profile}` \
+                 or set ${}",
+                provider.api_key_env
+            ),
             Some(ErrorKind::MissingCredential),
-        )
-    } else {
-        Check::pass("credential not required for this endpoint")
+        ),
+        Ok(_) => Check::pass("credential not required for this endpoint"),
+        Err(error) => Check::fail(
+            format!(
+                "credential store unavailable: {}",
+                crate::redact::redact(&error.to_string())
+            ),
+            Some(ErrorKind::MissingCredential),
+        ),
     };
 
     // A required credential that is already known to be absent is definitive.
@@ -217,7 +233,7 @@ pub fn validate(config: &Config, live: bool) -> Report {
     // beside the actionable missing-variable diagnosis.
     let credential_missing = credential.state == State::Fail;
     let (reachability, models, model_list) = if credential_missing {
-        let detail = format!("blocked because ${} is not set", provider.api_key_env);
+        let detail = format!("blocked because credential profile '{profile}' is unavailable");
         (Check::skipped(detail.clone()), None, Check::skipped(detail))
     } else {
         let probe = providers::probe(config, &provider_name);
@@ -280,6 +296,8 @@ pub fn validate(config: &Config, live: bool) -> Report {
         model: provider.model.clone(),
         transport,
         credential_env: provider.api_key_env.clone(),
+        credential_profile: profile,
+        credential_source,
         credential_required: provider.requires_auth(),
         credential,
         reachability,
@@ -531,6 +549,8 @@ mod tests {
             model: "m".into(),
             transport: "chat".into(),
             credential_env: "KEY".into(),
+            credential_profile: "local".into(),
+            credential_source: "not_required".into(),
             credential_required: false,
             credential: check.clone(),
             reachability: check.clone(),
@@ -565,6 +585,7 @@ mod tests {
         let mut config = Config::default();
         config.aishe.provider = "openai".into();
         config.providers.openai.base_url = "http://127.0.0.1:9".into();
+        config.providers.openai.credential = "test-missing-capability".into();
         config.providers.openai.api_key_env = "AISHE_TEST_MISSING_CAPABILITY_KEY".into();
         config.providers.openai.auth_required = Some(true);
         std::env::remove_var("AISHE_TEST_MISSING_CAPABILITY_KEY");
@@ -578,6 +599,6 @@ mod tests {
         assert!(report
             .reachability
             .detail
-            .contains("$AISHE_TEST_MISSING_CAPABILITY_KEY is not set"));
+            .contains("credential profile 'test-missing-capability' is unavailable"));
     }
 }

@@ -592,18 +592,32 @@ pub fn probe(config: &Config, name: &str) -> Probe {
     let is_openai = name == "openai";
     let (base_url, auth_header) = if is_openai {
         let p = &config.providers.openai;
-        let key = std::env::var(&p.api_key_env)
-            .ok()
-            .filter(|s| !s.trim().is_empty());
+        let key = match crate::credentials::resolve(p) {
+            Ok(resolved) => resolved.into_secret(),
+            Err(error) => {
+                return Probe {
+                    name: name.to_string(),
+                    endpoint: crate::provider_catalog::normalize_base_url(&p.base_url),
+                    reach: Reach::Down(crate::redact::redact(&error.to_string())),
+                }
+            }
+        };
         (
             p.base_url.clone(),
             key.map(|k| ("Authorization".to_string(), format!("Bearer {k}"))),
         )
     } else {
         let p = &config.providers.anthropic;
-        let key = std::env::var(&p.api_key_env)
-            .ok()
-            .filter(|s| !s.trim().is_empty());
+        let key = match crate::credentials::resolve(p) {
+            Ok(resolved) => resolved.into_secret(),
+            Err(error) => {
+                return Probe {
+                    name: name.to_string(),
+                    endpoint: crate::provider_catalog::normalize_base_url(&p.base_url),
+                    reach: Reach::Down(crate::redact::redact(&error.to_string())),
+                }
+            }
+        };
         (
             p.base_url.clone(),
             key.map(|k| ("x-api-key".to_string(), k)),
@@ -676,7 +690,7 @@ fn build_one(config: &Config, name: &str) -> Result<std::sync::Arc<dyn Provider>
     match name {
         "anthropic" => {
             let p = &config.providers.anthropic;
-            let key = read_key(&p.api_key_env)?;
+            let key = crate::credentials::require(p)?;
             Ok(Arc::new(anthropic::AnthropicProvider::new(
                 p.base_url.clone(),
                 key,
@@ -685,7 +699,7 @@ fn build_one(config: &Config, name: &str) -> Result<std::sync::Arc<dyn Provider>
         }
         "openai" => {
             let p = &config.providers.openai;
-            let key = read_optional_key(&p.api_key_env, p.requires_auth())?;
+            let key = crate::credentials::optional(p)?;
             Ok(Arc::new(openai_compat::OpenAiProvider::with_options(
                 p.base_url.clone(),
                 key,
@@ -695,24 +709,6 @@ fn build_one(config: &Config, name: &str) -> Result<std::sync::Arc<dyn Provider>
             )))
         }
         other => anyhow::bail!("unknown provider '{other}' (expected 'anthropic' or 'openai')"),
-    }
-}
-
-fn read_key(env_var: &str) -> Result<String> {
-    match std::env::var(env_var) {
-        Ok(v) if !v.trim().is_empty() => Ok(v),
-        _ => anyhow::bail!(
-            "API key not found — is ${env_var} set? \
-             Export it, e.g. `export {env_var}=...`"
-        ),
-    }
-}
-
-fn read_optional_key(env_var: &str, required: bool) -> Result<String> {
-    match std::env::var(env_var) {
-        Ok(value) if !value.trim().is_empty() => Ok(value),
-        _ if !required => Ok(String::new()),
-        _ => read_key(env_var),
     }
 }
 

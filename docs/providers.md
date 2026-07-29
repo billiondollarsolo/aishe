@@ -13,8 +13,10 @@ OpenRouter, Together, and other custom URLs use Chat Completions for broad
 compatibility. Set `transport = "responses"` or `"chat"` only when a gateway
 needs an explicit choice.
 
-API keys are read only from the environment variable named by `api_key_env`. They
-are never written to the config file.
+API keys are resolved from the profile named by `credential` in Aishe's private
+`credentials.toml`. The variable named by `api_key_env` is an optional
+higher-precedence override for CI, containers, and temporary testing. Keys are
+never written to ordinary `config.toml`.
 
 ## Anthropic
 
@@ -24,12 +26,13 @@ provider = "anthropic"
 
 [providers.anthropic]
 base_url = "https://api.anthropic.com"
+credential = "anthropic"
 api_key_env = "ANTHROPIC_API_KEY"
 model = "claude-sonnet-4-20250514"
 ```
 
 ```sh
-export ANTHROPIC_API_KEY=sk-ant-...
+aishe auth set anthropic
 aishe
 ```
 
@@ -41,6 +44,7 @@ provider = "openai"
 
 [providers.openai]
 base_url = "https://api.openai.com"
+credential = "openai"
 api_key_env = "OPENAI_API_KEY"
 model = "gpt-4o"
 transport = "auto"
@@ -48,7 +52,7 @@ auth_required = true
 ```
 
 ```sh
-export OPENAI_API_KEY=sk-...
+aishe auth set openai
 aishe
 ```
 
@@ -85,6 +89,7 @@ provider = "openai"
 
 [providers.openai]
 base_url = "https://api.groq.com/openai"
+credential = "groq"
 api_key_env = "GROQ_API_KEY"
 model = "openai/gpt-oss-120b"
 transport = "chat"
@@ -92,7 +97,7 @@ auth_required = true
 ```
 
 ```sh
-export GROQ_API_KEY=gsk_...
+aishe auth set groq
 aishe
 ```
 
@@ -107,6 +112,7 @@ provider = "openai"
 
 [providers.openai]
 base_url = "http://localhost:11434"
+credential = "ollama"
 api_key_env = "OLLAMA_API_KEY"
 model = "llama3.1"
 transport = "chat"

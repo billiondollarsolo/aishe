@@ -41,6 +41,12 @@ provider = "openai"
 [providers.openai]
 model = "keep-this-model"
 EOF
+cat > "$config_root/aishe/credentials.toml" <<'EOF'
+version = 1
+[profiles.openai]
+api_key = "synthetic-installer-preservation-key"
+EOF
+chmod 0600 "$config_root/aishe/credentials.toml"
 cat > "$data_root/aishe/history.ext" <<'EOF'
 : 1:0;echo keep-history
 EOF
@@ -123,4 +129,4 @@ grep -q 'upgrade:' "$output"
 grep -q 'config after install (untouched)' "$output"
 grep -q 'data after install (untouched)' "$output"
 
-printf 'PASS: installer rejected corruption and preserved config, history, tasks, and data\n'
+printf 'PASS: installer rejected corruption and preserved config, credentials, history, tasks, and data\n'

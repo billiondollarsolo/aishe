@@ -18,6 +18,7 @@ pub struct Service {
     pub base_url: &'static str,
     pub model: &'static str,
     pub key_env: &'static str,
+    pub credential: &'static str,
     pub transport: &'static str,
     pub auth_required: bool,
     pub help: &'static str,
@@ -31,6 +32,7 @@ pub const SERVICES: &[Service] = &[
         base_url: "https://api.anthropic.com",
         model: "claude-sonnet-4-20250514",
         key_env: "ANTHROPIC_API_KEY",
+        credential: "anthropic",
         transport: "auto",
         auth_required: true,
         help: "Claude models through the Anthropic Messages API.",
@@ -42,6 +44,7 @@ pub const SERVICES: &[Service] = &[
         base_url: "https://api.openai.com",
         model: "gpt-5.6-luna",
         key_env: "OPENAI_API_KEY",
+        credential: "openai",
         transport: "responses",
         auth_required: true,
         help: "Official OpenAI. Responses is used for reasoning and tools.",
@@ -53,6 +56,7 @@ pub const SERVICES: &[Service] = &[
         base_url: "https://api.groq.com/openai",
         model: "llama-3.3-70b-versatile",
         key_env: "GROQ_API_KEY",
+        credential: "groq",
         transport: "chat",
         auth_required: true,
         help: "Groq's OpenAI-compatible endpoint.",
@@ -64,6 +68,7 @@ pub const SERVICES: &[Service] = &[
         base_url: "https://openrouter.ai/api",
         model: "openai/gpt-4o",
         key_env: "OPENROUTER_API_KEY",
+        credential: "openrouter",
         transport: "chat",
         auth_required: true,
         help: "OpenRouter's multi-provider OpenAI-compatible endpoint.",
@@ -75,6 +80,7 @@ pub const SERVICES: &[Service] = &[
         base_url: "https://api.together.xyz",
         model: "meta-llama/Llama-3.3-70B-Instruct-Turbo",
         key_env: "TOGETHER_API_KEY",
+        credential: "together",
         transport: "chat",
         auth_required: true,
         help: "Together AI's OpenAI-compatible endpoint.",
@@ -86,6 +92,7 @@ pub const SERVICES: &[Service] = &[
         base_url: "http://localhost:11434",
         model: "llama3.1",
         key_env: "OLLAMA_API_KEY",
+        credential: "ollama",
         transport: "chat",
         auth_required: false,
         help: "Local Ollama; no dummy API key is required.",
@@ -97,6 +104,7 @@ pub const SERVICES: &[Service] = &[
         base_url: "",
         model: "",
         key_env: "OPENAI_API_KEY",
+        credential: "custom",
         transport: "auto",
         auth_required: true,
         help: "Any endpoint implementing Responses or Chat Completions.",
@@ -117,6 +125,7 @@ pub fn apply(service: &Service, provider: &mut ProviderConfig) {
         provider.model = service.model.to_string();
     }
     provider.api_key_env = service.key_env.to_string();
+    provider.credential = service.credential.to_string();
     provider.transport = service.transport.to_string();
     provider.auth_required = Some(service.auth_required);
 }
@@ -158,10 +167,16 @@ mod tests {
     #[test]
     fn catalog_keys_are_unique_and_complete() {
         let mut keys = std::collections::BTreeSet::new();
+        let mut credential_profiles = std::collections::BTreeSet::new();
         for service in SERVICES {
             assert!(keys.insert(service.key));
+            assert!(credential_profiles.insert(service.credential));
             assert!(!service.label.is_empty());
             assert!(!service.key_env.is_empty());
+            assert_eq!(
+                crate::credentials::normalize_profile(service.credential).unwrap(),
+                service.credential
+            );
             assert!(matches!(service.transport, "auto" | "responses" | "chat"));
         }
     }

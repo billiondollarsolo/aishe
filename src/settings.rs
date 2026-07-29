@@ -80,6 +80,11 @@ pub fn provenance() -> Result<(Config, Provenance)> {
             &source,
         ),
         field(
+            &format!("{provider_prefix}.credential"),
+            json!(provider.credential_profile()),
+            &source,
+        ),
+        field(
             &format!("{provider_prefix}.model"),
             json!(provider.model),
             &source,
@@ -310,8 +315,25 @@ fn provider_section(config: &mut Config) -> Result<()> {
     provider.base_url = provider_catalog::normalize_base_url(&endpoint);
     provider.auth_required = Some(!crate::config::is_loopback_url(&provider.base_url));
     if provider.requires_auth() {
+        let Some(credential) = promptui::text(
+            "Saved credential profile",
+            &provider.credential_profile(),
+            |value| {
+                crate::credentials::normalize_profile(value)?;
+                Ok(())
+            },
+        )?
+        else {
+            *config = before;
+            return Ok(());
+        };
+        if credential == ":back" {
+            *config = before;
+            return Ok(());
+        }
+        provider.credential = crate::credentials::normalize_profile(&credential)?;
         let Some(key_env) = promptui::text(
-            "API-key environment variable",
+            "Environment override variable",
             &provider.api_key_env,
             validate_env_name,
         )?
@@ -324,6 +346,10 @@ fn provider_section(config: &mut Config) -> Result<()> {
             return Ok(());
         }
         provider.api_key_env = key_env;
+        println!(
+            "  Secret values are managed separately; after Apply use `aishe auth set {}`.",
+            crate::commands::display_safe(&provider.credential_profile())
+        );
     }
     let Some(model) = promptui::text("Model", &provider.model, |value| {
         if value.trim().is_empty() {

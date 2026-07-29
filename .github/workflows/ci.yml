@@ -109,6 +109,9 @@ jobs:
       - name: Unauthenticated loopback provider
         run: python3 tests/provider_unauthenticated.py target/release/aishe
 
+      - name: Private shared credentials and precedence
+        run: python3 tests/credentials_linux.py target/release/aishe
+
       - name: Real-model JSON/exit contract validator
         run: python3 tests/live_contract_test.py
 

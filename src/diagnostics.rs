@@ -71,6 +71,7 @@ impl Check {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Paths {
     pub config: PathBuf,
+    pub credentials: PathBuf,
     pub config_dir: PathBuf,
     pub data_dir: PathBuf,
     pub history: PathBuf,
@@ -214,6 +215,37 @@ pub fn inspect(version: &str, options: &Options) -> Report {
         }
     };
 
+    checks.push(match crate::credentials::Store::load() {
+        Ok(Some(_)) => Check::new(
+            "credentials.file",
+            Status::Pass,
+            Severity::Warning,
+            format!("credentials: {}", paths.credentials.display()),
+            "private shared credentials file is valid; values were not displayed",
+        ),
+        Ok(None) => Check::new(
+            "credentials.file",
+            Status::Pass,
+            Severity::Info,
+            format!(
+                "credentials: not created at {}",
+                paths.credentials.display()
+            ),
+            "run `aishe auth set PROFILE` or let interactive setup save a key",
+        ),
+        Err(error) => Check::new(
+            "credentials.file",
+            Status::Fail,
+            Severity::Warning,
+            format!(
+                "credentials: unsafe or unreadable at {}",
+                paths.credentials.display()
+            ),
+            crate::redact::redact(&error.to_string()),
+        )
+        .fixable(true),
+    });
+
     match std::env::current_dir()
         .ok()
         .and_then(|cwd| config.apply_project_overlay(&cwd))
@@ -288,11 +320,16 @@ pub fn inspect(version: &str, options: &Options) -> Report {
         ));
     }
 
-    let credential = std::env::var(&provider_config.api_key_env)
-        .ok()
-        .is_some_and(|value| !value.trim().is_empty());
-    checks.push(if !provider_config.requires_auth() {
-        Check::new(
+    let profile = provider_config.credential_profile();
+    checks.push(match crate::credentials::resolve(provider_config) {
+        Ok(resolved) if resolved.secret().is_some() => Check::new(
+            "provider.credential",
+            Status::Pass,
+            Severity::Warning,
+            format!("API key: available ({})", resolved.source.label()),
+            format!("profile '{profile}'; the value is never displayed or written to diagnostics"),
+        ),
+        Ok(_) if !provider_config.requires_auth() => Check::new(
             "provider.credential",
             Status::Pass,
             Severity::Warning,
@@ -301,26 +338,26 @@ pub fn inspect(version: &str, options: &Options) -> Report {
                 "{} is local or explicitly configured without authentication",
                 provider_config.base_url
             ),
-        )
-    } else if credential {
-        Check::new(
-            "provider.credential",
-            Status::Pass,
-            Severity::Warning,
-            format!("API key: ${} is set", provider_config.api_key_env),
-            "the value is not displayed or written to diagnostics",
-        )
-    } else {
-        Check::new(
+        ),
+        Ok(_) => Check::new(
             "provider.credential",
             Status::Warn,
             Severity::Warning,
-            format!("API key: ${} not set", provider_config.api_key_env),
+            format!("API key: credential profile '{profile}' is not saved"),
             format!(
-                "LLM features are disabled; export {} and run `aishe doctor --live`",
+                "LLM features are disabled; run `aishe auth set {profile}` or set ${} \
+                 for an environment override",
                 provider_config.api_key_env
             ),
+        ),
+        Err(error) => Check::new(
+            "provider.credential",
+            Status::Fail,
+            Severity::Warning,
+            format!("credentials: unreadable at {}", paths.credentials.display()),
+            crate::redact::redact(&error.to_string()),
         )
+        .fixable(true),
     });
 
     if options.probe && !options.live {
@@ -574,6 +611,7 @@ pub fn resolved_paths() -> Paths {
         .join("aishe");
     Paths {
         config: config_path,
+        credentials: crate::credentials::path(),
         config_dir,
         history: data_dir.join("history.ext"),
         capability_dir: data_dir.join("capabilities"),
@@ -604,6 +642,8 @@ fn apply_safe_fixes(paths: &Paths, config_valid: bool) -> Check {
     for root in [&paths.config_dir, &paths.data_dir] {
         repair_private_tree(root, &mut changed);
     }
+    // AISHE_CREDENTIALS_FILE may live outside the normal config directory.
+    repair_private_tree(&paths.credentials, &mut changed);
     let removed = capabilities::clear_stale().unwrap_or(0);
     changed.sort();
     changed.dedup();

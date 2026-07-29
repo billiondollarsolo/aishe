@@ -3,11 +3,13 @@
 //! exercise the internals directly.
 
 pub mod audit;
+pub mod auth;
 pub mod cache;
 pub mod capabilities;
 pub mod commands;
 pub mod config;
 pub mod context;
+pub mod credentials;
 pub mod diagnostics;
 pub mod dispatcher;
 pub mod executor;

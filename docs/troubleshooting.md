@@ -6,9 +6,9 @@
 aishe doctor
 ```
 
-It reports your backing shell, config path, resolved front-end, provider, and
-whether the exact API-key environment variable is set. Most setup problems show
-up here. Add `--probe` for reachability, `--live` for minimal feature calls,
+It reports your backing shell, config and credentials paths, resolved front-end,
+provider, and the active credential source. Most setup problems show up here.
+Add `--probe` for reachability, `--live` for minimal feature calls,
 `--json` for automation, `--fix` for safe local repairs, or `--bundle PATH` for
 a redacted support bundle.
 
@@ -41,15 +41,18 @@ The full table is in [File locations](configuration.md#file-locations).
 
 ## "API key not found"
 
-aishe reads the key only from the environment variable named by `api_key_env` in
-your config. Export it in the same shell you launch aishe from:
+Aishe could not find the saved credential profile named in your provider config.
+Enter it with the hidden prompt:
 
 ```sh
-export ANTHROPIC_API_KEY=sk-ant-...      # or whatever api_key_env names
+aishe auth set anthropic
+aishe auth status anthropic
 ```
 
-For a local server such as Ollama, use `auth_required = false`; no dummy key is
-needed.
+An `api_key_env` value remains a higher-precedence override when set. If Doctor
+reports insecure permissions, run `aishe doctor --fix` or `chmod 600` on the
+exact credentials path it prints. For a local server such as Ollama, use
+`auth_required = false`; no dummy key is needed.
 
 ## A natural-language request ran as a command
 

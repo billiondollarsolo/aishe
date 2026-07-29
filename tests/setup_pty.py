@@ -283,6 +283,109 @@ def settings_are_transactional(root, env, config):
     print("  ok   settings provider cancel is transactional; reviewed apply works")
 
 
+def hidden_auth_and_staged_setup_are_secret_safe():
+    root = tempfile.mkdtemp(prefix="aishe-credential-pty-")
+    secret = "pty-secret-must-never-echo"
+    try:
+        env = isolated_env(root)
+        shell = Pty([BINARY, "setup"], env)
+        try:
+            shell.expect("Provider service")
+            shell.menu(7)  # custom, with authentication required
+            shell.expect("API endpoint")
+            shell.line("http://127.0.0.1:9")
+            shell.expect("Credential profile 'custom'")
+            shell.menu(1)  # enter and save locally
+            shell.expect("API key for 'custom'")
+            shell.line(secret)
+            shell.expect("Model")
+
+            draft = os.path.join(root, "data", "aishe", "setup-draft.json")
+            draft_text = open(draft, encoding="utf-8").read()
+            credentials = os.path.join(
+                root, "config", "aishe", "credentials.toml"
+            )
+            if secret in draft_text:
+                raise AssertionError("setup serialized its staged secret")
+            if os.path.exists(credentials):
+                raise AssertionError("setup wrote credentials before Apply")
+            if secret in shell.transcript:
+                raise AssertionError("hidden setup input appeared in the PTY transcript")
+
+            shell.line(":cancel")
+            shell.expect("Setup paused")
+            if shell.finish() != 0:
+                raise AssertionError("staged setup cancel returned nonzero")
+        finally:
+            shell.close()
+
+        if os.path.exists(
+            os.path.join(root, "config", "aishe", "credentials.toml")
+        ):
+            raise AssertionError("cancelled setup persisted a credential")
+
+        resumed = Pty([BINARY, "setup", "--resume"], env)
+        try:
+            resumed.expect("returning to the Credential step")
+            resumed.expect("Credential profile 'custom'")
+            resumed.menu(1)
+            resumed.expect("API key for 'custom'")
+            resumed.line(secret)
+            resumed.expect("Model")
+            resumed.line("custom-credential-model")
+            resumed.expect("Safety profile")
+            resumed.menu(1)
+            resumed.expect("No price is known")
+            resumed.menu(2)
+            resumed.expect("Live status-line placement")
+            resumed.menu(3)
+            resumed.expect("Run live text/structured/tool/streaming checks?")
+            resumed.line("n")
+            resumed.expect("Review")
+            resumed.expect("will save locally on Apply")
+            resumed.expect("Apply this configuration")
+            resumed.line("y")
+            resumed.expect("Setup complete")
+            resumed.expect("Run the guided first-session tour now")
+            resumed.line("n")
+            if resumed.finish() != 0:
+                raise AssertionError(
+                    "resumed credential setup returned nonzero\n"
+                    + resumed.transcript[-4000:]
+                )
+            if secret in resumed.transcript:
+                raise AssertionError("resumed hidden input appeared in transcript")
+        finally:
+            resumed.close()
+
+        credentials = os.path.join(root, "config", "aishe", "credentials.toml")
+        saved = open(credentials, encoding="utf-8").read()
+        if secret not in saved or "[profiles.custom]" not in saved:
+            raise AssertionError("Apply did not save the staged credential")
+        if os.stat(credentials).st_mode & 0o777 != 0o600:
+            raise AssertionError("credentials file is not mode 0600")
+
+        # Exercise the standalone hidden prompt as well. The secret may exist in
+        # the private file, but must not appear in output or process arguments.
+        replacement = "auth-replacement-secret-never-echo"
+        auth = Pty([BINARY, "auth", "set", "custom"], env)
+        try:
+            auth.expect("API key for credential profile 'custom'")
+            auth.line(replacement)
+            auth.expect("credential profile 'custom' saved")
+            if auth.finish() != 0:
+                raise AssertionError("interactive auth set returned nonzero")
+            if replacement in auth.transcript:
+                raise AssertionError("hidden auth input appeared in transcript")
+        finally:
+            auth.close()
+        if replacement not in open(credentials, encoding="utf-8").read():
+            raise AssertionError("interactive auth replacement was not saved")
+        print("  ok   hidden setup/auth input, cancel, resume, and Apply are secret-safe")
+    finally:
+        shutil.rmtree(root, ignore_errors=True)
+
+
 def tour_pause_resume_skip_restart_and_complete(root, env):
     paused = Pty([BINARY, "tour"], env)
     try:
@@ -351,6 +454,7 @@ def main():
         config = complete_setup(root, env)
         cancel_preserves_active_config(root, env, config)
         settings_are_transactional(root, env, config)
+        hidden_auth_and_staged_setup_are_secret_safe()
         tour_pause_resume_skip_restart_and_complete(root, env)
         print("PASS: interactive setup/settings/tour PTY")
     finally:

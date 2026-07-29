@@ -145,6 +145,9 @@ enum Cmd {
         /// Name of the environment variable containing the API key.
         #[arg(long)]
         key_env: Option<String>,
+        /// Saved credential profile name.
+        #[arg(long)]
+        credential_profile: Option<String>,
         /// Model identifier.
         #[arg(long)]
         model: Option<String>,
@@ -169,6 +172,11 @@ enum Cmd {
         /// Print effective fields and their provenance as JSON.
         #[arg(long)]
         json: bool,
+    },
+    /// Manage provider API keys in Aishe's private shared credentials file.
+    Auth {
+        #[command(subcommand)]
+        cmd: aishe::auth::AuthCommand,
     },
     /// Run the resumable guided first-session tour.
     Tour {
@@ -484,6 +492,7 @@ fn run() -> Result<u8> {
         service,
         base_url,
         key_env,
+        credential_profile,
         model,
         transport,
         profile,
@@ -500,6 +509,7 @@ fn run() -> Result<u8> {
             service: service.clone(),
             base_url: base_url.clone(),
             key_env: key_env.clone(),
+            credential_profile: credential_profile.clone(),
             model: model.clone(),
             transport: transport.clone(),
             profile: profile.as_deref().and_then(aishe::profiles::Profile::parse),
@@ -528,6 +538,12 @@ fn run() -> Result<u8> {
             aishe::settings::run()?;
         }
         return Ok(0);
+    }
+
+    // Credential management deliberately uses only user config. A project
+    // overlay can never redirect a write to a different saved profile.
+    if let Some(Cmd::Auth { cmd }) = &args.cmd {
+        return aishe::auth::run(cmd);
     }
 
     if let Some(Cmd::Tour {
@@ -1074,21 +1090,30 @@ fn shell_syntax_ok(executor: &Executor, cmd: &str) -> bool {
 /// shell commands still work; when the active provider's key is absent, name
 /// the exact environment variable at the point an LLM feature is requested.
 fn print_llm_unavailable(config: &Config) {
-    let key_env = match config.aishe.provider.as_str() {
-        "anthropic" => Some(config.providers.anthropic.api_key_env.as_str()),
-        "openai" => Some(config.providers.openai.api_key_env.as_str()),
+    let provider = match config.aishe.provider.as_str() {
+        "anthropic" => Some(&config.providers.anthropic),
+        "openai" => Some(&config.providers.openai),
         _ => None,
     };
-    if let Some(key_env) = key_env {
-        let key_set = std::env::var(key_env)
-            .map(|value| !value.trim().is_empty())
-            .unwrap_or(false);
-        if !key_set {
-            eprintln!(
-                "aishe: API key ${key_env} not set — LLM not configured; \
-                 export it (and add it to your shell startup file)"
-            );
-            return;
+    if let Some(provider) = provider {
+        let profile = provider.credential_profile();
+        match aishe::credentials::resolve(provider) {
+            Ok(resolved) if !resolved.source.is_available() => {
+                eprintln!(
+                    "aishe: API key missing for credential profile '{profile}' — \
+                     run `aishe auth set {profile}` (or set ${} for an override)",
+                    provider.api_key_env
+                );
+                return;
+            }
+            Err(error) => {
+                eprintln!(
+                    "aishe: credential store unavailable — {}",
+                    aishe::redact::redact(&error.to_string())
+                );
+                return;
+            }
+            _ => {}
         }
     }
     eprintln!("aishe: LLM not configured — run `aishe doctor` for details");

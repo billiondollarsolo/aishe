@@ -17,8 +17,8 @@ source with Cargo.
   features work without it. The `.deb` and `.rpm` packages recommend it; for a
   tarball/install-script setup, install it with your package manager when you
   want those features (`apt install bubblewrap`, `dnf install bubblewrap`, etc.).
-- A network-reachable LLM endpoint and an API key, set in an environment
-  variable. See [Providers](providers.md).
+- A network-reachable LLM endpoint and an API key, saved with `aishe auth set`
+  or supplied through an environment override. See [Providers](providers.md).
 - Platforms: macOS (arm64 and x86_64) and Linux (x86_64 and arm64). Windows is
   not supported.
 
@@ -51,8 +51,9 @@ curl -fsSL https://raw.githubusercontent.com/billiondollarsolo/aishe/main/instal
 ```
 
 An update replaces only the installed binary. It inventories the existing
-config and data locations before replacement and leaves configuration, history,
-durable tasks, audit logs, undo journals, and trust data untouched.
+config and data locations before replacement and leaves configuration,
+credentials, history, durable tasks, audit logs, undo journals, and trust data
+untouched.
 
 It installs to `/usr/local/bin` when writable, otherwise `~/.local/bin`. Override
 with environment variables:
@@ -222,6 +223,8 @@ table and the `AISHE_CONFIG_DIR` / `AISHE_DATA_DIR` overrides.
 
 - `config.toml` in the config directory is written only after you apply
   `aishe setup` or save a setting.
+- `credentials.toml` in the config directory is a separate mode-`0600` shared
+  credential store written only by setup Apply or `aishe auth`.
 - `history.ext` in the data directory is the timestamped shared shell history.
 - `tasks/` contains private, redacted durable agentic-task checkpoints. A
   stateless reasoning checkpoint can also contain opaque encrypted provider
