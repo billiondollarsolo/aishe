@@ -783,6 +783,8 @@ fn log_and_usage_read_the_audit_log() {
     // `aishe log` shows both entries.
     Command::cargo_bin("aishe")
         .unwrap()
+        .env("AISHE_CONFIG_DIR", dir.join("config"))
+        .env("AISHE_DATA_DIR", dir.join("data"))
         .env("AISHE_LOG_FILE", &log)
         .arg("log")
         .assert()
@@ -792,6 +794,8 @@ fn log_and_usage_read_the_audit_log() {
     // `aishe log --action action` filters to the command.
     Command::cargo_bin("aishe")
         .unwrap()
+        .env("AISHE_CONFIG_DIR", dir.join("config"))
+        .env("AISHE_DATA_DIR", dir.join("data"))
         .env("AISHE_LOG_FILE", &log)
         .args(["log", "--action", "action"])
         .assert()
@@ -801,6 +805,8 @@ fn log_and_usage_read_the_audit_log() {
     // `aishe usage` totals tokens and estimates cost (gpt-4o known price).
     Command::cargo_bin("aishe")
         .unwrap()
+        .env("AISHE_CONFIG_DIR", dir.join("config"))
+        .env("AISHE_DATA_DIR", dir.join("data"))
         .env("AISHE_LOG_FILE", &log)
         .arg("usage")
         .assert()
@@ -811,6 +817,11 @@ fn log_and_usage_read_the_audit_log() {
                 .and(contains("TOTAL")),
         );
 
+    assert!(!dir
+        .join("config")
+        .join("aishe")
+        .join("config.toml")
+        .exists());
     std::fs::remove_dir_all(&dir).ok();
 }
 
@@ -828,6 +839,8 @@ fn runbook_generates_script_and_markdown() {
 
     Command::cargo_bin("aishe")
         .unwrap()
+        .env("AISHE_CONFIG_DIR", dir.join("config"))
+        .env("AISHE_DATA_DIR", dir.join("data"))
         .env("AISHE_LOG_FILE", &log)
         .args(["runbook", "-o", dir.to_str().unwrap()])
         .assert()
@@ -843,6 +856,11 @@ fn runbook_generates_script_and_markdown() {
     assert!(md.contains("# Runbook: install nginx"));
     assert!(md.contains("`apt-get install -y nginx`"));
     assert!(md.contains("## Reproduce"));
+    assert!(!dir
+        .join("config")
+        .join("aishe")
+        .join("config.toml")
+        .exists());
 
     std::fs::remove_dir_all(&dir).ok();
 }

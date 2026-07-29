@@ -78,6 +78,8 @@ breaking changes can land in any release.
   Doctor/live validation also blocks redundant endpoint and model-list requests
   when a required credential is known to be absent, avoiding a confusing second
   HTTP 401 diagnosis.
+- Read-only `aishe log`, `aishe usage`, and `aishe runbook` work on a clean host
+  before provider setup and never create a default config as a side effect.
 - History files and all other newly created Aishe state use private permissions;
   safe repair recursively fixes older state while leaving symlink targets alone.
 - Provider/model text is control-escaped at terminal boundaries, and status

@@ -627,6 +627,53 @@ fn run() -> Result<u8> {
         };
     }
 
+    // Audit inspection/export is useful for recovery and support even before
+    // provider setup. Load existing pricing/log preferences when available,
+    // but never launch setup or materialize a default config as a side effect.
+    if matches!(
+        args.cmd,
+        Some(Cmd::Log { .. } | Cmd::Usage { .. } | Cmd::Runbook { .. })
+    ) {
+        let mut config = Config::load_quiet()?.unwrap_or_default();
+        let _project_overlay = std::env::current_dir()
+            .ok()
+            .and_then(|cwd| config.apply_project_overlay(&cwd));
+        config.apply_overrides(
+            args.mode.as_deref(),
+            args.provider.as_deref(),
+            args.model.as_deref(),
+        );
+        return match &args.cmd {
+            Some(Cmd::Log {
+                session,
+                action,
+                model,
+                since,
+                limit,
+                json,
+            }) => Ok(log_command(
+                &config,
+                session.as_deref(),
+                action.as_deref(),
+                model.as_deref(),
+                since.as_deref(),
+                *limit,
+                *json,
+            )),
+            Some(Cmd::Usage { by, since }) => Ok(usage_history_command(
+                &config,
+                by.as_deref(),
+                since.as_deref(),
+            )),
+            Some(Cmd::Runbook {
+                session,
+                out,
+                replay,
+            }) => runbook_command(&config, session.as_deref(), out.as_deref(), *replay),
+            _ => unreachable!("matched audit command"),
+        };
+    }
+
     let mut config = Config::load_or_init()?;
     // A project-local `.aishe/config.toml` overrides the user config (safe keys
     // always; sensitive keys only when the file is trusted). Applied before flags
@@ -777,31 +824,6 @@ fn run() -> Result<u8> {
         Some(Cmd::Resume { id, cwd }) => {
             return resume_task_command(&config, id.as_deref(), cwd.as_deref())
         }
-        Some(Cmd::Log {
-            session,
-            action,
-            model,
-            since,
-            limit,
-            json,
-        }) => {
-            return Ok(log_command(
-                &config,
-                session.as_deref(),
-                action.as_deref(),
-                model.as_deref(),
-                since.as_deref(),
-                *limit,
-                *json,
-            ));
-        }
-        Some(Cmd::Usage { by, since }) => {
-            return Ok(usage_history_command(
-                &config,
-                by.as_deref(),
-                since.as_deref(),
-            ));
-        }
         Some(Cmd::Context {
             explain,
             preview,
@@ -818,13 +840,6 @@ fn run() -> Result<u8> {
                 include,
             );
         }
-        Some(Cmd::Runbook {
-            session,
-            out,
-            replay,
-        }) => {
-            return runbook_command(&config, session.as_deref(), out.as_deref(), *replay);
-        }
         Some(Cmd::History { cmd }) => {
             return history_command(&config, cmd);
         }
@@ -836,7 +851,10 @@ fn run() -> Result<u8> {
             | Cmd::Settings { .. }
             | Cmd::Tour { .. }
             | Cmd::Sessions { .. }
-            | Cmd::Session { .. },
+            | Cmd::Session { .. }
+            | Cmd::Log { .. }
+            | Cmd::Usage { .. }
+            | Cmd::Runbook { .. },
         ) => {
             unreachable!("handled before config load")
         }
