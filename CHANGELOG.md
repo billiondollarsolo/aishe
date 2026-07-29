@@ -6,6 +6,8 @@ breaking changes can land in any release.
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-07-29
+
 ### Added
 - AWS CLI-style shared credentials: `config.toml` now keeps only a named
   credential profile while private API keys live in a separate versioned

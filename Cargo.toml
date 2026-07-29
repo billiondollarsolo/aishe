@@ -1,6 +1,6 @@
 [package]
 name = "aishe"
-version = "0.3.0"
+version = "0.4.0"
 edition = "2021"
 rust-version = "1.88"
 description = "A natural-language-aware shell that behaves like zsh for commands and delegates everything else to an LLM"
