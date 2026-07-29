@@ -956,13 +956,23 @@ existing config and data roots.
   terminal erase sequence neither executed nor repainted the terminal.
 - The node's 1.9 GiB temporary filesystem could not hold a second full debug
   test graph alongside the Rust toolchain and optimized artifact. The optimized
-  binary did build natively; the identical source passed all 418 Rust tests,
-  warning-free Clippy, the 454-check admin harness, and every deterministic
+  binary did build natively; the identical source passed all 420 Rust tests,
+  warning-free Clippy, the 455-check admin harness, and every deterministic
   script locally. Linux behavior was then exercised through the optimized
   native binary by the suites above.
-- Scenarios 9–13 remain intentionally pending until a current OpenAI credential
-  is staged privately on the node; no credential from chat was copied into a
-  command, config, log, process argument, evidence file, or repository.
+- Scenarios 9–13 passed against GPT-5.6 Luna through the Responses transport:
+  text, structured output, streaming, tool calling, and capability-cache
+  persistence all succeeded without compatibility fallback. The labelled
+  classification corpus passed 20/20 with zero contract breaches, and the
+  adversarial real-model corpus passed 280/280.
+- The complete paid matrix passed all seven gates in 1,331 seconds. Its three
+  redacted reports were copied to the ignored local test-artifacts directory
+  and independently scanned. The credential was supplied only through hidden
+  standard input to the isolated test process, was unset when the process
+  exited, and did not appear in command arguments, config, history, logs,
+  reports, evidence, or the repository. No API-key file remained on the node.
+- All 18 SSH scenarios passed. The exact-code GitHub Actions run passed Ubuntu,
+  macOS, the Rust 1.88 minimum-version build, and the full Linux PTY job.
 
 ## 19. Requirement-to-test matrix
 
