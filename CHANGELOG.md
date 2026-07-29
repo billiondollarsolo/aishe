@@ -6,6 +6,29 @@ breaking changes can land in any release.
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-07-29
+
+### Changed
+- Interactive setup, settings, and tour prompts now use an accessible color
+  hierarchy, a high-contrast single-line focus row, explicit word wrapping, and
+  a stacked narrow-terminal layout. `NO_COLOR` and dumb terminals retain the
+  same markers and structure without color.
+- Setup now refreshes `/v1/models` after the credential step instead of silently
+  discarding discovery failures or injecting an unverified configured model.
+  A successful catalog response verifies the endpoint/credential, listed and
+  typed model IDs are checked against the complete response, and an unlisted
+  manual ID must pass one clearly disclosed minimal generation request.
+
+### Fixed
+- Leaving an arrow-key menu now restores cooked terminal mode before printing
+  the newline. The following prompt therefore starts at the left margin instead
+  of inheriting the selected label's column and wrapping sideways.
+
+### Tests
+- Added narrow-PTY color, wrapping, and cursor-alignment coverage plus real
+  loopback `/v1/models` cases for rejected keys, catalog selections, typed model
+  IDs, and `model_not_found` validation.
+
 ## [0.4.0] - 2026-07-29
 
 ### Added
