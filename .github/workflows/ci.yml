@@ -9,6 +9,18 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  supply-chain:
+    name: dependency advisories, licenses, and sources
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Enforce dependency policy
+        uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check advisories bans licenses sources
+          arguments: --all-features
+
   test:
     name: test (${{ matrix.os }})
     runs-on: ${{ matrix.os }}

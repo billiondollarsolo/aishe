@@ -46,7 +46,7 @@ thiserror = "2"
 regex = "1"
 dirs = "5"
 libc = "0.2"
-portable-pty = "0.8"
+portable-pty = "0.9"
 base64 = "0.22"
 flate2 = "1"
 fs2 = "0.4"
@@ -57,8 +57,13 @@ tiny_http = "0.12"
 url = "2"
 zip = { version = "4", default-features = false, features = ["deflate"] }
 # Pure-Rust regex engine (fancy-regex) so no C oniguruma dependency is needed.
+# Only the embedded default syntax/theme dumps are loaded at runtime. Excluding
+# plist-load and yaml-load removes unnecessary untrusted document parsers from
+# the production dependency graph.
 syntect = { version = "5", default-features = false, features = [
-    "default-fancy",
+    "default-syntaxes",
+    "default-themes",
+    "regex-fancy",
 ], optional = true }
 
 [dev-dependencies]
