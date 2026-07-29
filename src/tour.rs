@@ -121,6 +121,10 @@ fn print_lesson(index: usize, workspace: &Path) -> Result<()> {
                 "     Type `what is using the most disk space` or prefix any request with `?`."
             );
             println!("     Aishe changes the input color when it recognizes the AI route.");
+            println!(
+                "     AI turns use Aishe's private, pinned agent engine; no separate app or TUI opens."
+            );
+            println!("     Follow-ups in this shell and workspace share one durable conversation.");
             let verified = Config::load_quiet()
                 .ok()
                 .flatten()
@@ -141,20 +145,39 @@ fn print_lesson(index: usize, workspace: &Path) -> Result<()> {
                 "     Suggestions are placed on the command line for review; edit or cancel them."
             );
             println!("     Alt-Enter forces the current buffer through Aishe.");
+            println!(
+                "     The statusline can show model, mode, scope, context tokens, call cost, and session cost."
+            );
+            println!(
+                "     Customize its fields and right/below/off placement in `aishe settings`."
+            );
         }
         3 => {
             println!("\n  4. Recover from failures");
             println!("     After a failed command, press Ctrl-X Ctrl-F to request a reviewed fix.");
             println!("     Aishe never reruns a state-changing command merely to diagnose it.");
+            println!(
+                "     `aishe sessions` lists managed conversations; `aishe resume ses_…` reconnects one."
+            );
         }
         4 => {
             println!("\n  5. File change and undo");
             prove_undo(workspace)?;
             println!("     Created a tour-only file, journaled it, and proved undo removed it.");
+            println!(
+                "     Agent file and command tools stay behind Aishe policy, audit, scope, and undo controls."
+            );
         }
         5 => {
             println!("\n  6. Modes and safety");
             println!("     Shift-Tab cycles suggest → auto → yolo for this session.");
+            println!("     Auto runs safe reads and asks before risky or state-changing actions.");
+            println!(
+                "     Yolo asks once for workspace or host scope, then runs without per-action prompts."
+            );
+            println!(
+                "     Linux workspace actions require functional bubblewrap; host scope is explicit."
+            );
             println!(
                 "     `aishe profile` shows the persistent profile; `aishe readiness` checks yolo."
             );
@@ -178,7 +201,19 @@ fn print_lesson(index: usize, workspace: &Path) -> Result<()> {
                 "     tasks:   {}",
                 crate::commands::display_safe(&paths.data_dir.join("tasks").display().to_string())
             );
-            println!("     Updates replace the binary, not these files.");
+            println!(
+                "     runtime: {}",
+                crate::commands::display_safe(
+                    &paths.data_dir.join("runtime").display().to_string()
+                )
+            );
+            println!(
+                "     Managed runtime updates are versioned; config, credentials, history, sessions,"
+            );
+            println!("     tasks, audit, and undo data survive upgrades.");
+            println!(
+                "     `aishe doctor` verifies the complete installation without exposing secrets."
+            );
         }
         _ => {}
     }

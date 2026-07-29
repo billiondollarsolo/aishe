@@ -557,7 +557,7 @@ fn print_status_preview(config: &Config) {
             "scope" => Some(config.backend.default_scope.as_str()),
             "task" => Some("task repo-audit"),
             "elapsed" => Some("last 4.2s"),
-            "context" => Some("context 18%"),
+            "context" => Some("context 8.4K tok"),
             "last_tokens" => Some("last 1,697/374 tok"),
             "last_cost" => Some("last cost n/a"),
             "session_tokens" => Some("session 1,697/374 tok"),

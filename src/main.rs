@@ -1723,16 +1723,24 @@ fn record_managed_usage(outcome: &TurnOutcome, config: &Config) {
                 .strip_prefix("ses_")
                 .unwrap_or(&outcome.session_id);
             let task = task.chars().take(12).collect::<String>();
-            aishe::usagelog::merge_status(
-                std::path::Path::new(&status_path),
-                &[
-                    ("task", format!("task {task}")),
-                    (
-                        "elapsed",
-                        format!("last {:.1}s", outcome.elapsed_ms as f64 / 1000.0),
-                    ),
-                ],
-            );
+            let context_tokens = outcome.events.iter().rev().find_map(|event| match event {
+                aishe::agent::AgentEvent::Usage { usage } => Some(usage.input_tokens),
+                _ => None,
+            });
+            let mut metadata = vec![
+                ("task", format!("task {task}")),
+                (
+                    "elapsed",
+                    format!("last {:.1}s", outcome.elapsed_ms as f64 / 1000.0),
+                ),
+            ];
+            if let Some(tokens) = context_tokens {
+                metadata.push((
+                    "context",
+                    format!("context {} tok", aishe::usage::group(tokens)),
+                ));
+            }
+            aishe::usagelog::merge_status(std::path::Path::new(&status_path), &metadata);
         }
     }
 }
