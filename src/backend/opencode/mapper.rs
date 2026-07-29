@@ -207,6 +207,11 @@ impl EventMapper {
         {
             return Vec::new();
         }
+        let aborted = info
+            .get("error")
+            .and_then(|error| error.get("name"))
+            .and_then(Value::as_str)
+            == Some("MessageAbortedError");
         let mut events = Vec::new();
         if let Some(structured) = info.get("structured") {
             if !structured.is_null()
@@ -223,6 +228,9 @@ impl EventMapper {
             events.push(AgentEvent::Usage {
                 usage: usage_from(info),
             });
+        }
+        if aborted {
+            events.push(AgentEvent::Aborted);
         }
         events
     }

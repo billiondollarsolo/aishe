@@ -31,6 +31,11 @@ pub struct LeaseRegistration {
     pub scope: ExecutionScope,
     pub network: NetworkPolicy,
     pub interactive: bool,
+    /// Hard session budget only when Aishe has an exact trusted price.
+    pub budget_usd: Option<f64>,
+    pub price: Option<crate::usage::Price>,
+    /// Authoritative cost already present in the resumed backend session.
+    pub baseline_spent_usd: f64,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -45,6 +50,29 @@ pub struct LeaseIdentity {
 pub struct ChildRegistration {
     pub parent_session_id: String,
     pub child_session_id: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProviderTurnRequest {
+    pub session_id: String,
+    pub requested_max_output_tokens: Option<u64>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ProviderTurnDecision {
+    pub max_output_tokens: u64,
+    pub remaining_usd: Option<f64>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProviderUsageReport {
+    pub session_id: String,
+    pub message_id: String,
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+    pub cost_usd: Option<f64>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -125,6 +153,7 @@ struct ToolLease {
     workspace: PathBuf,
     expires_at: Instant,
     queue: VecDeque<CallKey>,
+    pending_budget_reservations: HashMap<String, VecDeque<f64>>,
 }
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq, Serialize, Deserialize)]
@@ -158,6 +187,15 @@ struct DurableCall {
     updated_at_ms: u128,
 }
 
+#[derive(Clone, Serialize, Deserialize)]
+struct DurableUsage {
+    session_id: String,
+    message_id: String,
+    input_tokens: u64,
+    output_tokens: u64,
+    cost_usd: f64,
+}
+
 struct ActiveCall {
     durable: DurableCall,
     request: Option<PluginToolRequest>,
@@ -170,6 +208,8 @@ struct Journal {
     #[serde(default)]
     children: HashMap<String, String>,
     calls: Vec<DurableCall>,
+    #[serde(default)]
+    usage: Vec<DurableUsage>,
 }
 
 #[derive(Default)]
@@ -177,6 +217,7 @@ struct BridgeState {
     leases: HashMap<String, ToolLease>,
     children: HashMap<String, String>,
     calls: HashMap<CallKey, ActiveCall>,
+    usage: HashMap<String, DurableUsage>,
 }
 
 pub struct Bridge {
@@ -217,12 +258,18 @@ impl Bridge {
                 )
             })
             .collect();
+        let usage = journal
+            .usage
+            .into_iter()
+            .map(|record| (record.message_id.clone(), record))
+            .collect();
         let bridge = Self {
             journal_path,
             state: Mutex::new(BridgeState {
                 leases: HashMap::new(),
                 children: journal.children,
                 calls,
+                usage,
             }),
             changed: Condvar::new(),
         };
@@ -239,6 +286,7 @@ impl Bridge {
                 registration.workspace.display()
             )
         })?;
+        validate_budget_registration(&registration)?;
         let lease_id = random_hex(32);
         let session_id = registration.backend_session_id.clone();
         let mut state = self.lock()?;
@@ -250,6 +298,7 @@ impl Bridge {
                 workspace,
                 expires_at: Instant::now() + LEASE_TTL,
                 queue: VecDeque::new(),
+                pending_budget_reservations: HashMap::new(),
             },
         );
         self.changed.notify_all();
@@ -293,6 +342,154 @@ impl Bridge {
                 "No authenticated foreground lease owns this provider turn",
             ))
         }
+    }
+
+    pub fn authorize_provider_turn(
+        &self,
+        request: &ProviderTurnRequest,
+    ) -> Result<ProviderTurnDecision, BridgeFailure> {
+        validate_id(&request.session_id, "ses_").map_err(invalid_failure)?;
+        let mut state = self.bridge_lock()?;
+        cleanup_expired(&mut state);
+        let owner = lease_owner(&state, &request.session_id)?;
+        let durable_spent = state
+            .usage
+            .values()
+            .filter(|usage| {
+                lease_owner(&state, &usage.session_id).ok().as_deref() == Some(owner.as_str())
+            })
+            .map(|usage| usage.cost_usd)
+            .sum::<f64>();
+        let lease = state.leases.get_mut(&owner).ok_or_else(|| {
+            failure(
+                503,
+                "foreground_unavailable",
+                "No authenticated foreground lease owns this provider turn",
+            )
+        })?;
+        if lease.expires_at <= Instant::now() {
+            return Err(failure(
+                503,
+                "lease_expired",
+                "The foreground provider-turn lease expired",
+            ));
+        }
+        lease.expires_at = Instant::now() + LEASE_TTL;
+        let requested = request
+            .requested_max_output_tokens
+            .unwrap_or(16_384)
+            .clamp(1, 1_000_000);
+        let Some(budget) = lease.registration.budget_usd else {
+            return Ok(ProviderTurnDecision {
+                max_output_tokens: requested,
+                remaining_usd: None,
+            });
+        };
+        let Some(price) = lease.registration.price else {
+            return Err(failure(
+                500,
+                "budget_price_missing",
+                "A hard budget lease is missing its trusted model price",
+            ));
+        };
+        let reserved = lease
+            .pending_budget_reservations
+            .values()
+            .flatten()
+            .copied()
+            .sum::<f64>();
+        let spent = lease.registration.baseline_spent_usd.max(durable_spent) + reserved;
+        let remaining = (budget - spent).max(0.0);
+        if remaining <= f64::EPSILON {
+            return Err(failure(
+                402,
+                "budget_exhausted",
+                "The configured Aishe session budget is exhausted",
+            ));
+        }
+        let affordable = if price.output > 0.0 {
+            ((remaining * 1_000_000.0) / price.output).floor() as u64
+        } else {
+            requested
+        };
+        let cap = requested.min(affordable);
+        if cap == 0 {
+            return Err(failure(
+                402,
+                "budget_exhausted",
+                "The remaining Aishe budget cannot authorize another output token",
+            ));
+        }
+        let reservation = cap as f64 / 1_000_000.0 * price.output;
+        lease
+            .pending_budget_reservations
+            .entry(request.session_id.clone())
+            .or_default()
+            .push_back(reservation);
+        Ok(ProviderTurnDecision {
+            max_output_tokens: cap,
+            remaining_usd: Some(remaining),
+        })
+    }
+
+    pub fn record_provider_usage(&self, report: ProviderUsageReport) -> Result<(), BridgeFailure> {
+        validate_id(&report.session_id, "ses_").map_err(invalid_failure)?;
+        validate_id(&report.message_id, "msg_").map_err(invalid_failure)?;
+        if report
+            .cost_usd
+            .is_some_and(|cost| !cost.is_finite() || cost < 0.0)
+        {
+            return Err(failure(
+                400,
+                "invalid_usage",
+                "Provider usage cost is invalid",
+            ));
+        }
+        let mut state = self.bridge_lock()?;
+        if state.usage.contains_key(&report.message_id) {
+            return Ok(());
+        }
+        let owner = lease_owner(&state, &report.session_id)?;
+        let lease = state.leases.get_mut(&owner).ok_or_else(|| {
+            failure(
+                503,
+                "foreground_unavailable",
+                "No authenticated foreground lease owns this usage report",
+            )
+        })?;
+        let cost = report.cost_usd.or_else(|| {
+            lease.registration.price.map(|price| {
+                crate::usage::cost(
+                    crate::usage::Usage {
+                        input: report.input_tokens,
+                        output: report.output_tokens,
+                        requests: 1,
+                    },
+                    price,
+                )
+            })
+        });
+        // Unknown-price sessions cannot enforce a hard budget, but still
+        // accept and de-duplicate their usage event.
+        let cost = cost.unwrap_or(0.0);
+        if let Some(queue) = lease
+            .pending_budget_reservations
+            .get_mut(&report.session_id)
+        {
+            queue.pop_front();
+        }
+        state.usage.insert(
+            report.message_id.clone(),
+            DurableUsage {
+                session_id: report.session_id,
+                message_id: report.message_id,
+                input_tokens: report.input_tokens,
+                output_tokens: report.output_tokens,
+                cost_usd: cost,
+            },
+        );
+        drop(state);
+        self.persist().map_err(internal_failure)
     }
 
     /// Attach an OpenCode child session to the same authority as its parent.
@@ -667,6 +864,14 @@ impl Bridge {
             schema_version: JOURNAL_SCHEMA_VERSION,
             children: state.children.clone(),
             calls,
+            usage: {
+                let mut usage = state.usage.values().cloned().collect::<Vec<_>>();
+                usage.sort_by(|left, right| left.message_id.cmp(&right.message_id));
+                if usage.len() > 20_000 {
+                    usage.drain(..usage.len() - 20_000);
+                }
+                usage
+            },
         };
         let parent = self.journal_path.parent().unwrap_or_else(|| Path::new("."));
         std::fs::create_dir_all(parent)?;
@@ -689,6 +894,7 @@ fn load_journal(path: &Path) -> Result<Journal> {
                 schema_version: JOURNAL_SCHEMA_VERSION,
                 children: HashMap::new(),
                 calls: Vec::new(),
+                usage: Vec::new(),
             })
         }
         Err(error) => return Err(error.into()),
@@ -705,6 +911,31 @@ fn load_journal(path: &Path) -> Result<Journal> {
         anyhow::bail!("tool journal schema mismatch");
     }
     Ok(journal)
+}
+
+fn validate_budget_registration(registration: &LeaseRegistration) -> Result<()> {
+    if !registration.baseline_spent_usd.is_finite() || registration.baseline_spent_usd < 0.0 {
+        anyhow::bail!("baseline budget spend is invalid");
+    }
+    if registration
+        .budget_usd
+        .is_some_and(|budget| !budget.is_finite() || budget <= 0.0)
+    {
+        anyhow::bail!("hard budget must be finite and positive");
+    }
+    if let Some(price) = registration.price {
+        if !price.input.is_finite()
+            || !price.output.is_finite()
+            || price.input < 0.0
+            || price.output < 0.0
+        {
+            anyhow::bail!("budget price is invalid");
+        }
+    }
+    if registration.budget_usd.is_some() && registration.price.is_none() {
+        anyhow::bail!("a hard budget requires an exact trusted price");
+    }
+    Ok(())
 }
 
 fn lease_owner(state: &BridgeState, session_id: &str) -> Result<String, BridgeFailure> {
@@ -1040,6 +1271,9 @@ mod tests {
             scope: ExecutionScope::Workspace,
             network: NetworkPolicy::Deny,
             interactive: false,
+            budget_usd: None,
+            price: None,
+            baseline_spent_usd: 0.0,
         }
     }
 
@@ -1187,6 +1421,87 @@ mod tests {
             bridge.authorize_session("ses_child").unwrap_err().code,
             "foreground_unavailable"
         );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn provider_budget_reserves_caps_and_deduplicates_child_usage() {
+        let (bridge, root, workspace) = bridge("budget");
+        let mut configured = registration(&workspace);
+        configured.budget_usd = Some(0.001);
+        configured.price = Some(crate::usage::Price {
+            input: 0.0,
+            output: 100.0,
+        });
+        let lease = bridge.register(configured).unwrap();
+        let first = bridge
+            .authorize_provider_turn(&ProviderTurnRequest {
+                session_id: "ses_test".into(),
+                requested_max_output_tokens: Some(100),
+            })
+            .unwrap();
+        assert_eq!(first.max_output_tokens, 10);
+        assert_eq!(
+            bridge
+                .authorize_provider_turn(&ProviderTurnRequest {
+                    session_id: "ses_test".into(),
+                    requested_max_output_tokens: Some(100),
+                })
+                .unwrap_err()
+                .code,
+            "budget_exhausted"
+        );
+        bridge
+            .record_provider_usage(ProviderUsageReport {
+                session_id: "ses_test".into(),
+                message_id: "msg_budget_root".into(),
+                input_tokens: 1,
+                output_tokens: 5,
+                cost_usd: Some(0.0005),
+            })
+            .unwrap();
+        // Replay does not spend twice.
+        bridge
+            .record_provider_usage(ProviderUsageReport {
+                session_id: "ses_test".into(),
+                message_id: "msg_budget_root".into(),
+                input_tokens: 1,
+                output_tokens: 5,
+                cost_usd: Some(0.0005),
+            })
+            .unwrap();
+        bridge
+            .register_child(ChildRegistration {
+                parent_session_id: "ses_test".into(),
+                child_session_id: "ses_budget_child".into(),
+            })
+            .unwrap();
+        let child = bridge
+            .authorize_provider_turn(&ProviderTurnRequest {
+                session_id: "ses_budget_child".into(),
+                requested_max_output_tokens: Some(100),
+            })
+            .unwrap();
+        assert_eq!(child.max_output_tokens, 5);
+        bridge.unregister(&lease).unwrap();
+
+        // Durable usage survives a bridge reopen and remains secret-free.
+        drop(bridge);
+        let reopened = Bridge::open(root.join("journal.json")).unwrap();
+        let mut configured = registration(&workspace);
+        configured.budget_usd = Some(0.001);
+        configured.price = Some(crate::usage::Price {
+            input: 0.0,
+            output: 100.0,
+        });
+        reopened.register(configured).unwrap();
+        let remaining = reopened
+            .authorize_provider_turn(&ProviderTurnRequest {
+                session_id: "ses_test".into(),
+                requested_max_output_tokens: Some(100),
+            })
+            .unwrap();
+        assert_eq!(remaining.max_output_tokens, 5);
         std::fs::remove_dir_all(root).unwrap();
     }
 }

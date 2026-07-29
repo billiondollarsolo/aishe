@@ -1,5 +1,6 @@
 //! Foreground executor for supervisor-routed proxy tools.
 
+use std::collections::HashSet;
 use std::io::{IsTerminal, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -30,6 +31,7 @@ impl ToolWorker {
         client: SupervisorClient,
         registration: LeaseRegistration,
         config: Config,
+        cancel: Arc<AtomicBool>,
     ) -> Result<Self> {
         let identity = client.register(&registration)?;
         let stop = Arc::new(AtomicBool::new(false));
@@ -41,6 +43,7 @@ impl ToolWorker {
             .spawn(move || {
                 let skills = crate::skills::SkillRegistry::load();
                 let mcp = crate::mcp::McpRegistry::connect(&config.mcp_servers);
+                let mut approvals = HashSet::new();
                 while !worker_stop.load(Ordering::SeqCst) {
                     match worker_client.next(&worker_identity) {
                         Ok(Some(work)) => {
@@ -53,7 +56,7 @@ impl ToolWorker {
                             if worker_client.started(&started).is_err() {
                                 break;
                             }
-                            let result = execute(&work, &skills, &mcp);
+                            let result = execute(&work, &skills, &mcp, &mut approvals, &cancel);
                             let completion = ToolCompletion {
                                 lease_id: worker_identity.lease_id.clone(),
                                 session_id: work.session_id,
@@ -119,19 +122,22 @@ fn execute(
     work: &ToolWork,
     skills: &crate::skills::SkillRegistry,
     mcp: &crate::mcp::McpRegistry,
+    approvals: &mut HashSet<String>,
+    cancel: &Arc<AtomicBool>,
 ) -> ExecutionResult {
-    if let Err(message) = approve(work) {
+    let mut work = work.clone();
+    if let Err(message) = approve(&mut work, approvals) {
         return failure(&message);
     }
     let result = match work.tool.as_str() {
-        "run_command" => run_command(work),
-        "read_file" | "write_file" | "edit_file" | "list_dir" => run_file_tool(work),
-        "search_files" => search_files(work),
-        "fetch_url" => fetch_url(work),
-        "use_skill" => use_skill(work, skills),
-        "mcp_call" => mcp_call(work, mcp),
-        "ask_user" => ask_user(work),
-        "apply_patch" => apply_patch(work),
+        "run_command" => run_command(&work, cancel),
+        "read_file" | "write_file" | "edit_file" | "list_dir" => run_file_tool(&work),
+        "search_files" => search_files(&work),
+        "fetch_url" => fetch_url(&work),
+        "use_skill" => use_skill(&work, skills),
+        "mcp_call" => mcp_call(&work, mcp),
+        "ask_user" => ask_user(&work),
+        "apply_patch" => apply_patch(&work),
         _ => failure("unknown foreground tool"),
     };
     crate::audit::action(
@@ -145,7 +151,10 @@ fn execute(
     result
 }
 
-fn approve(work: &ToolWork) -> std::result::Result<(), String> {
+fn approve(
+    work: &mut ToolWork,
+    approvals: &mut HashSet<String>,
+) -> std::result::Result<(), String> {
     match work.mode {
         Mode::Suggest => {
             return Err("Suggest mode does not execute model-requested host tools.".into())
@@ -153,46 +162,158 @@ fn approve(work: &ToolWork) -> std::result::Result<(), String> {
         Mode::Yolo => return Ok(()),
         Mode::Auto => {}
     }
-    let Some(reason) = auto_approval_reason(work) else {
-        return Ok(());
-    };
     if !work.interactive || !std::io::stdin().is_terminal() {
-        return Err("Auto mode requires an interactive approval for this tool.".into());
+        if auto_approval_reason(work).is_some() {
+            return Err("Auto mode requires an interactive approval for this tool.".into());
+        }
+        return Ok(());
     }
-    let detail = match work.tool.as_str() {
+    loop {
+        let Some(reason) = auto_approval_reason(work) else {
+            return Ok(());
+        };
+        if approvals.contains(&approval_key(work)) {
+            return Ok(());
+        }
+        let detail = approval_detail(work);
+        println!();
+        println!("  ┌─ agent action ─────────────────────────────────");
+        println!(
+            "  │ {}",
+            crate::commands::display_safe(&format!("{}  {detail}", work.tool))
+        );
+        println!("  │ target   {}", crate::commands::display_safe(&detail));
+        println!("  │ reason   {}", crate::commands::display_safe(&reason));
+        println!(
+            "  │ policy   {:?} scope · {:?} network · {}",
+            work.scope,
+            work.network,
+            approval_capabilities(work)
+        );
+        println!("  └────────────────────────────────────────────────");
+        if work.tool == "run_command" {
+            print!("  [o] allow once  [s] allow matching this session  [e] edit  [d] deny: ");
+        } else {
+            print!("  [o] allow once  [s] allow matching this session  [d] deny: ");
+        }
+        let _ = std::io::stdout().flush();
+        let mut answer = String::new();
+        if std::io::stdin().read_line(&mut answer).is_err() {
+            return Err("Could not read the approval decision.".into());
+        }
+        match answer.trim().to_ascii_lowercase().as_str() {
+            "o" | "once" | "y" | "yes" => return Ok(()),
+            "s" | "session" | "always" => {
+                approvals.insert(approval_key(work));
+                return Ok(());
+            }
+            "e" | "edit" if work.tool == "run_command" => {
+                print!("  replacement command: ");
+                let _ = std::io::stdout().flush();
+                let mut command = String::new();
+                if std::io::stdin().read_line(&mut command).is_err()
+                    || command.trim().is_empty()
+                    || command.len() > 65_536
+                {
+                    return Err("Edited command is empty or invalid.".into());
+                }
+                work.args["command"] = Value::String(command.trim_end().to_string());
+            }
+            _ => return Err("User declined the agent action.".into()),
+        }
+    }
+}
+
+fn approval_detail(work: &ToolWork) -> String {
+    match work.tool.as_str() {
         "run_command" => work
             .args
             .get("command")
             .and_then(Value::as_str)
-            .unwrap_or("run command"),
+            .unwrap_or("run command")
+            .to_string(),
+        "fetch_url" => work
+            .args
+            .get("url")
+            .and_then(Value::as_str)
+            .unwrap_or("network request")
+            .to_string(),
+        "mcp_call" => format!(
+            "{} / {}",
+            work.args
+                .get("server")
+                .and_then(Value::as_str)
+                .unwrap_or("server"),
+            work.args
+                .get("tool")
+                .and_then(Value::as_str)
+                .unwrap_or("tool")
+        ),
         _ => work
             .args
             .get("path")
             .and_then(Value::as_str)
-            .unwrap_or(work.tool.as_str()),
-    };
-    println!();
-    println!("  agent action requires approval");
-    println!(
-        "  {} · {}",
-        crate::commands::display_safe(&work.tool),
-        crate::commands::display_safe(detail)
-    );
-    println!(
-        "  {} · {:?} · network {:?}",
-        crate::commands::display_safe(&reason),
-        work.scope,
-        work.network
-    );
-    print!("  Approve once? [y/N] ");
-    let _ = std::io::stdout().flush();
-    let mut answer = String::new();
-    if std::io::stdin().read_line(&mut answer).is_err()
-        || !matches!(answer.trim().to_ascii_lowercase().as_str(), "y" | "yes")
-    {
-        return Err("User declined the agent action.".into());
+            .unwrap_or(work.tool.as_str())
+            .to_string(),
     }
-    Ok(())
+}
+
+fn approval_key(work: &ToolWork) -> String {
+    use sha2::{Digest, Sha256};
+
+    let identity = match work.tool.as_str() {
+        "run_command" => work
+            .args
+            .get("command")
+            .and_then(Value::as_str)
+            .map(|value| value.split_whitespace().collect::<Vec<_>>().join(" "))
+            .unwrap_or_default(),
+        "mcp_call" => format!(
+            "{}:{}",
+            work.args
+                .get("server")
+                .and_then(Value::as_str)
+                .unwrap_or(""),
+            work.args.get("tool").and_then(Value::as_str).unwrap_or("")
+        ),
+        "apply_patch" => {
+            let value = work.args.get("patch").and_then(Value::as_str).unwrap_or("");
+            format!("{:x}", Sha256::digest(value.as_bytes()))
+        }
+        _ => approval_detail(work),
+    };
+    format!(
+        "{:?}:{:?}:{}:{}",
+        work.scope, work.network, work.tool, identity
+    )
+}
+
+fn approval_capabilities(work: &ToolWork) -> String {
+    let network = work.tool == "fetch_url"
+        || work
+            .args
+            .get("command")
+            .and_then(Value::as_str)
+            .is_some_and(crate::sandbox::is_network_command);
+    let sudo = work
+        .args
+        .get("command")
+        .and_then(Value::as_str)
+        .is_some_and(|command| command.split_whitespace().any(|part| part == "sudo"));
+    let writes = matches!(
+        work.tool.as_str(),
+        "write_file" | "edit_file" | "apply_patch" | "mcp_call"
+    ) || work
+        .args
+        .get("command")
+        .and_then(Value::as_str)
+        .is_some_and(crate::sandbox::is_write_command);
+    format!(
+        "{}{}{}",
+        if writes { "writes" } else { "read-only" },
+        if network { " · network" } else { "" },
+        if sudo { " · sudo" } else { "" }
+    )
 }
 
 fn auto_approval_reason(work: &ToolWork) -> Option<String> {
@@ -221,7 +342,7 @@ fn auto_approval_reason(work: &ToolWork) -> Option<String> {
     }
 }
 
-fn run_command(work: &ToolWork) -> ExecutionResult {
+fn run_command(work: &ToolWork, cancel: &Arc<AtomicBool>) -> ExecutionResult {
     let command = work
         .args
         .get("command")
@@ -249,6 +370,7 @@ fn run_command(work: &ToolWork) -> ExecutionResult {
         Ok(executor) => executor,
         Err(error) => return failure(&error.to_string()),
     };
+    executor.set_cancel_flag(Arc::clone(cancel));
     let timeout = work
         .args
         .get("timeout_secs")
@@ -256,8 +378,7 @@ fn run_command(work: &ToolWork) -> ExecutionResult {
         .unwrap_or(120)
         .clamp(1, 3600);
     println!("  → {}", crate::commands::display_safe(command));
-    let (code, output) =
-        executor.run_captured(command, Duration::from_secs(timeout), config_verbose(work));
+    let (code, output) = executor.run_captured(command, Duration::from_secs(timeout), true);
     ExecutionResult {
         success: code == 0,
         output,
@@ -593,10 +714,6 @@ fn ask_user(work: &ToolWork) -> ExecutionResult {
     }
 }
 
-fn config_verbose(_work: &ToolWork) -> bool {
-    false
-}
-
 fn success(output: String) -> ExecutionResult {
     ExecutionResult {
         success: true,
@@ -668,12 +785,13 @@ mod tests {
             network: NetworkPolicy::Allow,
             interactive: false,
         };
-        assert!(approve(&item).is_err());
+        let mut approvals = HashSet::new();
+        assert!(approve(&mut item, &mut approvals).is_err());
         item.mode = Mode::Auto;
-        assert!(approve(&item).is_ok());
+        assert!(approve(&mut item, &mut approvals).is_ok());
         item.args = serde_json::json!({"command":"rm -rf /tmp/aishe-do-not-run"});
-        assert!(approve(&item).is_err());
+        assert!(approve(&mut item, &mut approvals).is_err());
         item.mode = Mode::Yolo;
-        assert!(approve(&item).is_ok());
+        assert!(approve(&mut item, &mut approvals).is_ok());
     }
 }

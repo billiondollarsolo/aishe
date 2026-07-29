@@ -167,6 +167,18 @@ pub fn price_for(model: &str, overrides: &BTreeMap<String, Price>) -> Option<Pri
     None
 }
 
+/// Conservative price resolver for hard budget enforcement. Unlike display
+/// estimates, it never substring-matches a user override or catalog pattern.
+pub fn budget_price_for(model: &str, overrides: &BTreeMap<String, Price>) -> Option<Price> {
+    if let Some(price) = overrides.get(model) {
+        return Some(*price);
+    }
+    BUILTIN_PRICES
+        .iter()
+        .find(|(known, _)| known.eq_ignore_ascii_case(model))
+        .map(|(_, price)| *price)
+}
+
 /// Estimated USD cost for `usage` at `price`.
 pub fn cost(usage: Usage, price: Price) -> f64 {
     (usage.input as f64 / 1_000_000.0) * price.input
@@ -231,6 +243,25 @@ mod tests {
 
     fn no_overrides() -> BTreeMap<String, Price> {
         BTreeMap::new()
+    }
+
+    #[test]
+    fn hard_budget_prices_never_use_substring_matches() {
+        let mut prices = BTreeMap::new();
+        prices.insert(
+            "custom".into(),
+            Price {
+                input: 1.0,
+                output: 2.0,
+            },
+        );
+        assert!(budget_price_for("my-custom-model", &prices).is_none());
+        assert_eq!(
+            budget_price_for("custom", &prices),
+            prices.get("custom").copied()
+        );
+        assert!(budget_price_for("gpt-4o-2024-08-06", &prices).is_none());
+        assert!(budget_price_for("gpt-4o", &prices).is_some());
     }
 
     #[test]

@@ -7,6 +7,8 @@
 
 use std::io::IsTerminal;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use rand::RngCore;
@@ -19,6 +21,9 @@ use crate::backend::bridge::LeaseRegistration;
 use crate::backend::control::SupervisorClient;
 use crate::backend::opencode::{OpenCodeBackend, OpenCodeClient};
 use crate::config::Config;
+
+/// Process-local interrupt state shared by the native and managed loops.
+pub static INTERRUPTED: AtomicBool = AtomicBool::new(false);
 
 #[derive(Clone, Copy, Debug)]
 pub struct TurnOptions {
@@ -98,6 +103,7 @@ pub fn run_turn(
     prompt: &str,
     options: TurnOptions,
 ) -> std::result::Result<TurnOutcome, TurnFailure> {
+    INTERRUPTED.store(false, Ordering::SeqCst);
     if config.backend.engine != "opencode" {
         return Err(TurnFailure::PreAdmission(anyhow::anyhow!(
             "managed agent engine is disabled"
@@ -112,7 +118,7 @@ pub fn run_turn(
         control.model_id(),
     )
     .map_err(TurnFailure::PreAdmission)?;
-    let backend = OpenCodeBackend::new(client).map_err(TurnFailure::PreAdmission)?;
+    let backend = OpenCodeBackend::new(client.clone()).map_err(TurnFailure::PreAdmission)?;
     match backend.health().map_err(TurnFailure::PreAdmission)? {
         BackendHealth::Ready => {}
         BackendHealth::Degraded { reason } | BackendHealth::Unavailable { reason } => {
@@ -134,9 +140,30 @@ pub fn run_turn(
             resume_id: None,
         })
         .map_err(TurnFailure::PreAdmission)?;
+    let snapshot = backend
+        .snapshot(&session)
+        .context("reading managed-session usage before admission")
+        .map_err(TurnFailure::PreAdmission)?;
+    let price = crate::usage::budget_price_for(config.active_model(), &config.pricing);
+    let baseline_spent_usd = snapshot.usage.cost_usd.or_else(|| {
+        price.map(|price| {
+            crate::usage::cost(
+                crate::usage::Usage {
+                    input: snapshot.usage.input_tokens,
+                    output: snapshot.usage.output_tokens,
+                    requests: 0,
+                },
+                price,
+            )
+        })
+    });
+    let budget_usd = (config.aishe.budget_usd > 0.0)
+        .then_some(config.aishe.budget_usd)
+        .filter(|_| price.is_some());
 
     // Provider-turn authorization and every proxy tool require this foreground
     // lease. It is deliberately established before submit.
+    let cancelled = Arc::new(AtomicBool::new(false));
     let worker = ToolWorker::start(
         control,
         LeaseRegistration {
@@ -147,8 +174,12 @@ pub fn run_turn(
             scope: options.scope,
             network: options.network,
             interactive: options.interactive,
+            budget_usd,
+            price,
+            baseline_spent_usd: baseline_spent_usd.unwrap_or(0.0),
         },
         config.clone(),
+        Arc::clone(&cancelled),
     )
     .map_err(TurnFailure::PreAdmission)?;
 
@@ -164,6 +195,34 @@ pub fn run_turn(
         })
         .map_err(TurnFailure::Admitted)?;
 
+    let monitor_done = Arc::new(AtomicBool::new(false));
+    let monitor_finished = Arc::clone(&monitor_done);
+    let monitor_cancelled = Arc::clone(&cancelled);
+    let monitor_client = client.clone();
+    let monitor_session = session.clone();
+    let monitor = std::thread::Builder::new()
+        .name("aishe-agent-interrupt".into())
+        .spawn(move || {
+            while !monitor_finished.load(Ordering::SeqCst) {
+                if INTERRUPTED.load(Ordering::SeqCst) {
+                    monitor_cancelled.store(true, Ordering::SeqCst);
+                    let _ = monitor_client.abort(&monitor_session);
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+        })
+        .map_err(|error| {
+            // Submission has already been admitted. Abort explicitly so a
+            // monitor allocation failure cannot leave an unobserved provider
+            // turn running in the background.
+            cancelled.store(true, Ordering::SeqCst);
+            let _ = client.abort(&session);
+            TurnFailure::Admitted(anyhow::anyhow!(
+                "starting managed-turn interrupt monitor: {error}"
+            ))
+        })?;
+
     let mut renderer = options
         .render
         .then(|| super::renderer::AgentRenderer::new(&config.backend.output));
@@ -172,10 +231,21 @@ pub fn run_turn(
             renderer.render(event);
         }
     };
-    let events = backend
-        .events_with(&handle, &mut callback)
-        .map_err(TurnFailure::Admitted)?;
+    let events_result = backend.events_with(&handle, &mut callback);
+    monitor_done.store(true, Ordering::SeqCst);
+    let _ = monitor.join();
     drop(worker);
+    let events = events_result.map_err(TurnFailure::Admitted)?;
+    if cancelled.load(Ordering::SeqCst) {
+        crate::audit::action(
+            "agent:abort",
+            &format!("backend=opencode session={}", session.id),
+            Some(130),
+        );
+        return Err(TurnFailure::Admitted(anyhow::anyhow!(
+            "agent turn interrupted; provider and tool processes were cancelled"
+        )));
+    }
 
     if let Some(error) = events.iter().rev().find_map(|event| match event {
         AgentEvent::Failed { error } => Some(error),

@@ -12,7 +12,7 @@ use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use crossterm::style::Stylize;
 
-use aishe::agent::controller::{TurnFailure, TurnOptions, TurnOutcome};
+use aishe::agent::controller::{TurnFailure, TurnOptions, TurnOutcome, INTERRUPTED};
 use aishe::agent::Mode as AgentMode;
 use aishe::commands::CommandRegistry;
 use aishe::config::Config;
@@ -39,9 +39,6 @@ const VERSION: &str = concat!(
     env!("AISHE_BUILD_DATE"),
     ")"
 );
-
-/// Set by the SIGINT handler; checked by the yolo loop and reset around runs.
-static INTERRUPTED: AtomicBool = AtomicBool::new(false);
 
 extern "C" fn handle_sigint(_sig: libc::c_int) {
     INTERRUPTED.store(true, Ordering::SeqCst);
@@ -259,6 +256,16 @@ enum Cmd {
     /// Show or set the interaction mode (with a value, saves it to your config).
     Mode {
         #[arg(value_parser = ["suggest", "auto", "yolo"])]
+        value: Option<String>,
+    },
+    /// Show or set the agent execution scope for future turns.
+    Scope {
+        #[arg(value_parser = ["workspace", "host"])]
+        value: Option<String>,
+    },
+    /// Show or set network access for workspace-scoped agent turns.
+    Network {
+        #[arg(value_parser = ["allow", "deny"])]
         value: Option<String>,
     },
     /// Show or set the model for the active provider (saves it to your config).
@@ -976,6 +983,10 @@ fn run() -> Result<u8> {
             return Ok(0);
         }
         Some(Cmd::Mode { value }) => return Ok(set_or_show("mode", value.as_deref(), &config)),
+        Some(Cmd::Scope { value }) => return Ok(set_or_show("scope", value.as_deref(), &config)),
+        Some(Cmd::Network { value }) => {
+            return Ok(set_or_show("network", value.as_deref(), &config))
+        }
         Some(Cmd::Model { value }) => return Ok(set_or_show("model", value.as_deref(), &config)),
         Some(Cmd::Provider { value, live, json }) => {
             if value.as_deref() == Some("test") {
@@ -2474,6 +2485,8 @@ fn set_or_show(field: &str, value: Option<&str>, effective: &Config) -> u8 {
         let current = match field {
             "mode" => effective.aishe.mode.clone(),
             "provider" => effective.aishe.provider.clone(),
+            "scope" => effective.backend.default_scope.clone(),
+            "network" => effective.backend.workspace_network.clone(),
             _ => effective.active_model().to_string(),
         };
         println!("{field}: {current}");
@@ -2492,6 +2505,14 @@ fn set_or_show(field: &str, value: Option<&str>, effective: &Config) -> u8 {
             cfg.aishe.safety_profile = "custom".to_string();
         }
         "provider" => cfg.aishe.provider = value.to_string(),
+        "scope" => {
+            cfg.backend.default_scope = value.to_string();
+            cfg.aishe.safety_profile = "custom".to_string();
+        }
+        "network" => {
+            cfg.backend.workspace_network = value.to_string();
+            cfg.aishe.safety_profile = "custom".to_string();
+        }
         _ => cfg.set_active_model(value.to_string()),
     }
     if let Err(e) = cfg.save() {
@@ -2504,6 +2525,14 @@ fn set_or_show(field: &str, value: Option<&str>, effective: &Config) -> u8 {
         // is the source of truth, and non-PTY invocations have no state file.
         if let Some(path) = std::env::var_os("AISHE_MODEL_FILE").filter(|p| !p.is_empty()) {
             let _ = std::fs::write(path, aishe::commands::display_safe(cfg.active_model()));
+        }
+    }
+    if field == "scope" {
+        if let Some(path) = std::env::var_os("AISHE_SCOPE_FILE").filter(|p| !p.is_empty()) {
+            let _ = std::fs::write(
+                path,
+                aishe::commands::display_safe(&cfg.backend.default_scope),
+            );
         }
     }
     println!(

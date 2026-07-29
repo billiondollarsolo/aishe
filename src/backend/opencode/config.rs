@@ -11,13 +11,14 @@ use crate::config::{Config, ProviderConfig};
 
 pub const PROVIDER_KEY_ENV: &str = "AISHE_PROVIDER_API_KEY";
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ProviderSpec {
     pub provider_id: String,
     pub model_id: String,
     pub npm: String,
     pub base_url: String,
     pub requires_auth: bool,
+    pub price: Option<crate::usage::Price>,
 }
 
 /// Contains a secret and therefore deliberately does not implement Debug or
@@ -77,6 +78,7 @@ impl ProviderSpec {
             npm: npm.into(),
             base_url: append_v1(&base),
             requires_auth: provider.requires_auth(),
+            price: crate::usage::price_for(&provider.model, &config.pricing),
         })
     }
 }
@@ -174,6 +176,10 @@ pub fn generated_config(plugin_path: &Path, provider: Option<&ProviderSpec>) -> 
                 }
             }
         });
+        if let Some(price) = provider.price {
+            config["provider"][&provider.provider_id]["models"][&provider.model_id]["cost"] =
+                serde_json::json!({"input":price.input,"output":price.output});
+        }
         config["enabled_providers"] = serde_json::json!([provider.provider_id]);
         let model = format!("{}/{}", provider.provider_id, provider.model_id);
         config["model"] = Value::String(model.clone());

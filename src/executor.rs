@@ -7,6 +7,7 @@ use std::io::{BufRead, BufReader, Read, Write};
 use std::os::unix::process::{CommandExt, ExitStatusExt};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -146,6 +147,9 @@ pub struct Executor {
     /// Optional wrapper argv (e.g. a `bwrap … --` prefix) prepended before the
     /// shell in [`run_captured`], so a sandbox runs the command. Empty = none.
     sandbox_wrap: Vec<String>,
+    /// Cooperative cancellation for foreground agent commands. Ordinary shell
+    /// execution leaves this unset.
+    cancel: Option<Arc<AtomicBool>>,
 }
 
 impl Executor {
@@ -173,6 +177,7 @@ impl Executor {
             jobs: Vec::new(),
             history_log: None,
             sandbox_wrap: Vec::new(),
+            cancel: None,
         })
     }
 
@@ -196,6 +201,10 @@ impl Executor {
     /// the shell in [`run_captured`]. Used by the yolo loop's `bwrap` backend.
     pub fn set_sandbox_wrap(&mut self, wrap: Vec<String>) {
         self.sandbox_wrap = wrap;
+    }
+
+    pub fn set_cancel_flag(&mut self, cancel: Arc<AtomicBool>) {
+        self.cancel = Some(cancel);
     }
 
     /// Point the `history` builtin at the timestamped history log.
@@ -416,10 +425,21 @@ impl Executor {
         // Poll for completion, enforcing the timeout.
         let start = Instant::now();
         let mut timed_out = false;
+        let mut cancelled = false;
         let code = loop {
             match child.try_wait() {
                 Ok(Some(status)) => break exit_code(&status),
                 Ok(None) => {
+                    if self
+                        .cancel
+                        .as_ref()
+                        .is_some_and(|cancel| cancel.load(Ordering::SeqCst))
+                    {
+                        kill_process_group(pgid);
+                        let _ = child.wait();
+                        cancelled = true;
+                        break 130;
+                    }
                     if start.elapsed() >= timeout {
                         kill_process_group(pgid);
                         let _ = child.wait();
@@ -448,6 +468,8 @@ impl Executor {
                 timeout.as_secs()
             );
             output.push_str(&note);
+        } else if cancelled {
+            output.push_str("\n[aishe: command interrupted and process group terminated]");
         }
         let output = truncate_tail(&output, CAPTURE_TRUNCATE_CHARS);
         self.record(line, code);

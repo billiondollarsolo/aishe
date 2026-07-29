@@ -308,7 +308,19 @@ pub fn run_supervisor() -> Result<u8> {
 
 pub fn smoke_test(manager: &RuntimeManager) -> Result<()> {
     manager.verify()?;
-    let prepared = prepare_layout()?;
+    let mut prepared = prepare_layout()?;
+    let smoke_provider = ProviderSpec {
+        provider_id: "aishe-local".into(),
+        model_id: "smoke-model".into(),
+        npm: "@ai-sdk/openai-compatible".into(),
+        base_url: "http://127.0.0.1:9/v1".into(),
+        requires_auth: false,
+        price: None,
+    };
+    prepared.config_json = serde_json::to_string(&super::opencode::config::generated_config(
+        &prepared.plugin_path,
+        Some(&smoke_provider),
+    )?)?;
     let port = reserve_port()?;
     let password = random_hex(32);
     let bridge_token = random_hex(32);
@@ -331,7 +343,8 @@ pub fn smoke_test(manager: &RuntimeManager) -> Result<()> {
         &url,
         &password,
         manager.manifest().version.as_str(),
-    );
+    )
+    .and_then(|()| verify_smoke_tool_policy(&url, &password, &prepared.root));
     terminate_process_group(&mut child);
     result
 }
@@ -361,6 +374,7 @@ pub fn spawn_opencode(
         .stdin(Stdio::null())
         .stdout(Stdio::from(stdout))
         .stderr(Stdio::from(stderr))
+        .current_dir(&prepared.root)
         .env_clear()
         .env("HOME", &prepared.home)
         .env("XDG_CONFIG_HOME", prepared.root.join("xdg").join("config"))
@@ -397,6 +411,36 @@ pub fn spawn_opencode(
     command
         .spawn()
         .with_context(|| format!("starting managed OpenCode at {}", binary.display()))
+}
+
+fn verify_smoke_tool_policy(url: &str, password: &str, directory: &Path) -> Result<()> {
+    let authorization = format!(
+        "Basic {}",
+        base64::engine::general_purpose::STANDARD.encode(format!("aishe:{password}"))
+    );
+    let mut ids_url = url::Url::parse(&format!("{url}/experimental/tool/ids"))?;
+    ids_url
+        .query_pairs_mut()
+        .append_pair("directory", &directory.to_string_lossy());
+    let ids: Vec<String> = ureq::get(ids_url.as_str())
+        .set("Authorization", &authorization)
+        .timeout(Duration::from_secs(5))
+        .call()
+        .context("querying trusted plugin tool identities")?
+        .into_json()
+        .context("decoding trusted plugin tool identities")?;
+    for required in [
+        "aishe_run_command",
+        "aishe_read_file",
+        "aishe_write_file",
+        "aishe_apply_patch",
+    ] {
+        if !ids.iter().any(|id| id == required) {
+            anyhow::bail!("trusted OpenCode plugin did not register {required}");
+        }
+    }
+
+    Ok(())
 }
 
 fn copy_safe_environment(command: &mut Command) {

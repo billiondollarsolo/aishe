@@ -59,23 +59,51 @@ function proxy(name, description, args) {
 
 export const AisheBridge = async () => ({
   event: async ({ event }) => {
-    if (event?.type !== "session.created") return
     const info = event?.properties?.info
-    if (!info?.id || !info?.parentID) return
-    const response = await fetch(`${bridgeUrl}/v1/plugin/child`, {
-      method: "POST",
-      redirect: "error",
-      headers: {
-        "authorization": `Bearer ${bridgeToken}`,
-        "content-type": "application/json",
-      },
-      body: JSON.stringify({
-        parent_session_id: info.parentID,
-        child_session_id: info.id,
-      }),
-    })
-    if (!response.ok) {
-      throw new Error(`Aishe child-session lease registration failed: ${response.status}`)
+    if (event?.type === "session.created" && info?.id && info?.parentID) {
+      const response = await fetch(`${bridgeUrl}/v1/plugin/child`, {
+        method: "POST",
+        redirect: "error",
+        headers: {
+          "authorization": `Bearer ${bridgeToken}`,
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({
+          parent_session_id: info.parentID,
+          child_session_id: info.id,
+        }),
+      })
+      if (!response.ok) {
+        throw new Error(`Aishe child-session lease registration failed: ${response.status}`)
+      }
+      return
+    }
+    if (
+      event?.type === "message.updated" &&
+      info?.role === "assistant" &&
+      info?.id &&
+      (info?.sessionID || event?.properties?.sessionID) &&
+      info?.time?.completed
+    ) {
+      const sessionID = info.sessionID || event.properties.sessionID
+      const response = await fetch(`${bridgeUrl}/v1/plugin/usage`, {
+        method: "POST",
+        redirect: "error",
+        headers: {
+          "authorization": `Bearer ${bridgeToken}`,
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({
+          session_id: sessionID,
+          message_id: info.id,
+          input_tokens: Math.max(0, Math.floor(info.tokens?.input ?? 0)),
+          output_tokens: Math.max(0, Math.floor(info.tokens?.output ?? 0)),
+          cost_usd: Number.isFinite(info.cost) ? Math.max(0, info.cost) : null,
+        }),
+      })
+      if (!response.ok) {
+        throw new Error(`Aishe usage accounting rejected an event: ${response.status}`)
+      }
     }
   },
   tool: {
@@ -171,11 +199,6 @@ export const AisheBridge = async () => ({
       },
       body: JSON.stringify({
         session_id: input.sessionID,
-        agent: input.agent,
-        model: {
-          provider_id: input.model.providerID,
-          model_id: input.model.id,
-        },
         requested_max_output_tokens: output.maxOutputTokens,
       }),
     })

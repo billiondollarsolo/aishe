@@ -16,14 +16,16 @@ use serde_json::Value;
 
 use crate::backend::bridge::{
     Bridge, BridgeFailure, ChildRegistration, LeaseIdentity, LeaseRegistration, PluginToolRequest,
-    ToolCompletion, ToolStarted, ToolWork,
+    ProviderTurnRequest, ProviderUsageReport, ToolCompletion, ToolStarted, ToolWork,
 };
 use crate::backend::opencode::OpenCodeConnection;
 
 pub const SUPERVISOR_PROTOCOL_VERSION: u32 = 2;
 const STATE_SCHEMA_VERSION: u32 = 2;
 const MAX_HEADER_BYTES: usize = 32 * 1024;
-const MAX_BODY_BYTES: usize = 1024 * 1024;
+// Tool schemas permit a 4 MiB replacement or patch. Leave bounded envelope
+// room for JSON escaping, metadata, and the other small request fields.
+const MAX_BODY_BYTES: usize = 5 * 1024 * 1024;
 
 #[derive(Clone, Serialize, Deserialize)]
 pub struct SupervisorState {
@@ -453,7 +455,7 @@ pub fn serve_connection(mut stream: TcpStream, context: &ServerContext) -> Resul
                 .and_then(|completion| context.bridge.complete(completion)),
         ),
         ("POST", "/v1/plugin/provider-turn") => {
-            let value: serde_json::Value = match parse_json(&request) {
+            let value: ProviderTurnRequest = match parse_json(&request) {
                 Ok(value) => value,
                 Err(()) => {
                     return write_error(
@@ -464,24 +466,17 @@ pub fn serve_connection(mut stream: TcpStream, context: &ServerContext) -> Resul
                     )
                 }
             };
-            let Some(session_id) = value.get("session_id").and_then(serde_json::Value::as_str)
-            else {
-                return write_error(
-                    &mut stream,
-                    400,
-                    "invalid_session",
-                    "Provider-turn session is missing",
-                );
-            };
-            match context.bridge.authorize_session(session_id) {
-                Ok(()) => write_json(
-                    &mut stream,
-                    200,
-                    &serde_json::json!({"max_output_tokens":value.get("requested_max_output_tokens")}),
-                ),
+            match context.bridge.authorize_provider_turn(&value) {
+                Ok(decision) => write_json(&mut stream, 200, &decision),
                 Err(error) => write_bridge_failure(&mut stream, &error),
             }
         }
+        ("POST", "/v1/plugin/usage") => bridge_unit(
+            &mut stream,
+            parse_json::<ProviderUsageReport>(&request)
+                .map_err(|_| invalid_bridge_request())
+                .and_then(|usage| context.bridge.record_provider_usage(usage)),
+        ),
         ("POST", "/v1/plugin/child") => bridge_unit(
             &mut stream,
             parse_json::<ChildRegistration>(&request)

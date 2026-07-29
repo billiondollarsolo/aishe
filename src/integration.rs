@@ -553,6 +553,10 @@ if [[ -o interactive && "${AISHE_PTY_PROMPT:-1}" == 1 ]]; then
     esac
     model="${AISHE_MODEL}"
     mode="${AISHE_MODE:-suggest}"
+    if [[ -n "${AISHE_SCOPE_FILE:-}" && -r "${AISHE_SCOPE_FILE}" ]]; then
+      scope="$(<"$AISHE_SCOPE_FILE")"
+      [[ -n "$scope" ]] && AISHE_SCOPE="$scope"
+    fi
     scope="${AISHE_SCOPE:-workspace}"
     metrics=()
     if [[ -n "${AISHE_STATUS_FILE:-}" && -r "${AISHE_STATUS_FILE}" ]]; then
