@@ -3,6 +3,8 @@
 //! OpenRouter, Together, etc. via `base_url`.
 
 use std::collections::BTreeMap;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::Arc;
 
 use serde_json::{json, Value};
@@ -18,15 +20,35 @@ pub struct OpenAiProvider {
     api_key: String,
     model: String,
     meter: Arc<UsageMeter>,
+    token_limit_param: AtomicU8,
+    token_limit_known: AtomicU8,
+    token_limit_cache: Option<PathBuf>,
 }
 
 impl OpenAiProvider {
     pub fn new(base_url: String, api_key: String, model: String) -> Self {
+        let token_limit_cache = token_limit_cache_path(&base_url, &model);
+        Self::with_token_limit_cache(base_url, api_key, model, token_limit_cache)
+    }
+
+    fn with_token_limit_cache(
+        base_url: String,
+        api_key: String,
+        model: String,
+        token_limit_cache: Option<PathBuf>,
+    ) -> Self {
+        let stored = token_limit_cache
+            .as_deref()
+            .and_then(load_token_limit_param);
+        let token_limit_param = stored.unwrap_or_else(|| TokenLimitParam::default_for(&base_url));
         Self {
             base_url: base_url.trim_end_matches('/').to_string(),
             api_key,
             model,
             meter: Arc::new(UsageMeter::default()),
+            token_limit_param: AtomicU8::new(token_limit_param as u8),
+            token_limit_known: AtomicU8::new(u8::from(stored.is_some())),
+            token_limit_cache,
         }
     }
 
@@ -86,12 +108,13 @@ impl OpenAiProvider {
         messages: &[Msg],
         tools: &[ToolDef],
         format: &ResponseFormat,
-    ) -> Value {
+    ) -> (Value, TokenLimitParam) {
+        let token_limit_param = self.token_limit_param();
         let mut body = json!({
             "model": self.model,
-            "max_tokens": MAX_TOKENS,
             "messages": Self::build_messages(system, messages),
         });
+        body[token_limit_param.name()] = json!(MAX_TOKENS);
         if !tools.is_empty() {
             let tool_defs: Vec<Value> = tools
                 .iter()
@@ -120,7 +143,7 @@ impl OpenAiProvider {
                 });
             }
         }
-        body
+        (body, token_limit_param)
     }
 
     fn post(&self, body: &Value) -> Result<Value, ProviderError> {
@@ -128,6 +151,50 @@ impl OpenAiProvider {
         let (i, o) = usage_from_value(&resp);
         self.meter.record(i, o);
         Ok(resp)
+    }
+
+    fn token_limit_param(&self) -> TokenLimitParam {
+        TokenLimitParam::from_u8(self.token_limit_param.load(Ordering::Relaxed))
+    }
+
+    /// Switch to the alternate token-limit spelling after the endpoint rejects
+    /// the one used by this request. The choice is only persisted after a later
+    /// request succeeds, so a transient or misleading error cannot poison the
+    /// cross-process cache.
+    fn switch_rejected_token_limit(
+        &self,
+        rejected: TokenLimitParam,
+        message: &str,
+        already_switched: &mut bool,
+    ) -> bool {
+        if *already_switched || !is_token_limit_error(message, rejected) {
+            return false;
+        }
+        self.token_limit_param
+            .store(rejected.other() as u8, Ordering::Relaxed);
+        self.token_limit_known.store(0, Ordering::Relaxed);
+        *already_switched = true;
+        true
+    }
+
+    /// Record a parameter that the endpoint accepted. A provider/model cache
+    /// file means subsequent `aishe` child processes start with this spelling
+    /// and do not pay for the same rejected probe on every shell command.
+    fn remember_accepted_token_limit(&self, accepted: TokenLimitParam) {
+        self.token_limit_param
+            .store(accepted as u8, Ordering::Relaxed);
+        if self.token_limit_known.swap(1, Ordering::Relaxed) != 0 {
+            return;
+        }
+        let Some(path) = &self.token_limit_cache else {
+            return;
+        };
+        if let Some(parent) = path.parent() {
+            if std::fs::create_dir_all(parent).is_err() {
+                return;
+            }
+        }
+        let _ = crate::config::write_atomic(path, accepted.name().as_bytes());
     }
 
     /// Parse `choices[0].message` into our `Completion`. Tool-call arguments
@@ -186,10 +253,25 @@ impl Provider for OpenAiProvider {
         // Try the requested format; on a `response_format`/schema rejection (a
         // server that doesn't support it), step down to a looser one and retry.
         let mut fmt = format.clone();
+        let mut token_limit_switched = false;
         loop {
-            let body = self.build_body(system, messages, &[], &fmt);
+            let (body, token_limit_param) = self.build_body(system, messages, &[], &fmt);
             match self.post(&body) {
-                Ok(resp) => return Ok(Self::parse_completion(&resp)?.text.unwrap_or_default()),
+                Ok(resp) => {
+                    self.remember_accepted_token_limit(token_limit_param);
+                    return Ok(Self::parse_completion(&resp)?.text.unwrap_or_default());
+                }
+                Err(ProviderError::Api {
+                    status: 400,
+                    message,
+                }) if self.switch_rejected_token_limit(
+                    token_limit_param,
+                    &message,
+                    &mut token_limit_switched,
+                ) =>
+                {
+                    continue
+                }
                 Err(ProviderError::Api {
                     status: 400,
                     message,
@@ -213,9 +295,29 @@ impl Provider for OpenAiProvider {
         messages: &[Msg],
         tools: &[ToolDef],
     ) -> Result<Completion, ProviderError> {
-        let body = self.build_body(system, messages, tools, &ResponseFormat::Text);
-        let resp = self.post(&body)?;
-        Self::parse_completion(&resp)
+        let mut token_limit_switched = false;
+        loop {
+            let (body, token_limit_param) =
+                self.build_body(system, messages, tools, &ResponseFormat::Text);
+            match self.post(&body) {
+                Ok(resp) => {
+                    self.remember_accepted_token_limit(token_limit_param);
+                    return Self::parse_completion(&resp);
+                }
+                Err(ProviderError::Api {
+                    status: 400,
+                    message,
+                }) if self.switch_rejected_token_limit(
+                    token_limit_param,
+                    &message,
+                    &mut token_limit_switched,
+                ) =>
+                {
+                    continue
+                }
+                Err(e) => return Err(e),
+            }
+        }
     }
 
     fn complete_with_tools_stream(
@@ -230,13 +332,31 @@ impl Provider for OpenAiProvider {
             ("Authorization", auth.as_str()),
             ("content-type", "application/json"),
         ];
-        let mut body = self.build_body(system, messages, tools, &ResponseFormat::Text);
-        body["stream"] = json!(true);
-        body["stream_options"] = json!({"include_usage": true});
-        let resp = match stream_post(&self.endpoint(), &headers, &body) {
-            Ok(r) => r,
-            // Fall back to the non-streaming call if streaming setup fails.
-            Err(_) => return self.complete_with_tools(system, messages, tools),
+        let mut token_limit_switched = false;
+        let resp = loop {
+            let (mut body, token_limit_param) =
+                self.build_body(system, messages, tools, &ResponseFormat::Text);
+            body["stream"] = json!(true);
+            body["stream_options"] = json!({"include_usage": true});
+            match stream_post(&self.endpoint(), &headers, &body) {
+                Ok(r) => {
+                    self.remember_accepted_token_limit(token_limit_param);
+                    break r;
+                }
+                Err(ProviderError::Api {
+                    status: 400,
+                    message,
+                }) if self.switch_rejected_token_limit(
+                    token_limit_param,
+                    &message,
+                    &mut token_limit_switched,
+                ) =>
+                {
+                    continue
+                }
+                // Fall back to the non-streaming call if streaming setup fails.
+                Err(_) => return self.complete_with_tools(system, messages, tools),
+            }
         };
 
         let mut text = String::new();
@@ -324,14 +444,29 @@ impl Provider for OpenAiProvider {
             ("content-type", "application/json"),
         ];
         let mut fmt = format.clone();
+        let mut token_limit_switched = false;
         let resp = loop {
-            let mut body = self.build_body(system, messages, &[], &fmt);
+            let (mut body, token_limit_param) = self.build_body(system, messages, &[], &fmt);
             body["stream"] = json!(true);
             // Ask for a trailing usage chunk (supported by OpenAI, Groq, …);
             // servers that ignore it simply omit usage.
             body["stream_options"] = json!({"include_usage": true});
             match stream_post(&self.endpoint(), &headers, &body) {
-                Ok(r) => break r,
+                Ok(r) => {
+                    self.remember_accepted_token_limit(token_limit_param);
+                    break r;
+                }
+                Err(ProviderError::Api {
+                    status: 400,
+                    message,
+                }) if self.switch_rejected_token_limit(
+                    token_limit_param,
+                    &message,
+                    &mut token_limit_switched,
+                ) =>
+                {
+                    continue
+                }
                 Err(ProviderError::Api {
                     status: 400,
                     message,
@@ -398,6 +533,104 @@ impl Provider for OpenAiProvider {
     fn meter(&self) -> Arc<UsageMeter> {
         Arc::clone(&self.meter)
     }
+}
+
+/// The two token-limit spellings used across Chat Completions implementations.
+///
+/// OpenAI deprecates `max_tokens` in favor of `max_completion_tokens`, while
+/// some compatible servers still only implement the older spelling.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[repr(u8)]
+enum TokenLimitParam {
+    MaxTokens = 0,
+    MaxCompletionTokens = 1,
+}
+
+impl TokenLimitParam {
+    fn from_u8(value: u8) -> Self {
+        match value {
+            1 => Self::MaxCompletionTokens,
+            _ => Self::MaxTokens,
+        }
+    }
+
+    fn name(self) -> &'static str {
+        match self {
+            Self::MaxTokens => "max_tokens",
+            Self::MaxCompletionTokens => "max_completion_tokens",
+        }
+    }
+
+    fn other(self) -> Self {
+        match self {
+            Self::MaxTokens => Self::MaxCompletionTokens,
+            Self::MaxCompletionTokens => Self::MaxTokens,
+        }
+    }
+
+    fn default_for(base_url: &str) -> Self {
+        if base_url
+            .trim_end_matches('/')
+            .eq_ignore_ascii_case("https://api.openai.com")
+        {
+            Self::MaxCompletionTokens
+        } else {
+            Self::MaxTokens
+        }
+    }
+}
+
+/// A stable, non-sensitive filename for one endpoint/model pair. Base URLs can
+/// contain credentials on unusual compatible services, so neither the URL nor
+/// model name is written to disk verbatim.
+fn token_limit_cache_key(base_url: &str, model: &str) -> String {
+    let mut hash = 0xcbf2_9ce4_8422_2325u64;
+    for byte in base_url
+        .trim_end_matches('/')
+        .as_bytes()
+        .iter()
+        .copied()
+        .chain(std::iter::once(0xff))
+        .chain(model.as_bytes().iter().copied())
+    {
+        hash ^= u64::from(byte);
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    format!("{hash:016x}")
+}
+
+fn token_limit_cache_path(base_url: &str, model: &str) -> Option<PathBuf> {
+    crate::config::data_root().map(|root| {
+        root.join("aishe").join("provider-compat").join(format!(
+            "openai-{}.token-limit",
+            token_limit_cache_key(base_url, model)
+        ))
+    })
+}
+
+fn load_token_limit_param(path: &Path) -> Option<TokenLimitParam> {
+    match std::fs::read_to_string(path).ok()?.trim() {
+        "max_tokens" => Some(TokenLimitParam::MaxTokens),
+        "max_completion_tokens" => Some(TokenLimitParam::MaxCompletionTokens),
+        _ => None,
+    }
+}
+
+/// Does a 400 message indicate that the endpoint rejected the token-limit
+/// spelling used in this request?
+fn is_token_limit_error(message: &str, used: TokenLimitParam) -> bool {
+    let message = message.to_ascii_lowercase();
+    message.contains(used.name())
+        && [
+            "unsupported parameter",
+            "not supported",
+            "does not support",
+            "unrecognized",
+            "unknown parameter",
+            "invalid parameter",
+        ]
+        .iter()
+        .any(|needle| message.contains(needle))
 }
 
 /// The next looser response format to retry with (schema → json → text → none).
@@ -498,6 +731,7 @@ fn extract_error_message(resp: ureq::Response) -> String {
 mod tests {
     use super::*;
     use crate::providers::AssistantMsg;
+    use mockito::Matcher;
 
     #[test]
     fn system_is_first_message() {
@@ -572,5 +806,223 @@ mod tests {
                                                               // a real client bug behind endless step-downs otherwise).
         assert!(!is_format_error("context length exceeded"));
         assert!(!is_format_error("invalid api key"));
+    }
+
+    #[test]
+    fn official_openai_uses_the_current_token_limit_parameter() {
+        let provider = OpenAiProvider::with_token_limit_cache(
+            "https://api.openai.com".into(),
+            "k".into(),
+            "gpt-x".into(),
+            None,
+        );
+        let (body, used) =
+            provider.build_body("SYS", &[Msg::User("hi".into())], &[], &ResponseFormat::Text);
+        assert_eq!(used, TokenLimitParam::MaxCompletionTokens);
+        assert_eq!(body["max_completion_tokens"], MAX_TOKENS);
+        assert!(body.get("max_tokens").is_none());
+    }
+
+    #[test]
+    fn token_limit_fallback_is_persisted_for_the_endpoint_and_model() {
+        let mut server = mockito::Server::new();
+        let legacy = server
+            .mock("POST", "/v1/chat/completions")
+            .match_body(Matcher::PartialJson(json!({
+                "model": "learn-me",
+                "max_tokens": MAX_TOKENS
+            })))
+            .with_status(400)
+            .with_header("content-type", "application/json")
+            .with_body(
+                r#"{"error":{"message":"Unsupported parameter: 'max_tokens' is not supported with this model. Use 'max_completion_tokens' instead."}}"#,
+            )
+            .expect(1)
+            .create();
+        let current = server
+            .mock("POST", "/v1/chat/completions")
+            .match_body(Matcher::PartialJson(json!({
+                "model": "learn-me",
+                "max_completion_tokens": MAX_TOKENS
+            })))
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(r#"{"choices":[{"message":{"content":"Paris"}}]}"#)
+            .expect(2)
+            .create();
+
+        let dir = std::env::temp_dir().join(format!(
+            "aishe-openai-compat-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let cache = dir.join("token-limit");
+        let provider = OpenAiProvider::with_token_limit_cache(
+            server.url(),
+            "k".into(),
+            "learn-me".into(),
+            Some(cache.clone()),
+        );
+        assert_eq!(
+            provider
+                .complete(
+                    "SYS",
+                    &[Msg::User("question".into())],
+                    &ResponseFormat::Text
+                )
+                .unwrap(),
+            "Paris"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&cache).unwrap(),
+            "max_completion_tokens"
+        );
+
+        // A fresh provider represents the next `aishe` child process. It reads
+        // the accepted spelling and goes straight to the successful request.
+        let next_process = OpenAiProvider::with_token_limit_cache(
+            server.url(),
+            "k".into(),
+            "learn-me".into(),
+            Some(cache),
+        );
+        assert_eq!(
+            next_process
+                .complete("SYS", &[Msg::User("again".into())], &ResponseFormat::Text)
+                .unwrap(),
+            "Paris"
+        );
+        legacy.assert();
+        current.assert();
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn streaming_retries_with_the_alternate_token_limit_parameter() {
+        let mut server = mockito::Server::new();
+        let legacy = server
+            .mock("POST", "/v1/chat/completions")
+            .match_body(Matcher::PartialJson(json!({
+                "max_tokens": MAX_TOKENS,
+                "stream": true
+            })))
+            .with_status(400)
+            .with_header("content-type", "application/json")
+            .with_body(
+                r#"{"error":{"message":"Unsupported parameter: max_tokens; use max_completion_tokens"}}"#,
+            )
+            .create();
+        let current = server
+            .mock("POST", "/v1/chat/completions")
+            .match_body(Matcher::PartialJson(json!({
+                "max_completion_tokens": MAX_TOKENS,
+                "stream": true
+            })))
+            .with_status(200)
+            .with_header("content-type", "text/event-stream")
+            .with_body(
+                "data: {\"choices\":[{\"delta\":{\"content\":\"Paris\"}}]}\n\ndata: [DONE]\n\n",
+            )
+            .create();
+
+        let provider = OpenAiProvider::with_token_limit_cache(
+            server.url(),
+            "k".into(),
+            "stream-model".into(),
+            None,
+        );
+        let mut streamed = String::new();
+        let answer = provider
+            .complete_stream(
+                "SYS",
+                &[Msg::User("question".into())],
+                &ResponseFormat::Text,
+                &mut |delta| streamed.push_str(delta),
+            )
+            .unwrap();
+        assert_eq!(answer, "Paris");
+        assert_eq!(streamed, "Paris");
+        legacy.assert();
+        current.assert();
+    }
+
+    #[test]
+    fn tool_requests_retry_with_the_alternate_token_limit_parameter() {
+        let mut server = mockito::Server::new();
+        let legacy = server
+            .mock("POST", "/v1/chat/completions")
+            .match_body(Matcher::PartialJson(json!({
+                "max_tokens": MAX_TOKENS,
+                "tools": [{"type": "function"}]
+            })))
+            .with_status(400)
+            .with_header("content-type", "application/json")
+            .with_body(
+                r#"{"error":{"message":"Unsupported parameter: max_tokens; use max_completion_tokens"}}"#,
+            )
+            .create();
+        let current = server
+            .mock("POST", "/v1/chat/completions")
+            .match_body(Matcher::PartialJson(json!({
+                "max_completion_tokens": MAX_TOKENS,
+                "tools": [{"type": "function"}]
+            })))
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(r#"{"choices":[{"message":{"content":"done"}}]}"#)
+            .create();
+        let provider = OpenAiProvider::with_token_limit_cache(
+            server.url(),
+            "k".into(),
+            "tool-model".into(),
+            None,
+        );
+        let tools = [ToolDef {
+            name: "run_command".into(),
+            description: "run a command".into(),
+            schema: json!({"type": "object"}),
+        }];
+
+        let completion = provider
+            .complete_with_tools("SYS", &[Msg::User("go".into())], &tools)
+            .unwrap();
+        assert_eq!(completion.text.as_deref(), Some("done"));
+        legacy.assert();
+        current.assert();
+    }
+
+    #[test]
+    fn compatibility_cache_is_scoped_to_endpoint_and_model() {
+        assert_eq!(
+            token_limit_cache_key("https://example.test/", "model-a"),
+            token_limit_cache_key("https://example.test", "model-a")
+        );
+        assert_ne!(
+            token_limit_cache_key("https://example.test", "model-a"),
+            token_limit_cache_key("https://example.test", "model-b")
+        );
+        assert_ne!(
+            token_limit_cache_key("https://one.example", "model-a"),
+            token_limit_cache_key("https://two.example", "model-a")
+        );
+    }
+
+    #[test]
+    fn token_limit_errors_are_specific_to_the_parameter_used() {
+        assert!(is_token_limit_error(
+            "Unsupported parameter: 'max_tokens' is not supported with this model",
+            TokenLimitParam::MaxTokens
+        ));
+        assert!(is_token_limit_error(
+            "Unrecognized request argument supplied: max_completion_tokens",
+            TokenLimitParam::MaxCompletionTokens
+        ));
+        assert!(!is_token_limit_error(
+            "context length exceeded",
+            TokenLimitParam::MaxTokens
+        ));
     }
 }

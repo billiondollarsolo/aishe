@@ -6,6 +6,20 @@ breaking changes can land in any release.
 
 ## [Unreleased]
 
+## [0.2.28] - 2026-07-28
+
+### Fixed
+- OpenAI Chat Completions requests now use `max_completion_tokens` for the
+  official OpenAI endpoint. OpenAI-compatible endpoints that reject one
+  token-limit spelling are retried once with the other spelling across normal,
+  streaming, and tool-use requests.
+- The accepted token-limit parameter is remembered per endpoint and model in
+  aishe's state directory. New `aishe` processes reuse it, so a compatible
+  endpoint does not incur the same failed fallback on every shell command.
+- The PTY right prompt now refreshes its model label immediately after
+  `aishe model <name>` instead of showing the model that was active when the
+  shell started.
+
 ## [0.2.27] - 2026-07-28
 
 ### Fixed

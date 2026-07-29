@@ -337,6 +337,9 @@ if [[ -o interactive && "${AISHE_PTY_PROMPT:-1}" == 1 ]]; then
   autoload -Uz add-zsh-hook
   aishe_set_prompt() {
     local glyph
+    if [[ -n "${AISHE_MODEL_FILE:-}" && -r "${AISHE_MODEL_FILE}" ]]; then
+      IFS= read -r AISHE_MODEL < "${AISHE_MODEL_FILE}"
+    fi
     case "${AISHE_MODE:-suggest}" in
       yolo) glyph='⚡' ;;
       auto) glyph='»' ;;
@@ -656,6 +659,8 @@ mod tests {
         assert!(rc.contains("export ZDOTDIR=\"${AISHE_REAL_ZDOTDIR}\""));
         assert!(rc.contains("command_not_found_handler"));
         assert!(rc.contains("print -z"));
+        assert!(rc.contains("AISHE_MODEL_FILE"));
+        assert!(rc.contains("read -r AISHE_MODEL"));
         // The wrapper gets the force-NL widget too (shared ZSH_HOOK).
         assert!(rc.contains("aishe-nl-widget"));
     }

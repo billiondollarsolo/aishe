@@ -69,6 +69,16 @@ pub fn run_zsh(config: &Config, history_log: &std::path::Path) -> Result<u8> {
     cmd.env("AISHE_REAL_ZDOTDIR", &real_zdotdir);
     cmd.env("AISHE_MODE", &config.aishe.mode);
     cmd.env("AISHE_MODEL", config.active_model());
+    // `aishe model <name>` runs as a child of zsh, so it cannot directly update
+    // the parent shell's AISHE_MODEL. Share the current value through a tiny
+    // per-session file that the prompt hook reads before every prompt.
+    let model_file = std::env::temp_dir().join(format!("aishe-model-{}", std::process::id()));
+    let _model_guard = if std::fs::write(&model_file, config.active_model()).is_ok() {
+        cmd.env("AISHE_MODEL_FILE", &model_file);
+        Some(FileGuard(model_file))
+    } else {
+        None
+    };
     cmd.env(
         "AISHE_PTY_PROMPT",
         if config.aishe.pty_prompt { "1" } else { "0" },

@@ -558,6 +558,7 @@ model = "gpt-x"
 "#,
     )
     .unwrap();
+    let model_file = dir.join("pty-model");
 
     let run = |args: &[&str]| {
         let mut c = Command::cargo_bin("aishe").unwrap();
@@ -565,6 +566,7 @@ model = "gpt-x"
             .env("XDG_DATA_HOME", dir.join("data"))
             .env("AISHE_CONFIG_DIR", &dir)
             .env("AISHE_DATA_DIR", dir.join("data"))
+            .env("AISHE_MODEL_FILE", &model_file)
             .args(args);
         c
     };
@@ -587,6 +589,7 @@ model = "gpt-x"
     run(&["provider", "openai"]).assert().success();
     // `model` targets the now-active provider (openai).
     run(&["model", "gpt-z2"]).assert().success();
+    assert_eq!(std::fs::read_to_string(&model_file).unwrap(), "gpt-z2");
 
     // The effective config reflects the persisted changes.
     run(&["config"])

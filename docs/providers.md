@@ -142,7 +142,14 @@ aishe model gpt-4o-mini
 ```
 
 `aishe model` sets the model for the currently selected provider. Both persist to
-the config.
+the config. In the zsh PTY front-end, the right-prompt model label refreshes on
+the next prompt after this command.
+
+For OpenAI-compatible Chat Completions endpoints, aishe supports both
+`max_tokens` and `max_completion_tokens`. It records the spelling accepted by
+each endpoint/model pair in the aishe state directory and reuses it in later
+processes, so a compatibility retry happens at most once unless the endpoint's
+behavior changes.
 
 ## Fallback chain (resilience and offline)
 

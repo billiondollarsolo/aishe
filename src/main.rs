@@ -1679,6 +1679,14 @@ fn set_or_show(field: &str, value: Option<&str>, effective: &Config) -> u8 {
         eprintln!("aishe: {e}");
         return 1;
     }
+    if field == "model" {
+        // Under the PTY front-end, let the parent zsh prompt pick up the saved
+        // model on its very next precmd. This is best-effort: config persistence
+        // is the source of truth, and non-PTY invocations have no state file.
+        if let Some(path) = std::env::var_os("AISHE_MODEL_FILE").filter(|p| !p.is_empty()) {
+            let _ = std::fs::write(path, cfg.active_model());
+        }
+    }
     println!("{field} = {value}  (saved to {})", Config::path().display());
     0
 }
