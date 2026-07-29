@@ -7,6 +7,13 @@ use crate::agent::{
     UserQuestion,
 };
 
+const MAX_PENDING_PART_EVENTS: usize = 256;
+
+enum PendingPartEvent {
+    Delta(Value),
+    Updated(Value),
+}
+
 #[derive(Default)]
 pub struct EventMapper {
     session_id: String,
@@ -19,6 +26,9 @@ pub struct EventMapper {
     child_sessions: HashSet<String>,
     completed_children: HashSet<String>,
     reasoning_active: bool,
+    turn_observed: bool,
+    assistant_message_ids: HashSet<String>,
+    pending_part_events: Vec<PendingPartEvent>,
 }
 
 impl EventMapper {
@@ -88,9 +98,7 @@ impl EventMapper {
             "message.part.delta" => self.part_delta(properties),
             "message.part.updated" => self.part_updated(properties),
             "session.status" => self.session_status(properties),
-            "session.idle" => vec![AgentEvent::Completed {
-                summary: String::new(),
-            }],
+            "session.idle" => self.session_idle(),
             "session.error" => vec![AgentEvent::Failed {
                 error: map_error(properties.get("error")),
             }],
@@ -200,19 +208,21 @@ impl EventMapper {
         let Some(message_id) = info.get("id").and_then(Value::as_str) else {
             return Vec::new();
         };
+        self.turn_observed = true;
+        self.assistant_message_ids.insert(message_id.to_string());
+        let mut events = self.drain_pending_parts();
         if info
             .get("time")
             .and_then(|time| time.get("completed"))
             .is_none()
         {
-            return Vec::new();
+            return events;
         }
         let aborted = info
             .get("error")
             .and_then(|error| error.get("name"))
             .and_then(Value::as_str)
             == Some("MessageAbortedError");
-        let mut events = Vec::new();
         if let Some(structured) = info.get("structured") {
             if !structured.is_null()
                 && self
@@ -236,6 +246,13 @@ impl EventMapper {
     }
 
     fn part_delta(&mut self, properties: &Value) -> Vec<AgentEvent> {
+        if !self.turn_observed {
+            self.queue_pending_part(PendingPartEvent::Delta(properties.clone()));
+            return Vec::new();
+        }
+        if !self.relevant_part(properties) {
+            return Vec::new();
+        }
         if properties.get("field").and_then(Value::as_str) != Some("text") {
             return Vec::new();
         }
@@ -269,6 +286,13 @@ impl EventMapper {
     }
 
     fn part_updated(&mut self, properties: &Value) -> Vec<AgentEvent> {
+        if !self.turn_observed {
+            self.queue_pending_part(PendingPartEvent::Updated(properties.clone()));
+            return Vec::new();
+        }
+        if !self.relevant_part(properties) {
+            return Vec::new();
+        }
         let part = properties.get("part").unwrap_or(&Value::Null);
         let part_id = part
             .get("id")
@@ -319,6 +343,37 @@ impl EventMapper {
             "step-finish" => Vec::new(),
             _ => Vec::new(),
         }
+    }
+
+    fn queue_pending_part(&mut self, event: PendingPartEvent) {
+        if self.pending_part_events.len() < MAX_PENDING_PART_EVENTS {
+            self.pending_part_events.push(event);
+        }
+    }
+
+    fn drain_pending_parts(&mut self) -> Vec<AgentEvent> {
+        let pending = std::mem::take(&mut self.pending_part_events);
+        let mut events = Vec::new();
+        for event in pending {
+            events.extend(match event {
+                PendingPartEvent::Delta(properties) => self.part_delta(&properties),
+                PendingPartEvent::Updated(properties) => self.part_updated(&properties),
+            });
+        }
+        events
+    }
+
+    fn relevant_part(&self, properties: &Value) -> bool {
+        let message_id = properties
+            .get("messageID")
+            .and_then(Value::as_str)
+            .or_else(|| {
+                properties
+                    .get("part")
+                    .and_then(|part| part.get("messageID"))
+                    .and_then(Value::as_str)
+            });
+        message_id.is_some_and(|id| self.assistant_message_ids.contains(id))
     }
 
     fn tool_updated(&mut self, part: &Value) -> Vec<AgentEvent> {
@@ -401,24 +456,38 @@ impl EventMapper {
         }
     }
 
-    fn session_status(&self, properties: &Value) -> Vec<AgentEvent> {
+    fn session_status(&mut self, properties: &Value) -> Vec<AgentEvent> {
         match properties
             .get("status")
             .and_then(|status| status.get("type"))
             .and_then(Value::as_str)
         {
-            Some("idle") => vec![AgentEvent::Completed {
-                summary: String::new(),
-            }],
-            Some("retry") => vec![AgentEvent::Reconnecting {
-                attempt: properties
-                    .get("status")
-                    .and_then(|status| status.get("attempt"))
-                    .and_then(Value::as_u64)
-                    .unwrap_or(1) as u32,
-            }],
-            _ => Vec::new(),
+            Some("idle") => self.session_idle(),
+            Some("retry") => {
+                vec![AgentEvent::Reconnecting {
+                    attempt: properties
+                        .get("status")
+                        .and_then(|status| status.get("attempt"))
+                        .and_then(Value::as_u64)
+                        .unwrap_or(1) as u32,
+                }]
+            }
+            Some(_) => Vec::new(),
+            None => Vec::new(),
         }
+    }
+
+    fn session_idle(&self) -> Vec<AgentEvent> {
+        if !self.turn_observed {
+            // `/global/event` may publish the session's existing idle state
+            // immediately after subscribe and before prompt_async admission.
+            // Treating that as this turn's completion drops the foreground
+            // lease before the new provider request begins.
+            return Vec::new();
+        }
+        vec![AgentEvent::Completed {
+            summary: String::new(),
+        }]
     }
 }
 
@@ -490,11 +559,28 @@ mod tests {
     #[test]
     fn maps_deltas_tools_usage_and_idle_without_duplicates() {
         let mut mapper = EventMapper::new("ses_1", "msg_user");
+        let stale_idle = envelope(
+            "session.status",
+            serde_json::json!({"sessionID":"ses_1","status":{"type":"idle"}}),
+        );
+        assert!(
+            mapper.map(&stale_idle).is_empty(),
+            "an idle state observed before current-turn activity is stale"
+        );
+        let assistant_started = envelope(
+            "message.updated",
+            serde_json::json!({"sessionID":"ses_1","info":{
+                "id":"msg_assistant","role":"assistant","parentID":"msg_user",
+                "time":{"created":1}
+            }}),
+        );
+        assert!(mapper.map(&assistant_started).is_empty());
         let running = envelope(
             "message.part.updated",
             serde_json::json!({
                 "sessionID":"ses_1",
-                "part":{"id":"prt_1","type":"tool","callID":"call_1","tool":"aishe_read_file",
+                "part":{"id":"prt_1","messageID":"msg_assistant","type":"tool",
+                    "callID":"call_1","tool":"aishe_read_file",
                     "state":{"status":"running","input":{"path":"a"},"title":"Read","time":{"start":1}}}
             }),
         );
@@ -506,7 +592,8 @@ mod tests {
             "message.part.updated",
             serde_json::json!({
                 "sessionID":"ses_1",
-                "part":{"id":"prt_1","type":"tool","callID":"call_1","tool":"aishe_read_file",
+                "part":{"id":"prt_1","messageID":"msg_assistant","type":"tool",
+                    "callID":"call_1","tool":"aishe_read_file",
                     "state":{"status":"completed","input":{"path":"a"},"output":"ok","title":"Read",
                         "metadata":{},"time":{"start":1,"end":2}}}
             }),
@@ -552,7 +639,8 @@ mod tests {
             "message.part.updated",
             serde_json::json!({
                 "sessionID":"ses_1",
-                "part":{"id":"prt_step","type":"step-finish","tokens":{"input":5,"output":2},"cost":0.01}
+                "part":{"id":"prt_step","messageID":"msg_assistant","type":"step-finish",
+                    "tokens":{"input":5,"output":2},"cost":0.01}
             }),
         );
         assert!(mapper.map(&step).is_empty());

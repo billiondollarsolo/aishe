@@ -19,6 +19,7 @@ use crate::agent::{ExecutionScope, Mode, NetworkPolicy};
 const JOURNAL_SCHEMA_VERSION: u32 = 1;
 const MAX_JOURNAL_BYTES: u64 = 16 * 1024 * 1024;
 const LEASE_TTL: Duration = Duration::from_secs(45);
+const USAGE_RECONCILIATION_GRACE: Duration = Duration::from_secs(30);
 const TOOL_WAIT: Duration = Duration::from_secs(60 * 60);
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -156,6 +157,16 @@ struct ToolLease {
     pending_budget_reservations: HashMap<String, VecDeque<f64>>,
 }
 
+/// A closed foreground lease has no tool or provider-turn authority, but keeps
+/// just enough non-secret accounting state for OpenCode's asynchronous
+/// `message.updated` plugin callback to reconcile the provider usage that
+/// completed immediately before unregister.
+struct RetiredUsageLease {
+    price: Option<crate::usage::Price>,
+    pending_budget_reservations: HashMap<String, VecDeque<f64>>,
+    expires_at: Instant,
+}
+
 #[derive(Clone, Debug, Eq, Hash, PartialEq, Serialize, Deserialize)]
 struct CallKey {
     session_id: String,
@@ -215,6 +226,7 @@ struct Journal {
 #[derive(Default)]
 struct BridgeState {
     leases: HashMap<String, ToolLease>,
+    retired_usage_leases: HashMap<String, RetiredUsageLease>,
     children: HashMap<String, String>,
     calls: HashMap<CallKey, ActiveCall>,
     usage: HashMap<String, DurableUsage>,
@@ -267,6 +279,7 @@ impl Bridge {
             journal_path,
             state: Mutex::new(BridgeState {
                 leases: HashMap::new(),
+                retired_usage_leases: HashMap::new(),
                 children: journal.children,
                 calls,
                 usage,
@@ -290,6 +303,7 @@ impl Bridge {
         let lease_id = random_hex(32);
         let session_id = registration.backend_session_id.clone();
         let mut state = self.lock()?;
+        state.retired_usage_leases.remove(&session_id);
         state.leases.insert(
             session_id.clone(),
             ToolLease {
@@ -319,7 +333,18 @@ impl Bridge {
         let mut state = self.bridge_lock()?;
         let lease = lease_for_identity(&mut state, identity)?;
         let session = lease.registration.backend_session_id.clone();
-        state.leases.remove(&session);
+        let lease = state
+            .leases
+            .remove(&session)
+            .expect("validated foreground lease exists");
+        state.retired_usage_leases.insert(
+            session,
+            RetiredUsageLease {
+                price: lease.registration.price,
+                pending_budget_reservations: lease.pending_budget_reservations,
+                expires_at: Instant::now() + USAGE_RECONCILIATION_GRACE,
+            },
+        );
         self.changed.notify_all();
         Ok(())
     }
@@ -449,35 +474,58 @@ impl Bridge {
         if state.usage.contains_key(&report.message_id) {
             return Ok(());
         }
+        cleanup_expired(&mut state);
         let owner = lease_owner(&state, &report.session_id)?;
-        let lease = state.leases.get_mut(&owner).ok_or_else(|| {
-            failure(
+        let cost = if let Some(lease) = state.leases.get_mut(&owner) {
+            let cost = report.cost_usd.or_else(|| {
+                lease.registration.price.map(|price| {
+                    crate::usage::cost(
+                        crate::usage::Usage {
+                            input: report.input_tokens,
+                            output: report.output_tokens,
+                            requests: 1,
+                        },
+                        price,
+                    )
+                })
+            });
+            if let Some(queue) = lease
+                .pending_budget_reservations
+                .get_mut(&report.session_id)
+            {
+                queue.pop_front();
+            }
+            cost
+        } else if let Some(lease) = state.retired_usage_leases.get_mut(&owner) {
+            let cost = report.cost_usd.or_else(|| {
+                lease.price.map(|price| {
+                    crate::usage::cost(
+                        crate::usage::Usage {
+                            input: report.input_tokens,
+                            output: report.output_tokens,
+                            requests: 1,
+                        },
+                        price,
+                    )
+                })
+            });
+            if let Some(queue) = lease
+                .pending_budget_reservations
+                .get_mut(&report.session_id)
+            {
+                queue.pop_front();
+            }
+            cost
+        } else {
+            return Err(failure(
                 503,
                 "foreground_unavailable",
-                "No authenticated foreground lease owns this usage report",
-            )
-        })?;
-        let cost = report.cost_usd.or_else(|| {
-            lease.registration.price.map(|price| {
-                crate::usage::cost(
-                    crate::usage::Usage {
-                        input: report.input_tokens,
-                        output: report.output_tokens,
-                        requests: 1,
-                    },
-                    price,
-                )
-            })
-        });
+                "No live or recently completed foreground lease owns this usage report",
+            ));
+        };
         // Unknown-price sessions cannot enforce a hard budget, but still
         // accept and de-duplicate their usage event.
         let cost = cost.unwrap_or(0.0);
-        if let Some(queue) = lease
-            .pending_budget_reservations
-            .get_mut(&report.session_id)
-        {
-            queue.pop_front();
-        }
         state.usage.insert(
             report.message_id.clone(),
             DurableUsage {
@@ -1042,11 +1090,16 @@ fn validate_request_workspace(
             "Tool worktree does not resolve canonically",
         )
     })?;
-    if directory != lease.workspace || worktree != lease.workspace {
+    // OpenCode deliberately reports `/` as `worktree` for a directory that is
+    // not backed by version control. That sentinel must never become Aishe
+    // authority: the exact request directory still has to match the canonical
+    // foreground lease, and ToolWork always carries the lease workspace.
+    let global_non_vcs_worktree = worktree == Path::new("/");
+    if directory != lease.workspace || (worktree != lease.workspace && !global_non_vcs_worktree) {
         return Err(failure(
             403,
             "workspace_mismatch",
-            "Model-supplied tool workspace does not match the foreground lease",
+            "OpenCode tool context does not match the foreground lease",
         ));
     }
     Ok(())
@@ -1152,6 +1205,9 @@ fn validate_output(value: &Value) -> Result<(), BridgeFailure> {
 fn cleanup_expired(state: &mut BridgeState) {
     let now = Instant::now();
     state.leases.retain(|_, lease| lease.expires_at > now);
+    state
+        .retired_usage_leases
+        .retain(|_, lease| lease.expires_at > now);
 }
 
 fn validate_shell_id(value: &str) -> Result<()> {
@@ -1373,6 +1429,30 @@ mod tests {
     }
 
     #[test]
+    fn non_vcs_worktree_sentinel_does_not_expand_the_lease() {
+        let (bridge, root, workspace) = bridge("non-vcs");
+        let identity = bridge.register(registration(&workspace)).unwrap();
+        let mut candidate = request(&workspace);
+        candidate.worktree = PathBuf::from("/");
+        let state = bridge.state.lock().unwrap();
+        let lease = state
+            .leases
+            .get(&identity.backend_session_id)
+            .expect("registered lease");
+        assert!(validate_request_workspace(&candidate, lease).is_ok());
+
+        candidate.directory = root.clone();
+        assert_eq!(
+            validate_request_workspace(&candidate, lease)
+                .unwrap_err()
+                .code,
+            "workspace_mismatch"
+        );
+        drop(state);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn child_session_inherits_only_its_live_parent_lease() {
         let (bridge, root, workspace) = bridge("child");
         let lease = bridge.register(registration(&workspace)).unwrap();
@@ -1484,6 +1564,28 @@ mod tests {
             .unwrap();
         assert_eq!(child.max_output_tokens, 5);
         bridge.unregister(&lease).unwrap();
+        assert_eq!(
+            bridge
+                .authorize_provider_turn(&ProviderTurnRequest {
+                    session_id: "ses_test".into(),
+                    requested_max_output_tokens: Some(1),
+                })
+                .unwrap_err()
+                .code,
+            "foreground_unavailable"
+        );
+        // OpenCode publishes the completed message before its plugin callback
+        // necessarily reaches Aishe. Accounting is accepted during a short
+        // post-lease grace without restoring provider/tool authority.
+        bridge
+            .record_provider_usage(ProviderUsageReport {
+                session_id: "ses_budget_child".into(),
+                message_id: "msg_budget_child".into(),
+                input_tokens: 1,
+                output_tokens: 0,
+                cost_usd: Some(0.0),
+            })
+            .unwrap();
 
         // Durable usage survives a bridge reopen and remains secret-free.
         drop(bridge);

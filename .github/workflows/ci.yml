@@ -141,6 +141,9 @@ jobs:
       - name: Interactive setup state-machine PTY
         run: python3 tests/setup_pty.py target/release/aishe
 
+      - name: Pinned OpenCode provider and tool-bridge contract
+        run: python3 tests/opencode_runtime_contract.py target/release/aishe
+
       - name: Durable task interruption and resume
         run: python3 tests/durable_task_resume.py target/release/aishe
 

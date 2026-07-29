@@ -33,6 +33,7 @@ impl ToolWorker {
         config: Config,
         cancel: Arc<AtomicBool>,
     ) -> Result<Self> {
+        let denied_environment = sensitive_environment_names(&config);
         let identity = client.register(&registration)?;
         let stop = Arc::new(AtomicBool::new(false));
         let worker_stop = Arc::clone(&stop);
@@ -56,7 +57,14 @@ impl ToolWorker {
                             if worker_client.started(&started).is_err() {
                                 break;
                             }
-                            let result = execute(&work, &skills, &mcp, &mut approvals, &cancel);
+                            let result = execute(
+                                &work,
+                                &skills,
+                                &mcp,
+                                &mut approvals,
+                                &cancel,
+                                &denied_environment,
+                            );
                             let completion = ToolCompletion {
                                 lease_id: worker_identity.lease_id.clone(),
                                 session_id: work.session_id,
@@ -124,20 +132,21 @@ fn execute(
     mcp: &crate::mcp::McpRegistry,
     approvals: &mut HashSet<String>,
     cancel: &Arc<AtomicBool>,
+    denied_environment: &HashSet<String>,
 ) -> ExecutionResult {
     let mut work = work.clone();
     if let Err(message) = approve(&mut work, approvals) {
         return failure(&message);
     }
     let result = match work.tool.as_str() {
-        "run_command" => run_command(&work, cancel),
+        "run_command" => run_command(&work, cancel, denied_environment),
         "read_file" | "write_file" | "edit_file" | "list_dir" => run_file_tool(&work),
-        "search_files" => search_files(&work),
+        "search_files" => search_files(&work, denied_environment),
         "fetch_url" => fetch_url(&work),
         "use_skill" => use_skill(&work, skills),
         "mcp_call" => mcp_call(&work, mcp),
         "ask_user" => ask_user(&work),
-        "apply_patch" => apply_patch(&work),
+        "apply_patch" => apply_patch(&work, denied_environment),
         _ => failure("unknown foreground tool"),
     };
     crate::audit::action(
@@ -342,7 +351,11 @@ fn auto_approval_reason(work: &ToolWork) -> Option<String> {
     }
 }
 
-fn run_command(work: &ToolWork, cancel: &Arc<AtomicBool>) -> ExecutionResult {
+fn run_command(
+    work: &ToolWork,
+    cancel: &Arc<AtomicBool>,
+    denied_environment: &HashSet<String>,
+) -> ExecutionResult {
     let command = work
         .args
         .get("command")
@@ -366,7 +379,7 @@ fn run_command(work: &ToolWork, cancel: &Arc<AtomicBool>) -> ExecutionResult {
         Ok(path) => path,
         Err(error) => return failure(&error.to_string()),
     };
-    let mut executor = match agent_executor(work, &cwd) {
+    let mut executor = match agent_executor(work, &cwd, denied_environment) {
         Ok(executor) => executor,
         Err(error) => return failure(&error.to_string()),
     };
@@ -461,7 +474,7 @@ fn validate_tool_path(work: &ToolWork, value: &str, write: bool) -> Result<PathB
     Ok(canonical)
 }
 
-fn search_files(work: &ToolWork) -> ExecutionResult {
+fn search_files(work: &ToolWork, denied_environment: &HashSet<String>) -> ExecutionResult {
     let query = work.args.get("query").and_then(Value::as_str).unwrap_or("");
     let path = work.args.get("path").and_then(Value::as_str).unwrap_or(".");
     if let Err(error) = validate_tool_path(work, path, false) {
@@ -470,7 +483,7 @@ fn search_files(work: &ToolWork) -> ExecutionResult {
     let Some(rg) = crate::executor::which("rg") else {
         return failure("search_files requires ripgrep (rg).");
     };
-    let mut executor = match agent_executor(work, &work.workspace) {
+    let mut executor = match agent_executor(work, &work.workspace, denied_environment) {
         Ok(executor) => executor,
         Err(error) => return failure(&error.to_string()),
     };
@@ -496,7 +509,7 @@ fn search_files(work: &ToolWork) -> ExecutionResult {
     }
 }
 
-fn apply_patch(work: &ToolWork) -> ExecutionResult {
+fn apply_patch(work: &ToolWork, denied_environment: &HashSet<String>) -> ExecutionResult {
     use rand::RngCore;
     use std::fs::OpenOptions;
 
@@ -547,7 +560,7 @@ fn apply_patch(work: &ToolWork) -> ExecutionResult {
         return failure(&format!("Could not stage the patch: {error}"));
     }
 
-    let mut executor = match agent_executor(work, &work.workspace) {
+    let mut executor = match agent_executor(work, &work.workspace, denied_environment) {
         Ok(executor) => executor,
         Err(error) => {
             let _ = std::fs::remove_file(&patch_path);
@@ -619,9 +632,13 @@ fn patch_targets(work: &ToolWork, patch: &str) -> Result<Vec<PathBuf>> {
     Ok(targets)
 }
 
-fn agent_executor(work: &ToolWork, cwd: &Path) -> Result<Executor> {
+fn agent_executor(
+    work: &ToolWork,
+    cwd: &Path,
+    denied_environment: &HashSet<String>,
+) -> Result<Executor> {
     #[allow(unused_mut)]
-    let mut executor = Executor::new_agent(cwd)?;
+    let mut executor = Executor::new_agent(cwd, denied_environment)?;
     if work.scope == ExecutionScope::Workspace {
         #[cfg(target_os = "linux")]
         match crate::dependencies::bubblewrap_probe() {
@@ -640,6 +657,20 @@ fn agent_executor(work: &ToolWork, cwd: &Path) -> Result<Executor> {
         }
     }
     Ok(executor)
+}
+
+fn sensitive_environment_names(config: &Config) -> HashSet<String> {
+    [
+        config.providers.openai.api_key_env.as_str(),
+        config.providers.anthropic.api_key_env.as_str(),
+        "AISHE_PROVIDER_API_KEY",
+        "AISHE_BRIDGE_TOKEN",
+        "OPENCODE_SERVER_PASSWORD",
+    ]
+    .into_iter()
+    .filter(|name| !name.is_empty())
+    .map(|name| name.to_ascii_uppercase())
+    .collect()
 }
 
 fn shell_quote(value: &str) -> String {

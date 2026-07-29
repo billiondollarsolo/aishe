@@ -115,7 +115,7 @@ pub fn generated_config(plugin_path: &Path, provider: Option<&ProviderSpec>) -> 
             "mode":"primary",
             "prompt":SUGGEST_PROMPT,
             "permission":{"*":"deny"},
-            "tools":disabled_builtin_tools(),
+            "tools":suggest_disabled_tools(),
             "steps":1
         }),
     );
@@ -266,6 +266,32 @@ fn disabled_builtin_tools() -> Value {
     })
 }
 
+fn suggest_disabled_tools() -> Value {
+    let mut tools = disabled_builtin_tools();
+    let object = tools
+        .as_object_mut()
+        .expect("disabled tool configuration is always an object");
+    for name in [
+        "aishe_run_command",
+        "aishe_read_file",
+        "aishe_write_file",
+        "aishe_edit_file",
+        "aishe_apply_patch",
+        "aishe_list_dir",
+        "aishe_search_files",
+        "aishe_fetch_url",
+        "aishe_use_skill",
+        "aishe_mcp_call",
+        "aishe_ask_user",
+        "task",
+        "todowrite",
+        "todoread",
+    ] {
+        object.insert(name.into(), Value::Bool(false));
+    }
+    tools
+}
+
 fn validate_model(value: &str) -> Result<()> {
     if value.trim().is_empty() || value.len() > 512 {
         anyhow::bail!("active model must contain 1–512 characters");
@@ -393,6 +419,20 @@ mod tests {
         assert!(config["agent"]["aishe-suggest"]["permission"]
             .get("aishe_*")
             .is_none());
+        for tool in [
+            "aishe_run_command",
+            "aishe_read_file",
+            "aishe_write_file",
+            "aishe_apply_patch",
+            "task",
+            "todowrite",
+            "todoread",
+        ] {
+            assert_eq!(
+                config["agent"]["aishe-suggest"]["tools"][tool], false,
+                "suggest must hide {tool} from the model"
+            );
+        }
         assert_eq!(
             config["agent"]["aishe-auto"]["permission"]["aishe_*"],
             "allow"

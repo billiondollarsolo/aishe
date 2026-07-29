@@ -184,7 +184,7 @@ impl Executor {
     /// Construct the restricted executor used by foreground agent-tool leases.
     /// It does not source user `.aishrc` files and removes credential-shaped
     /// environment variables before any model-requested process is started.
-    pub fn new_agent(cwd: &Path) -> Result<Self> {
+    pub fn new_agent(cwd: &Path, denied_environment: &HashSet<String>) -> Result<Self> {
         let mut executor = Self::new()?;
         executor.session_rc = None;
         executor.set_cwd(
@@ -193,7 +193,7 @@ impl Executor {
         );
         executor
             .env
-            .retain(|name, _| agent_environment_allowed(name));
+            .retain(|name, _| agent_environment_allowed(name, denied_environment));
         Ok(executor)
     }
 
@@ -344,9 +344,15 @@ impl Executor {
     /// interactive children (vim, ssh, top) and pipes/globs/redirs all work.
     pub fn run(&mut self, line: &str) -> i32 {
         let mut cmd = Command::new(&self.shell);
+        // `Command` inherits the parent environment before `envs` overlays
+        // values. Clearing first is mandatory for the agent executor:
+        // otherwise a denied provider key remains inherited even after it was
+        // removed from `self.env`. Ordinary executors already snapshot the
+        // complete user environment, so this also makes later `unset`
+        // operations behave correctly.
+        cmd.env_clear().envs(&self.env);
         self.apply_rc(&mut cmd, line);
-        cmd.envs(&self.env)
-            .current_dir(&self.cwd)
+        cmd.current_dir(&self.cwd)
             .stdin(Stdio::inherit())
             .stdout(Stdio::inherit())
             .stderr(Stdio::inherit());
@@ -384,6 +390,9 @@ impl Executor {
             c.arg(&self.shell);
             c
         };
+        // Start from the executor's explicit snapshot so credentials removed by
+        // `new_agent` cannot leak back in through `Command` inheritance.
+        cmd.env_clear().envs(&self.env);
         self.apply_rc(&mut cmd, line);
         // Run the shell in its own process group so a timeout (or completion)
         // can reap the *whole* process tree. Without this, `child.kill()` only
@@ -392,7 +401,6 @@ impl Executor {
         // open, so the drainer threads block forever and `run_captured` hangs
         // long past its timeout.
         let child = cmd
-            .envs(&self.env)
             .current_dir(&self.cwd)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
@@ -1128,8 +1136,14 @@ fn strip_quotes(v: &str) -> String {
     }
 }
 
-fn agent_environment_allowed(name: &str) -> bool {
+fn agent_environment_allowed(name: &str, denied_environment: &HashSet<String>) -> bool {
     let upper = name.to_ascii_uppercase();
+    if denied_environment.contains(&upper)
+        || upper.starts_with("AISHE_")
+        || upper.starts_with("OPENCODE_")
+    {
+        return false;
+    }
     ![
         "TOKEN",
         "SECRET",
@@ -1291,13 +1305,22 @@ mod tests {
         executor
             .env
             .insert("AWS_SECRET_ACCESS_KEY".into(), "should-not-survive".into());
-        executor.env.insert("LANG".into(), "C.UTF-8".into());
-        executor.session_rc = None;
         executor
             .env
-            .retain(|name, _| agent_environment_allowed(name));
+            .insert("CONTRACT_PROVIDER_KEY".into(), "should-not-survive".into());
+        executor
+            .env
+            .insert("AISHE_BRIDGE_URL".into(), "should-not-survive".into());
+        executor.env.insert("LANG".into(), "C.UTF-8".into());
+        executor.session_rc = None;
+        let denied = ["CONTRACT_PROVIDER_KEY".to_string()].into_iter().collect();
+        executor
+            .env
+            .retain(|name, _| agent_environment_allowed(name, &denied));
         assert!(!executor.env.contains_key("OPENAI_API_KEY"));
         assert!(!executor.env.contains_key("AWS_SECRET_ACCESS_KEY"));
+        assert!(!executor.env.contains_key("CONTRACT_PROVIDER_KEY"));
+        assert!(!executor.env.contains_key("AISHE_BRIDGE_URL"));
         assert_eq!(
             executor.env.get("LANG").map(String::as_str),
             Some("C.UTF-8")

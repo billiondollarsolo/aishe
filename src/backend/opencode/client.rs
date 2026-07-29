@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::io::{BufRead, BufReader, Read};
 use std::path::Path;
 use std::time::Duration;
@@ -15,6 +16,8 @@ use super::mapper::EventMapper;
 
 const MAX_JSON_BYTES: u64 = 16 * 1024 * 1024;
 const MAX_RECONNECT_ATTEMPTS: u32 = 3;
+const MESSAGE_BIND_ATTEMPTS: u32 = 100;
+const MESSAGE_BIND_INTERVAL: Duration = Duration::from_millis(50);
 
 #[derive(Clone)]
 pub struct OpenCodeConnection {
@@ -108,22 +111,33 @@ impl OpenCodeClient {
         request: &PromptRequest,
     ) -> Result<(PromptHandle, Box<dyn BufRead + Send>)> {
         let stream = self.subscribe()?;
-        let message_id = format!("msg_{}", random_identifier());
+        // OpenCode compares message IDs lexicographically to determine whether
+        // a newly admitted user turn follows the previous assistant turn. Its
+        // IDs contain a server-process-local monotonic counter, so a client
+        // cannot safely mint a compatible ID. Snapshot the current messages
+        // after subscribing, omit messageID on admission, and bind the open
+        // stream to the authoritative ID that OpenCode creates.
+        let baseline = message_ids(&self.session_messages(&request.session)?);
         let path = format!(
             "/session/{}/prompt_async",
             encode_segment(&request.session.id)
         );
         let agent = agent_for_mode(request.mode);
-        let mut body = serde_json::json!({
-            "messageID": message_id,
+        let body = serde_json::json!({
             "model": {"providerID": self.provider_id, "modelID": self.model_id},
             "agent": agent,
             "parts": [{"type":"text","text":request.text}]
         });
-        if request.mode == Mode::Suggest {
-            body["format"] = suggest_output_format();
-        }
+        // OpenCode 1.18.9's submit API accepts `format=json_schema`, but its
+        // durable message-read API rejects the same persisted format (including
+        // the defaulted retryCount). That poisons snapshot/resume for the whole
+        // session. The compatibility-pinned adapter therefore uses the strict
+        // JSON protocol in the trusted aishe-suggest system prompt and validates
+        // it in Rust, without sending the broken upstream format field.
         self.post_no_content(&path, Some(&request.session.workspace), &body)?;
+        let message_id = self
+            .await_admitted_user_message(request, agent, &baseline)
+            .context("binding admitted OpenCode prompt to its authoritative message ID")?;
         Ok((
             PromptHandle {
                 session_id: request.session.id.clone(),
@@ -363,6 +377,43 @@ impl OpenCodeClient {
         self.get_json(&path, Some(&session.workspace))
     }
 
+    fn await_admitted_user_message(
+        &self,
+        request: &PromptRequest,
+        agent: &str,
+        baseline: &HashSet<String>,
+    ) -> Result<String> {
+        let mut last_error = None;
+        for attempt in 0..MESSAGE_BIND_ATTEMPTS {
+            match self.session_messages(&request.session) {
+                Ok(messages) => {
+                    if let Some(message_id) = matching_new_user_message_id(
+                        &messages,
+                        baseline,
+                        agent,
+                        &self.provider_id,
+                        &self.model_id,
+                        &request.text,
+                    ) {
+                        return Ok(message_id);
+                    }
+                }
+                Err(error) => last_error = Some(error),
+            }
+            if attempt + 1 < MESSAGE_BIND_ATTEMPTS {
+                std::thread::sleep(MESSAGE_BIND_INTERVAL);
+            }
+        }
+        if let Some(error) = last_error {
+            return Err(error)
+                .context("OpenCode admitted the prompt but its message list could not be read");
+        }
+        anyhow::bail!(
+            "OpenCode admitted the prompt but did not publish its user message within {} ms",
+            MESSAGE_BIND_INTERVAL.as_millis() * u128::from(MESSAGE_BIND_ATTEMPTS)
+        )
+    }
+
     fn reconcile_events(
         &self,
         session: &BackendSession,
@@ -512,23 +563,6 @@ fn agent_for_mode(mode: Mode) -> &'static str {
     }
 }
 
-fn suggest_output_format() -> Value {
-    serde_json::json!({
-        "type":"json_schema",
-        "retryCount":1,
-        "schema":{
-            "type":"object",
-            "additionalProperties":false,
-            "properties":{
-                "type":{"type":"string","enum":["answer","command"]},
-                "command":{"type":"string"},
-                "explanation":{"type":"string"}
-            },
-            "required":["type","command","explanation"]
-        }
-    })
-}
-
 fn read_json_bounded(response: ureq::Response) -> Result<Value> {
     let mut bytes = Vec::new();
     response
@@ -543,13 +577,6 @@ fn read_json_bounded(response: ureq::Response) -> Result<Value> {
 
 fn encode_segment(value: &str) -> String {
     url::form_urlencoded::byte_serialize(value.as_bytes()).collect()
-}
-
-fn random_identifier() -> String {
-    use rand::RngCore;
-    let mut bytes = [0u8; 16];
-    rand::rng().fill_bytes(&mut bytes);
-    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
 fn json_u64(value: Option<&Value>) -> u64 {
@@ -568,6 +595,61 @@ fn latest_user_message_id(messages: &Value) -> Option<String> {
         (info.get("role")?.as_str()? == "user")
             .then(|| info.get("id")?.as_str().map(ToString::to_string))
             .flatten()
+    })
+}
+
+fn message_ids(messages: &Value) -> HashSet<String> {
+    messages
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|message| {
+            message
+                .get("info")
+                .and_then(|info| info.get("id"))
+                .and_then(Value::as_str)
+                .map(ToString::to_string)
+        })
+        .collect()
+}
+
+fn matching_new_user_message_id(
+    messages: &Value,
+    baseline: &HashSet<String>,
+    agent: &str,
+    provider_id: &str,
+    model_id: &str,
+    prompt: &str,
+) -> Option<String> {
+    messages.as_array()?.iter().rev().find_map(|message| {
+        let info = message.get("info")?;
+        let id = info.get("id")?.as_str()?;
+        if baseline.contains(id)
+            || info.get("role").and_then(Value::as_str) != Some("user")
+            || info.get("agent").and_then(Value::as_str) != Some(agent)
+            || info
+                .get("model")
+                .and_then(|model| model.get("providerID"))
+                .and_then(Value::as_str)
+                != Some(provider_id)
+            || info
+                .get("model")
+                .and_then(|model| model.get("modelID"))
+                .and_then(Value::as_str)
+                != Some(model_id)
+        {
+            return None;
+        }
+        let has_prompt = message
+            .get("parts")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .any(|part| {
+                part.get("type").and_then(Value::as_str) == Some("text")
+                    && part.get("text").and_then(Value::as_str) == Some(prompt)
+            });
+        has_prompt.then(|| id.to_string())
     })
 }
 
@@ -597,7 +679,6 @@ mod tests {
         assert_eq!(agent_for_mode(Mode::Suggest), "aishe-suggest");
         assert_eq!(agent_for_mode(Mode::Auto), "aishe-auto");
         assert_eq!(agent_for_mode(Mode::Yolo), "aishe-yolo");
-        assert_eq!(suggest_output_format()["type"], "json_schema");
     }
 
     #[test]
@@ -616,13 +697,30 @@ mod tests {
             .unwrap();
             events.flush().unwrap();
 
+            let (mut baseline, _) = listener.accept().unwrap();
+            let baseline_request = read_test_request(&mut baseline);
+            assert!(baseline_request.starts_with("GET /session/ses_1/message?directory="));
+            write!(
+                baseline,
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 2\r\nConnection: close\r\n\r\n[]"
+            )
+            .unwrap();
+            baseline.flush().unwrap();
+
             let (mut prompt, _) = listener.accept().unwrap();
             let prompt_request = read_test_request(&mut prompt);
             assert!(prompt_request.starts_with("POST /session/ses_1/prompt_async?directory="));
             let body = prompt_request.split("\r\n\r\n").nth(1).unwrap();
             let value: Value = serde_json::from_str(body).unwrap();
             assert_eq!(value["parts"][0]["text"], "capital of France?");
-            let user_message = value["messageID"].as_str().unwrap();
+            assert!(
+                value.get("format").is_none(),
+                "OpenCode 1.18.9 cannot durably reread json_schema user messages"
+            );
+            assert!(
+                value.get("messageID").is_none(),
+                "OpenCode must mint its own monotonic message ID"
+            );
             write!(
                 prompt,
                 "HTTP/1.1 204 No Content\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
@@ -630,9 +728,41 @@ mod tests {
             .unwrap();
             prompt.flush().unwrap();
 
+            let user_message = "msg_019d2a4f41af0001servermessage1";
+            let admitted_body = serde_json::json!([{
+                "info": {
+                    "id": user_message,
+                    "role": "user",
+                    "agent": "aishe-suggest",
+                    "model": {
+                        "providerID": "aishe-openai",
+                        "modelID": "model"
+                    }
+                },
+                "parts": [{
+                    "id": "prt_server",
+                    "messageID": user_message,
+                    "type": "text",
+                    "text": "capital of France?"
+                }]
+            }])
+            .to_string();
+            let (mut admitted, _) = listener.accept().unwrap();
+            let admitted_request = read_test_request(&mut admitted);
+            assert!(admitted_request.starts_with("GET /session/ses_1/message?directory="));
+            write!(
+                admitted,
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                admitted_body.len(),
+                admitted_body
+            )
+            .unwrap();
+            admitted.flush().unwrap();
+
             let frames = [
                 serde_json::json!({"payload":{"type":"message.part.updated","properties":{
-                    "sessionID":"ses_1","part":{"id":"prt_1","type":"text","text":"Paris.",
+                    "sessionID":"ses_1","part":{"id":"prt_1","messageID":"msg_assistant",
+                    "type":"text","text":"Paris.",
                     "time":{"start":1,"end":2}}}}}),
                 serde_json::json!({"payload":{"type":"message.updated","properties":{
                     "sessionID":"ses_1","info":{"id":"msg_assistant","role":"assistant",
@@ -687,6 +817,33 @@ mod tests {
             1
         );
         assert!(matches!(events.last(), Some(AgentEvent::Completed { .. })));
+    }
+
+    #[test]
+    fn binds_only_a_new_exact_server_created_user_message() {
+        let baseline = ["msg_old".to_string()].into_iter().collect();
+        let messages = serde_json::json!([
+            {
+                "info":{"id":"msg_old","role":"user","agent":"aishe-auto",
+                    "model":{"providerID":"p","modelID":"m"}},
+                "parts":[{"type":"text","text":"same"}]
+            },
+            {
+                "info":{"id":"msg_wrong_agent","role":"user","agent":"aishe-yolo",
+                    "model":{"providerID":"p","modelID":"m"}},
+                "parts":[{"type":"text","text":"same"}]
+            },
+            {
+                "info":{"id":"msg_new","role":"user","agent":"aishe-auto",
+                    "model":{"providerID":"p","modelID":"m"}},
+                "parts":[{"type":"text","text":"same"}]
+            }
+        ]);
+        assert_eq!(
+            matching_new_user_message_id(&messages, &baseline, "aishe-auto", "p", "m", "same")
+                .as_deref(),
+            Some("msg_new")
+        );
     }
 
     fn read_test_request(stream: &mut TcpStream) -> String {
