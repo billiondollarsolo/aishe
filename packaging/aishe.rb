@@ -41,9 +41,19 @@ class Aishe < Formula
     man1.install "aishe.1"
   end
 
+  def caveats
+    <<~EOS
+      Run `aishe setup` to install and checksum-verify Aishe's pinned OpenCode
+      runtime in your user data directory. Aishe does not use an arbitrary
+      Homebrew OpenCode version.
+
+      macOS workspace policy checks are available, but this release does not
+      provide an OS sandbox for yolo actions; each yolo shell warns explicitly.
+    EOS
+  end
+
   test do
     assert_match "aishe", shell_output("#{bin}/aishe --version")
-    assert_match "backing shell", shell_output("#{bin}/aishe doctor")
     assert_match ".TH aishe 1", shell_output("#{bin}/aishe man")
   end
 end

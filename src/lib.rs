@@ -24,6 +24,7 @@ pub mod integration;
 pub mod mcp;
 pub mod modes;
 pub mod overlay;
+pub mod policy;
 pub mod profiles;
 pub mod promptui;
 pub mod provider_catalog;

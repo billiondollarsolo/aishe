@@ -64,6 +64,19 @@ impl SkillRegistry {
     /// **user's** skill wins — a project skill never shadows it — and project
     /// skills whose files are untrusted are dropped entirely.
     pub fn load() -> Self {
+        // A malformed or explicitly restrictive administrator policy fails
+        // closed for model-invoked instructions. Diagnostics exposes the policy
+        // parse error with a remediation path.
+        if !crate::policy::load()
+            .map(|loaded| {
+                loaded
+                    .as_ref()
+                    .is_none_or(|loaded| loaded.policy.permits_user_skills())
+            })
+            .unwrap_or(false)
+        {
+            return SkillRegistry::default();
+        }
         let mut reg = SkillRegistry::default();
         // `skill_dirs` yields user first, then project; the flag marks the origin.
         for (dir, is_project) in skill_dirs() {

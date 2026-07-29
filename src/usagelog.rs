@@ -210,6 +210,34 @@ pub fn write_status(
     let _ = crate::config::write_atomic(status_path, rendered.as_bytes());
 }
 
+/// Merge bounded non-usage agent metadata into the status file. Values are
+/// terminal-sanitized by the zsh prompt renderer and line-format sanitized
+/// here. This deliberately carries no prompt or reasoning text.
+pub fn merge_status(status_path: &Path, fields: &[(&str, String)]) {
+    let existing = std::fs::read(status_path)
+        .ok()
+        .filter(|bytes| bytes.len() <= 64 * 1024)
+        .and_then(|bytes| String::from_utf8(bytes).ok())
+        .unwrap_or_default();
+    let mut values = std::collections::BTreeMap::new();
+    for line in existing.lines() {
+        if let Some((key, value)) = line.split_once('\t') {
+            values.insert(key.to_string(), value.to_string());
+        }
+    }
+    for (key, value) in fields {
+        values.insert(
+            key.replace(['\t', '\n', '\r'], " "),
+            value.replace(['\t', '\n', '\r'], " "),
+        );
+    }
+    let rendered = values
+        .into_iter()
+        .map(|(key, value)| format!("{key}\t{value}\n"))
+        .collect::<String>();
+    let _ = crate::config::write_atomic(status_path, rendered.as_bytes());
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

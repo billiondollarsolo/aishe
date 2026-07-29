@@ -18,17 +18,16 @@ section: utils
 priority: optional
 maintainer: "billiondollarsolo <billiondollarsolo@users.noreply.github.com>"
 description: |
-  Natural-language-aware shell: zsh for commands, an LLM for everything else.
-  aishe behaves like zsh for real commands and routes anything that is not a
-  command to an LLM, which either suggests a command to confirm or runs
-  autonomously in a tool-use loop. Single binary, no services.
+  Native zsh command line with a managed coding-agent backend. Aishe preserves
+  ordinary shell behavior while routing natural language through a private,
+  compatibility-pinned OpenCode runtime installed and verified during setup.
 vendor: billiondollarsolo
 homepage: https://github.com/billiondollarsolo/aishe
 license: MIT
 
-# aishe delegates command execution to zsh (preferred) or bash. bash is present
-# on essentially every Linux box, so we recommend zsh. Bubblewrap is optional:
-# the core shell works without it, but `aishe dry-run` needs it for isolation.
+# These are weak dependencies: restricted containers can use the bash hook and
+# policy-only degradation. Setup explains the limitation, obtains consent before
+# package installation, and functionally verifies bubblewrap when selected.
 recommends:
   - zsh
   - bubblewrap

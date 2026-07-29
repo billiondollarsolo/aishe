@@ -12,6 +12,8 @@ jobs:
   test:
     name: test (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
+    env:
+      AISHE_RUNTIME_DIR: ${{ runner.temp }}/aishe-runtime
     strategy:
       fail-fast: false
       matrix:
@@ -24,7 +26,7 @@ jobs:
       # the cli tests that assert `doctor` succeeds failed only there.
       - name: Install zsh (ubuntu)
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y zsh
+        run: sudo apt-get update && sudo apt-get install -y zsh bubblewrap
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -48,6 +50,11 @@ jobs:
 
       - name: Build
         run: cargo build --verbose --locked
+
+      - name: Install and live-verify pinned OpenCode runtime
+        run: |
+          target/debug/aishe backend install
+          target/debug/aishe backend verify --live
 
       - name: Test
         run: cargo test --all-targets --verbose --locked
@@ -73,6 +80,8 @@ jobs:
   pty-smoke:
     name: PTY smoke tests (zsh-pty)
     runs-on: ubuntu-latest
+    env:
+      AISHE_RUNTIME_DIR: ${{ runner.temp }}/aishe-runtime
     steps:
       - uses: actions/checkout@v7
 
@@ -81,7 +90,7 @@ jobs:
 
       - name: Install zsh
         run: |
-          sudo apt-get update && sudo apt-get install -y zsh
+          sudo apt-get update && sudo apt-get install -y zsh bubblewrap
           # GitHub images leave the zsh completion directories group-writable,
           # so compinit stops with an interactive "insecure directories …
           # continue [y] or abort [n]?" prompt. Inside a PTY test that prompt
@@ -102,6 +111,11 @@ jobs:
 
       - name: Build release binary
         run: cargo build --release --locked
+
+      - name: Install and live-verify pinned OpenCode runtime
+        run: |
+          target/release/aishe backend install
+          target/release/aishe backend verify --live
 
       - name: Installer upgrade preserves config and data
         run: sh tests/installer_upgrade.sh target/release/aishe

@@ -74,10 +74,10 @@ _aishe_handle_nl() {
   [[ -z "$line" ]] && return
   case "${AISHE_MODE:-suggest}" in
     yolo)
-      command aishe --yolo-line "$line" < /dev/tty > /dev/tty 2>&1
+      AISHE_PENDING_FILE="$AISHE_PENDING_FILE" command aishe --yolo-line "$line" < /dev/tty > /dev/tty 2>&1
       ;;
     auto)
-      command aishe --auto-line "$line" < /dev/tty > /dev/tty 2>&1
+      AISHE_PENDING_FILE="$AISHE_PENDING_FILE" command aishe --auto-line "$line" < /dev/tty > /dev/tty 2>&1
       ;;
     *)
       local cmd
@@ -540,7 +540,7 @@ const PTY_PROMPT: &str = r#"# --- aishe branded prompt (PTY front-end; pty_promp
 if [[ -o interactive && "${AISHE_PTY_PROMPT:-1}" == 1 ]]; then
   autoload -Uz add-zsh-hook
   aishe_set_prompt() {
-    local glyph model mode scope status_text status_prompt base_prompt key value item
+    local glyph model mode backend scope status_text status_prompt base_prompt key value item
     local -A metrics
     local -a status_items
     if [[ -n "${AISHE_MODEL_FILE:-}" && -r "${AISHE_MODEL_FILE}" ]]; then
@@ -553,6 +553,7 @@ if [[ -o interactive && "${AISHE_PTY_PROMPT:-1}" == 1 ]]; then
     esac
     model="${AISHE_MODEL}"
     mode="${AISHE_MODE:-suggest}"
+    backend="${AISHE_BACKEND:-opencode}"
     if [[ -n "${AISHE_SCOPE_FILE:-}" && -r "${AISHE_SCOPE_FILE}" ]]; then
       scope="$(<"$AISHE_SCOPE_FILE")"
       [[ -n "$scope" ]] && AISHE_SCOPE="$scope"
@@ -571,6 +572,7 @@ if [[ -o interactive && "${AISHE_PTY_PROMPT:-1}" == 1 ]]; then
       case "$item" in
         model) value="$model" ;;
         mode) value="$mode" ;;
+        backend) value="$backend" ;;
         scope) value="$scope" ;;
         *) value="${metrics[$item]:-}" ;;
       esac
@@ -628,11 +630,11 @@ command_not_found_handle() {
   local line="$*"
   case "${AISHE_MODE:-suggest}" in
     yolo)
-      command aishe --yolo-line "$line" < /dev/tty > /dev/tty 2>&1
+      AISHE_PENDING_FILE="$AISHE_PENDING_FILE" command aishe --yolo-line "$line" < /dev/tty > /dev/tty 2>&1
       return 0
       ;;
     auto)
-      command aishe --auto-line "$line" < /dev/tty > /dev/tty 2>&1
+      AISHE_PENDING_FILE="$AISHE_PENDING_FILE" command aishe --auto-line "$line" < /dev/tty > /dev/tty 2>&1
       return 0
       ;;
     *)
@@ -853,6 +855,7 @@ mod tests {
         assert!(s.contains("AISHE_PENDING_FILE"));
         assert!(s.contains("aishe_precmd"));
         assert!(s.contains("add-zsh-hook precmd aishe_precmd"));
+        assert!(s.contains(r#"AISHE_PENDING_FILE="$AISHE_PENDING_FILE" command aishe --auto-line"#));
     }
 
     #[test]
@@ -883,6 +886,13 @@ mod tests {
         // or the re-armed trap is malformed.
         assert!(s.contains(r#"${__aishe_existing_exit_trap#trap -- \'}"#));
         assert!(s.contains(r#"${__aishe_prev%\' EXIT}"#));
+    }
+
+    #[test]
+    fn bash_auto_fallback_uses_main_shell_handoff() {
+        let s = script("bash").unwrap();
+        assert!(s.contains(r#"AISHE_PENDING_FILE="$AISHE_PENDING_FILE" command aishe --auto-line"#));
+        assert!(s.contains(r#"[ "$action" = run ]"#));
     }
 
     #[test]

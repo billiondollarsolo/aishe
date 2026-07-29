@@ -294,6 +294,9 @@ pub fn inspect(version: &str, options: &Options) -> Report {
         )),
     }
 
+    append_policy_checks(&mut checks, &mut config);
+    append_backend_checks(&mut checks, &config, config_valid, options);
+
     let provider = config.aishe.provider.clone();
     let provider_config = active_provider(&config);
     checks.push(Check::new(
@@ -400,27 +403,7 @@ pub fn inspect(version: &str, options: &Options) -> Report {
         capabilities::load(&config)
     };
 
-    let bwrap = crate::sandbox::bwrap_available();
-    checks.push(if bwrap {
-        Check::new(
-            "sandbox.bubblewrap",
-            Status::Pass,
-            Severity::Warning,
-            "optional dry-run: available (bubblewrap)",
-            "OS-isolated dry-run and strongest autonomous sandbox are available",
-        )
-    } else {
-        Check::new(
-            "sandbox.bubblewrap",
-            Status::Warn,
-            Severity::Warning,
-            "optional dry-run: bubblewrap not installed",
-            format!(
-                "core shell and LLM features work; install with `{}` to enable `aishe dry-run`",
-                bubblewrap_install_command()
-            ),
-        )
-    });
+    append_sandbox_checks(&mut checks, &config);
 
     checks.push(Check::new(
         "privacy.redaction",
@@ -562,6 +545,415 @@ pub fn inspect(version: &str, options: &Options) -> Report {
     }
 }
 
+fn append_policy_checks(checks: &mut Vec<Check>, config: &mut Config) {
+    match crate::policy::load() {
+        Ok(None) => checks.push(Check::new(
+            "policy.organization",
+            Status::Pass,
+            Severity::Info,
+            "organization policy: none",
+            format!("no policy file at {}", crate::policy::path().display()),
+        )),
+        Ok(Some(loaded)) => match loaded.policy.constrain(config) {
+            Ok(()) => checks.push(Check::new(
+                "policy.organization",
+                Status::Pass,
+                Severity::Critical,
+                format!("organization policy: {}", loaded.path.display()),
+                "validated and applied as the highest-precedence constraint layer",
+            )),
+            Err(error) => checks.push(Check::new(
+                "policy.organization",
+                Status::Fail,
+                Severity::Critical,
+                "organization policy denied the active configuration",
+                crate::redact::redact(&error.to_string()),
+            )),
+        },
+        Err(error) => checks.push(Check::new(
+            "policy.organization",
+            Status::Fail,
+            Severity::Critical,
+            format!(
+                "organization policy: invalid at {}",
+                crate::policy::path().display()
+            ),
+            crate::redact::redact(&error.to_string()),
+        )),
+    }
+}
+
+fn append_backend_checks(
+    checks: &mut Vec<Check>,
+    config: &Config,
+    config_valid: bool,
+    options: &Options,
+) {
+    let runtime_required = config.backend.engine == "opencode";
+    checks.push(Check::new(
+        "backend.engine",
+        if config.backend.engine == "opencode" {
+            Status::Pass
+        } else {
+            Status::Warn
+        },
+        Severity::Critical,
+        format!("agent engine: {}", config.backend.engine),
+        if config.backend.engine == "opencode" {
+            "all new AI turns use the managed OpenCode adapter"
+        } else {
+            "native is a time-limited compatibility/repair backend"
+        },
+    ));
+
+    let manager = match crate::backend::RuntimeManager::new() {
+        Ok(manager) => manager,
+        Err(error) => {
+            checks.push(Check::new(
+                "backend.runtime.present",
+                if runtime_required {
+                    Status::Fail
+                } else {
+                    Status::Warn
+                },
+                if runtime_required {
+                    Severity::Critical
+                } else {
+                    Severity::Warning
+                },
+                "managed runtime: path unavailable",
+                crate::redact::redact(&error.to_string()),
+            ));
+            return;
+        }
+    };
+    let manifest = manager.manifest();
+    let status = manager.status();
+    let (runtime_ready, runtime_version, runtime_hash) = match &status {
+        crate::backend::RuntimeStatus::Ready {
+            version, sha256, ..
+        } => (true, version.clone(), Some(sha256.clone())),
+        crate::backend::RuntimeStatus::Missing { expected_version } => {
+            (false, expected_version.clone(), None)
+        }
+        crate::backend::RuntimeStatus::Invalid {
+            expected_version, ..
+        } => (false, expected_version.clone(), None),
+    };
+    checks.push(
+        Check::new(
+            "backend.runtime.present",
+            if runtime_ready {
+                Status::Pass
+            } else if runtime_required {
+                Status::Fail
+            } else {
+                Status::Warn
+            },
+            if runtime_required {
+                Severity::Critical
+            } else {
+                Severity::Warning
+            },
+            if runtime_ready {
+                "managed runtime: installed"
+            } else {
+                "managed runtime: unavailable"
+            },
+            match &status {
+                crate::backend::RuntimeStatus::Ready { binary, .. } => binary.display().to_string(),
+                crate::backend::RuntimeStatus::Missing { .. } => {
+                    "run `aishe backend install` or `aishe setup`".into()
+                }
+                crate::backend::RuntimeStatus::Invalid { reason, .. } => {
+                    format!("{reason}; run `aishe backend repair`")
+                }
+            },
+        )
+        .fixable(true),
+    );
+    checks.push(Check::new(
+        "backend.runtime.version",
+        if runtime_ready && runtime_version == manifest.version {
+            Status::Pass
+        } else if runtime_required {
+            Status::Fail
+        } else {
+            Status::Skipped
+        },
+        if runtime_required {
+            Severity::Critical
+        } else {
+            Severity::Warning
+        },
+        format!("managed runtime version: {runtime_version}"),
+        format!("this Aishe build requires exactly {}", manifest.version),
+    ));
+    checks.push(Check::new(
+        "backend.runtime.hash",
+        if runtime_hash.is_some() {
+            Status::Pass
+        } else if runtime_required {
+            Status::Fail
+        } else {
+            Status::Skipped
+        },
+        if runtime_required {
+            Severity::Critical
+        } else {
+            Severity::Warning
+        },
+        "managed runtime hash",
+        runtime_hash.unwrap_or_else(|| "not available because verification failed".into()),
+    ));
+    let license = manager.version_dir().join("LICENSE");
+    let notices = manager.version_dir().join("THIRD_PARTY_NOTICES.md");
+    checks.push(Check::new(
+        "backend.runtime.license",
+        if license.is_file() && notices.is_file() {
+            Status::Pass
+        } else {
+            Status::Fail
+        },
+        Severity::Warning,
+        "managed runtime license notices",
+        if license.is_file() && notices.is_file() {
+            format!("{}; {}", license.display(), notices.display())
+        } else {
+            "LICENSE or THIRD_PARTY_NOTICES.md is missing; repair the runtime".into()
+        },
+    ));
+
+    let loaded_state = crate::backend::control::load_state().ok().flatten();
+    let verified_state = crate::backend::control::verified_state().ok().flatten();
+    checks.push(Check::new(
+        "backend.supervisor",
+        if verified_state.is_some() {
+            Status::Pass
+        } else if loaded_state.is_some() {
+            Status::Warn
+        } else {
+            Status::Skipped
+        },
+        Severity::Warning,
+        if verified_state.is_some() {
+            "backend supervisor: running"
+        } else if loaded_state.is_some() {
+            "backend supervisor: stale or unauthenticated state"
+        } else {
+            "backend supervisor: stopped (idle)"
+        },
+        "the per-user supervisor starts on demand and stops after its idle timeout",
+    ));
+    let loopback = verified_state.as_ref().is_some_and(|state| {
+        state.control_url.starts_with("http://127.0.0.1:")
+            && state.opencode_url.starts_with("http://127.0.0.1:")
+    });
+    for (id, summary, pass_detail) in [
+        (
+            "backend.server.loopback",
+            "backend listeners",
+            "both control and OpenCode listeners are IPv4 loopback-only",
+        ),
+        (
+            "backend.server.auth",
+            "backend authentication",
+            "private state passed authenticated health with bounded identities",
+        ),
+        (
+            "backend.server.health",
+            "backend health",
+            "supervisor and OpenCode process identities are live",
+        ),
+    ] {
+        checks.push(Check::new(
+            id,
+            if verified_state.is_some() && (id != "backend.server.loopback" || loopback) {
+                Status::Pass
+            } else {
+                Status::Skipped
+            },
+            Severity::Critical,
+            summary,
+            if verified_state.is_some() {
+                pass_detail
+            } else {
+                "not running; use `aishe doctor --live` for an active smoke test"
+            },
+        ));
+    }
+
+    let smoke = if options.live && runtime_ready {
+        Some(crate::backend::supervisor::smoke_test(&manager))
+    } else {
+        None
+    };
+    let smoke_status = match &smoke {
+        Some(Ok(())) => Status::Pass,
+        Some(Err(_)) => Status::Fail,
+        None => Status::Skipped,
+    };
+    let smoke_detail = match &smoke {
+        Some(Ok(())) => {
+            "pinned server started with isolated HOME/XDG, authenticated health, and trusted proxy-tool registration"
+                .into()
+        }
+        Some(Err(error)) => crate::redact::redact(&error.to_string()),
+        None => "run `aishe doctor --live` to start the isolated smoke server".into(),
+    };
+    for (id, summary) in [
+        ("backend.config.isolated", "backend config isolation"),
+        ("backend.plugin.hash", "trusted plugin hash"),
+        ("backend.tools.restricted", "model tool restriction"),
+        ("backend.tool_bridge", "Aishe tool bridge"),
+    ] {
+        checks.push(Check::new(
+            id,
+            smoke_status,
+            Severity::Critical,
+            summary,
+            smoke_detail.clone(),
+        ));
+    }
+    checks.push(Check::new(
+        "backend.events",
+        Status::Skipped,
+        Severity::Warning,
+        "backend event stream",
+        "full SSE ordering/cancellation is exercised by adapter contract tests and a real turn",
+    ));
+    checks.push(Check::new(
+        "backend.provider",
+        if config_valid {
+            Status::Pass
+        } else {
+            Status::Skipped
+        },
+        Severity::Warning,
+        format!("backend provider: {}", config.aishe.provider),
+        active_provider(config).base_url.clone(),
+    ));
+    checks.push(Check::new(
+        "backend.model",
+        if config_valid {
+            Status::Pass
+        } else {
+            Status::Skipped
+        },
+        Severity::Warning,
+        format!("backend model: {}", config.active_model()),
+        "exact model availability is checked by provider validation",
+    ));
+    checks.push(Check::new(
+        "backend.credential_isolation",
+        Status::Pass,
+        Severity::Critical,
+        "credential isolation",
+        "credentials enter the supervisor through a bounded private pipe; tool subprocess environments drop provider secrets",
+    ));
+
+    let backend_root = crate::backend::supervisor::backend_root().ok();
+    let sessions = backend_root
+        .as_ref()
+        .map(|root| root.join("sessions").join("mappings.json"));
+    checks.push(Check::new(
+        "sessions.storage",
+        Status::Pass,
+        Severity::Warning,
+        "managed session storage",
+        sessions
+            .map(|path| {
+                if path.exists() {
+                    format!("mapping index present at {}", path.display())
+                } else {
+                    format!("created on first managed turn at {}", path.display())
+                }
+            })
+            .unwrap_or_else(|| "data directory unavailable".into()),
+    ));
+    checks.push(Check::new(
+        "sessions.migration",
+        Status::Pass,
+        Severity::Info,
+        "legacy session retention",
+        "legacy task/session files remain readable and are never deleted by runtime operations",
+    ));
+    let usage_journal = backend_root.map(|root| root.join("journal.json"));
+    checks.push(Check::new(
+        "usage.mapping",
+        Status::Pass,
+        Severity::Warning,
+        "managed usage mapping",
+        usage_journal
+            .map(|path| {
+                if path.exists() {
+                    format!("durable de-duplication journal at {}", path.display())
+                } else {
+                    format!(
+                        "journal will be created on first managed turn at {}",
+                        path.display()
+                    )
+                }
+            })
+            .unwrap_or_else(|| "data directory unavailable".into()),
+    ));
+}
+
+fn append_sandbox_checks(checks: &mut Vec<Check>, config: &Config) {
+    let state = crate::dependencies::bubblewrap_probe();
+    let present = !matches!(&state, crate::dependencies::BubblewrapState::Missing);
+    let usable = matches!(&state, crate::dependencies::BubblewrapState::Usable { .. });
+    checks.push(Check::new(
+        "sandbox.bubblewrap.present",
+        if present {
+            Status::Pass
+        } else if cfg!(target_os = "linux") {
+            Status::Warn
+        } else {
+            Status::Skipped
+        },
+        Severity::Warning,
+        "bubblewrap binary",
+        format!("{state:?}"),
+    ));
+    checks.push(Check::new(
+        "sandbox.bubblewrap.functional",
+        if usable {
+            Status::Pass
+        } else if config.sandbox.require_functional {
+            Status::Fail
+        } else {
+            Status::Warn
+        },
+        if config.sandbox.require_functional {
+            Severity::Critical
+        } else {
+            Severity::Warning
+        },
+        "bubblewrap functional isolation",
+        if usable {
+            "real self-test proved writable workspace, read-only host root, private /tmp, and network namespace"
+        } else {
+            "run `aishe setup` for a consent-gated package install and functional retry"
+        },
+    ));
+    checks.push(Check::new(
+        "sandbox.workspace.escape",
+        if usable {
+            Status::Pass
+        } else {
+            Status::Skipped
+        },
+        Severity::Critical,
+        "workspace escape protection",
+        if usable {
+            "functional probe refused a write through the read-only host root"
+        } else {
+            "no kernel sandbox was available to exercise; policy-only checks are not an OS boundary"
+        },
+    ));
+}
+
 fn capability_checks(report: &capabilities::Report) -> Vec<Check> {
     [
         ("provider.live.credential", &report.credential),
@@ -621,6 +1013,7 @@ pub fn resolved_paths() -> Paths {
 
 fn apply_safe_fixes(paths: &Paths, config_valid: bool) -> Check {
     let mut changed = Vec::new();
+    let mut notes = Vec::new();
     for dir in [&paths.config_dir, &paths.data_dir] {
         if !dir.exists() && std::fs::create_dir_all(dir).is_ok() {
             changed.push(dir.clone());
@@ -645,9 +1038,47 @@ fn apply_safe_fixes(paths: &Paths, config_valid: bool) -> Check {
     // AISHE_CREDENTIALS_FILE may live outside the normal config directory.
     repair_private_tree(&paths.credentials, &mut changed);
     let removed = capabilities::clear_stale().unwrap_or(0);
+    if let Ok(manager) = crate::backend::RuntimeManager::new() {
+        match manager.status() {
+            crate::backend::RuntimeStatus::Invalid { .. } => {
+                match manager.install(crate::backend::InstallSource::Default, true) {
+                    Ok(_) => {
+                        changed.push(manager.version_dir());
+                        notes.push("reinstalled corrupt managed runtime".to_string());
+                    }
+                    Err(error) => notes.push(format!(
+                        "runtime repair failed: {}",
+                        crate::redact::redact(&error.to_string())
+                    )),
+                }
+            }
+            crate::backend::RuntimeStatus::Ready { .. } => {
+                match crate::backend::supervisor::prepare_layout() {
+                    Ok(prepared) => {
+                        changed.push(prepared.plugin_path);
+                        notes.push("verified/rewrote the embedded trusted plugin".to_string());
+                    }
+                    Err(error) => notes.push(format!(
+                        "plugin repair failed: {}",
+                        crate::redact::redact(&error.to_string())
+                    )),
+                }
+            }
+            crate::backend::RuntimeStatus::Missing { .. } => {
+                notes.push("runtime missing; run `aishe backend install`".to_string());
+            }
+        }
+    }
+    if let Ok(Some(state)) = crate::backend::control::load_state() {
+        if !crate::backend::control::state_processes_exist(&state)
+            && crate::backend::control::remove_state_if_nonce(&state.startup_nonce).is_ok()
+        {
+            notes.push("removed verified-stale supervisor state".to_string());
+        }
+    }
     changed.sort();
     changed.dedup();
-    let detail = if changed.is_empty() && removed == 0 {
+    let mut detail = if changed.is_empty() && removed == 0 {
         "no changes were necessary".into()
     } else {
         format!(
@@ -655,6 +1086,10 @@ fn apply_safe_fixes(paths: &Paths, config_valid: bool) -> Check {
             changed.len()
         )
     };
+    if !notes.is_empty() {
+        detail.push_str("; ");
+        detail.push_str(&notes.join("; "));
+    }
     Check {
         id: "repair.safe".into(),
         status: Status::Pass,
@@ -706,20 +1141,6 @@ fn set_private_mode(_path: &Path, _desired: u32) -> bool {
     false
 }
 
-fn bubblewrap_install_command() -> &'static str {
-    if crate::executor::which("apt-get").is_some() || crate::executor::which("apt").is_some() {
-        "sudo apt-get install bubblewrap"
-    } else if crate::executor::which("dnf").is_some() {
-        "sudo dnf install bubblewrap"
-    } else if crate::executor::which("pacman").is_some() {
-        "sudo pacman -S bubblewrap"
-    } else if crate::executor::which("apk").is_some() {
-        "sudo apk add bubblewrap"
-    } else {
-        "install bubblewrap with your OS package manager"
-    }
-}
-
 pub fn render_text(report: &Report) -> String {
     let mut output = String::from("aishe doctor\n────────────\n");
     for check in &report.checks {
@@ -761,7 +1182,7 @@ struct SupportBundle<'a> {
     schema_version: u32,
     report: &'a Report,
     config: Value,
-    exclusions: [&'static str; 6],
+    exclusions: Vec<String>,
 }
 
 pub fn write_bundle(path: &Path, report: &Report, config: Option<&Config>) -> Result<()> {
@@ -773,14 +1194,25 @@ pub fn write_bundle(path: &Path, report: &Report, config: Option<&Config>) -> Re
         schema_version: 1,
         report,
         config,
-        exclusions: [
-            "credential values",
-            "environment values",
-            "prompts",
-            "command history",
-            "file contents",
-            "audit contents",
-        ],
+        exclusions: {
+            let mut values = [
+                "credential values",
+                "environment values",
+                "prompts",
+                "command history",
+                "file contents",
+                "audit contents",
+            ]
+            .into_iter()
+            .map(str::to_string)
+            .collect::<Vec<_>>();
+            if let Ok(Some(loaded)) = crate::policy::load() {
+                values.extend(loaded.policy.support_bundle_exclusions);
+            }
+            values.sort();
+            values.dedup();
+            values
+        },
     };
     let bytes = serde_json::to_vec_pretty(&bundle)?;
     config::write_atomic(path, &bytes)

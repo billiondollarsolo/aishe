@@ -78,6 +78,7 @@ pub fn run_zsh(config: &Config, history_log: &std::path::Path) -> Result<u8> {
     cmd.env("AISHE_SHELL_ID", &shell_id);
     cmd.env("AISHE_MODE", &config.aishe.mode);
     cmd.env("AISHE_SCOPE", &config.backend.default_scope);
+    cmd.env("AISHE_BACKEND", &config.backend.engine);
     let scope_file = std::env::temp_dir().join(format!("aishe-scope-{shell_id}"));
     let _scope_guard = if std::fs::write(&scope_file, &config.backend.default_scope).is_ok() {
         cmd.env("AISHE_SCOPE_FILE", &scope_file);

@@ -422,25 +422,46 @@ fn verify_smoke_tool_policy(url: &str, password: &str, directory: &Path) -> Resu
     ids_url
         .query_pairs_mut()
         .append_pair("directory", &directory.to_string_lossy());
-    let ids: Vec<String> = ureq::get(ids_url.as_str())
-        .set("Authorization", &authorization)
-        .timeout(Duration::from_secs(5))
-        .call()
-        .context("querying trusted plugin tool identities")?
-        .into_json()
-        .context("decoding trusted plugin tool identities")?;
-    for required in [
+    let required = [
         "aishe_run_command",
         "aishe_read_file",
         "aishe_write_file",
         "aishe_apply_patch",
-    ] {
-        if !ids.iter().any(|id| id == required) {
-            anyhow::bail!("trusted OpenCode plugin did not register {required}");
+    ];
+    // `/global/health` can become ready a fraction before OpenCode finishes
+    // loading plugins for the requested directory. Poll the authoritative tool
+    // endpoint so setup does not fail intermittently on that startup boundary.
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        let last_error = match ureq::get(ids_url.as_str())
+            .set("Authorization", &authorization)
+            .timeout(Duration::from_secs(1))
+            .call()
+        {
+            Ok(response) => match response.into_json::<Vec<String>>() {
+                Ok(ids) => {
+                    let missing = required
+                        .iter()
+                        .filter(|required| !ids.iter().any(|id| id == **required))
+                        .copied()
+                        .collect::<Vec<_>>();
+                    if missing.is_empty() {
+                        return Ok(());
+                    }
+                    format!(
+                        "trusted OpenCode plugin did not register {}",
+                        missing.join(", ")
+                    )
+                }
+                Err(error) => format!("decoding trusted plugin tool identities: {error}"),
+            },
+            Err(error) => format!("querying trusted plugin tool identities: {error}"),
+        };
+        if std::time::Instant::now() >= deadline {
+            anyhow::bail!("{last_error}");
         }
+        std::thread::sleep(Duration::from_millis(100));
     }
-
-    Ok(())
 }
 
 fn copy_safe_environment(command: &mut Command) {
@@ -562,7 +583,11 @@ fn spawn_supervisor(bootstrap: &SupervisorBootstrap) -> Result<()> {
         .stderr(Stdio::from(log))
         .env_clear();
     copy_safe_environment(&mut command);
-    for name in ["AISHE_DATA_DIR"] {
+    // Preserve only Aishe-owned path overrides needed to find the same private
+    // state/runtime after the detached process clears its environment. This is
+    // also what makes centrally pre-provisioned runtime directories usable in
+    // CI and managed enterprise images.
+    for name in ["AISHE_DATA_DIR", "AISHE_RUNTIME_DIR"] {
         if let Some(value) = std::env::var_os(name).filter(|value| !value.is_empty()) {
             command.env(name, value);
         }

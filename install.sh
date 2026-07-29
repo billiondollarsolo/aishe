@@ -10,6 +10,10 @@
 #   AISHE_BIN_DIR   install directory (default: /usr/local/bin, or ~/.local/bin
 #                   if that is not writable)
 #   AISHE_SKIP_ZSH  set to 1 to skip ensuring zsh is installed
+#   AISHE_SKIP_BACKEND set to 1 to install only the Aishe binary
+#   AISHE_RUNTIME_BASE_URL pinned-runtime mirror base URL
+#   AISHE_RUNTIME_FILE approved local pinned-runtime archive
+#   AISHE_INSTALL_SYSTEM_DEPS set to 1 to authorize zsh package installation
 # Arguments:
 #   --setup         run interactive setup after a fresh/updated install (TTY only)
 #
@@ -63,7 +67,11 @@ ensure_zsh() {
     note "zsh not found; skipping (AISHE_SKIP_ZSH=1). The interactive shell needs zsh; -c and the bash hook still work."
     return 0
   fi
-  note "zsh not found; aishe is most robust with it. Attempting to install zsh..."
+  if [ "${AISHE_INSTALL_SYSTEM_DEPS:-0}" != 1 ]; then
+    note "zsh not found. System packages are never installed without explicit consent; run 'aishe setup' for a guided install, or set AISHE_INSTALL_SYSTEM_DEPS=1."
+    return 0
+  fi
+  note "zsh not found; AISHE_INSTALL_SYSTEM_DEPS=1 explicitly authorized installation."
 
   sudo_cmd=""
   if [ "$(id -u)" != 0 ]; then
@@ -168,6 +176,8 @@ fi
 tar -xzf "$tmp/$tarball" -C "$tmp"
 [ -f "$tmp/aishe" ] || err "archive did not contain an 'aishe' binary"
 chmod +x "$tmp/aishe"
+"$tmp/aishe" --version >/dev/null 2>&1 ||
+  err "downloaded Aishe binary did not pass its version self-test"
 
 # Sanity-check that the binary matches this OS, so a wrong download can never be
 # silently installed. ELF = Linux, Mach-O = macOS (Mach-O magic has no "ELF").
@@ -213,10 +223,36 @@ fi
 state_inventory "config before install" "$config_state"
 state_inventory "data before install" "$data_state"
 
+# Install and live-verify the exact runtime supported by the staged Aishe binary
+# before replacing a working Aishe binary. Runtime activation is versioned under
+# the user's data directory and never rewrites config, credentials, history,
+# tasks, sessions, audit, or undo state.
+if [ "${AISHE_SKIP_BACKEND:-0}" = 1 ]; then
+  note "managed runtime install skipped (AISHE_SKIP_BACKEND=1)"
+else
+  note "installing and verifying the compatibility-pinned OpenCode runtime before binary activation"
+  if [ -n "${AISHE_RUNTIME_FILE:-}" ]; then
+    [ -f "$AISHE_RUNTIME_FILE" ] ||
+      err "AISHE_RUNTIME_FILE is not a file: $AISHE_RUNTIME_FILE"
+    "$tmp/aishe" backend install --from "$AISHE_RUNTIME_FILE" ||
+      err "managed runtime installation failed; the existing Aishe binary was not replaced"
+  else
+    "$tmp/aishe" backend install ||
+      err "managed runtime installation failed; the existing Aishe binary was not replaced"
+  fi
+  "$tmp/aishe" backend verify --live ||
+    err "managed runtime live verification failed; the existing Aishe binary was not replaced"
+fi
+
+# Install to a same-directory staging name, then atomically rename it over the
+# destination. A crash cannot leave a truncated executable.
+new_binary="$bindir/.aishe.new.$$"
 if [ -w "$bindir" ]; then
-  install -m 0755 "$tmp/aishe" "$bindir/aishe"
+  install -m 0755 "$tmp/aishe" "$new_binary"
+  mv -f "$new_binary" "$bindir/aishe"
 elif command -v sudo >/dev/null 2>&1; then
-  sudo install -m 0755 "$tmp/aishe" "$bindir/aishe"
+  sudo install -m 0755 "$tmp/aishe" "$new_binary"
+  sudo mv -f "$new_binary" "$bindir/aishe"
 else
   err "cannot write to $bindir and sudo is unavailable; set AISHE_BIN_DIR"
 fi
@@ -228,8 +264,8 @@ if [ "$existing" = 1 ]; then
 else
   note "fresh install: $new_version"
 fi
-state_inventory "config after install (untouched)" "$config_state"
-state_inventory "data after install (untouched)" "$data_state"
+state_inventory "config after install (preserved)" "$config_state"
+state_inventory "data after install (user state preserved; runtime may be added)" "$data_state"
 case ":$PATH:" in
   *":$bindir:"*) : ;;
   *) printf 'aishe-install: note: %s is not on your PATH\n' "$bindir" >&2 ;;

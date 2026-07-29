@@ -91,6 +91,7 @@ AISHE_CONFIG_DIR="$config_root" \
 AISHE_DATA_DIR="$data_root" \
 AISHE_RELEASE_BASE_URL="file://$work/releases" \
 AISHE_SKIP_ZSH=1 \
+AISHE_SKIP_BACKEND=1 \
 sh "$repo_root/install.sh" >"$bad_output" 2>&1; then
   printf 'FAIL: installer accepted a corrupt checksum\n' >&2
   exit 1
@@ -114,6 +115,7 @@ AISHE_CONFIG_DIR="$config_root" \
 AISHE_DATA_DIR="$data_root" \
 AISHE_RELEASE_BASE_URL="file://$work/releases" \
 AISHE_SKIP_ZSH=1 \
+AISHE_SKIP_BACKEND=1 \
 sh "$repo_root/install.sh" >"$output" 2>&1
 
 cmp "$source_binary" "$test_bin/aishe"
@@ -126,7 +128,7 @@ cmp "$source_binary" "$test_bin/aishe"
   exit 1
 }
 grep -q 'upgrade:' "$output"
-grep -q 'config after install (untouched)' "$output"
-grep -q 'data after install (untouched)' "$output"
+grep -q 'config after install (preserved)' "$output"
+grep -q 'data after install (user state preserved' "$output"
 
 printf 'PASS: installer rejected corruption and preserved config, credentials, history, tasks, and data\n'

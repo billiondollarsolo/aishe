@@ -13,11 +13,51 @@ use crate::promptui::{self, MenuResult};
 use crate::provider_catalog::{self, Family};
 use crate::usage::{self, Price};
 
-const DRAFT_SCHEMA_VERSION: u32 = 2;
+const DRAFT_SCHEMA_VERSION: u32 = 3;
+
+pub const EXIT_OK: u8 = 0;
+pub const EXIT_PAUSED: u8 = 2;
+pub const EXIT_INPUT: u8 = 3;
+pub const EXIT_RUNTIME: u8 = 4;
+pub const EXIT_PROVIDER: u8 = 5;
+pub const EXIT_SANDBOX: u8 = 6;
+pub const EXIT_POLICY: u8 = 7;
+
+#[derive(Debug)]
+struct ClassifiedError {
+    code: u8,
+    message: String,
+}
+
+impl std::fmt::Display for ClassifiedError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(&self.message)
+    }
+}
+
+impl std::error::Error for ClassifiedError {}
+
+pub fn exit_code(error: &anyhow::Error) -> u8 {
+    error
+        .downcast_ref::<ClassifiedError>()
+        .map(|error| error.code)
+        .unwrap_or(EXIT_INPUT)
+}
+
+fn classified(code: u8, error: impl std::fmt::Display) -> anyhow::Error {
+    anyhow::Error::new(ClassifiedError {
+        code,
+        message: crate::redact::redact(&error.to_string()),
+    })
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 enum Step {
+    Discovery,
+    Platform,
+    Runtime,
+    Sandbox,
     Service,
     Endpoint,
     Credential,
@@ -39,6 +79,10 @@ enum PromptResult<T> {
 impl Step {
     fn next(self) -> Self {
         match self {
+            Self::Discovery => Self::Platform,
+            Self::Platform => Self::Runtime,
+            Self::Runtime => Self::Sandbox,
+            Self::Sandbox => Self::Service,
             Self::Service => Self::Endpoint,
             Self::Endpoint => Self::Credential,
             Self::Credential => Self::Model,
@@ -53,7 +97,11 @@ impl Step {
 
     fn previous(self) -> Self {
         match self {
-            Self::Service => Self::Service,
+            Self::Discovery => Self::Discovery,
+            Self::Platform => Self::Discovery,
+            Self::Runtime => Self::Platform,
+            Self::Sandbox => Self::Runtime,
+            Self::Service => Self::Sandbox,
             Self::Endpoint => Self::Service,
             Self::Credential => Self::Endpoint,
             Self::Model => Self::Credential,
@@ -90,10 +138,21 @@ pub struct Options {
     pub input_price: Option<f64>,
     pub output_price: Option<f64>,
     pub live: bool,
+    pub backend: Option<String>,
+    pub install_backend: bool,
+    pub runtime_file: Option<PathBuf>,
+    pub runtime_base_url: Option<String>,
+    pub sandbox: Option<String>,
+    pub install_system_deps: bool,
+    pub default_scope: Option<String>,
+    pub network: Option<String>,
+    pub output: Option<String>,
+    pub json: bool,
 }
 
 #[derive(Clone, Debug)]
 pub struct Outcome {
+    pub exit_code: u8,
     pub applied: bool,
     pub config_path: PathBuf,
     pub backup: Option<PathBuf>,
@@ -102,10 +161,28 @@ pub struct Outcome {
 
 pub fn run(options: Options) -> Result<Outcome> {
     if options.verify_only {
-        let config = Config::load_quiet()?.context("no config exists; run `aishe setup` first")?;
+        let mut config = Config::load_quiet()?
+            .context("no config exists; run `aishe setup` first")
+            .map_err(|error| classified(EXIT_INPUT, error))?;
+        crate::policy::constrain(&mut config).map_err(|error| classified(EXIT_POLICY, error))?;
+        verify_runtime_and_sandbox(&config, false, None, None, false)?;
         let report = capabilities::validate(&config, options.live);
-        print_report(&report);
+        let verified = report.credential.state != State::Fail
+            && report.model_available.state != State::Fail
+            && (!options.live || report.verified());
+        if options.json {
+            print_setup_json(
+                false,
+                &config,
+                None,
+                &report,
+                if verified { EXIT_OK } else { EXIT_PROVIDER },
+            )?;
+        } else {
+            print_report(&report);
+        }
         return Ok(Outcome {
+            exit_code: if verified { EXIT_OK } else { EXIT_PROVIDER },
             applied: false,
             config_path: Config::path(),
             backup: None,
@@ -122,28 +199,216 @@ pub fn run(options: Options) -> Result<Outcome> {
 }
 
 fn run_non_interactive(options: Options) -> Result<Outcome> {
-    let existing = Config::load_quiet()?;
+    validate_noninteractive_options(&options).map_err(|error| classified(EXIT_INPUT, error))?;
+    let existing = Config::load_quiet().map_err(|error| classified(EXIT_INPUT, error))?;
     let mut config = existing.clone().unwrap_or_default();
     if let Some(service_key) = options.service.as_deref() {
         let service = provider_catalog::find(service_key)
-            .with_context(|| format!("unknown service '{service_key}'"))?;
+            .with_context(|| format!("unknown service '{service_key}'"))
+            .map_err(|error| classified(EXIT_INPUT, error))?;
         apply_service(&mut config, service);
     } else if existing.is_none() {
-        anyhow::bail!("fresh non-interactive setup requires --service");
+        return Err(classified(
+            EXIT_INPUT,
+            "fresh non-interactive setup requires --service",
+        ));
     }
-    apply_overrides(&mut config, &options)?;
-    validate_config(&config)?;
+    apply_overrides(&mut config, &options).map_err(|error| classified(EXIT_INPUT, error))?;
+    validate_config(&config).map_err(|error| classified(EXIT_INPUT, error))?;
+    let loaded_policy = crate::policy::load().map_err(|error| classified(EXIT_POLICY, error))?;
+    if let Some(loaded) = &loaded_policy {
+        loaded
+            .policy
+            .validate_request(&config)
+            .map_err(|error| classified(EXIT_POLICY, error))?;
+    }
+    let runtime = verify_runtime_and_sandbox(
+        &config,
+        options.install_backend,
+        options.runtime_file.as_deref(),
+        options.runtime_base_url.as_deref(),
+        options.install_system_deps,
+    )?;
     let report = capabilities::validate(&config, options.live);
-    let backup = save_applied(&config)?;
+    if report.credential.state == State::Fail
+        || report.model_available.state == State::Fail
+        || (options.live && !report.live_verified())
+    {
+        if options.json {
+            print_setup_json(false, &config, runtime.as_ref(), &report, EXIT_PROVIDER)?;
+        } else {
+            print_report(&report);
+        }
+        return Err(classified(
+            EXIT_PROVIDER,
+            "provider credential, model, or requested live capability validation failed",
+        ));
+    }
+    let backup =
+        save_transactional(&config, None).map_err(|error| classified(EXIT_RUNTIME, error))?;
     discard_draft().ok();
-    print_report(&report);
-    println!("Saved config to {}", Config::path().display());
+    if options.json {
+        print_setup_json(true, &config, runtime.as_ref(), &report, EXIT_OK)?;
+    } else {
+        print_report(&report);
+        println!("Saved config to {}", Config::path().display());
+    }
     Ok(Outcome {
+        exit_code: EXIT_OK,
         applied: true,
         config_path: Config::path(),
         backup,
         report: Some(report),
     })
+}
+
+fn validate_noninteractive_options(options: &Options) -> Result<()> {
+    if options
+        .backend
+        .as_deref()
+        .is_some_and(|value| value != "opencode")
+    {
+        anyhow::bail!("--backend must be opencode");
+    }
+    if options.runtime_file.is_some() && options.runtime_base_url.is_some() {
+        anyhow::bail!("--runtime-file and --runtime-base-url are mutually exclusive");
+    }
+    if (options.runtime_file.is_some() || options.runtime_base_url.is_some())
+        && !options.install_backend
+    {
+        anyhow::bail!("--runtime-file/--runtime-base-url require --install-backend");
+    }
+    if let Some(url) = &options.runtime_base_url {
+        validate_runtime_base_url(url)?;
+    }
+    if options.install_system_deps && options.sandbox.as_deref() != Some("bwrap") {
+        anyhow::bail!("--install-system-deps requires --sandbox bwrap");
+    }
+    Ok(())
+}
+
+fn verify_runtime_and_sandbox(
+    config: &Config,
+    install_backend: bool,
+    runtime_file: Option<&Path>,
+    runtime_base_url: Option<&str>,
+    install_system_deps: bool,
+) -> Result<Option<crate::backend::RuntimeStatus>> {
+    let loaded_policy = crate::policy::load().map_err(|error| classified(EXIT_POLICY, error))?;
+    if let (Some(requested), Some(managed)) = (
+        runtime_base_url,
+        loaded_policy
+            .as_ref()
+            .and_then(|loaded| loaded.policy.runtime_base_url()),
+    ) {
+        if requested.trim_end_matches('/') != managed.trim_end_matches('/') {
+            return Err(classified(
+                EXIT_POLICY,
+                "runtime mirror differs from the organization-managed mirror",
+            ));
+        }
+    }
+
+    if cfg!(target_os = "linux") && config.sandbox.linux_backend == "bwrap" {
+        let mut state = crate::dependencies::bubblewrap_probe();
+        if !matches!(state, crate::dependencies::BubblewrapState::Usable { .. })
+            && install_system_deps
+        {
+            let plan = crate::dependencies::bubblewrap_install_plan()
+                .map_err(|error| classified(EXIT_SANDBOX, error))?;
+            state = crate::dependencies::install_bubblewrap(&plan, true)
+                .map_err(|error| classified(EXIT_SANDBOX, error))?;
+        }
+        if !matches!(state, crate::dependencies::BubblewrapState::Usable { .. }) {
+            return Err(classified(
+                EXIT_SANDBOX,
+                format!(
+                    "functional bubblewrap is required but unavailable ({state:?}); \
+                     pass --install-system-deps to authorize installation or explicitly \
+                     choose --sandbox policy when organization policy permits"
+                ),
+            ));
+        }
+    } else if config.sandbox.require_functional {
+        return Err(classified(
+            EXIT_SANDBOX,
+            "functional bubblewrap is required but this platform/sandbox selection cannot provide it",
+        ));
+    }
+
+    if config.backend.engine != "opencode" {
+        return Ok(None);
+    }
+    let manager =
+        crate::backend::RuntimeManager::new().map_err(|error| classified(EXIT_RUNTIME, error))?;
+    let asset = manager
+        .manifest()
+        .asset_for_current_platform()
+        .map_err(|error| classified(EXIT_RUNTIME, error))?;
+    if let Some(loaded) = &loaded_policy {
+        loaded
+            .policy
+            .validate_runtime_hash(&asset.sha256)
+            .map_err(|error| classified(EXIT_POLICY, error))?;
+    }
+    let status = if install_backend {
+        let source = if let Some(path) = runtime_file {
+            crate::backend::InstallSource::Local(path.to_path_buf())
+        } else {
+            let base = loaded_policy
+                .as_ref()
+                .and_then(|loaded| loaded.policy.runtime_base_url())
+                .or(runtime_base_url);
+            if let Some(base) = base {
+                runtime_source_from_base(&manager, base)
+                    .map_err(|error| classified(EXIT_RUNTIME, error))?
+            } else {
+                crate::backend::InstallSource::Default
+            }
+        };
+        manager
+            .install(source, false)
+            .map_err(|error| classified(EXIT_RUNTIME, error))?
+    } else {
+        manager
+            .verify()
+            .map_err(|error| classified(EXIT_RUNTIME, error))?
+    };
+    crate::backend::supervisor::smoke_test(&manager)
+        .map_err(|error| classified(EXIT_RUNTIME, error))?;
+    Ok(Some(status))
+}
+
+fn print_setup_json(
+    applied: bool,
+    config: &Config,
+    runtime: Option<&crate::backend::RuntimeStatus>,
+    report: &Report,
+    exit_code: u8,
+) -> Result<()> {
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&serde_json::json!({
+            "schema_version": 1,
+            "applied": applied,
+            "exit_code": exit_code,
+            "config_path": Config::path(),
+            "credentials_path": crate::credentials::path(),
+            "backend": config.backend.engine,
+            "runtime": runtime,
+            "sandbox": {
+                "backend": config.sandbox.linux_backend,
+                "functional": matches!(
+                    crate::dependencies::bubblewrap_probe(),
+                    crate::dependencies::BubblewrapState::Usable { .. }
+                ),
+            },
+            "scope": config.backend.default_scope,
+            "network": config.backend.workspace_network,
+            "provider": report,
+        }))?
+    );
+    Ok(())
 }
 
 fn run_interactive(options: Options) -> Result<Outcome> {
@@ -179,6 +444,7 @@ fn run_interactive(options: Options) -> Result<Outcome> {
             }
             _ => {
                 return Ok(Outcome {
+                    exit_code: EXIT_PAUSED,
                     applied: false,
                     config_path: Config::path(),
                     backup: None,
@@ -215,7 +481,280 @@ fn run_interactive(options: Options) -> Result<Outcome> {
     let mut report = None;
     loop {
         match draft.step {
+            Step::Discovery => {
+                step_header(1, "Welcome and existing state");
+                print_existing_state(&baseline)?;
+                let choices = vec![
+                    "Continue setup".to_string(),
+                    "Pause and resume later".to_string(),
+                ];
+                match promptui::menu(
+                    "Aishe is ready to verify this environment",
+                    &choices,
+                    0,
+                    true,
+                    "Setup preserves config, credentials, history, tasks, and sessions. Only the final Apply changes active configuration.",
+                )? {
+                    MenuResult::Selected(0) => advance(&mut draft)?,
+                    MenuResult::Selected(1) | MenuResult::Cancel => return cancel(draft),
+                    MenuResult::Back => {}
+                    MenuResult::Selected(_) => unreachable!(),
+                }
+            }
+            Step::Platform => {
+                step_header(2, "Shell and platform");
+                print_platform_state();
+                if crate::executor::which("zsh").is_some() {
+                    promptui::success("zsh is installed and the PTY front-end is available");
+                    advance(&mut draft)?;
+                    continue;
+                }
+                promptui::warning(
+                    "zsh is missing. Aishe can still provide non-interactive commands and a bash hook, but `aishe` cannot launch its native interactive front-end.",
+                );
+                let mut choices = vec!["Continue in shell-only mode".to_string()];
+                if cfg!(target_os = "linux") {
+                    if let Ok(plan) = crate::dependencies::zsh_install_plan() {
+                        choices.insert(0, format!("Install zsh now — {}", plan.display));
+                    }
+                }
+                match promptui::menu(
+                    "Interactive shell dependency",
+                    &choices,
+                    0,
+                    true,
+                    "System package installation is an immediate side effect. Aishe shows and executes an argv plan without `sh -c`.",
+                )? {
+                    MenuResult::Selected(0) if choices.len() == 2 => {
+                        let plan = crate::dependencies::zsh_install_plan()?;
+                        let Some(consent) =
+                            promptui::confirm(&format!("Run `{}` now", plan.display), false)?
+                        else {
+                            return cancel(draft);
+                        };
+                        if consent {
+                            crate::dependencies::install_zsh(&plan, true)?;
+                            promptui::success("zsh installed and verified");
+                            advance(&mut draft)?;
+                        }
+                    }
+                    MenuResult::Selected(_) => advance(&mut draft)?,
+                    MenuResult::Back => draft.step = draft.step.previous(),
+                    MenuResult::Cancel => return cancel(draft),
+                }
+            }
+            Step::Runtime => {
+                step_header(3, "Agent runtime");
+                let manager = crate::backend::RuntimeManager::new()?;
+                print_runtime_state(&manager)?;
+                let loaded_policy = crate::policy::load()?;
+                let approved_base = loaded_policy
+                    .as_ref()
+                    .and_then(|loaded| loaded.policy.runtime_base_url())
+                    .map(str::to_string)
+                    .or_else(|| options.runtime_base_url.clone());
+                match manager.status() {
+                    crate::backend::RuntimeStatus::Ready { .. } => {
+                        if let Some(loaded) = &loaded_policy {
+                            let asset = manager.manifest().asset_for_current_platform()?;
+                            loaded.policy.validate_runtime_hash(&asset.sha256)?;
+                        }
+                        crate::backend::supervisor::smoke_test(&manager)?;
+                        promptui::success(
+                            "runtime hash, version, authenticated server, and trusted plugin verified",
+                        );
+                        advance(&mut draft)?;
+                    }
+                    crate::backend::RuntimeStatus::Missing { .. }
+                    | crate::backend::RuntimeStatus::Invalid { .. } => {
+                        let choices = vec![
+                            "Install and verify the pinned runtime".into(),
+                            "Use an approved local archive…".into(),
+                            "Use a runtime mirror…".into(),
+                            "Continue shell-only and resume setup later".into(),
+                        ];
+                        match promptui::menu(
+                            "OpenCode Agent Runtime",
+                            &choices,
+                            0,
+                            true,
+                            "Runtime installation writes only Aishe's private versioned runtime directory. It never changes config, credentials, or history.",
+                        )? {
+                            MenuResult::Selected(index @ 0..=2) => {
+                                let source = match index {
+                                    0 => {
+                                        if let Some(path) = &options.runtime_file {
+                                            crate::backend::InstallSource::Local(path.clone())
+                                        } else if let Some(base) = approved_base {
+                                            runtime_source_from_base(&manager, &base)?
+                                        } else {
+                                            crate::backend::InstallSource::Default
+                                        }
+                                    }
+                                    1 => {
+                                        let Some(value) = promptui::text(
+                                            "Local runtime archive",
+                                            "",
+                                            |value| {
+                                                let path = Path::new(value);
+                                                if !path.is_file() {
+                                                    anyhow::bail!("archive file does not exist");
+                                                }
+                                                Ok(())
+                                            },
+                                        )?
+                                        else {
+                                            return cancel(draft);
+                                        };
+                                        if value == ":back" {
+                                            continue;
+                                        }
+                                        crate::backend::InstallSource::Local(PathBuf::from(value))
+                                    }
+                                    2 => {
+                                        let default = approved_base.as_deref().unwrap_or("");
+                                        let Some(value) = promptui::text(
+                                            "Runtime mirror base URL",
+                                            default,
+                                            validate_runtime_base_url,
+                                        )?
+                                        else {
+                                            return cancel(draft);
+                                        };
+                                        if value == ":back" {
+                                            continue;
+                                        }
+                                        runtime_source_from_base(&manager, &value)?
+                                    }
+                                    _ => unreachable!(),
+                                };
+                                let status = manager.install(source, true)?;
+                                if let crate::backend::RuntimeStatus::Ready { version, .. } = status
+                                {
+                                    if let Some(loaded) = &loaded_policy {
+                                        let asset =
+                                            manager.manifest().asset_for_current_platform()?;
+                                        loaded.policy.validate_runtime_hash(&asset.sha256)?;
+                                    }
+                                    crate::backend::supervisor::smoke_test(&manager)?;
+                                    promptui::success(&format!(
+                                        "OpenCode {version} installed, checksum-verified, and started successfully"
+                                    ));
+                                    advance(&mut draft)?;
+                                }
+                            }
+                            MenuResult::Selected(3) => {
+                                promptui::warning(
+                                    "Agent turns remain unavailable until `aishe backend install` succeeds; normal zsh commands continue to work.",
+                                );
+                                advance(&mut draft)?;
+                            }
+                            MenuResult::Back => draft.step = draft.step.previous(),
+                            MenuResult::Cancel => return cancel(draft),
+                            MenuResult::Selected(_) => unreachable!(),
+                        }
+                    }
+                }
+            }
+            Step::Sandbox => {
+                step_header(4, "Execution sandbox");
+                if !cfg!(target_os = "linux") {
+                    promptui::warning(
+                        "OS sandbox: unavailable in this macOS release. Workspace paths are policy-checked, and every yolo shell session shows an explicit no-OS-sandbox warning before acceptance.",
+                    );
+                    draft.config.sandbox.linux_backend = "policy".into();
+                    advance(&mut draft)?;
+                    continue;
+                }
+                let policy_requires = crate::policy::load()?
+                    .as_ref()
+                    .and_then(|loaded| loaded.policy.require_bubblewrap)
+                    == Some(true);
+                match crate::dependencies::bubblewrap_probe() {
+                    crate::dependencies::BubblewrapState::Usable { path } => {
+                        promptui::success(&format!(
+                            "bubblewrap passed writable-workspace, read-only-root, and network-isolation tests ({})",
+                            path.display()
+                        ));
+                        draft.config.sandbox.linux_backend = "bwrap".into();
+                        draft.config.sandbox.require_functional = policy_requires;
+                        advance(&mut draft)?;
+                    }
+                    state => {
+                        let detail = match state {
+                            crate::dependencies::BubblewrapState::Missing => {
+                                "bubblewrap is not installed".to_string()
+                            }
+                            crate::dependencies::BubblewrapState::InstalledButUnusable {
+                                reason,
+                            } => format!("bubblewrap is installed but unusable: {reason}"),
+                            crate::dependencies::BubblewrapState::Unsupported => {
+                                "bubblewrap is unsupported in this environment".to_string()
+                            }
+                            crate::dependencies::BubblewrapState::Usable { .. } => unreachable!(),
+                        };
+                        promptui::warning(&detail);
+                        let plan = crate::dependencies::bubblewrap_install_plan().ok();
+                        if let Some(plan) = &plan {
+                            println!("  exact install command: {}", plan.display);
+                        }
+                        let mut choices = Vec::new();
+                        if plan.is_some() {
+                            choices.push("Install bubblewrap now".into());
+                        }
+                        if !policy_requires {
+                            choices.push("Continue with policy-only degradation".into());
+                        }
+                        choices.push("Pause and install it manually".into());
+                        match promptui::menu(
+                            "Linux workspace isolation",
+                            &choices,
+                            0,
+                            true,
+                            "bubblewrap confines workspace agent commands to a read-only host, a writable project, private /tmp, and the selected network policy.",
+                        )? {
+                            MenuResult::Selected(index)
+                                if plan.is_some() && index == 0 =>
+                            {
+                                let plan = plan.as_ref().unwrap();
+                                let Some(consent) = promptui::confirm(
+                                    &format!("Run `{}` now", plan.display),
+                                    false,
+                                )?
+                                else {
+                                    return cancel(draft);
+                                };
+                                if consent {
+                                    crate::dependencies::install_bubblewrap(plan, true)?;
+                                    draft.config.sandbox.linux_backend = "bwrap".into();
+                                    draft.config.sandbox.require_functional = policy_requires;
+                                    promptui::success(
+                                        "bubblewrap installed and passed its functional self-test",
+                                    );
+                                    advance(&mut draft)?;
+                                }
+                            }
+                            MenuResult::Selected(index)
+                                if !policy_requires
+                                    && index == usize::from(plan.is_some()) =>
+                            {
+                                draft.config.sandbox.linux_backend = "policy".into();
+                                draft.config.sandbox.require_functional = false;
+                                promptui::warning(
+                                    "Policy-only mode checks paths but is not a kernel isolation boundary.",
+                                );
+                                advance(&mut draft)?;
+                            }
+                            MenuResult::Selected(_) | MenuResult::Cancel => {
+                                return cancel(draft)
+                            }
+                            MenuResult::Back => draft.step = draft.step.previous(),
+                        }
+                    }
+                }
+            }
             Step::Service => {
+                step_header(5, "Provider and credential");
                 let labels: Vec<String> = provider_catalog::SERVICES
                     .iter()
                     .map(|service| format!("{} — {}", service.label, service.help))
@@ -343,6 +882,7 @@ fn run_interactive(options: Options) -> Result<Outcome> {
                 }
             }
             Step::Model => {
+                step_header(6, "Model and pricing");
                 let provider_name = draft.config.aishe.provider.clone();
                 let current = active_provider(&draft.config).model.clone();
                 let catalog = with_pending(&pending_credential, || {
@@ -468,6 +1008,7 @@ fn run_interactive(options: Options) -> Result<Outcome> {
                 }
             }
             Step::Profile => {
+                step_header(7, "Behavior and scope");
                 let choices = vec![
                     "Conservative — suggest, confirm all tool commands".into(),
                     "Balanced — auto safe commands, confirm writes".into(),
@@ -490,7 +1031,9 @@ fn run_interactive(options: Options) -> Result<Outcome> {
                         ][index];
                         let changes = profiles::apply(&mut draft.config, profile);
                         println!("  {} safety setting(s) changed", changes.len());
-                        advance(&mut draft)?;
+                        if configure_scope_and_network(&mut draft)? {
+                            advance(&mut draft)?;
+                        }
                     }
                     MenuResult::Back => draft.step = draft.step.previous(),
                     MenuResult::Cancel => return cancel(draft),
@@ -539,6 +1082,27 @@ fn run_interactive(options: Options) -> Result<Outcome> {
                 }
             }
             Step::Status => {
+                step_header(8, "Interface");
+                let output_choices = vec![
+                    "Compact — concise reasoning and bounded tool results".into(),
+                    "Detailed — expanded tool metadata and timing".into(),
+                ];
+                match promptui::menu(
+                    "Agent transcript density",
+                    &output_choices,
+                    usize::from(draft.config.backend.output == "detailed"),
+                    true,
+                    "Both modes redact secrets and bound terminal output. Detailed mode shows more execution evidence, never hidden chain-of-thought.",
+                )? {
+                    MenuResult::Selected(0) => draft.config.backend.output = "compact".into(),
+                    MenuResult::Selected(1) => draft.config.backend.output = "detailed".into(),
+                    MenuResult::Back => {
+                        draft.step = draft.step.previous();
+                        continue;
+                    }
+                    MenuResult::Cancel => return cancel(draft),
+                    MenuResult::Selected(_) => unreachable!(),
+                }
                 let positions = vec![
                     "Right prompt — compact and persistent".into(),
                     "Below — Codex-style secondary prompt line".into(),
@@ -560,7 +1124,6 @@ fn run_interactive(options: Options) -> Result<Outcome> {
                         draft.config.aishe.status_line = false;
                         draft.config.aishe.status_line_position = "off".into();
                         println!("  preview: (status line off)");
-                        advance(&mut draft)?;
                     }
                     MenuResult::Selected(position) => {
                         draft.config.aishe.status_line = true;
@@ -570,13 +1133,76 @@ fn run_interactive(options: Options) -> Result<Outcome> {
                             continue;
                         }
                         print_status_preview(&draft.config);
-                        advance(&mut draft)?;
                     }
-                    MenuResult::Back => draft.step = draft.step.previous(),
+                    MenuResult::Back => {
+                        draft.step = draft.step.previous();
+                        continue;
+                    }
                     MenuResult::Cancel => return cancel(draft),
                 }
+                let audit_required = crate::policy::load()?
+                    .as_ref()
+                    .and_then(|loaded| loaded.policy.require_audit_logging)
+                    == Some(true);
+                if audit_required {
+                    draft.config.logging.enabled = true;
+                    draft.config.logging.redact = true;
+                    promptui::warning("Audit logging: on · Managed by organization");
+                } else {
+                    let Some(audit) = promptui::confirm(
+                        "Enable the private redacted audit log? (records prompts, answers, and actions)",
+                        draft.config.logging.enabled,
+                    )?
+                    else {
+                        return cancel(draft);
+                    };
+                    draft.config.logging.enabled = audit;
+                }
+                advance(&mut draft)?;
             }
             Step::Validation => {
+                step_header(9, "End-to-end validation");
+                if let Some(loaded) = crate::policy::load()? {
+                    loaded.policy.constrain(&mut draft.config)?;
+                    if let Err(error) = loaded.policy.validate_request(&draft.config) {
+                        promptui::error(&format!("Managed by organization: {error}"));
+                        draft.step = Step::Service;
+                        save_draft(&draft)?;
+                        continue;
+                    }
+                }
+                let backend_check = with_pending(&pending_credential, || {
+                    validate_managed_backend(&draft.config)
+                })?;
+                if let Err(error) = backend_check {
+                    promptui::error(&format!(
+                        "Managed backend validation failed: {}",
+                        crate::redact::redact(&error.to_string())
+                    ));
+                    let choices = vec![
+                        "Retry managed backend validation".into(),
+                        "Back to agent runtime".into(),
+                        "Pause setup".into(),
+                    ];
+                    match promptui::menu(
+                        "Backend needs attention",
+                        &choices,
+                        0,
+                        true,
+                        "No active config or credential was changed. Runtime files already installed remain checksum-verifiable and reusable.",
+                    )? {
+                        MenuResult::Selected(0) => {}
+                        MenuResult::Selected(1) | MenuResult::Back => {
+                            draft.step = Step::Runtime
+                        }
+                        MenuResult::Selected(2) | MenuResult::Cancel => return cancel(draft),
+                        MenuResult::Selected(_) => unreachable!(),
+                    }
+                    continue;
+                }
+                promptui::success(
+                    "runtime, authenticated loopback server, isolated config, and trusted plugin passed",
+                );
                 let Some(live) = promptui::confirm(
                     "Run live text/structured/tool/streaming checks? (may use tokens)",
                     true,
@@ -592,6 +1218,7 @@ fn run_interactive(options: Options) -> Result<Outcome> {
                 advance(&mut draft)?;
             }
             Step::Review => {
+                step_header(10, "Review and Apply");
                 print_review(
                     &baseline,
                     &draft.config,
@@ -607,9 +1234,43 @@ fn run_interactive(options: Options) -> Result<Outcome> {
                     continue;
                 }
                 validate_config(&draft.config)?;
-                let backup = save_with_pending(&draft.config, pending_credential.take())?;
+                if let Some(loaded) = crate::policy::load()? {
+                    loaded.policy.constrain(&mut draft.config)?;
+                    loaded.policy.validate_request(&draft.config)?;
+                }
+                let backup =
+                    save_transactional(&draft.config, pending_credential.take()).map_err(|error| {
+                        classified(
+                            EXIT_RUNTIME,
+                            format!(
+                                "final backend health failed; prior config and credentials were restored: {error}"
+                            ),
+                        )
+                    })?;
                 discard_draft()?;
                 promptui::success("Setup complete");
+                println!();
+                println!(
+                    "  ✓ zsh             {}",
+                    crate::executor::which("zsh")
+                        .map(|path| path.display().to_string())
+                        .unwrap_or_else(|| "shell-only mode".into())
+                );
+                println!(
+                    "  ✓ agent engine    OpenCode {}",
+                    crate::backend::RuntimeManifest::embedded()?.version
+                );
+                println!(
+                    "  ✓ provider        {} · {}",
+                    draft.config.aishe.provider,
+                    draft.config.active_model()
+                );
+                println!(
+                    "  ✓ sandbox         {} · {}",
+                    draft.config.sandbox.linux_backend, draft.config.backend.default_scope
+                );
+                println!("  ✓ history         preserved");
+                println!();
                 println!("  config: {}", Config::path().display());
                 println!("  credentials: {}", crate::credentials::path().display());
                 if let Some(path) = &backup {
@@ -630,9 +1291,16 @@ fn run_interactive(options: Options) -> Result<Outcome> {
                 {
                     crate::tour::run(crate::tour::Options::default())?;
                 } else {
-                    println!("  Next: run `aishe tour` when you are ready.");
+                    println!();
+                    println!("  Run: aishe");
+                    println!("  Inside Aishe:");
+                    println!("    git status                 runs in zsh");
+                    println!("    explain this repository    asks the agent");
+                    println!();
+                    println!("  Run `aishe tour` when you are ready.");
                 }
                 return Ok(Outcome {
+                    exit_code: EXIT_OK,
                     applied: true,
                     config_path: Config::path(),
                     backup,
@@ -641,6 +1309,289 @@ fn run_interactive(options: Options) -> Result<Outcome> {
             }
         }
     }
+}
+
+fn step_header(number: usize, title: &str) {
+    promptui::section(&format!("Step {number} of 10 · {title}"));
+}
+
+fn print_existing_state(config: &Config) -> Result<()> {
+    let config_path = Config::path();
+    let schema = Config::schema_version_on_disk()?;
+    let credential_profiles = crate::credentials::Store::load()?
+        .map(|store| store.profile_names())
+        .unwrap_or_default();
+    let runtime = crate::backend::RuntimeManager::new()?.status();
+    let runtime_text = match runtime {
+        crate::backend::RuntimeStatus::Ready { version, .. } => {
+            format!("OpenCode {version} · verified on disk")
+        }
+        crate::backend::RuntimeStatus::Missing { expected_version } => {
+            format!("OpenCode {expected_version} · not installed")
+        }
+        crate::backend::RuntimeStatus::Invalid {
+            expected_version,
+            reason,
+        } => format!("OpenCode {expected_version} · invalid ({reason})"),
+    };
+    let policy = crate::policy::load()?;
+    let history = crate::config::data_root()
+        .map(|root| root.join("aishe").join("history.ext"))
+        .filter(|path| path.exists());
+    let sessions = crate::backend::opencode::session::SessionStore::from_default_root()
+        .and_then(|store| store.records(None))
+        .map(|records| records.len())
+        .unwrap_or(0);
+    println!(
+        "  install: {}",
+        if config_path.exists() {
+            "upgrade / reconfiguration"
+        } else {
+            "fresh"
+        }
+    );
+    println!(
+        "  config: {}{}",
+        config_path.display(),
+        schema
+            .map(|value| format!(" · schema {value}"))
+            .unwrap_or_else(|| " · not created".into())
+    );
+    println!(
+        "  credentials: {} profile(s){}",
+        credential_profiles.len(),
+        if credential_profiles.is_empty() {
+            String::new()
+        } else {
+            format!(" ({})", credential_profiles.join(", "))
+        }
+    );
+    println!(
+        "  retained state: history {} · {} task(s) · {sessions} managed session(s)",
+        if history.is_some() {
+            "present"
+        } else {
+            "not created"
+        },
+        crate::tasks::list().len()
+    );
+    println!("  runtime: {runtime_text}");
+    println!(
+        "  organization policy: {}",
+        policy
+            .as_ref()
+            .map(|loaded| loaded.path.display().to_string())
+            .unwrap_or_else(|| "none".into())
+    );
+    println!(
+        "  active preference: {} · {} · {}",
+        config.aishe.provider,
+        config.active_model(),
+        config.aishe.mode
+    );
+    Ok(())
+}
+
+fn print_platform_state() {
+    println!(
+        "  platform: {}-{}",
+        std::env::consts::OS,
+        std::env::consts::ARCH
+    );
+    if let Some(zsh) = crate::executor::which("zsh") {
+        let version = std::process::Command::new(&zsh)
+            .arg("--version")
+            .output()
+            .ok()
+            .map(|output| String::from_utf8_lossy(&output.stdout).trim().to_string())
+            .unwrap_or_else(|| "version unavailable".into());
+        println!("  zsh: {} · {}", zsh.display(), version);
+    } else {
+        println!("  zsh: not installed");
+    }
+    println!(
+        "  terminal: PTY {} · color {} · width {}",
+        if std::io::stdin().is_terminal() && std::io::stdout().is_terminal() {
+            "available"
+        } else {
+            "unavailable"
+        },
+        if std::env::var_os("NO_COLOR").is_some() {
+            "disabled by NO_COLOR"
+        } else {
+            "enabled when supported"
+        },
+        crossterm::terminal::size()
+            .map(|(columns, _)| columns)
+            .unwrap_or(80)
+    );
+    println!("  config: {}", Config::path().display());
+    println!(
+        "  data: {}",
+        crate::config::data_root()
+            .map(|path| path.join("aishe").display().to_string())
+            .unwrap_or_else(|| "unavailable".into())
+    );
+    let proxy = ["HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY"]
+        .iter()
+        .filter(|name| std::env::var_os(name).is_some())
+        .copied()
+        .collect::<Vec<_>>();
+    let ca = ["SSL_CERT_FILE", "SSL_CERT_DIR"]
+        .iter()
+        .filter(|name| std::env::var_os(name).is_some())
+        .copied()
+        .collect::<Vec<_>>();
+    println!(
+        "  network environment: proxy {} · custom CA {}",
+        if proxy.is_empty() {
+            "none".into()
+        } else {
+            proxy.join(",")
+        },
+        if ca.is_empty() {
+            "none".into()
+        } else {
+            ca.join(",")
+        }
+    );
+}
+
+fn print_runtime_state(manager: &crate::backend::RuntimeManager) -> Result<()> {
+    let manifest = manager.manifest();
+    let asset = manifest.asset_for_current_platform()?;
+    let source = manifest.source_url(
+        asset,
+        crate::policy::load()?
+            .as_ref()
+            .and_then(|loaded| loaded.policy.runtime_base_url()),
+    );
+    let hostname = url::Url::parse(&source)
+        .ok()
+        .and_then(|url| url.host_str().map(str::to_string))
+        .unwrap_or_else(|| "approved local source".into());
+    println!("  engine: OpenCode Agent Runtime {}", manifest.version);
+    println!(
+        "  asset: {} · {:.1} MiB",
+        asset.name,
+        asset.size as f64 / 1_048_576.0
+    );
+    println!("  source: {hostname}");
+    println!("  install path: {}", manager.version_dir().display());
+    println!("  verification: exact size + SHA-256 {}", asset.sha256);
+    println!("  license: MIT · bundled LICENSE and THIRD_PARTY_NOTICES.md");
+    Ok(())
+}
+
+fn runtime_source_from_base(
+    manager: &crate::backend::RuntimeManager,
+    base: &str,
+) -> Result<crate::backend::InstallSource> {
+    validate_runtime_base_url(base)?;
+    let asset = manager.manifest().asset_for_current_platform()?;
+    Ok(crate::backend::InstallSource::Url(
+        manager.manifest().source_url(asset, Some(base)),
+    ))
+}
+
+fn validate_runtime_base_url(value: &str) -> Result<()> {
+    let parsed = url::Url::parse(value).context("enter a valid runtime mirror URL")?;
+    let loopback = parsed
+        .host_str()
+        .and_then(|host| host.parse::<std::net::IpAddr>().ok())
+        .is_some_and(|address| address.is_loopback())
+        || parsed.host_str() == Some("localhost");
+    if parsed.scheme() != "https" && !(parsed.scheme() == "http" && loopback) {
+        anyhow::bail!("runtime mirror must use HTTPS (HTTP is allowed only on loopback)");
+    }
+    Ok(())
+}
+
+fn configure_scope_and_network(draft: &mut Draft) -> Result<bool> {
+    if draft.config.aishe.safety_profile == "autonomous"
+        && cfg!(target_os = "linux")
+        && !matches!(
+            crate::dependencies::bubblewrap_probe(),
+            crate::dependencies::BubblewrapState::Usable { .. }
+        )
+    {
+        promptui::error(
+            "Autonomous workspace mode requires functional bubblewrap on Linux. Return to the Sandbox step or choose another behavior profile.",
+        );
+        return Ok(false);
+    }
+    let policy = crate::policy::load()?;
+    let host_allowed = policy
+        .as_ref()
+        .and_then(|loaded| loaded.policy.allow_host_yolo)
+        != Some(false);
+    let mut scopes = vec!["Workspace — project writes only; safest default".to_string()];
+    if host_allowed {
+        scopes.push("Host — full user/system access after per-shell yolo acceptance".into());
+    }
+    let default = usize::from(draft.config.backend.default_scope == "host" && host_allowed);
+    match promptui::menu(
+        "Default execution scope",
+        &scopes,
+        default,
+        true,
+        "This is an authority boundary, not yolo acceptance. Yolo always requires a new explicit acceptance in each live shell.",
+    )? {
+        MenuResult::Selected(0) => draft.config.backend.default_scope = "workspace".into(),
+        MenuResult::Selected(1) if host_allowed => draft.config.backend.default_scope = "host".into(),
+        MenuResult::Back | MenuResult::Cancel => return Ok(false),
+        MenuResult::Selected(_) => unreachable!(),
+    }
+    if draft.config.backend.default_scope == "workspace" {
+        let network_forbidden = policy
+            .as_ref()
+            .and_then(|loaded| loaded.policy.allow_network)
+            == Some(false);
+        if network_forbidden {
+            draft.config.backend.workspace_network = "deny".into();
+            promptui::warning("Network: denied · Managed by organization");
+        } else {
+            let choices = vec![
+                "Deny — no network from workspace agent commands".into(),
+                "Allow — network tools remain subject to mode approvals".into(),
+            ];
+            match promptui::menu(
+                "Workspace network",
+                &choices,
+                usize::from(draft.config.backend.workspace_network == "allow"),
+                true,
+                "Provider API traffic is separate. This controls network access by model-selected tools and commands.",
+            )? {
+                MenuResult::Selected(0) => draft.config.backend.workspace_network = "deny".into(),
+                MenuResult::Selected(1) => draft.config.backend.workspace_network = "allow".into(),
+                MenuResult::Back | MenuResult::Cancel => return Ok(false),
+                MenuResult::Selected(_) => unreachable!(),
+            }
+        }
+    }
+    Ok(true)
+}
+
+fn validate_managed_backend(config: &Config) -> Result<()> {
+    if config.backend.engine != "opencode" {
+        anyhow::bail!("the v0.5 agent implementation requires backend.engine=opencode");
+    }
+    let manager = crate::backend::RuntimeManager::new()?;
+    manager.verify()?;
+    crate::backend::supervisor::smoke_test(&manager)?;
+    let state = crate::backend::supervisor::ensure_running(config)?;
+    let expected = manager.manifest().version.as_str();
+    let result = if state.runtime_version == expected
+        && state.plugin_sha256 == env!("AISHE_OPENCODE_PLUGIN_SHA256")
+        && state.opencode_url.starts_with("http://127.0.0.1:")
+        && state.control_url.starts_with("http://127.0.0.1:")
+    {
+        Ok(())
+    } else {
+        anyhow::bail!("managed backend identity or loopback isolation is inconsistent");
+    };
+    let _ = crate::backend::supervisor::request_stop();
+    result
 }
 
 fn apply_service(config: &mut Config, service: &provider_catalog::Service) {
@@ -657,6 +1608,22 @@ fn apply_service(config: &mut Config, service: &provider_catalog::Service) {
 }
 
 fn apply_overrides(config: &mut Config, options: &Options) -> Result<()> {
+    if let Some(backend) = &options.backend {
+        config.backend.engine = backend.clone();
+    }
+    if let Some(scope) = &options.default_scope {
+        config.backend.default_scope = scope.clone();
+    }
+    if let Some(network) = &options.network {
+        config.backend.workspace_network = network.clone();
+    }
+    if let Some(output) = &options.output {
+        config.backend.output = output.clone();
+    }
+    if let Some(sandbox) = &options.sandbox {
+        config.sandbox.linux_backend = sandbox.clone();
+        config.sandbox.require_functional = sandbox == "bwrap";
+    }
     let provider = active_provider_mut(config);
     if let Some(base_url) = &options.base_url {
         provider.base_url = provider_catalog::normalize_base_url(base_url);
@@ -723,7 +1690,7 @@ fn fresh_draft(config: Config) -> Draft {
     };
     Draft {
         schema_version: DRAFT_SCHEMA_VERSION,
-        step: Step::Service,
+        step: Step::Discovery,
         service: service.into(),
         config,
     }
@@ -740,6 +1707,7 @@ fn cancel(draft: Draft) -> Result<Outcome> {
         "\n  Setup paused. Resume with `aishe setup --resume`; active config was not changed."
     );
     Ok(Outcome {
+        exit_code: EXIT_PAUSED,
         applied: false,
         config_path: Config::path(),
         backup: None,
@@ -844,7 +1812,7 @@ fn choose_status_items(draft: &mut Draft) -> Result<bool> {
         &choices,
         0,
         true,
-        "Fields: model, mode, scope, last_tokens, last_cost, session_tokens, session_cost, requests.",
+        "Fields: model, mode, backend, scope, task, elapsed, context, last_tokens, last_cost, session_tokens, session_cost, requests.",
     )? {
         MenuResult::Selected(0) => {
             draft.config.aishe.status_line_items =
@@ -857,6 +1825,7 @@ fn choose_status_items(draft: &mut Draft) -> Result<bool> {
             draft.config.aishe.status_line_items = [
                 "model",
                 "mode",
+                "backend",
                 "scope",
                 "last_tokens",
                 "last_cost",
@@ -870,7 +1839,7 @@ fn choose_status_items(draft: &mut Draft) -> Result<bool> {
         }
         MenuResult::Selected(2) => {
             draft.config.aishe.status_line_items =
-                ["model", "mode", "scope"]
+                ["model", "mode", "backend", "scope"]
                     .into_iter()
                     .map(str::to_string)
                     .collect();
@@ -906,7 +1875,11 @@ fn validate_status_items(items: &[String]) -> Result<()> {
     const ALLOWED: &[&str] = &[
         "model",
         "mode",
+        "backend",
         "scope",
+        "task",
+        "elapsed",
+        "context",
         "last_tokens",
         "last_cost",
         "session_tokens",
@@ -930,7 +1903,11 @@ fn print_status_preview(config: &Config) {
         .map(|item| match item.as_str() {
             "model" => config.active_model().to_string(),
             "mode" => config.aishe.mode.clone(),
+            "backend" => config.backend.engine.clone(),
             "scope" => config.backend.default_scope.clone(),
+            "task" => "task repo-audit".into(),
+            "elapsed" => "last 4.2s".into(),
+            "context" => "context 18%".into(),
             "last_tokens" => "last 1,697/374 tok".into(),
             "last_cost" => "last ~$0.0012".into(),
             "session_tokens" => "session 8,421/1,904 tok".into(),
@@ -984,6 +1961,21 @@ fn validate_transport(value: &str) -> Result<()> {
 }
 
 pub(crate) fn validate_config(config: &Config) -> Result<()> {
+    if !matches!(config.backend.engine.as_str(), "opencode" | "native") {
+        anyhow::bail!("backend.engine must be opencode or native");
+    }
+    if !matches!(config.backend.default_scope.as_str(), "workspace" | "host") {
+        anyhow::bail!("backend.default_scope must be workspace or host");
+    }
+    if !matches!(config.backend.workspace_network.as_str(), "allow" | "deny") {
+        anyhow::bail!("backend.workspace_network must be allow or deny");
+    }
+    if !matches!(config.backend.output.as_str(), "compact" | "detailed") {
+        anyhow::bail!("backend.output must be compact or detailed");
+    }
+    if !matches!(config.sandbox.linux_backend.as_str(), "bwrap" | "policy") {
+        anyhow::bail!("sandbox.linux_backend must be bwrap or policy");
+    }
     if !matches!(config.aishe.provider.as_str(), "anthropic" | "openai") {
         anyhow::bail!("provider must be anthropic or openai");
     }
@@ -1087,6 +2079,63 @@ fn print_review(
         crate::commands::display_safe(&configured.aishe.safety_profile)
     );
     println!(
+        "    backend: {} · OpenCode {}",
+        crate::commands::display_safe(&configured.backend.engine),
+        crate::backend::RuntimeManifest::embedded()?.version
+    );
+    println!(
+        "    scope/network: {} · {}",
+        crate::commands::display_safe(&configured.backend.default_scope),
+        crate::commands::display_safe(&configured.backend.workspace_network)
+    );
+    println!(
+        "    sandbox: {}{}",
+        crate::commands::display_safe(&configured.sandbox.linux_backend),
+        if configured.sandbox.require_functional {
+            " · required"
+        } else {
+            ""
+        }
+    );
+    println!(
+        "    interface: {} output · statusline {}",
+        crate::commands::display_safe(&configured.backend.output),
+        if configured.aishe.status_line {
+            configured.aishe.status_line_position.as_str()
+        } else {
+            "off"
+        }
+    );
+    println!(
+        "    pricing/budget: {} · {}",
+        if usage::price_for(configured.active_model(), &configured.pricing).is_some() {
+            "exact price available"
+        } else {
+            "price unknown; cost budgets disabled"
+        },
+        if configured.aishe.budget_usd > 0.0 {
+            format!("${:.4} session cap", configured.aishe.budget_usd)
+        } else {
+            "no user session cap".into()
+        }
+    );
+    println!(
+        "    audit/redaction: {} · {}",
+        if configured.logging.enabled {
+            "audit on"
+        } else {
+            "audit off"
+        },
+        if configured.aishe.redact_secrets {
+            "redaction on"
+        } else {
+            "redaction off"
+        }
+    );
+    if let Some(loaded) = crate::policy::load()? {
+        println!("    organization: Managed by {}", loaded.path.display());
+    }
+    println!(
         "    config: {}",
         crate::commands::display_safe(&Config::path().display().to_string())
     );
@@ -1150,6 +2199,76 @@ fn save_with_pending(
             }
             Err(error)
         }
+    }
+}
+
+/// Persist credentials/config, then prove the persisted configuration can start
+/// the authenticated managed backend. Any failure restores the exact prior
+/// bytes (including the absence of a file) and deliberately leaves the setup
+/// draft intact for repair/resume.
+fn save_transactional(
+    config: &Config,
+    pending: Option<(String, String)>,
+) -> Result<Option<PathBuf>> {
+    let config_path = Config::path();
+    let credentials_path = crate::credentials::path();
+    let prior_config = snapshot_file(&config_path)?;
+    let prior_credentials = snapshot_file(&credentials_path)?;
+    let backup = save_with_pending(config, pending)?;
+    let health = if config.backend.engine == "opencode" {
+        crate::backend::supervisor::ensure_running(config).map(|_| ())
+    } else {
+        Ok(())
+    };
+    if let Err(error) = health {
+        let _ = crate::backend::supervisor::request_stop();
+        let config_rollback = restore_file(&config_path, prior_config);
+        let credential_rollback = restore_file(&credentials_path, prior_credentials);
+        match (config_rollback, credential_rollback) {
+            (Ok(()), Ok(())) => return Err(error).context("persisted backend health check"),
+            (config_result, credential_result) => {
+                anyhow::bail!(
+                    "persisted backend health check failed: {error}; config rollback: {}; \
+                     credential rollback: {}",
+                    config_result
+                        .err()
+                        .map(|error| error.to_string())
+                        .unwrap_or_else(|| "ok".into()),
+                    credential_result
+                        .err()
+                        .map(|error| error.to_string())
+                        .unwrap_or_else(|| "ok".into())
+                );
+            }
+        }
+    }
+    Ok(backup)
+}
+
+fn snapshot_file(path: &Path) -> Result<Option<Vec<u8>>> {
+    match std::fs::read(path) {
+        Ok(bytes) => Ok(Some(bytes)),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error).with_context(|| format!("snapshotting {}", path.display())),
+    }
+}
+
+fn restore_file(path: &Path, snapshot: Option<Vec<u8>>) -> Result<()> {
+    match snapshot {
+        Some(bytes) => {
+            if let Some(parent) = path.parent() {
+                std::fs::create_dir_all(parent)?;
+                crate::config::set_private_dir(parent);
+            }
+            crate::config::write_atomic(path, &bytes)?;
+            crate::config::set_private_file(path);
+            Ok(())
+        }
+        None => match std::fs::remove_file(path) {
+            Ok(()) => Ok(()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(error) => Err(error.into()),
+        },
     }
 }
 
@@ -1284,10 +2403,13 @@ mod tests {
 
     #[test]
     fn step_state_machine_moves_forward_and_back() {
+        assert_eq!(Step::Discovery.next(), Step::Platform);
+        assert_eq!(Step::Sandbox.next(), Step::Service);
         assert_eq!(Step::Service.next(), Step::Endpoint);
         assert_eq!(Step::Review.next(), Step::Review);
         assert_eq!(Step::Model.previous(), Step::Credential);
-        assert_eq!(Step::Service.previous(), Step::Service);
+        assert_eq!(Step::Service.previous(), Step::Sandbox);
+        assert_eq!(Step::Discovery.previous(), Step::Discovery);
     }
 
     #[test]
@@ -1317,6 +2439,28 @@ mod tests {
         assert!(validate_env_name("bad-name").is_err());
         assert!(validate_rate(f64::NAN).is_err());
         assert!(validate_rate(-1.0).is_err());
+    }
+
+    #[test]
+    fn noninteractive_runtime_inputs_are_explicit_and_non_conflicting() {
+        assert!(validate_noninteractive_options(&Options {
+            runtime_file: Some(PathBuf::from("runtime.tar.gz")),
+            ..Options::default()
+        })
+        .is_err());
+        assert!(validate_noninteractive_options(&Options {
+            install_backend: true,
+            runtime_file: Some(PathBuf::from("runtime.tar.gz")),
+            runtime_base_url: Some("https://mirror.example/runtime".into()),
+            ..Options::default()
+        })
+        .is_err());
+        assert!(validate_noninteractive_options(&Options {
+            install_backend: true,
+            runtime_base_url: Some("https://mirror.example/runtime".into()),
+            ..Options::default()
+        })
+        .is_ok());
     }
 
     #[test]

@@ -14,6 +14,8 @@ on:
 
 permissions:
   contents: write
+  id-token: write
+  attestations: write
 
 env:
   CARGO_TERM_COLOR: always
@@ -238,9 +240,73 @@ jobs:
             dist/*.deb.sha256
             dist/*.rpm.sha256
 
+  runtime_supply_chain:
+    name: pinned OpenCode runtime, notices, SBOM, and provenance
+    needs: create_release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Validate pinned upstream identity and license
+        shell: bash
+        run: |
+          set -euo pipefail
+          manifest=assets/backend/opencode/runtime-manifest.json
+          version="$(jq -r .version "$manifest")"
+          test "$version" = "1.18.9"
+          test "$(jq -r .runtime "$manifest")" = "opencode"
+          test "$(jq '.assets | length' "$manifest")" -eq 4
+          curl --fail --location --retry 3 \
+            "https://raw.githubusercontent.com/anomalyco/opencode/v${version}/LICENSE" \
+            --output upstream-LICENSE
+          cmp upstream-LICENSE assets/backend/opencode/LICENSE
+          grep -F "MIT" assets/backend/opencode/THIRD_PARTY_NOTICES.md
+
+      - name: Download and verify every approved runtime archive
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p runtime-assets
+          manifest=assets/backend/opencode/runtime-manifest.json
+          release_url="$(jq -r .release_url "$manifest")"
+          jq -c '.assets[]' "$manifest" | while read -r row; do
+            name="$(jq -r .name <<<"$row")"
+            expected_size="$(jq -r .size <<<"$row")"
+            expected_sha="$(jq -r .sha256 <<<"$row")"
+            curl --fail --location --retry 3 \
+              "$release_url/$name" --output "runtime-assets/$name"
+            actual_size="$(stat -c %s "runtime-assets/$name")"
+            test "$actual_size" = "$expected_size"
+            printf '%s  %s\n' "$expected_sha" "$name" >> runtime-assets/SHA256SUMS
+          done
+          (cd runtime-assets && sha256sum --check SHA256SUMS)
+          cp "$manifest" runtime-assets/runtime-manifest.json
+          cp assets/backend/opencode/LICENSE runtime-assets/OpenCode-LICENSE
+          cp assets/backend/opencode/THIRD_PARTY_NOTICES.md runtime-assets/THIRD_PARTY_NOTICES.md
+
+      - name: Generate source and dependency SBOM
+        uses: anchore/sbom-action@v0
+        with:
+          path: .
+          format: spdx-json
+          output-file: runtime-assets/aishe-sbom.spdx.json
+
+      - name: Attest runtime and supply-chain artifacts
+        uses: actions/attest-build-provenance@v3
+        with:
+          subject-path: |
+            runtime-assets/*
+
+      - name: Upload pinned runtime and supply-chain artifacts
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.create_release.outputs.tag }}
+          files: |
+            runtime-assets/*
+
   publish:
     name: publish complete release
-    needs: [create_release, build, package]
+    needs: [create_release, build, package, runtime_supply_chain]
     runs-on: ubuntu-latest
     steps:
       - name: Publish only after every artifact is uploaded

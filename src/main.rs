@@ -122,56 +122,89 @@ struct Args {
     cmd: Option<Cmd>,
 }
 
+#[derive(clap::Args, Debug)]
+struct SetupArgs {
+    /// Resume the last interrupted setup draft.
+    #[arg(long)]
+    resume: bool,
+    /// Discard only the setup draft and start from the active config.
+    #[arg(long)]
+    restart: bool,
+    /// Verify the active config without changing it.
+    #[arg(long)]
+    verify: bool,
+    /// Configure from flags without opening a terminal UI.
+    #[arg(long)]
+    non_interactive: bool,
+    /// Service preset: anthropic, openai, groq, openrouter, together, ollama, custom.
+    #[arg(long)]
+    service: Option<String>,
+    /// Provider base URL (host root, without /v1).
+    #[arg(long)]
+    base_url: Option<String>,
+    /// Name of the environment variable containing the API key.
+    #[arg(long)]
+    key_env: Option<String>,
+    /// Saved credential profile name.
+    #[arg(long)]
+    credential_profile: Option<String>,
+    /// Model identifier.
+    #[arg(long)]
+    model: Option<String>,
+    /// API transport: auto, responses, or chat.
+    #[arg(long, value_parser = ["auto", "responses", "chat"])]
+    transport: Option<String>,
+    /// Safety profile.
+    #[arg(long, value_parser = ["conservative", "balanced", "autonomous", "custom"])]
+    profile: Option<String>,
+    /// Input price in USD per million tokens.
+    #[arg(long)]
+    input_price: Option<f64>,
+    /// Output price in USD per million tokens.
+    #[arg(long)]
+    output_price: Option<f64>,
+    /// Make minimal live generation requests while validating.
+    #[arg(long)]
+    live: bool,
+    /// Agent backend (enterprise setup currently supports opencode).
+    #[arg(long, value_parser = ["opencode"])]
+    backend: Option<String>,
+    /// Install or repair the pinned managed OpenCode runtime.
+    #[arg(long)]
+    install_backend: bool,
+    /// Install the runtime from an approved local archive.
+    #[arg(long, value_name = "PATH", conflicts_with = "runtime_base_url")]
+    runtime_file: Option<std::path::PathBuf>,
+    /// Download the pinned runtime asset from this mirror base URL.
+    #[arg(long, value_name = "URL", conflicts_with = "runtime_file")]
+    runtime_base_url: Option<String>,
+    /// Linux sandbox requirement.
+    #[arg(long, value_parser = ["bwrap", "policy"])]
+    sandbox: Option<String>,
+    /// Explicitly authorize supported system package installation.
+    #[arg(long)]
+    install_system_deps: bool,
+    /// Default agent execution scope.
+    #[arg(long, value_parser = ["workspace", "host"])]
+    default_scope: Option<String>,
+    /// Workspace-agent network policy.
+    #[arg(long, value_parser = ["allow", "deny"])]
+    network: Option<String>,
+    /// Native agent transcript density.
+    #[arg(long, value_parser = ["compact", "detailed"])]
+    output: Option<String>,
+    /// Emit a stable machine-readable setup result.
+    #[arg(long)]
+    json: bool,
+}
+
 #[derive(Subcommand, Debug)]
 enum Cmd {
     /// Internal managed backend supervisor.
     #[command(name = "__backend-supervisor", hide = true)]
     BackendSupervisor,
     /// Configure and verify Aishe interactively, or provision it with flags.
-    Setup {
-        /// Resume the last interrupted setup draft.
-        #[arg(long)]
-        resume: bool,
-        /// Discard only the setup draft and start from the active config.
-        #[arg(long)]
-        restart: bool,
-        /// Verify the active config without changing it.
-        #[arg(long)]
-        verify: bool,
-        /// Configure from flags without opening a terminal UI.
-        #[arg(long)]
-        non_interactive: bool,
-        /// Service preset: anthropic, openai, groq, openrouter, together, ollama, custom.
-        #[arg(long)]
-        service: Option<String>,
-        /// Provider base URL (host root, without /v1).
-        #[arg(long)]
-        base_url: Option<String>,
-        /// Name of the environment variable containing the API key.
-        #[arg(long)]
-        key_env: Option<String>,
-        /// Saved credential profile name.
-        #[arg(long)]
-        credential_profile: Option<String>,
-        /// Model identifier.
-        #[arg(long)]
-        model: Option<String>,
-        /// API transport: auto, responses, or chat.
-        #[arg(long, value_parser = ["auto", "responses", "chat"])]
-        transport: Option<String>,
-        /// Safety profile.
-        #[arg(long, value_parser = ["conservative", "balanced", "autonomous", "custom"])]
-        profile: Option<String>,
-        /// Input price in USD per million tokens.
-        #[arg(long)]
-        input_price: Option<f64>,
-        /// Output price in USD per million tokens.
-        #[arg(long)]
-        output_price: Option<f64>,
-        /// Make minimal live generation requests while validating.
-        #[arg(long)]
-        live: bool,
-    },
+    Setup(Box<SetupArgs>),
     /// Edit the current configuration through an interactive section hub.
     Settings {
         /// Print effective fields and their provenance as JSON.
@@ -647,8 +680,16 @@ fn backend_command(command: &BackendCmd) -> Result<u8> {
             Ok(0)
         }
         BackendCmd::Rollback => {
-            eprintln!("aishe: no prior compatible managed runtime is registered with this build");
-            Ok(1)
+            let _ = aishe::backend::supervisor::request_stop();
+            let status = manager.rollback()?;
+            if let RuntimeStatus::Ready {
+                version, sha256, ..
+            } = status
+            {
+                println!("✓ rolled back to the prior verified OpenCode {version} install");
+                println!("  sha256: {sha256}");
+            }
+            Ok(0)
         }
         BackendCmd::Stop => aishe::backend::supervisor::request_stop(),
         BackendCmd::Logs { tail } => {
@@ -681,50 +722,57 @@ fn run() -> Result<u8> {
 
     // Setup is deliberately handled before ordinary config loading: its job is
     // to create, repair, or verify the config without invoking a legacy wizard.
-    if let Some(Cmd::Setup {
-        resume,
-        restart,
-        verify,
-        non_interactive,
-        service,
-        base_url,
-        key_env,
-        credential_profile,
-        model,
-        transport,
-        profile,
-        input_price,
-        output_price,
-        live,
-    }) = &args.cmd
-    {
-        let outcome = aishe::setup::run(aishe::setup::Options {
-            resume: *resume,
-            restart: *restart,
-            verify_only: *verify,
-            non_interactive: *non_interactive,
-            service: service.clone(),
-            base_url: base_url.clone(),
-            key_env: key_env.clone(),
-            credential_profile: credential_profile.clone(),
-            model: model.clone(),
-            transport: transport.clone(),
-            profile: profile.as_deref().and_then(aishe::profiles::Profile::parse),
-            input_price: *input_price,
-            output_price: *output_price,
-            live: *live,
-        })?;
-        return Ok(
-            if outcome
-                .report
-                .as_ref()
-                .is_some_and(|report| report.credential.state == aishe::capabilities::State::Fail)
-            {
-                1
-            } else {
-                0
-            },
-        );
+    if let Some(Cmd::Setup(setup)) = &args.cmd {
+        let outcome = match aishe::setup::run(aishe::setup::Options {
+            resume: setup.resume,
+            restart: setup.restart,
+            verify_only: setup.verify,
+            non_interactive: setup.non_interactive,
+            service: setup.service.clone(),
+            base_url: setup.base_url.clone(),
+            key_env: setup.key_env.clone(),
+            credential_profile: setup.credential_profile.clone(),
+            model: setup.model.clone(),
+            transport: setup.transport.clone(),
+            profile: setup
+                .profile
+                .as_deref()
+                .and_then(aishe::profiles::Profile::parse),
+            input_price: setup.input_price,
+            output_price: setup.output_price,
+            live: setup.live,
+            backend: setup.backend.clone(),
+            install_backend: setup.install_backend,
+            runtime_file: setup.runtime_file.clone(),
+            runtime_base_url: setup.runtime_base_url.clone(),
+            sandbox: setup.sandbox.clone(),
+            install_system_deps: setup.install_system_deps,
+            default_scope: setup.default_scope.clone(),
+            network: setup.network.clone(),
+            output: setup.output.clone(),
+            json: setup.json,
+        }) {
+            Ok(outcome) => outcome,
+            Err(error) => {
+                let code = aishe::setup::exit_code(&error);
+                let message = aishe::redact::redact(&error.to_string());
+                if setup.json {
+                    println!(
+                        "{}",
+                        serde_json::to_string_pretty(&serde_json::json!({
+                            "schema_version": 1,
+                            "applied": false,
+                            "exit_code": code,
+                            "error": message,
+                        }))?
+                    );
+                } else {
+                    eprintln!("aishe setup: {message}");
+                }
+                return Ok(code);
+            }
+        };
+        return Ok(outcome.exit_code);
     }
 
     if let Some(Cmd::Settings { json }) = &args.cmd {
@@ -906,6 +954,9 @@ fn run() -> Result<u8> {
         args.provider.as_deref(),
         args.model.as_deref(),
     );
+    // Administrator policy is the final, read-only constraint layer. It can
+    // reduce authority or reject a provider/model, never inject credentials.
+    aishe::policy::constrain(&mut config)?;
     if args.accept_yolo {
         init_audit(&config);
         return match ensure_yolo_acceptance(&config) {
@@ -1080,7 +1131,7 @@ fn run() -> Result<u8> {
             return dry_run_command(command, *apply);
         }
         Some(
-            Cmd::Setup { .. }
+            Cmd::Setup(_)
             | Cmd::Settings { .. }
             | Cmd::Tour { .. }
             | Cmd::Sessions { .. }
@@ -1285,6 +1336,61 @@ fn hook_session_path(config: &Config) -> Option<std::path::PathBuf> {
         .ok()
         .filter(|s| !s.trim().is_empty())
         .map(std::path::PathBuf::from)
+}
+
+/// Hand a native pre-admission fallback command back to the live shell without
+/// mixing the command protocol into the managed agent's terminal output.
+///
+/// The integration passes `AISHE_PENDING_FILE` only to hidden hook invocations.
+/// Direct `aishe --auto-line` callers keep the historical stdout/exit-code
+/// contract when the variable is absent.
+fn stage_hook_command(action: &str, command: &str) -> Result<bool> {
+    let Some(path) = std::env::var_os("AISHE_PENDING_FILE")
+        .filter(|value| !value.is_empty())
+        .map(std::path::PathBuf::from)
+    else {
+        return Ok(false);
+    };
+    write_hook_command(&path, action, command)?;
+    Ok(true)
+}
+
+fn write_hook_command(path: &std::path::Path, action: &str, command: &str) -> Result<()> {
+    use std::io::Write;
+
+    if path.exists() {
+        let metadata = std::fs::symlink_metadata(path)
+            .with_context(|| format!("inspecting shell handoff {}", path.display()))?;
+        if metadata.file_type().is_symlink() || !metadata.is_file() || metadata.len() > 1_048_576 {
+            anyhow::bail!("AISHE_PENDING_FILE is not a bounded regular file");
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            if metadata.uid() != unsafe { libc::geteuid() } {
+                anyhow::bail!("AISHE_PENDING_FILE is not owned by the current user");
+            }
+        }
+    }
+    let mut options = std::fs::OpenOptions::new();
+    options.create(true).write(true).truncate(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600).custom_flags(libc::O_NOFOLLOW);
+    }
+    let mut file = options
+        .open(path)
+        .with_context(|| format!("opening shell handoff {}", path.display()))?;
+    writeln!(file, "{action}")?;
+    writeln!(file, "{command}")?;
+    file.sync_all()?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
+    }
+    Ok(())
 }
 
 /// Whether `cmd` parses as valid shell syntax. Used so the hook front-ends can
@@ -1612,6 +1718,21 @@ fn record_managed_usage(outcome: &TurnOutcome, config: &Config) {
                 Some((usage, config.active_model())),
                 &config.aishe.status_line_items,
             );
+            let task = outcome
+                .session_id
+                .strip_prefix("ses_")
+                .unwrap_or(&outcome.session_id);
+            let task = task.chars().take(12).collect::<String>();
+            aishe::usagelog::merge_status(
+                std::path::Path::new(&status_path),
+                &[
+                    ("task", format!("task {task}")),
+                    (
+                        "elapsed",
+                        format!("last {:.1}s", outcome.elapsed_ms as f64 / 1000.0),
+                    ),
+                ],
+            );
         }
     }
 }
@@ -1824,9 +1945,9 @@ fn yolo_line(
     Ok(0)
 }
 
-/// Shell-hook helper for `auto` mode: get a suggestion, print the command to
-/// stdout, and signal safety via the exit code so the hook can decide whether to
-/// run it directly (`eval`) or pre-fill it for review.
+/// Shell-hook helper for `auto` mode: get a suggestion and either stage it for
+/// the live shell (hook invocation) or print it with the legacy exit-code
+/// contract (direct invocation).
 ///
 /// - Answer (no command): nothing on stdout, exit 0.
 /// - Safe command: command on stdout, exit 0 (hook runs it).
@@ -1874,7 +1995,6 @@ fn auto_line(
             if !explanation.is_empty() {
                 eprintln!("{}", explanation.as_str().dim());
             }
-            println!("{command}");
             let code = match safety::assess(command) {
                 Risk::Safe => 0,
                 Risk::Dangerous(reason) => {
@@ -1893,6 +2013,10 @@ fn auto_line(
                     EXIT_AUTO_DANGEROUS
                 }
             };
+            let action = if code == 0 { "run" } else { "fill" };
+            if !stage_hook_command(action, command)? {
+                println!("{command}");
+            }
             let reply = if explanation.is_empty() {
                 command.clone()
             } else {
@@ -2733,18 +2857,41 @@ fn context_command(
 
 fn tasks_list_command(json_output: bool) -> u8 {
     let records = aishe::tasks::list();
+    let managed = aishe::backend::opencode::session::SessionStore::from_default_root()
+        .and_then(|store| store.records(None))
+        .unwrap_or_default();
     if json_output {
         println!(
             "{}",
-            serde_json::to_string_pretty(&records).unwrap_or_else(|_| "[]".into())
+            serde_json::to_string_pretty(&serde_json::json!({
+                "schema_version": 1,
+                "managed": managed,
+                "legacy": records,
+            }))
+            .unwrap_or_else(|_| "{}".into())
         );
         return 0;
     }
-    if records.is_empty() {
-        println!("no durable AI task sessions");
+    if records.is_empty() && managed.is_empty() {
+        println!("no AI sessions");
         return 0;
     }
-    println!("durable AI task sessions (oldest first):");
+    if !managed.is_empty() {
+        println!("managed OpenCode sessions (newest mapping last):");
+        for record in managed {
+            println!(
+                "  {}  {:?} · {:?}  {}",
+                aishe::commands::display_safe(&record.backend_session_id),
+                record.mode,
+                record.scope,
+                aishe::commands::display_safe(&record.workspace.display().to_string())
+            );
+        }
+    }
+    if records.is_empty() {
+        return 0;
+    }
+    println!("legacy durable task sessions (oldest first, retained):");
     for record in records {
         println!(
             "  {}  {:?}  {} / {}  {}",
@@ -2830,6 +2977,9 @@ fn resume_task_command(
     id: Option<&str>,
     replacement_cwd: Option<&std::path::Path>,
 ) -> Result<u8> {
+    if let Some(id) = id.filter(|id| id.starts_with("ses_")) {
+        return resume_managed_session(config, id, replacement_cwd);
+    }
     let record = match id {
         Some(id) => aishe::tasks::load(id)?,
         None => aishe::tasks::most_recent_resumable()
@@ -2892,6 +3042,51 @@ fn resume_task_command(
         &mcp,
     )?;
     record_session_usage(Some(provider.as_ref()), config);
+    Ok(0)
+}
+
+fn resume_managed_session(
+    config: &Config,
+    id: &str,
+    replacement_cwd: Option<&std::path::Path>,
+) -> Result<u8> {
+    use aishe::agent::{BackendSession, ExecutionScope, Mode};
+
+    let state = aishe::backend::supervisor::ensure_running(config)?;
+    let control = aishe::backend::control::SupervisorClient::new(state)?;
+    let client = aishe::backend::opencode::OpenCodeClient::new(
+        control.opencode_connection(),
+        control.provider_id(),
+        control.model_id(),
+    )?;
+    let sessions = client.list_sessions(None)?;
+    let summary = sessions
+        .into_iter()
+        .find(|session| session.id == id)
+        .with_context(|| format!("managed session '{id}' was not found"))?;
+    let workspace = match replacement_cwd {
+        Some(path) if path.is_dir() => path.to_path_buf(),
+        Some(path) => anyhow::bail!("replacement cwd {} is not a directory", path.display()),
+        None if summary.workspace.is_dir() => summary.workspace,
+        None => anyhow::bail!(
+            "managed session workspace {} is missing; pass --cwd PATH",
+            summary.workspace.display()
+        ),
+    };
+    let session = BackendSession {
+        id: id.to_string(),
+        workspace,
+        backend: "opencode".into(),
+    };
+    let mode = Mode::parse(&config.aishe.mode).context("active mode is invalid")?;
+    let scope = ExecutionScope::parse(&config.backend.default_scope)
+        .context("active backend scope is invalid")?;
+    let shell_id = aishe::agent::controller::current_shell_id()?;
+    aishe::backend::opencode::session::SessionStore::from_default_root()?
+        .bind(&shell_id, &session, mode, scope)?;
+    println!("resumed managed session {id}");
+    println!("workspace: {}", session.workspace.display());
+    println!("The next natural-language turn in this shell continues that conversation.");
     Ok(0)
 }
 
@@ -3940,5 +4135,29 @@ mod tests {
             path.unwrap(),
             std::path::PathBuf::from("/from/config.jsonl")
         );
+    }
+
+    #[test]
+    fn hook_command_handoff_is_exact_and_private() {
+        let path = std::env::temp_dir().join(format!(
+            "aishe-hook-handoff-{}-{}",
+            std::process::id(),
+            std::thread::current().name().unwrap_or("test")
+        ));
+        let _ = std::fs::remove_file(&path);
+        write_hook_command(&path, "run", "cd '/tmp/a b'\nprintf ok").unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "run\ncd '/tmp/a b'\nprintf ok\n"
+        );
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+                0o600
+            );
+        }
+        let _ = std::fs::remove_file(path);
     }
 }

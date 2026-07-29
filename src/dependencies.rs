@@ -96,57 +96,66 @@ fn functional_probe(binary: &Path) -> Result<()> {
 }
 
 pub fn bubblewrap_install_plan() -> Result<InstallPlan> {
+    package_install_plan("bubblewrap")
+}
+
+pub fn zsh_install_plan() -> Result<InstallPlan> {
+    package_install_plan("zsh")
+}
+
+fn package_install_plan(package: &str) -> Result<InstallPlan> {
     if !cfg!(target_os = "linux") {
-        anyhow::bail!("bubblewrap package installation is supported only on Linux");
+        anyhow::bail!("{package} package installation is supported only on Linux");
     }
     let manager = detect_package_manager().context(
         "no supported package manager found (apt-get, dnf, yum, zypper, pacman, or apk)",
     )?;
     let is_root = unsafe { libc::geteuid() } == 0;
-    let (manager_name, binary, package_args): (&str, PathBuf, &[&str]) = match manager.as_str() {
-        "apt-get" => (
-            "apt",
-            crate::executor::which("apt-get").unwrap(),
-            &["install", "-y", "bubblewrap"],
-        ),
-        "dnf" => (
-            "dnf",
-            crate::executor::which("dnf").unwrap(),
-            &["install", "-y", "bubblewrap"],
-        ),
-        "yum" => (
-            "yum",
-            crate::executor::which("yum").unwrap(),
-            &["install", "-y", "bubblewrap"],
-        ),
-        "zypper" => (
-            "zypper",
-            crate::executor::which("zypper").unwrap(),
-            &["--non-interactive", "install", "bubblewrap"],
-        ),
-        "pacman" => (
-            "pacman",
-            crate::executor::which("pacman").unwrap(),
-            &["-S", "--noconfirm", "bubblewrap"],
-        ),
-        "apk" => (
-            "apk",
-            crate::executor::which("apk").unwrap(),
-            &["add", "bubblewrap"],
-        ),
-        _ => unreachable!("package-manager detector returned an unknown manager"),
-    };
+    let (manager_name, binary, mut package_args): (&str, PathBuf, Vec<String>) =
+        match manager.as_str() {
+            "apt-get" => (
+                "apt",
+                crate::executor::which("apt-get").unwrap(),
+                vec!["install".into(), "-y".into(), package.into()],
+            ),
+            "dnf" => (
+                "dnf",
+                crate::executor::which("dnf").unwrap(),
+                vec!["install".into(), "-y".into(), package.into()],
+            ),
+            "yum" => (
+                "yum",
+                crate::executor::which("yum").unwrap(),
+                vec!["install".into(), "-y".into(), package.into()],
+            ),
+            "zypper" => (
+                "zypper",
+                crate::executor::which("zypper").unwrap(),
+                vec!["--non-interactive".into(), "install".into(), package.into()],
+            ),
+            "pacman" => (
+                "pacman",
+                crate::executor::which("pacman").unwrap(),
+                vec!["-S".into(), "--noconfirm".into(), package.into()],
+            ),
+            "apk" => (
+                "apk",
+                crate::executor::which("apk").unwrap(),
+                vec!["add".into(), package.into()],
+            ),
+            _ => unreachable!("package-manager detector returned an unknown manager"),
+        };
     let mut args = Vec::new();
     let (program, needs_privilege) = if is_root {
         (binary.display().to_string(), false)
     } else {
-        let sudo = crate::executor::which("sudo").context(
-            "bubblewrap installation needs administrator access but sudo is unavailable",
-        )?;
+        let sudo = crate::executor::which("sudo").context(format!(
+            "{package} installation needs administrator access but sudo is unavailable"
+        ))?;
         args.push(binary.display().to_string());
         (sudo.display().to_string(), true)
     };
-    args.extend(package_args.iter().map(|value| value.to_string()));
+    args.append(&mut package_args);
     let display = std::iter::once(program.as_str())
         .chain(args.iter().map(String::as_str))
         .map(shell_display_arg)
@@ -162,8 +171,31 @@ pub fn bubblewrap_install_plan() -> Result<InstallPlan> {
 }
 
 pub fn install_bubblewrap(plan: &InstallPlan, consent: bool) -> Result<BubblewrapState> {
+    run_install_plan(plan, consent, "bubblewrap")?;
+    let state = bubblewrap_probe();
+    if !matches!(state, BubblewrapState::Usable { .. }) {
+        anyhow::bail!("bubblewrap installed but its functional self-test failed");
+    }
+    Ok(state)
+}
+
+pub fn install_zsh(plan: &InstallPlan, consent: bool) -> Result<PathBuf> {
+    run_install_plan(plan, consent, "zsh")?;
+    let binary = crate::executor::which("zsh").context("zsh installed but is not on PATH")?;
+    let output = Command::new(&binary)
+        .arg("--version")
+        .stdin(Stdio::null())
+        .output()
+        .context("running zsh --version")?;
+    if !output.status.success() {
+        anyhow::bail!("zsh installed but its version self-test failed");
+    }
+    Ok(binary)
+}
+
+fn run_install_plan(plan: &InstallPlan, consent: bool, label: &str) -> Result<()> {
     if !consent {
-        anyhow::bail!("bubblewrap installation was not authorized");
+        anyhow::bail!("{label} installation was not authorized");
     }
     let status = Command::new(&plan.program)
         .args(&plan.args)
@@ -173,13 +205,9 @@ pub fn install_bubblewrap(plan: &InstallPlan, consent: bool) -> Result<Bubblewra
         .status()
         .with_context(|| format!("running {}", plan.display))?;
     if !status.success() {
-        anyhow::bail!("bubblewrap package installation failed with {status}");
+        anyhow::bail!("{label} package installation failed with {status}");
     }
-    let state = bubblewrap_probe();
-    if !matches!(state, BubblewrapState::Usable { .. }) {
-        anyhow::bail!("bubblewrap installed but its functional self-test failed");
-    }
-    Ok(state)
+    Ok(())
 }
 
 fn detect_package_manager() -> Option<String> {

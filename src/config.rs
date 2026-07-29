@@ -110,6 +110,9 @@ pub struct BackendConfig {
     /// `compact` or `detailed` inline agent rendering.
     #[serde(default = "default_backend_output")]
     pub output: String,
+    /// Hard provider output cap. `0` delegates to the backend/model default.
+    #[serde(default)]
+    pub max_output_tokens: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -416,6 +419,7 @@ fn default_status_line_items() -> Vec<String> {
     vec![
         "model".to_string(),
         "mode".to_string(),
+        "backend".to_string(),
         "scope".to_string(),
         "session_cost".to_string(),
         "requests".to_string(),
@@ -530,6 +534,7 @@ impl Default for BackendConfig {
             default_scope: default_execution_scope(),
             workspace_network: default_workspace_network(),
             output: default_backend_output(),
+            max_output_tokens: 0,
         }
     }
 }

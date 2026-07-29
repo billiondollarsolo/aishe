@@ -64,6 +64,7 @@ pub struct TurnOutcome {
     pub text: String,
     pub events: Vec<AgentEvent>,
     pub usage: UsageDelta,
+    pub elapsed_ms: u128,
 }
 
 #[derive(Debug)]
@@ -103,6 +104,7 @@ pub fn run_turn(
     prompt: &str,
     options: TurnOptions,
 ) -> std::result::Result<TurnOutcome, TurnFailure> {
+    let started_at = std::time::Instant::now();
     INTERRUPTED.store(false, Ordering::SeqCst);
     if config.backend.engine != "opencode" {
         return Err(TurnFailure::PreAdmission(anyhow::anyhow!(
@@ -126,7 +128,7 @@ pub fn run_turn(
         }
     }
 
-    let shell_id = shell_id().map_err(TurnFailure::PreAdmission)?;
+    let shell_id = current_shell_id().map_err(TurnFailure::PreAdmission)?;
     let requested_workspace = std::env::current_dir()
         .context("resolving the current workspace")
         .map_err(TurnFailure::PreAdmission)?;
@@ -191,7 +193,8 @@ pub fn run_turn(
             session: session.clone(),
             text: prompt.to_string(),
             mode: options.mode,
-            max_output_tokens: None,
+            max_output_tokens: (config.backend.max_output_tokens > 0)
+                .then_some(config.backend.max_output_tokens),
         })
         .map_err(TurnFailure::Admitted)?;
 
@@ -273,6 +276,7 @@ pub fn run_turn(
         text,
         events,
         usage,
+        elapsed_ms: started_at.elapsed().as_millis(),
     })
 }
 
@@ -322,7 +326,7 @@ fn collect_usage(events: &[AgentEvent]) -> UsageDelta {
     total
 }
 
-fn shell_id() -> Result<String> {
+pub fn current_shell_id() -> Result<String> {
     if let Ok(value) = std::env::var("AISHE_SHELL_ID") {
         if (16..=128).contains(&value.len())
             && value

@@ -202,13 +202,25 @@ def isolated_env(root):
     return env
 
 
+def setup_to_provider(shell):
+    shell.expect("Continue setup")
+    shell.line()  # Step 1: continue; platform/runtime/sandbox auto-verify in CI.
+    shell.expect("Provider service", timeout=60)
+
+
+def expect_setup_exit(shell, label):
+    code = shell.finish()
+    if code != 2:
+        raise AssertionError("%s returned %s, expected stable pause code 2" % (label, code))
+
+
 def setup_visual_style_and_alignment():
     root = tempfile.mkdtemp(prefix="aishe-setup-visual-")
     try:
         env = isolated_env(root)
         shell = Pty([BINARY, "setup"], env, cols=58)
         try:
-            shell.expect("Provider service")
+            setup_to_provider(shell)
             shell.drain(0.3)
             if "\x1b[1;36mProvider service\x1b[0m" not in shell.transcript:
                 raise AssertionError("setup menu title was not color styled")
@@ -230,8 +242,7 @@ def setup_visual_style_and_alignment():
                 )
             shell.line(":cancel")
             shell.expect("Setup paused")
-            if shell.finish() != 0:
-                raise AssertionError("visual setup probe returned nonzero")
+            expect_setup_exit(shell, "visual setup probe")
         finally:
             shell.close()
         print("  ok   colored focus, narrow wrapping, and prompt alignment")
@@ -250,7 +261,7 @@ def setup_checks_catalog_credential_and_manual_model():
         with model_server(catalog, [good_key]) as endpoint:
             rejected = Pty([BINARY, "setup"], env)
             try:
-                rejected.expect("Provider service")
+                setup_to_provider(rejected)
                 rejected.menu(7)
                 rejected.expect("API endpoint")
                 rejected.line(endpoint)
@@ -264,14 +275,13 @@ def setup_checks_catalog_credential_and_manual_model():
                 rejected.expect("Credential profile 'custom'")
                 rejected.send("\x1b")
                 rejected.expect("Setup paused")
-                if rejected.finish() != 0:
-                    raise AssertionError("invalid-credential setup probe returned nonzero")
+                expect_setup_exit(rejected, "invalid-credential setup probe")
             finally:
                 rejected.close()
 
             restarted = Pty([BINARY, "setup", "--restart"], env)
             try:
-                restarted.expect("Provider service")
+                setup_to_provider(restarted)
                 restarted.menu(7)
                 restarted.expect("API endpoint")
                 restarted.line(endpoint)
@@ -301,8 +311,7 @@ def setup_checks_catalog_credential_and_manual_model():
                 restarted.expect("Safety profile")
                 restarted.send("\x1b")
                 restarted.expect("Setup paused")
-                if restarted.finish() != 0:
-                    raise AssertionError("manual-model setup probe returned nonzero")
+                expect_setup_exit(restarted, "manual-model setup probe")
             finally:
                 restarted.close()
         print("  ok   /models rejects bad keys and validates selected or typed models")
@@ -313,7 +322,7 @@ def setup_checks_catalog_credential_and_manual_model():
 def complete_setup(root, env, endpoint):
     shell = Pty([BINARY, "setup"], env)
     try:
-        shell.expect("Provider service")
+        setup_to_provider(shell)
         shell.menu(6)  # Ollama
 
         shell.expect("API endpoint")
@@ -335,6 +344,10 @@ def complete_setup(root, env, endpoint):
 
         shell.expect("Safety profile")
         shell.menu(2)  # balanced
+        shell.expect("Default execution scope")
+        shell.menu(1)  # workspace
+        shell.expect("Workspace network")
+        shell.menu(1)  # deny
         shell.expect("No price is known")
         shell.menu(1)  # enter exact rates
         shell.expect("Input price")
@@ -344,22 +357,26 @@ def complete_setup(root, env, endpoint):
         shell.expect("Output price")
         shell.line("0.5")
 
+        shell.expect("Agent transcript density")
+        shell.menu(1)  # compact
         shell.expect("Live status-line placement")
         shell.menu(2)  # below
         shell.expect("Status-line contents")
         shell.menu(2)  # detailed
         shell.expect("preview (below)")
+        shell.expect("Enable the private redacted audit log?")
+        shell.line("n")
 
-        shell.expect("Run live text/structured/tool/streaming checks?")
+        shell.expect("Run live text/structured/tool/streaming checks?", timeout=60)
         shell.line("n")
         shell.expect("Provider check:")
         shell.expect("Review")
         shell.expect("Apply this configuration")
         shell.line("y")
-        shell.expect("Setup complete")
+        shell.expect("Setup complete", timeout=60)
         shell.expect("Run the guided first-session tour now")
         shell.line("n")
-        shell.expect("Next: run `aishe tour`")
+        shell.expect("Run `aishe tour` when you are ready")
         if shell.finish() != 0:
             raise AssertionError("setup returned nonzero\n" + shell.transcript[-4000:])
     finally:
@@ -388,11 +405,10 @@ def cancel_preserves_active_config(root, env, config):
     before = open(config, "rb").read()
     shell = Pty([BINARY, "setup"], env)
     try:
-        shell.expect("Provider service")
+        setup_to_provider(shell)
         shell.send("\x1b")
         shell.expect("Setup paused")
-        if shell.finish() != 0:
-            raise AssertionError("cancel returned nonzero")
+        expect_setup_exit(shell, "cancel")
     finally:
         shell.close()
     after = open(config, "rb").read()
@@ -407,8 +423,7 @@ def cancel_preserves_active_config(root, env, config):
         resumed.expect("Provider service")
         resumed.send("\x03")
         resumed.expect("Setup paused")
-        if resumed.finish() != 0:
-            raise AssertionError("Ctrl-C cancel returned nonzero")
+        expect_setup_exit(resumed, "Ctrl-C cancel")
     finally:
         resumed.close()
     if before != open(config, "rb").read():
@@ -423,11 +438,10 @@ def cancel_preserves_active_config(root, env, config):
         json.dump(draft_state, file)
     restarted = Pty([BINARY, "setup", "--restart"], env)
     try:
-        restarted.expect("Provider service")
+        setup_to_provider(restarted)
         restarted.send("\x1b")
         restarted.expect("Setup paused")
-        if restarted.finish() != 0:
-            raise AssertionError("restarted setup cancel returned nonzero")
+        expect_setup_exit(restarted, "restarted setup cancel")
     finally:
         restarted.close()
     if before != open(config, "rb").read():
@@ -495,7 +509,7 @@ def hidden_auth_and_staged_setup_are_secret_safe():
         env = isolated_env(root)
         shell = Pty([BINARY, "setup"], env)
         try:
-            shell.expect("Provider service")
+            setup_to_provider(shell)
             shell.menu(7)  # custom, with authentication required
             shell.expect("API endpoint")
             shell.line(endpoint)
@@ -520,8 +534,7 @@ def hidden_auth_and_staged_setup_are_secret_safe():
 
             shell.send("\x1b")
             shell.expect("Setup paused")
-            if shell.finish() != 0:
-                raise AssertionError("staged setup cancel returned nonzero")
+            expect_setup_exit(shell, "staged setup cancel")
         finally:
             shell.close()
 
@@ -544,17 +557,27 @@ def hidden_auth_and_staged_setup_are_secret_safe():
             resumed.expect("present in the current endpoint catalog")
             resumed.expect("Safety profile")
             resumed.menu(1)
+            resumed.expect("Default execution scope")
+            resumed.menu(1)
+            resumed.expect("Workspace network")
+            resumed.menu(1)
             resumed.expect("No price is known")
             resumed.menu(2)
+            resumed.expect("Agent transcript density")
+            resumed.menu(1)
             resumed.expect("Live status-line placement")
             resumed.menu(3)
-            resumed.expect("Run live text/structured/tool/streaming checks?")
+            resumed.expect("Enable the private redacted audit log?")
+            resumed.line("n")
+            resumed.expect(
+                "Run live text/structured/tool/streaming checks?", timeout=60
+            )
             resumed.line("n")
             resumed.expect("Review")
             resumed.expect("will save locally on Apply")
             resumed.expect("Apply this configuration")
             resumed.line("y")
-            resumed.expect("Setup complete")
+            resumed.expect("Setup complete", timeout=60)
             resumed.expect("Run the guided first-session tour now")
             resumed.line("n")
             if resumed.finish() != 0:

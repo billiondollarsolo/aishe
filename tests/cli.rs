@@ -643,6 +643,9 @@ provider = "anthropic"
 base_url = "http://127.0.0.1:1"
 api_key_env = "ANTHROPIC_API_KEY"
 model = "claude-x"
+
+[backend]
+engine = "native"
 "#,
     )
     .unwrap();
@@ -838,6 +841,9 @@ model = "user-model"
 base_url = "https://api.openai.com"
 api_key_env = "OPENAI_API_KEY"
 model = "user-openai"
+
+[backend]
+engine = "native"
 "#,
     )
     .unwrap();
@@ -1207,6 +1213,13 @@ fn missing_config_in_non_tty_mode_is_actionable_and_does_not_write_defaults() {
 fn noninteractive_setup_is_rerunnable_and_preserves_existing_fields() {
     let dir = temp_root("setup");
     let data = dir.join("data");
+    let config_dir = dir.join("aishe");
+    std::fs::create_dir_all(&config_dir).unwrap();
+    std::fs::write(
+        config_dir.join("config.toml"),
+        "version = 4\n\n[backend]\nengine = \"native\"\n",
+    )
+    .unwrap();
     let run = |args: &[&str]| {
         let mut command = Command::cargo_bin("aishe").unwrap();
         command
@@ -1270,7 +1283,7 @@ fn noninteractive_setup_is_rerunnable_and_preserves_existing_fields() {
         .collect();
     assert_eq!(
         backup_texts.len(),
-        2,
+        3,
         "rapid setup applies must create distinct backups"
     );
     assert!(
@@ -1522,7 +1535,8 @@ fn durable_task_cli_lifecycle_is_private_and_redacted() {
     let listing = run(&["sessions", "--json"]).output().unwrap();
     assert!(listing.status.success());
     let records: serde_json::Value = serde_json::from_slice(&listing.stdout).unwrap();
-    let record = &records.as_array().unwrap()[0];
+    assert_eq!(records["schema_version"], 1);
+    let record = &records["legacy"].as_array().unwrap()[0];
     let id = record["id"].as_str().unwrap();
     assert_eq!(record["status"], "completed");
     let task_path = data.join("aishe").join("tasks").join(format!("{id}.json"));

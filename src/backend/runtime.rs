@@ -59,6 +59,10 @@ pub struct RuntimeManager {
 
 impl RuntimeManager {
     pub fn new() -> Result<Self> {
+        if let Some(root) = std::env::var_os("AISHE_RUNTIME_DIR").filter(|value| !value.is_empty())
+        {
+            return Self::with_root(PathBuf::from(root));
+        }
         let data = crate::config::data_root().context("cannot resolve Aishe data directory")?;
         Self::with_root(data.join("aishe").join("runtime"))
     }
@@ -90,6 +94,12 @@ impl RuntimeManager {
         } else {
             "opencode"
         })
+    }
+
+    fn previous_dir(&self) -> PathBuf {
+        self.root
+            .join("opencode")
+            .join(format!(".previous-{}", self.manifest.version))
     }
 
     pub fn status(&self) -> RuntimeStatus {
@@ -176,15 +186,31 @@ impl RuntimeManager {
 
             let destination = self.version_dir();
             if destination.exists() {
-                let replaced = self.root.join(format!(".replaced-{nonce}"));
-                fs::rename(&destination, &replaced).with_context(|| {
-                    format!("staging existing runtime {}", destination.display())
-                })?;
+                let replaced = self.previous_dir();
+                let retired_previous = self.root.join(format!(".retired-previous-{nonce}"));
+                if replaced.exists() {
+                    fs::rename(&replaced, &retired_previous).with_context(|| {
+                        format!("staging prior rollback runtime {}", replaced.display())
+                    })?;
+                }
+                if let Err(error) = fs::rename(&destination, &replaced) {
+                    if retired_previous.exists() {
+                        let _ = fs::rename(&retired_previous, &replaced);
+                    }
+                    return Err(error).with_context(|| {
+                        format!("staging existing runtime {}", destination.display())
+                    });
+                }
                 if let Err(error) = fs::rename(&staging, &destination) {
                     let _ = fs::rename(&replaced, &destination);
+                    if retired_previous.exists() {
+                        let _ = fs::rename(&retired_previous, &replaced);
+                    }
                     return Err(error).context("activating verified OpenCode runtime");
                 }
-                let _ = fs::remove_dir_all(replaced);
+                if retired_previous.exists() {
+                    let _ = fs::remove_dir_all(retired_previous);
+                }
             } else {
                 fs::rename(&staging, &destination)
                     .context("activating verified OpenCode runtime")?;
@@ -219,6 +245,46 @@ impl RuntimeManager {
         }
     }
 
+    /// Atomically swap the current runtime with the immediately previous
+    /// checksum-verified install of the same compatibility-pinned version.
+    pub fn rollback(&self) -> Result<RuntimeStatus> {
+        let current = self.version_dir();
+        let previous = self.previous_dir();
+        if !previous.is_dir() {
+            anyhow::bail!(
+                "no prior compatible OpenCode {} runtime is available",
+                self.manifest.version
+            );
+        }
+        // Verify the candidate before moving the working runtime.
+        let candidate = previous.join(if cfg!(windows) {
+            "opencode.exe"
+        } else {
+            "opencode"
+        });
+        self.verify_install(&candidate)
+            .context("previous runtime failed compatibility verification")?;
+
+        let nonce = random_hex(12);
+        let swap = self.root.join(format!(".rollback-swap-{nonce}"));
+        fs::rename(&current, &swap)
+            .with_context(|| format!("staging current runtime {}", current.display()))?;
+        if let Err(error) = fs::rename(&previous, &current) {
+            let _ = fs::rename(&swap, &current);
+            return Err(error).context("activating previous runtime");
+        }
+        if let Err(error) = fs::rename(&swap, &previous) {
+            // The candidate is already active and verified. Preserve the prior
+            // current runtime at the bounded swap path for manual recovery.
+            return Err(error).context("retaining replaced runtime for reverse rollback");
+        }
+        crate::config::write_atomic(
+            &self.root.join("current"),
+            format!("{}\n", self.manifest.version).as_bytes(),
+        )?;
+        self.verify()
+    }
+
     /// Remove only interrupted private staging/download/replacement entries.
     /// Version directories are intentionally retained for explicit rollback.
     pub fn garbage_collect(&self, dry_run: bool) -> Result<Vec<PathBuf>> {
@@ -233,9 +299,15 @@ impl RuntimeManager {
                 .file_name()
                 .and_then(|value| value.to_str())
                 .unwrap_or("");
-            if ![".download-", ".staging-", ".replaced-"]
-                .iter()
-                .any(|prefix| name.starts_with(prefix))
+            if ![
+                ".download-",
+                ".staging-",
+                ".replaced-",
+                ".retired-previous-",
+                ".rollback-swap-",
+            ]
+            .iter()
+            .any(|prefix| name.starts_with(prefix))
             {
                 continue;
             }
