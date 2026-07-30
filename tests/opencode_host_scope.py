@@ -50,6 +50,7 @@ def main():
     runtime = os.environ.get("AISHE_RUNTIME_DIR")
     if not runtime:
         raise SystemExit("AISHE_RUNTIME_DIR must point to the installed pinned runtime")
+    require_bwrap = os.environ.get("AISHE_TEST_REQUIRE_BWRAP") == "1"
     binary = str(pathlib.Path(sys.argv[1]).resolve())
     with contract.STATE.lock:
         contract.STATE.requests.clear()
@@ -87,7 +88,7 @@ def main():
         contract.write_config(config_path, endpoint, default_scope="workspace")
         config = config_path.read_text(encoding="utf-8")
         config = config.replace('mode = "auto"', 'mode = "yolo"')
-        if os.environ.get("AISHE_TEST_REQUIRE_BWRAP") == "1":
+        if require_bwrap:
             config = config.replace(
                 'linux_backend = "policy"', 'linux_backend = "bwrap"'
             )
@@ -128,8 +129,15 @@ def main():
                 "--yolo-line",
                 "write the workspace-scope contract marker",
             )
-            if workspace_target.read_text(encoding="utf-8") != "workspace-first\n":
-                raise AssertionError("workspace-scoped tool did not write its project marker")
+            if require_bwrap:
+                if workspace_target.read_text(encoding="utf-8") != "workspace-first\n":
+                    raise AssertionError(
+                        "workspace-scoped tool did not write its project marker"
+                    )
+            elif workspace_target.exists():
+                raise AssertionError(
+                    "restricted runner executed a workspace tool without functional bubblewrap"
+                )
             first_sessions = json.loads(
                 run(binary, env, workspace, "sessions", "--json").stdout
             ).get("managed", [])
