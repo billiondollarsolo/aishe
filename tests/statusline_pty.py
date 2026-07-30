@@ -20,6 +20,7 @@ BINARY = os.path.abspath(
 )
 SGR = re.compile(r"\x1b\[[0-9;]*m")
 CSI = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]")
+TERMINAL_MODE = re.compile(r"\x1b[=>]")
 
 
 def submitted_line_remains_visible(segment, line):
@@ -28,7 +29,8 @@ def submitted_line_remains_visible(segment, line):
     if line not in before_accept:
         return False
     after_final_copy = before_accept.rsplit(line, 1)[1]
-    after_final_copy = CSI.sub("", after_final_copy).replace("\r", "").replace("\n", "")
+    after_final_copy = TERMINAL_MODE.sub("", CSI.sub("", after_final_copy))
+    after_final_copy = after_final_copy.replace("\r", "").replace("\n", "")
     return after_final_copy == ""
 
 

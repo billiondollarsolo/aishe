@@ -110,15 +110,31 @@ impl AgentBackend for OpenCodeBackend {
                 return Ok(session);
             }
         }
-        let session = self.client.create_session(
-            &workspace,
-            "Aishe session",
-            request.scope,
-            request.network,
-        )?;
-        self.sessions
-            .bind(&request.shell_id, &session, request.mode, request.scope)?;
-        Ok(session)
+        self.sessions.serialize_creation(|| {
+            // Another process may have created this shell/workspace session
+            // while we waited for the creation lock. Recheck before POSTing.
+            if let Some(mapping) = self.sessions.find(&request.shell_id, &workspace)? {
+                let session = BackendSession {
+                    id: mapping.backend_session_id,
+                    workspace: mapping.workspace,
+                    backend: "opencode".into(),
+                };
+                if self.client.session(&session)?.is_some() {
+                    self.sessions
+                        .bind(&request.shell_id, &session, request.mode, request.scope)?;
+                    return Ok(session);
+                }
+            }
+            let session = self.client.create_session(
+                &workspace,
+                "Aishe session",
+                request.scope,
+                request.network,
+            )?;
+            self.sessions
+                .bind(&request.shell_id, &session, request.mode, request.scope)?;
+            Ok(session)
+        })
     }
 
     fn submit(&self, request: PromptRequest) -> Result<PromptHandle> {

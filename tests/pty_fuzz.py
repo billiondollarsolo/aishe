@@ -104,6 +104,13 @@ class Pty:
     def send(self, line):
         os.write(self.master, (line + "\r").encode("utf-8"))
 
+    def raw(self, data):
+        os.write(self.master, data)
+
+    def expect_prompt(self, timeout=TIMEOUT):
+        """Wait for both the prompt and ZLE's live-input transition."""
+        return self.expect("ZP> ", timeout) and self.expect("\x1b[?2004h", timeout)
+
     def wait_ready(self, timeout=20):
         """Block until zsh's line editor is really accepting input.
 
@@ -133,9 +140,21 @@ class Pty:
 
     def clear_line(self):
         # Ctrl-C: abandon any partial or pre-filled buffer and get a fresh prompt.
-        os.write(self.master, b"\x03")
-        self.drain_until_quiet(quiet=0.2)
-        self.buf = ""
+        # zsh can redraw a `print -z` review buffer in place without printing a
+        # second literal prompt, so prompt text is not proof that Ctrl-C landed.
+        # Ask the test-only ZLE widget for the actual BUFFER state instead.
+        for _ in range(3):
+            self.buf = ""
+            os.write(self.master, b"\x03")
+            self.settle(0.2)
+            self.raw(b"\x18\x02")  # Ctrl-X Ctrl-B: _aishe_fuzz_buffer_state
+            if self.expect("FUZZ_BUFFER_EMPTY", timeout=2):
+                self.buf = ""
+                return True
+            # Ctrl-C is harmless on an empty prompt. Repeating it covers a loaded
+            # host where the first byte arrived during the review widget's final
+            # redraw and was not yet handled by ZLE.
+        return False
 
     def settle(self, secs=0.25):
         deadline = time.monotonic() + secs
@@ -387,15 +406,24 @@ def main():
 
     sh = Pty([os.path.abspath(BINARY), "zsh"], env, cwd=home)
     sh.wait_ready()
+    if not sh.expect_prompt(timeout=20):
+        fail(sh, {"kind": "startup"}, "ZLE did not become ready for fuzz setup")
+    sh.send(
+        "_aishe_fuzz_buffer_state() { "
+        '[[ -z "$BUFFER" ]] && zle -M FUZZ_BUFFER_EMPTY '
+        "|| zle -M FUZZ_BUFFER_NONEMPTY; }; "
+        "zle -N _aishe_fuzz_buffer_state; "
+        "bindkey '^X^B' _aishe_fuzz_buffer_state"
+    )
     n_cmd = 120 * SCALE
     n_nl = 200 * SCALE
     ran = 0
     try:
-        sh.expect("ZP> ", timeout=30)
-
         # ---- commands: must produce exact output, no errors ----
         set_fake("")
         for case in gen_command_inputs(rng, n_cmd):
+            if not sh.expect_prompt(timeout=10):
+                fail(sh, case, "ZLE was not ready for the generated command")
             sh.buf = ""
             sh.send(case["input"])
             ok = sh.expect(case["want"], timeout=10)
@@ -409,6 +437,8 @@ def main():
         # ---- sigil NL: a fixed fake answer; must always route, never error ----
         set_fake('{"type":"answer","explanation":"AIANSWER"}')
         for case in gen_nl_inputs(rng, n_nl):
+            if not sh.expect_prompt(timeout=10):
+                fail(sh, case, "ZLE was not ready for the generated prompt")
             sh.buf = ""
             sh.send(case["input"])
             ok = sh.expect("AIANSWER", timeout=10)
@@ -420,15 +450,27 @@ def main():
             ran += 1
 
         # ---- adversarial model responses: never an eval/parse error ----
+        prompt_is_ready = False
         for case in adversarial_responses():
             set_fake(case["fake"])
+            if not prompt_is_ready and not sh.expect_prompt(timeout=10):
+                fail(sh, case, "ZLE was not ready for the adversarial prompt")
+            prompt_is_ready = False
             sh.buf = ""
             sh.send(case["input"])
             if not sh.expect(case["want"], timeout=10):
                 fail(sh, case, "expected %r from adversarial response" % case["want"])
+            if case["kind"] == "adv-danger" and not sh.expect(
+                "pre-filled for review", timeout=10
+            ):
+                fail(sh, case, "risky command was not held for explicit review")
             sh.drain_until_quiet()
             check_invariants(sh, case)  # the real invariant: no parse/glob/eval error
-            sh.clear_line()  # drop any pre-filled buffer before the next case
+            if case["kind"] == "adv-danger" and not sh.clear_line():
+                # Dangerous commands are intentionally pre-filled for review in
+                # auto mode; discard that buffer before the next generated case.
+                fail(sh, case, "ZLE did not clear the pre-filled review command")
+            prompt_is_ready = case["kind"] == "adv-danger"
             _record(case)
             ran += 1
 

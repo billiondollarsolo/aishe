@@ -315,6 +315,11 @@ fn segment_danger(seg: &str) -> Option<&'static str> {
     // Path-aware recursive-`rm` check first (it may *clear* an otherwise
     // scary-looking `rm -rf` when every target is a relative in-tree path).
     rm_recursive_force_risk(seg)
+        // A non-recursive delete can still destroy a system file or data
+        // outside the current tree (`rm /etc/passwd`, `rm ../secrets`). Keep
+        // ordinary in-tree cleanup safe, but never equate "not recursive" with
+        // "not destructive".
+        .or_else(|| rm_out_of_tree_risk(seg))
         // `mv` of a system/out-of-tree path, and recursive `chmod`/`chown` on
         // one, are as destructive as `rm -rf` but the anchored patterns only
         // catch a bare `/`. Path-aware checks mirror the `rm` logic.
@@ -1205,6 +1210,46 @@ fn rm_recursive_force_risk(seg: &str) -> Option<&'static str> {
     None
 }
 
+/// Any `rm` whose operand is a system or out-of-tree path.
+///
+/// The recursive-force check above handles mass deletion and its option
+/// aliases. This companion check closes the single-file gap without prompting
+/// for ordinary relative cleanup such as `rm build.log` or `rm *.tmp`.
+fn rm_out_of_tree_risk(seg: &str) -> Option<&'static str> {
+    let mut tokens = seg.split_whitespace();
+    let mut head = tokens.next()?;
+    if head == "sudo" {
+        head = tokens.next()?;
+    }
+    if head != "rm" {
+        return None;
+    }
+
+    let mut end_options = false;
+    let mut skip_redirect_target = false;
+    for tok in tokens {
+        if skip_redirect_target {
+            skip_redirect_target = false;
+            continue;
+        }
+        if matches!(tok, "<" | ">" | ">>" | "<<" | "1>" | "2>" | "2>>" | "&>") {
+            skip_redirect_target = true;
+            continue;
+        }
+        if !end_options && tok == "--" {
+            end_options = true;
+            continue;
+        }
+        if !end_options && tok.starts_with('-') {
+            continue;
+        }
+        if is_dangerous_path(&unquote(tok)) {
+            return Some("delete of a system or out-of-tree path");
+        }
+    }
+    None
+}
+
 /// `mv` whose source *or* destination is a system / out-of-tree path (moving a
 /// top-level system location, or moving something into one, is destructive).
 /// In-tree relative moves (`mv a b`, `mv src/ build/`) are left Safe.
@@ -1347,6 +1392,7 @@ fn recursive_perms_risk(seg: &str) -> Option<&'static str> {
     let mut recursive = false;
     let mut targets: Vec<&str> = Vec::new();
     let mut mode_seen = false;
+    let mut mode_or_owner = None;
     for tok in tokens {
         match tok {
             "--recursive" => recursive = true,
@@ -1362,12 +1408,22 @@ fn recursive_perms_risk(seg: &str) -> Option<&'static str> {
             // pushed into `targets` on the claim that `is_dangerous_path` ignores
             // it, but `$USER` starts with `$`, so `chown -R $USER ~/.npm` was
             // flagged on its *owner*.
-            _ if !mode_seen => mode_seen = true,
+            _ if !mode_seen => {
+                mode_seen = true;
+                mode_or_owner = Some(unquote(tok));
+            }
             _ => targets.push(tok),
         }
     }
     if !recursive {
         return None;
+    }
+    if head == "chmod"
+        && mode_or_owner
+            .as_deref()
+            .is_some_and(chmod_grants_world_write)
+    {
+        return Some("recursive world-writable permission change");
     }
     if targets
         .iter()
@@ -1376,6 +1432,24 @@ fn recursive_perms_risk(seg: &str) -> Option<&'static str> {
         return Some("recursive permission/ownership change on a system or out-of-tree path");
     }
     None
+}
+
+/// Whether a chmod mode grants write access to "other"/all users.
+fn chmod_grants_world_write(mode: &str) -> bool {
+    if !mode.is_empty() && mode.bytes().all(|byte| matches!(byte, b'0'..=b'7')) {
+        return mode
+            .bytes()
+            .last()
+            .is_some_and(|byte| ((byte - b'0') & 0o2) != 0);
+    }
+
+    mode.split(',').any(|clause| {
+        let Some((classes, permissions)) = clause.split_once('+') else {
+            return false;
+        };
+        permissions.contains('w')
+            && (classes.is_empty() || classes.contains('a') || classes.contains('o'))
+    })
 }
 
 /// `truncate -s 0 <file>` whose (single, non-glob) target is a system /
@@ -2611,7 +2685,12 @@ mod tests {
         safe("chmod -R 755 ~/bin");
         safe("chown -R $USER ~/.npm");
         safe("chown -R \"$USER\":staff ~/.cache");
+        safe("chmod -R 755 /tmp/aishe-build");
+        safe("chmod -R u+w /tmp/aishe-build");
         dangerous("chmod -R 777 ~");
+        dangerous("chmod -R 777 /tmp/aishe-build");
+        dangerous("chmod --recursive a+w /tmp/aishe-build");
+        dangerous("chmod -R o+rw /tmp/aishe-build");
         dangerous("chown -R root:root /usr");
     }
 
@@ -2649,6 +2728,9 @@ mod tests {
         dangerous("rm -rf $HOME");
         dangerous("rm -rf *");
         dangerous("rm -rf foo/../../etc");
+        dangerous("rm /etc/passwd");
+        dangerous("rm -f /tmp/outside-workspace");
+        dangerous("sudo rm -- ../sibling/file");
         dangerous("dd if=/dev/zero of=/dev/sda");
         dangerous("mkfs.ext4 /dev/sdb1");
         dangerous("fdisk /dev/sda");

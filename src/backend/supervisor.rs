@@ -114,8 +114,31 @@ pub fn prepare_layout() -> Result<PreparedRuntime> {
 /// provider credentials in its environment when necessary.
 pub fn ensure_running(config: &crate::config::Config) -> Result<SupervisorState> {
     let manager = RuntimeManager::new()?;
-    manager.verify()?;
     let launch = ProviderLaunch::from_aishe(config)?;
+    if let Some(state) = super::control::verified_state()? {
+        if state.runtime_version == manager.manifest().version
+            && state.plugin_sha256 == env!("AISHE_OPENCODE_PLUGIN_SHA256")
+            && state.provider_id == launch.spec.provider_id
+            && state.model_id == launch.spec.model_id
+        {
+            return Ok(state);
+        }
+    }
+
+    // Elect one cold-start client before spawning a detached supervisor. The
+    // supervisor's own lock is still authoritative, but it is acquired inside
+    // the child; without this parent-side election, a burst of clients can
+    // spawn lock-losing children that exit before reading their bootstrap pipe.
+    // Healthy warm calls returned above and never touch this lock.
+    let root = backend_root()?;
+    fs::create_dir_all(&root)?;
+    crate::config::set_private_dir(&root);
+    let startup_lock = private_lock(&root.join("startup.lock"))?;
+    startup_lock
+        .lock_exclusive()
+        .context("locking managed backend startup")?;
+
+    // A different client may have completed startup while this process waited.
     if let Some(state) = super::control::verified_state()? {
         if state.runtime_version == manager.manifest().version
             && state.plugin_sha256 == env!("AISHE_OPENCODE_PLUGIN_SHA256")
@@ -136,6 +159,7 @@ pub fn ensure_running(config: &crate::config::Config) -> Result<SupervisorState>
         remove_stale_state()?;
     }
 
+    manager.verify_startup_attestation()?;
     let bootstrap = SupervisorBootstrap {
         schema_version: 1,
         provider: launch.spec,
@@ -194,7 +218,7 @@ pub fn run_supervisor() -> Result<u8> {
 
     let bootstrap = read_bootstrap()?;
     let manager = RuntimeManager::new()?;
-    manager.verify()?;
+    manager.verify_startup_attestation()?;
     let mut prepared = prepare_layout()?;
     prepared.config_json = serde_json::to_string(&super::opencode::config::generated_config(
         &prepared.plugin_path,

@@ -145,6 +145,35 @@ impl SessionStore {
         })
     }
 
+    /// Serialize the narrow find/create/bind window across Aishe processes.
+    ///
+    /// OpenCode 1.18.9 can reject a large cold burst of simultaneous
+    /// `POST /session` requests. This separate advisory lock also prevents two
+    /// hooks for the same new shell/workspace from both creating a conversation
+    /// before either mapping is durable. Mapping reads/writes use their own lock,
+    /// so the callback may safely call `find` and `bind`.
+    pub fn serialize_creation<T>(&self, operation: impl FnOnce() -> Result<T>) -> Result<T> {
+        fs::create_dir_all(&self.root)
+            .with_context(|| format!("creating session directory {}", self.root.display()))?;
+        crate::config::set_private_dir(&self.root);
+        let path = self.root.join("creation.lock");
+        let mut options = OpenOptions::new();
+        options.create(true).read(true).write(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        let lock = options
+            .open(&path)
+            .with_context(|| format!("opening session-creation lock {}", path.display()))?;
+        lock.lock_exclusive()
+            .context("locking OpenCode session creation")?;
+        let result = operation();
+        FileExt::unlock(&lock).context("unlocking OpenCode session creation")?;
+        result
+    }
+
     fn with_index<T>(
         &self,
         write: bool,
@@ -234,6 +263,9 @@ fn unix_millis() -> u128 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::{Arc, Barrier};
+    use std::time::Duration;
 
     fn temp_store(name: &str) -> SessionStore {
         SessionStore::new(std::env::temp_dir().join(format!(
@@ -297,6 +329,39 @@ mod tests {
         let raw = fs::read_to_string(store.root.join("mappings.json")).unwrap();
         assert!(!raw.contains("token"));
         assert!(!raw.contains("password"));
+        fs::remove_dir_all(&store.root).unwrap();
+    }
+
+    #[test]
+    fn creation_lock_serializes_process_equivalent_callers() {
+        let store = temp_store("creation-lock");
+        let active = Arc::new(AtomicUsize::new(0));
+        let maximum = Arc::new(AtomicUsize::new(0));
+        let barrier = Arc::new(Barrier::new(8));
+        let threads = (0..8)
+            .map(|_| {
+                let store = store.clone();
+                let active = Arc::clone(&active);
+                let maximum = Arc::clone(&maximum);
+                let barrier = Arc::clone(&barrier);
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    store
+                        .serialize_creation(|| {
+                            let count = active.fetch_add(1, Ordering::SeqCst) + 1;
+                            maximum.fetch_max(count, Ordering::SeqCst);
+                            std::thread::sleep(Duration::from_millis(10));
+                            active.fetch_sub(1, Ordering::SeqCst);
+                            Ok(())
+                        })
+                        .unwrap();
+                })
+            })
+            .collect::<Vec<_>>();
+        for thread in threads {
+            thread.join().unwrap();
+        }
+        assert_eq!(maximum.load(Ordering::SeqCst), 1);
         fs::remove_dir_all(&store.root).unwrap();
     }
 }

@@ -104,6 +104,31 @@ def tool_result_messages(body):
     ]
 
 
+def find_persisted_secret(roots, secret):
+    """Return the first persisted file containing secret without retaining trees.
+
+    OpenCode installs plugin dependencies under its isolated data root. That tree
+    is intentionally included in the credential-leak assertion, but concatenating
+    every file into one bytes object makes the scan quadratic and can consume
+    hundreds of megabytes. Stream every regular file with enough overlap to catch
+    a secret split across read boundaries instead.
+    """
+    needle = secret.encode()
+    overlap = max(len(needle) - 1, 0)
+    for base in roots:
+        for path in base.rglob("*"):
+            if not path.is_file() or path.is_symlink():
+                continue
+            tail = b""
+            with path.open("rb") as source:
+                while chunk_bytes := source.read(1024 * 1024):
+                    candidate = tail + chunk_bytes
+                    if needle in candidate:
+                        return path
+                    tail = candidate[-overlap:] if overlap else b""
+    return None
+
+
 class ProviderHandler(http.server.BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
 
@@ -497,13 +522,12 @@ def assert_runtime_contract(binary, runtime_dir):
                     f"{json.dumps(journal, indent=2)}"
                 )
 
-            persisted = b""
-            for base in (config_home, data_home):
-                for path in base.rglob("*"):
-                    if path.is_file() and not path.is_symlink():
-                        persisted += path.read_bytes()
-            if CANARY.encode() in persisted:
-                raise AssertionError("provider credential leaked into persisted Aishe/OpenCode state")
+            leak_path = find_persisted_secret((config_home, data_home), CANARY)
+            if leak_path is not None:
+                raise AssertionError(
+                    "provider credential leaked into persisted Aishe/OpenCode "
+                    f"state: {leak_path}"
+                )
 
             validation = run(
                 binary,

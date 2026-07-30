@@ -202,6 +202,21 @@ def isolated_env(root):
     return env
 
 
+def cleanup_isolated_root(root):
+    """Stop any managed backend started by setup before deleting its state."""
+    if os.path.isdir(root):
+        subprocess.run(
+            [BINARY, "backend", "stop"],
+            cwd=root,
+            env=isolated_env(root),
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=15,
+            check=False,
+        )
+    shutil.rmtree(root, ignore_errors=True)
+
+
 def setup_to_provider(shell):
     shell.expect("Continue setup")
     shell.line()  # Step 1: continue; platform/runtime/sandbox auto-verify in CI.
@@ -247,7 +262,7 @@ def setup_visual_style_and_alignment():
             shell.close()
         print("  ok   colored focus, narrow wrapping, and prompt alignment")
     finally:
-        shutil.rmtree(root, ignore_errors=True)
+        cleanup_isolated_root(root)
 
 
 def setup_checks_catalog_credential_and_manual_model():
@@ -316,7 +331,7 @@ def setup_checks_catalog_credential_and_manual_model():
                 restarted.close()
         print("  ok   /models rejects bad keys and validates selected or typed models")
     finally:
-        shutil.rmtree(root, ignore_errors=True)
+        cleanup_isolated_root(root)
 
 
 def complete_setup(root, env, endpoint):
@@ -616,7 +631,7 @@ def hidden_auth_and_staged_setup_are_secret_safe():
         print("  ok   hidden setup/auth input, cancel, resume, and Apply are secret-safe")
     finally:
         server_context.__exit__(None, None, None)
-        shutil.rmtree(root, ignore_errors=True)
+        cleanup_isolated_root(root)
 
 
 def tour_pause_resume_skip_restart_and_complete(root, env):
@@ -694,7 +709,7 @@ def main():
         tour_pause_resume_skip_restart_and_complete(root, env)
         print("PASS: interactive setup/settings/tour PTY")
     finally:
-        shutil.rmtree(root, ignore_errors=True)
+        cleanup_isolated_root(root)
 
 
 if __name__ == "__main__":

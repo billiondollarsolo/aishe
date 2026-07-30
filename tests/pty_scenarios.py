@@ -41,6 +41,7 @@ FORBIDDEN = [
 
 SGR = re.compile(r"\x1b\[[0-9;]*m")
 CSI = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]")
+TERMINAL_MODE = re.compile(r"\x1b[=>]")
 
 
 def submitted_line_remains_visible(segment, line):
@@ -56,7 +57,8 @@ def submitted_line_remains_visible(segment, line):
     if line not in before_accept:
         return False
     after_final_copy = before_accept.rsplit(line, 1)[1]
-    after_final_copy = CSI.sub("", after_final_copy).replace("\r", "").replace("\n", "")
+    after_final_copy = TERMINAL_MODE.sub("", CSI.sub("", after_final_copy))
+    after_final_copy = after_final_copy.replace("\r", "").replace("\n", "")
     return after_final_copy == ""
 
 
@@ -101,6 +103,10 @@ class Pty:
 
     def send(self, line):
         os.write(self.master, (line + "\r").encode("utf-8"))
+
+    def expect_prompt(self, timeout=TIMEOUT):
+        """Wait until the prompt is visible and ZLE has entered input mode."""
+        return self.expect("ZP> ", timeout) and self.expect("\x1b[?2004h", timeout)
 
     def wait_ready(self, timeout=20):
         """Block until zsh's line editor is really accepting input.
@@ -236,7 +242,7 @@ def main():
     home, env = make_env(BINARY)
     sh = Pty([os.path.abspath(BINARY), "zsh"], env)
     try:
-        sh.expect("ZP> ")  # first prompt
+        sh.expect_prompt()  # first prompt and live line editor
         sh.wait_ready()
 
         # A user's existing zsh/Oh My Zsh history configuration must win over
@@ -262,7 +268,7 @@ def main():
             "zle -N _aishe_test_highlight_dump; "
             "bindkey '^X^H' _aishe_test_highlight_dump"
         )
-        sh.expect("ZP> ")
+        sh.expect_prompt()
         sh.buf = ""
         sh.raw(b"echo")
         sh.settle(0.3)
@@ -273,7 +279,7 @@ def main():
             sh.expect("AISHE_RH=0 4 fg=green"),
         )
         sh.raw(b"\x03")
-        sh.expect("ZP> ")
+        sh.expect_prompt()
 
         # The first token can be a real command and initially green, then the
         # completed buffer can become a natural-language question. Define the
@@ -284,7 +290,7 @@ def main():
             "where() { return 77; }; "
             "who() { return 77; }"
         )
-        sh.expect("ZP> ")
+        sh.expect_prompt()
         sh.buf = ""
         sh.raw(b"what")
         sh.settle(0.3)
@@ -295,7 +301,7 @@ def main():
             sh.expect("AISHE_RH=0 4 fg=green"),
         )
         sh.raw(b"\x03")
-        sh.expect("ZP> ")
+        sh.expect_prompt()
 
         for line, name in [
             ("what is the capital of France", "what-question turns AI-colored"),
@@ -312,7 +318,7 @@ def main():
                 sh.expect("AISHE_RH=0 %d fg=magenta" % len(line)),
             )
             sh.raw(b"\x03")
-            sh.expect("ZP> ")
+            sh.expect_prompt()
 
         # Bare/ordinary commands remain shell-colored even after the collision
         # grammar is enabled.
@@ -322,14 +328,14 @@ def main():
         sh.raw(b"\x18\x08")
         check(sh, "bare who remains a shell command", sh.expect("AISHE_RH=0 3 fg=green"))
         sh.raw(b"\x03")
-        sh.expect("ZP> ")
+        sh.expect_prompt()
         sh.buf = ""
         sh.raw(b"ls -la")
         sh.settle(0.3)
         sh.raw(b"\x18\x08")
         check(sh, "Linux command with arguments stays green", sh.expect("AISHE_RH=0 2 fg=green"))
         sh.raw(b"\x03")
-        sh.expect("ZP> ")
+        sh.expect_prompt()
 
         # Enter uses the same grammar as highlighting. This is the regression
         # assertion: a valid `what` command must not run once the full line is a
@@ -355,7 +361,7 @@ def main():
         # ANSI color sequences; the fallback itself has now been verified. Wait
         # for Ctrl-C to finish before sending the assignment, and put the marker
         # in the same command so observing it proves the assignment ran.
-        sh.expect("ZP> ")
+        sh.expect_prompt()
         sh.send("export AISHE_COMMAND_HIGHLIGHT=0; print -r -- HIGHLIGHT_TEST_DONE")
         sh.expect("HIGHLIGHT_TEST_DONE")
         sh.expect("HIGHLIGHT_TEST_DONE")
@@ -375,9 +381,9 @@ def main():
 
         # Alt-Enter forces even a valid shell-looking line through Aishe. It
         # uses a separate ZLE widget and must preserve the submitted line too.
-        sh.expect("ZP> ")
+        sh.expect_prompt()
         set_fake(sh, answer("ANSWER_FORCE_NL_42"))
-        sh.expect("ZP> ")
+        sh.expect_prompt()
         forced_line = "echo this is a natural-language request"
         forced_start = len(sh.transcript)
         sh.raw(forced_line.encode("utf-8"))
@@ -418,7 +424,7 @@ def main():
         # limited to an unknown first word.
         native_match = os.path.join(home, "native1")
         sh.send("touch %s" % native_match)
-        sh.expect("ZP> ")
+        sh.expect_prompt()
         set_fake(sh, answer("MUST_NOT_ROUTE_42"))
         sh.send("print -r -- %s" % os.path.join(home, "native?"))
         check(sh, "real commands keep native glob expansion", sh.expect(native_match))

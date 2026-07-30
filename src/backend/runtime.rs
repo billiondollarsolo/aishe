@@ -245,6 +245,46 @@ impl RuntimeManager {
         }
     }
 
+    /// Validate the private install attestation needed on the lazy start path.
+    ///
+    /// Installation and `backend verify` perform the expensive executable
+    /// version probe and full binary digest. Repeating both in the client and
+    /// detached supervisor on every cold start adds more than a second for a
+    /// ~60 MiB runtime. The active version directory is private to the user, so
+    /// startup validates its regular executable, exact embedded-manifest
+    /// metadata, and atomic `current` pointer; Doctor/Verify remain the explicit
+    /// full corruption and digest checks.
+    pub fn verify_startup_attestation(&self) -> Result<()> {
+        let binary = self.binary_path();
+        reject_symlink(&binary)?;
+        let binary_metadata = fs::metadata(&binary)
+            .with_context(|| format!("reading runtime metadata for {}", binary.display()))?;
+        if !binary_metadata.is_file()
+            || binary_metadata.len() == 0
+            || binary_metadata.len() > EXTRACTED_LIMIT
+        {
+            anyhow::bail!("OpenCode runtime executable metadata is invalid");
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            if binary_metadata.permissions().mode() & 0o111 == 0 {
+                anyhow::bail!("OpenCode runtime is not executable");
+            }
+        }
+
+        let current_path = self.root.join("current");
+        reject_symlink(&current_path)?;
+        let current = fs::read_to_string(&current_path)
+            .with_context(|| format!("reading {}", current_path.display()))?;
+        if current.len() > 128 || current.trim() != self.manifest.version {
+            anyhow::bail!("OpenCode runtime current pointer is invalid");
+        }
+
+        let metadata = self.read_install_metadata()?;
+        self.validate_install_metadata(&metadata, None)
+    }
+
     /// Atomically swap the current runtime with the immediately previous
     /// checksum-verified install of the same compatibility-pinned version.
     pub fn rollback(&self) -> Result<RuntimeStatus> {
@@ -442,13 +482,27 @@ impl RuntimeManager {
 
     fn verify_install(&self, binary: &Path) -> Result<String> {
         let binary_sha = self.verify_binary(binary)?;
+        let metadata = self.read_install_metadata()?;
+        self.validate_install_metadata(&metadata, Some(&binary_sha))?;
+        Ok(binary_sha)
+    }
+
+    fn read_install_metadata(&self) -> Result<InstallMetadata> {
         let metadata_path = self.version_dir().join("install.json");
         reject_symlink(&metadata_path)?;
-        let metadata: InstallMetadata = serde_json::from_slice(
-            &fs::read(&metadata_path)
-                .with_context(|| format!("reading {}", metadata_path.display()))?,
-        )
-        .context("parsing OpenCode install metadata")?;
+        let bytes = fs::read(&metadata_path)
+            .with_context(|| format!("reading {}", metadata_path.display()))?;
+        if bytes.len() > 64 * 1024 {
+            anyhow::bail!("OpenCode install metadata exceeds 64 KiB");
+        }
+        serde_json::from_slice(&bytes).context("parsing OpenCode install metadata")
+    }
+
+    fn validate_install_metadata(
+        &self,
+        metadata: &InstallMetadata,
+        computed_binary_sha: Option<&str>,
+    ) -> Result<()> {
         let expected_asset = self.manifest.asset_for_current_platform()?;
         if metadata.schema_version != 1
             || metadata.runtime != "opencode"
@@ -458,11 +512,17 @@ impl RuntimeManager {
             || !metadata
                 .archive_sha256
                 .eq_ignore_ascii_case(&expected_asset.sha256)
-            || !metadata.binary_sha256.eq_ignore_ascii_case(&binary_sha)
+            || metadata.binary_sha256.len() != 64
+            || !metadata
+                .binary_sha256
+                .bytes()
+                .all(|byte| byte.is_ascii_hexdigit())
+            || computed_binary_sha
+                .is_some_and(|binary_sha| !metadata.binary_sha256.eq_ignore_ascii_case(binary_sha))
         {
             anyhow::bail!("OpenCode install metadata does not match the verified runtime");
         }
-        Ok(binary_sha)
+        Ok(())
     }
 
     fn create_private_dir(&self, path: &Path) -> Result<()> {
@@ -759,6 +819,34 @@ mod tests {
             .file_name()
             .to_string_lossy()
             .starts_with(".staging-")));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn startup_attestation_is_fast_but_fails_closed_on_identity_changes() {
+        let root = temp_root("startup-attestation");
+        let source_root = root.join("source");
+        let archive = synthetic_archive(&source_root);
+        let manager = manager_for_archive(root.join("runtime"), &archive);
+        manager
+            .install(InstallSource::Local(archive), false)
+            .unwrap();
+        manager.verify_startup_attestation().unwrap();
+
+        let current_path = manager.root().join("current");
+        fs::write(&current_path, b"1.18.8\n").unwrap();
+        assert!(manager.verify_startup_attestation().is_err());
+        fs::write(&current_path, format!("{}\n", manager.manifest().version)).unwrap();
+
+        let metadata_path = manager.version_dir().join("install.json");
+        let original = fs::read(&metadata_path).unwrap();
+        let mut metadata: InstallMetadata = serde_json::from_slice(&original).unwrap();
+        metadata.asset = "unreviewed-runtime.tar.gz".into();
+        fs::write(&metadata_path, serde_json::to_vec(&metadata).unwrap()).unwrap();
+        assert!(manager.verify_startup_attestation().is_err());
+        fs::write(&metadata_path, original).unwrap();
+        manager.verify_startup_attestation().unwrap();
         fs::remove_dir_all(root).unwrap();
     }
 

@@ -159,6 +159,14 @@ jobs:
       - name: Pinned OpenCode provider and tool-bridge contract
         run: python3 tests/opencode_runtime_contract.py target/release/aishe
 
+      - name: Managed OpenCode startup, reconnect, and memory qualification
+        run: >-
+          python3 tests/opencode_soak.py target/release/aishe
+          --turns 20 --cold-cycles 3 --warm-probes 20 --reconnect-every 10
+
+      - name: Concurrent managed-session isolation
+        run: python3 tests/opencode_concurrency.py target/release/aishe --sessions 8
+
       - name: Durable task interruption and resume
         run: python3 tests/durable_task_resume.py target/release/aishe
 
