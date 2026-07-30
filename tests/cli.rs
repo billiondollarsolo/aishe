@@ -1294,6 +1294,8 @@ fn noninteractive_setup_is_rerunnable_and_preserves_existing_fields() {
         "local-test-model",
         "--profile",
         "balanced",
+        "--sandbox",
+        "policy",
         "--input-price",
         "0.25",
         "--output-price",

@@ -5,6 +5,9 @@ This intentionally uses the real managed OpenCode binary with a local fake
 OpenAI-compatible provider. It proves the boundary that mock Rust adapters
 cannot: generated agent/tool policy, provider streaming, the trusted plugin
 bridge, foreground execution, usage accounting, and durable session mapping.
+The harmless environment probe uses host scope so the bridge contract remains
+portable to hosted runners that prohibit bubblewrap namespaces; the separate
+workspace-to-host test requires functional bubblewrap on a qualification node.
 """
 
 import http.server
@@ -359,7 +362,7 @@ status_line = true
 [backend]
 engine = "opencode"
 fallback = "none"
-default_scope = "workspace"
+default_scope = "host"
 workspace_network = "deny"
 output = "focus"
 max_output_tokens = 512
@@ -542,7 +545,7 @@ def assert_runtime_contract(binary, runtime_dir):
             if (
                 managed[0].get("backend") != "opencode"
                 or managed[0].get("mode") != "auto"
-                or managed[0].get("scope") != "workspace"
+                or managed[0].get("scope") != "host"
             ):
                 raise AssertionError(f"managed session identity mismatch: {managed[0]}")
 
