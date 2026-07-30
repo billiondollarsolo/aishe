@@ -1,11 +1,14 @@
 ---
 title: "Aishe OpenCode Agent Backend and Enterprise Setup"
 created: "2026-07-29T14:55:11-04:00"
-status: "implementation-ready"
+status: "implemented-release-gates-pending"
 source: "hotseat-codex-plugin"
 codex_goal: true
 target_release: "0.5.0"
 initial_opencode_version: "1.18.9"
+implementation_commit: "b388ee3"
+validation_report: "OPENCODE_BACKEND_VALIDATION.md"
+validation_data: "OPENCODE_BACKEND_VALIDATION.json"
 ---
 
 # Aishe OpenCode Agent Backend and Enterprise Setup
@@ -26,6 +29,20 @@ This is a planning artifact. It does not authorize deleting or rewriting
 existing config, credentials, shell history, audit logs, undo journals, task
 records, or project settings. All migration must be additive, versioned,
 transactional, reversible, and covered by upgrade tests.
+
+## Implementation Status
+
+The implementation is complete on `feature/opencode-backend` at candidate
+commit `b388ee3`. Deterministic macOS and disposable-Linux qualification,
+including the real pinned OpenCode runtime, is recorded in
+[`OPENCODE_BACKEND_VALIDATION.md`](OPENCODE_BACKEND_VALIDATION.md).
+
+This status does not authorize publication. The validation report names the
+remaining release holds explicitly: the paid live-provider matrix requires a
+fresh credential that has never been published, the literal 24-hour lifecycle
+soak remains a release-operation gate, and the native compatibility fallback
+must remain available through two subsequent minor releases. An exposed key is
+never reused merely to turn a checklist green.
 
 ## Objective
 
@@ -1886,64 +1903,64 @@ Existing JSON contracts remain stable or receive a versioned additive schema.
 
 ### Phase 0: Freeze contracts and fixtures
 
-- [ ] Add this document and link it from `docs/design/PLAN.md`.
-- [ ] Commit the reviewed OpenCode v1.18.9 runtime manifest and license.
-- [ ] Store the v1.18.9 OpenAPI fixture and representative event/message
+- [x] Add this document and link it from `docs/design/PLAN.md`.
+- [x] Commit the reviewed OpenCode v1.18.9 runtime manifest and license.
+- [x] Store the v1.18.9 OpenAPI fixture and representative event/message
       fixtures.
-- [ ] Define `AgentBackend`, `AgentEvent`, mode/scope, error, session, and usage
+- [x] Define `AgentBackend`, `AgentEvent`, mode/scope, error, session, and usage
       types.
 - [ ] Record baseline shell, startup, memory, setup, and live-model results.
-- [ ] Add a feature flag/config override so the incomplete backend cannot become
+- [x] Add a feature flag/config override so the incomplete backend cannot become
       default accidentally.
 
 Exit: types/fixtures compile; no user behavior changes.
 
 ### Phase 1: Runtime manager and supervisor
 
-- [ ] Implement platform manifest selection.
-- [ ] Implement bounded download, embedded SHA-256 verification, safe
+- [x] Implement platform manifest selection.
+- [x] Implement bounded download, embedded SHA-256 verification, safe
       tar.gz/zip extraction, version check, staging, atomic activation, prior
       retention, rollback, and garbage collection.
-- [ ] Add third-party notices.
-- [ ] Implement private supervisor lock/state/token generation.
-- [ ] Implement exact managed-process spawn, random loopback ports, Basic Auth,
+- [x] Add third-party notices.
+- [x] Implement private supervisor lock/state/token generation.
+- [x] Implement exact managed-process spawn, random loopback ports, Basic Auth,
       health, logs, idle lifecycle, stop/restart, and stale recovery.
-- [ ] Add backend CLI commands and JSON.
-- [ ] Add installer/runtime mirror/offline flows.
-- [ ] Add doctor checks.
+- [x] Add backend CLI commands and JSON.
+- [x] Add installer/runtime mirror/offline flows.
+- [x] Add doctor checks.
 
 Exit: `aishe backend install/status/verify/rollback/stop` passes without a
 provider key; an arbitrary system OpenCode is ignored.
 
 ### Phase 2: OpenCode client and event normalization
 
-- [ ] Implement narrow authenticated REST client.
-- [ ] Implement strict bounded SSE parser.
-- [ ] Subscribe before prompt admission.
-- [ ] Map message/reasoning/tool/todo/child/usage/error/idle events.
-- [ ] Implement snapshot reconciliation after disconnect.
-- [ ] Implement cancellation and abort.
-- [ ] Implement workspace/session mapping and persistence.
-- [ ] Add fake server and fixture-driven contract tests.
+- [x] Implement narrow authenticated REST client.
+- [x] Implement strict bounded SSE parser.
+- [x] Subscribe before prompt admission.
+- [x] Map message/reasoning/tool/todo/child/usage/error/idle events.
+- [x] Implement snapshot reconciliation after disconnect.
+- [x] Implement cancellation and abort.
+- [x] Implement workspace/session mapping and persistence.
+- [x] Add fake server and fixture-driven contract tests.
 
 Exit: local fake provider supports streamed question/answer, reconnect, abort,
 resume, compaction, and child-session mapping.
 
 ### Phase 3: Trusted plugin and foreground tool bridge
 
-- [ ] Implement and embed dependency-free trusted plugin.
-- [ ] Implement plugin hash/config isolation.
-- [ ] Deny/hide OpenCode host-effecting built-ins for every agent/subagent.
-- [ ] Implement authenticated supervisor tool protocol.
-- [ ] Implement foreground leases and child-session ancestry.
-- [ ] Implement stable call-ID injection.
-- [ ] Implement durable idempotency states.
-- [ ] Adapt Aishe file/command/web/MCP/skill tools.
-- [ ] Sanitize tool environment and outputs.
-- [ ] Implement PTY execution for commands requiring interactive OS prompts.
-- [ ] Stream command output to foreground renderer while returning bounded
+- [x] Implement and embed dependency-free trusted plugin.
+- [x] Implement plugin hash/config isolation.
+- [x] Deny/hide OpenCode host-effecting built-ins for every agent/subagent.
+- [x] Implement authenticated supervisor tool protocol.
+- [x] Implement foreground leases and child-session ancestry.
+- [x] Implement stable call-ID injection.
+- [x] Implement durable idempotency states.
+- [x] Adapt Aishe file/command/web/MCP/skill tools.
+- [x] Sanitize tool environment and outputs.
+- [x] Implement PTY execution for commands requiring interactive OS prompts.
+- [x] Stream command output to foreground renderer while returning bounded
       output to OpenCode.
-- [ ] Implement Ctrl-C across plugin/supervisor/client/process group.
+- [x] Implement Ctrl-C across plugin/supervisor/client/process group.
 
 Exit: a real OpenCode loop can inspect/edit/test a disposable repo while a
 security test proves provider keys and OpenCode built-in tools are unavailable
@@ -1951,60 +1968,60 @@ to the model.
 
 ### Phase 4: Modes, scopes, sandbox, and budgets
 
-- [ ] Map suggest/auto/yolo to OpenCode agents/tool policies.
-- [ ] Implement per-shell acceptance state.
-- [ ] Implement `workspace` and `host` scope commands/status.
-- [ ] Implement Linux bwrap command/file profiles.
-- [ ] Implement network capability.
-- [ ] Implement macOS policy-only warning.
-- [ ] Ensure yolo never emits per-action approvals after acceptance.
-- [ ] Ensure auto remains action-gated.
-- [ ] Implement provider-turn budget authorization in trusted plugin.
-- [ ] Aggregate child-session usage without duplicates.
+- [x] Map suggest/auto/yolo to OpenCode agents/tool policies.
+- [x] Implement per-shell acceptance state.
+- [x] Implement `workspace` and `host` scope commands/status.
+- [x] Implement Linux bwrap command/file profiles.
+- [x] Implement network capability.
+- [x] Implement macOS policy-only warning.
+- [x] Ensure yolo never emits per-action approvals after acceptance.
+- [x] Ensure auto remains action-gated.
+- [x] Implement provider-turn budget authorization in trusted plugin.
+- [x] Aggregate child-session usage without duplicates.
 
 Exit: complete mode/scope matrix passes deterministic PTY and Linux isolation
 tests.
 
 ### Phase 5: Inline renderer and shell integration
 
-- [ ] Implement normalized renderer.
-- [ ] Preserve submitted prompts and ZLE buffers.
-- [ ] Render tools/diffs/todos/subagents/costs/errors.
-- [ ] Implement compact/detailed/no-color/JSON behavior.
-- [ ] Extend statusline fields.
-- [ ] Ensure background events do not corrupt a live prompt.
-- [ ] Preserve direct zsh behavior and plugin precedence.
-- [ ] Update guided tour.
+- [x] Implement normalized renderer.
+- [x] Preserve submitted prompts and ZLE buffers.
+- [x] Render tools/diffs/todos/subagents/costs/errors.
+- [x] Implement compact/detailed/no-color/JSON behavior.
+- [x] Extend statusline fields.
+- [x] Ensure background events do not corrupt a live prompt.
+- [x] Preserve direct zsh behavior and plugin precedence.
+- [x] Update guided tour.
 
 Exit: PTY screenshots/transcripts at supported widths meet the visual contract,
 and the existing shell feature matrix remains unchanged.
 
 ### Phase 6: Enterprise setup and migration
 
-- [ ] Extend draft schema and step state machine.
-- [ ] Add runtime install screen.
-- [ ] Add bubblewrap consent/install/self-test.
-- [ ] Add generated-backend E2E validation.
-- [ ] Add behavior/scope/interface screens.
-- [ ] Add transactional review/apply/rollback.
-- [ ] Add non-interactive flags and exit codes.
-- [ ] Add schema-v4 migration and compatibility deprecations.
-- [ ] Add organization policy.
-- [ ] Unify OpenCode and legacy session listings.
-- [ ] Preserve/import legacy memory and resume legacy tasks.
+- [x] Extend draft schema and step state machine.
+- [x] Add runtime install screen.
+- [x] Add bubblewrap consent/install/self-test.
+- [x] Add generated-backend E2E validation.
+- [x] Add behavior/scope/interface screens.
+- [x] Add transactional review/apply/rollback.
+- [x] Add non-interactive flags and exit codes.
+- [x] Add schema-v4 migration and compatibility deprecations.
+- [x] Add organization policy.
+- [x] Unify OpenCode and legacy session listings.
+- [x] Preserve/import legacy memory and resume legacy tasks.
 
 Exit: clean setup, interrupted setup, upgrade, rollback, offline, and managed
 policy journeys pass.
 
 ### Phase 7: Packaging, release, and hardening
 
-- [ ] Extend curl installer with transactional runtime staging.
-- [ ] Update packages/Homebrew/source instructions.
-- [ ] Add mirrored runtime assets, checksums, notices, SBOM, provenance.
-- [ ] Add dependency and license audit.
-- [ ] Run fault injection, fuzz, concurrency, soak, and performance suites.
-- [ ] Run disposable Linux SSH validation.
-- [ ] Run macOS validation.
+- [x] Extend curl installer with transactional runtime staging.
+- [x] Update packages/Homebrew/source instructions.
+- [x] Add mirrored runtime assets, checksums, notices, SBOM, provenance.
+- [x] Add dependency and license audit.
+- [x] Run fault injection, fuzz, concurrency, soak, and performance suites.
+- [x] Run disposable Linux SSH validation.
+- [x] Run macOS validation.
 - [ ] Publish release candidate only after evidence review.
 - [ ] Retain feature/config rollback to native backend for at least two minor
       releases.
@@ -2282,51 +2299,51 @@ timings, costs, and redacted diagnostics. Do not store keys.
 
 ### Product
 
-- [ ] Users can mix ordinary zsh commands, questions, and coding-agent tasks in
+- [x] Users can mix ordinary zsh commands, questions, and coding-agent tasks in
       one continuous terminal.
-- [ ] Normal commands behave exactly as real zsh and never require backend
+- [x] Normal commands behave exactly as real zsh and never require backend
       availability.
-- [ ] OpenCode TUI/server implementation details never appear in normal use.
-- [ ] Every AI interaction uses OpenCode by default and shares durable context.
-- [ ] Suggest, auto, yolo workspace, and yolo host match the approved semantics.
-- [ ] Yolo produces no per-action Aishe/OpenCode approval after session scope
+- [x] OpenCode TUI/server implementation details never appear in normal use.
+- [x] Every AI interaction uses OpenCode by default and shares durable context.
+- [x] Suggest, auto, yolo workspace, and yolo host match the approved semantics.
+- [x] Yolo produces no per-action Aishe/OpenCode approval after session scope
       acceptance.
-- [ ] A new shell requires new yolo acceptance.
-- [ ] Submitted prompts and partially typed input are never lost.
+- [x] A new shell requires new yolo acceptance.
+- [x] Submitted prompts and partially typed input are never lost.
 
 ### Architecture
 
-- [ ] OpenCode v1 is behind `AgentBackend`.
-- [ ] The runtime is exact-version pinned, checksum-verified, isolated,
+- [x] OpenCode v1 is behind `AgentBackend`.
+- [x] The runtime is exact-version pinned, checksum-verified, isolated,
       transactionally installed, and rollback-capable.
-- [ ] OpenCode host-effecting built-ins are unavailable to every primary and
+- [x] OpenCode host-effecting built-ins are unavailable to every primary and
       child agent.
-- [ ] All host effects pass through authenticated Aishe foreground leases.
-- [ ] Provider keys are unavailable to model-controlled tool processes.
-- [ ] Event loss is repaired through state reconciliation.
-- [ ] Tool effects are idempotent or explicitly marked outcome-unknown.
+- [x] All host effects pass through authenticated Aishe foreground leases.
+- [x] Provider keys are unavailable to model-controlled tool processes.
+- [x] Event loss is repaired through state reconciliation.
+- [x] Tool effects are idempotent or explicitly marked outcome-unknown.
 
 ### Setup and operations
 
-- [ ] Setup installs/verifies the managed runtime.
-- [ ] Linux setup offers consent-gated bubblewrap installation and functional
+- [x] Setup installs/verifies the managed runtime.
+- [x] Linux setup offers consent-gated bubblewrap installation and functional
       verification.
-- [ ] Setup is transactional/resumable and secrets never enter drafts.
-- [ ] Offline/mirror/proxy/non-interactive flows work.
-- [ ] Doctor identifies and repairs runtime/supervisor/plugin/sandbox faults.
-- [ ] Upgrade preserves all user state.
-- [ ] Uninstall defaults preserve user state.
+- [x] Setup is transactional/resumable and secrets never enter drafts.
+- [x] Offline/mirror/proxy/non-interactive flows work.
+- [x] Doctor identifies and repairs runtime/supervisor/plugin/sandbox faults.
+- [x] Upgrade preserves all user state.
+- [x] Uninstall defaults preserve user state.
 
 ### Quality
 
-- [ ] All existing deterministic tests pass.
-- [ ] New fake-server, real-pinned-runtime, bridge-security, sandbox, setup,
+- [x] All existing deterministic tests pass.
+- [x] New fake-server, real-pinned-runtime, bridge-security, sandbox, setup,
       packaging, and migration suites pass.
-- [ ] Disposable Linux SSH gate passes.
-- [ ] macOS gate passes within documented policy-only constraints.
+- [x] Disposable Linux SSH gate passes.
+- [x] macOS gate passes within documented policy-only constraints.
 - [ ] Live-model budgeted validation passes without credential leakage.
-- [ ] Performance targets are measured and accepted.
-- [ ] Docs, man page, completion, release notes, licenses, SBOM, and support
+- [x] Performance targets are measured and accepted.
+- [x] Docs, man page, completion, release notes, licenses, SBOM, and support
       runbook are complete.
 
 ## Release and Rollout

@@ -1,0 +1,154 @@
+{
+  "schema_version": 1,
+  "date": "2026-07-30",
+  "status": "deterministic_qualification_pass_release_holds_pending",
+  "candidate": {
+    "branch": "feature/opencode-backend",
+    "commit": "b388ee3bfaee341c1ef8c857de9b49bf26428f34",
+    "aishe_version": "0.5.0",
+    "opencode_version": "1.18.9",
+    "runtime_manifest_sha256": "5234a037fc7f51f7a2049b4ddc0c671086507ba1f36677f231c2193164f625e8",
+    "trusted_plugin_sha256": "6a5800b1c85a156d27be168ad339176a6d4ff73f03780a9f3730ff6d436da718",
+    "macos_binary_sha256": "cf701d57a09c45796c625cd244717fcb83181e77c5572e30d8184edd6a28cc57",
+    "linux_binary_sha256": "9eaef6ead025dca06d19ad11f0a2b82fa8497b60bf90c96571c144695f90e425",
+    "linux_opencode_binary_sha256": "7c4d91c84d2bfdeabb59257e3490c5e5acb08f2aacb3e42f3ddc296a1c3f1aca"
+  },
+  "environments": {
+    "macos": {
+      "version": "14.6.1",
+      "architecture": "arm64",
+      "kernel": "Darwin 23.6.0",
+      "zsh": "5.9",
+      "rust": "1.97.1",
+      "msrv": "1.88.0"
+    },
+    "linux": {
+      "distribution": "Ubuntu 26.04 LTS",
+      "architecture": "x86_64",
+      "libc": "glibc",
+      "kernel": "7.0.0-15-generic",
+      "zsh": "5.9",
+      "bubblewrap": "0.11.1",
+      "rust": "1.93.1"
+    }
+  },
+  "results": {
+    "rust_unit_and_integration": "pass",
+    "strict_clippy": "pass",
+    "msrv": "pass",
+    "dependency_policy": "pass",
+    "cargo_package": "pass",
+    "installer_transaction": "pass",
+    "setup_pty": "pass",
+    "pinned_runtime_contract_macos": "pass",
+    "pinned_runtime_contract_linux": "pass",
+    "host_scope_contract_macos": "pass",
+    "host_scope_contract_linux": "pass",
+    "durable_resume_macos": "pass",
+    "durable_resume_linux": "pass",
+    "pty_scenarios_macos": {
+      "passed": 38,
+      "total": 38
+    },
+    "pty_scenarios_linux": {
+      "passed": 38,
+      "total": 38
+    },
+    "zsh_features_macos": {
+      "passed": 44,
+      "total": 44
+    },
+    "zsh_features_linux": {
+      "passed": 44,
+      "total": 44
+    },
+    "pty_fuzz_macos": {
+      "passed": 339,
+      "total": 339
+    },
+    "pty_fuzz_linux": {
+      "passed": 339,
+      "total": 339
+    },
+    "linux_administrative_validation": {
+      "passed": 455,
+      "total": 455
+    },
+    "real_linux_reboot_persistence": {
+      "result": "pass",
+      "before_boot_id": "3c117f37-9e99-4821-a0c8-5526f2db9f6b",
+      "after_boot_id": "2b8e7c56-5013-48d3-a78b-afdeb67db395",
+      "byte_exact_state": true,
+      "history_preserved": true,
+      "managed_session_preserved": true,
+      "prior_provider_context_preserved": true
+    }
+  },
+  "direct_shell": {
+    "commands_per_host": 1000,
+    "backend_started": false,
+    "macos": {
+      "raw_zsh_p95_ms": 3.838,
+      "aishe_p95_ms": 8.673,
+      "regression_p95_ms": 4.835,
+      "limit_ms": 10.0,
+      "result": "pass"
+    },
+    "linux": {
+      "raw_zsh_p95_ms": 2.744,
+      "aishe_p95_ms": 5.533,
+      "regression_p95_ms": 2.788,
+      "limit_ms": 10.0,
+      "result": "pass"
+    }
+  },
+  "managed_soak": {
+    "result": "pass",
+    "turns": 1000,
+    "reconnects": 39,
+    "lifecycle_cycles": 12,
+    "lifecycle_elapsed_seconds": 74.69360357000551,
+    "provider_requests": 1012,
+    "cold_samples": 40,
+    "cold_ready_p95_ms": 2228.9907579979626,
+    "cold_turn_p95_ms": 3493.068822004716,
+    "live_verify_p95_ms": 3661.841398003162,
+    "warm_health_p95_ms": 25.39111599617172,
+    "turn_p50_ms": 410.34910399321234,
+    "turn_p95_ms": 3276.3152480038116,
+    "supervisor_rss_max_kib": 13476,
+    "opencode_rss_max_kib": 750616,
+    "opencode_rss_growth_kib": 45040
+  },
+  "concurrency": {
+    "result": "pass",
+    "sessions": 100,
+    "wall_seconds": 72.926,
+    "provider_requests_per_session": 1,
+    "durable_sessions_per_identity": 1
+  },
+  "external_provider_requests": 0,
+  "paid_cost_usd": 0.0,
+  "release_gates_and_rollout_obligations": [
+    {
+      "blocking": true,
+      "requirement": "Run the bounded OpenAI, Anthropic, and OpenAI-compatible live-provider matrix with newly issued credentials that have never been published."
+    },
+    {
+      "blocking": true,
+      "requirement": "Run the literal 24-hour lifecycle soak; the accelerated lifecycle contract cannot substitute for elapsed wall-clock time."
+    },
+    {
+      "blocking": true,
+      "requirement": "Review release CI artifacts, SBOM, provenance, packages, and this evidence before creating or publishing a tag."
+    },
+    {
+      "blocking": false,
+      "requirement": "Retain the native compatibility fallback and runtime rollback for at least two subsequent minor releases."
+    },
+    {
+      "blocking": false,
+      "requirement": "Run the optional Fedora/RHEL-family qualification when a disposable node is available."
+    }
+  ]
+}

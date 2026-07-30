@@ -47,6 +47,9 @@ cargo fmt --all -- --check
   - `tests/direct_shell_benchmark.py`: compares raw zsh and `aishe -c`, checks
     exact output across 1,000 direct commands, enforces the direct-command p95
     startup regression SLO, and proves that no managed-backend state is created.
+  - `tests/reboot_persistence.py`: two-phase disposable-node gate that hashes
+    config/history/session state before a real reboot, then verifies the bytes,
+    managed-session identity, and prior provider context after reconnect.
   - `tests/fixtures/opencode/v1.18.9/`: frozen OpenAPI endpoint and normalized
     event fixtures for the supported compatibility surface.
   - `tests/provider_unauthenticated.py`: real local HTTP endpoint proving
@@ -123,6 +126,15 @@ AISHE_RUNTIME_DIR=/path/to/test-runtime \
     --lifecycle-hours 24 --lifecycle-interval 300
 AISHE_RUNTIME_DIR=/path/to/test-runtime \
   python3 tests/opencode_concurrency.py target/release/aishe --sessions 100
+
+# On a disposable node only:
+AISHE_RUNTIME_DIR=/path/to/test-runtime \
+  python3 tests/reboot_persistence.py prepare \
+    target/release/aishe /persistent/aishe-reboot-fixture
+# reboot and reconnect
+AISHE_RUNTIME_DIR=/path/to/test-runtime \
+  python3 tests/reboot_persistence.py verify \
+    target/release/aishe /persistent/aishe-reboot-fixture
 ```
 
 To run the natural-language suite, provide an API key in the environment (the
