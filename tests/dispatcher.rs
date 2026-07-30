@@ -1,6 +1,6 @@
 //! Dispatcher integration tests against a manually-seeded cache.
 
-use aishe::dispatcher::{dispatch, CommandCache, Dispatch};
+use aishe::dispatcher::{dispatch, fast_shell_line, CommandCache, Dispatch};
 
 /// Build a cache seeded by a real PATH scan plus a few known names.
 fn seeded_cache() -> CommandCache {
@@ -29,6 +29,20 @@ fn natural_language_routes_to_nl() {
         dispatch("whats eating my disk space", &cache),
         Dispatch::NaturalLanguage(_)
     ));
+}
+
+#[test]
+fn question_grammar_beats_real_command_names() {
+    let cache = seeded_cache();
+    assert!(matches!(
+        dispatch("what is the capital of France", &cache),
+        Dispatch::NaturalLanguage(_)
+    ));
+    assert!(matches!(
+        dispatch("who am i logged in as", &cache),
+        Dispatch::NaturalLanguage(_)
+    ));
+    assert!(fast_shell_line("what is the capital of France").is_none());
 }
 
 #[test]

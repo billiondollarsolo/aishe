@@ -34,7 +34,19 @@ cargo fmt --all -- --check
     runtime against a deterministic fake provider, real trusted plugin, real
     authenticated foreground bridge, and isolated environment. It proves
     multi-turn continuity, suggest/auto tool policy, usage, idempotency journal,
-    and credential non-leakage/non-persistence.
+    credential non-leakage/non-persistence, no runtime plugin dependency tree,
+    and no install-time or public-catalog egress.
+  - `tests/opencode_host_scope.py`: runs a real pinned-runtime yolo tool loop
+    with a synthetic per-shell host acceptance, writes to a disposable path
+    outside the workspace, and proves the effect crossed one authenticated
+    Aishe lease without a second per-action approval.
+  - `tests/opencode_soak.py` and `tests/opencode_concurrency.py`: measure cold
+    and warm lifecycle latency/RSS, repeated reconnect continuity, optional
+    24-hour stop/start behavior, exact provider-request counts, and concurrent
+    shell/session isolation.
+  - `tests/direct_shell_benchmark.py`: compares raw zsh and `aishe -c`, checks
+    exact output across 1,000 direct commands, enforces the direct-command p95
+    startup regression SLO, and proves that no managed-backend state is created.
   - `tests/fixtures/opencode/v1.18.9/`: frozen OpenAPI endpoint and normalized
     event fixtures for the supported compatibility surface.
   - `tests/provider_unauthenticated.py`: real local HTTP endpoint proving
@@ -97,6 +109,20 @@ cargo build --release --locked
 python3 tests/admin_validation.py            # deterministic suites need no key
 AISHE_RUNTIME_DIR=/path/to/test-runtime \
   python3 tests/opencode_runtime_contract.py target/release/aishe
+AISHE_RUNTIME_DIR=/path/to/test-runtime \
+  python3 tests/opencode_host_scope.py target/release/aishe
+python3 tests/direct_shell_benchmark.py target/release/aishe
+
+# Full fake-provider release qualifications:
+AISHE_RUNTIME_DIR=/path/to/test-runtime \
+  python3 tests/opencode_soak.py target/release/aishe \
+    --turns 1000 --cold-cycles 40 --warm-probes 200 --reconnect-every 25
+AISHE_RUNTIME_DIR=/path/to/test-runtime \
+  python3 tests/opencode_soak.py target/release/aishe \
+    --turns 20 --cold-cycles 3 --warm-probes 20 \
+    --lifecycle-hours 24 --lifecycle-interval 300
+AISHE_RUNTIME_DIR=/path/to/test-runtime \
+  python3 tests/opencode_concurrency.py target/release/aishe --sessions 100
 ```
 
 To run the natural-language suite, provide an API key in the environment (the

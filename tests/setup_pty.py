@@ -265,6 +265,55 @@ def setup_visual_style_and_alignment():
         cleanup_isolated_root(root)
 
 
+def setup_width_and_no_color_matrix():
+    for cols in (40, 80, 120, 200):
+        root = tempfile.mkdtemp(prefix="aishe-setup-width-%d-" % cols)
+        try:
+            env = isolated_env(root)
+            shell = Pty([BINARY, "setup"], env, cols=cols)
+            try:
+                setup_to_provider(shell)
+                shell.drain(0.2)
+                if "\x1b[?1049h" in shell.transcript:
+                    raise AssertionError(
+                        "setup entered an alternate-screen UI at %d columns" % cols
+                    )
+                if "\x1b[1;36;7m› " not in shell.transcript:
+                    raise AssertionError(
+                        "setup lost its visible focus row at %d columns" % cols
+                    )
+                shell.menu(2)
+                shell.expect("API endpoint")
+                shell.line(":cancel")
+                shell.expect("Setup paused")
+                expect_setup_exit(shell, "setup width %d" % cols)
+            finally:
+                shell.close()
+        finally:
+            cleanup_isolated_root(root)
+
+    root = tempfile.mkdtemp(prefix="aishe-setup-no-color-")
+    try:
+        env = isolated_env(root)
+        env["NO_COLOR"] = "1"
+        shell = Pty([BINARY, "setup"], env, cols=80)
+        try:
+            setup_to_provider(shell)
+            shell.drain(0.2)
+            if "\x1b[1;36m" in shell.transcript or "\x1b[1;36;7m" in shell.transcript:
+                raise AssertionError("NO_COLOR setup emitted color styling")
+            if "› " not in shell.transcript or "Provider service" not in shell.transcript:
+                raise AssertionError("NO_COLOR setup lost its focus marker or title")
+            shell.send("\x1b")
+            shell.expect("Setup paused")
+            expect_setup_exit(shell, "NO_COLOR setup")
+        finally:
+            shell.close()
+    finally:
+        cleanup_isolated_root(root)
+    print("  ok   40/80/120/200-column and NO_COLOR setup matrix")
+
+
 def setup_checks_catalog_credential_and_manual_model():
     root = tempfile.mkdtemp(prefix="aishe-setup-model-check-")
     good_key = "setup-catalog-good-key"
@@ -699,6 +748,7 @@ def main():
     root = tempfile.mkdtemp(prefix="aishe-setup-pty-")
     try:
         setup_visual_style_and_alignment()
+        setup_width_and_no_color_matrix()
         setup_checks_catalog_credential_and_manual_model()
         env = isolated_env(root)
         with model_server(["setup-local-model"]) as endpoint:

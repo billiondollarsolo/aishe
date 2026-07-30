@@ -1055,8 +1055,12 @@ fn apply_safe_fixes(paths: &Paths, config_valid: bool) -> Check {
             crate::backend::RuntimeStatus::Ready { .. } => {
                 match crate::backend::supervisor::prepare_layout() {
                     Ok(prepared) => {
-                        changed.push(prepared.plugin_path);
-                        notes.push("verified/rewrote the embedded trusted plugin".to_string());
+                        if prepared.changed_paths.is_empty() {
+                            notes.push("verified managed plugin and isolated layout".to_string());
+                        } else {
+                            changed.extend(prepared.changed_paths);
+                            notes.push("repaired managed plugin and isolated layout".to_string());
+                        }
                     }
                     Err(error) => notes.push(format!(
                         "plugin repair failed: {}",

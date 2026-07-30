@@ -194,6 +194,7 @@ def make_env(binary):
 
 
 PASSED = []
+FAKE_GENERATION = 0
 
 
 def check(sh, name, ok):
@@ -211,16 +212,34 @@ def set_fake(sh, payload):
     # Export the canned model response into the wrapped zsh; the per-call
     # `aishe --auto-line` inherits it. Single-quote-safe payloads only.
     #
-    # A fixed sleep here races a slow runner: if the export has not been
-    # processed when the buffer is cleared, the stale echo leaks into the next
-    # expect() and the following scenario fails for no visible reason. Confirm
-    # the assignment landed with a round trip instead of guessing at a delay.
-    sh.send("export AISHE_FAKE_LLM='%s'" % payload)
-    marker = "FAKE_SET_MARKER"
-    sh.send("print -r -- %s" % marker)
-    sh.expect(marker)  # the echo of the print line
-    sh.expect(marker)  # its output — the export is now definitely in effect
-    sh.buf = ""  # drop anything trailing so the next expect() is clean
+    # A fixed sleep here races a slow runner. Keep the assignment, comparison,
+    # and acknowledgement in one command so the second marker can only appear
+    # after zsh has both exported the exact payload and verified its value.
+    # A generation suffix prevents stale terminal output from satisfying a
+    # later handshake.
+    global FAKE_GENERATION
+    for _ in range(3):
+        FAKE_GENERATION += 1
+        marker = "FAKE_SET_MARKER_%d" % FAKE_GENERATION
+        sh.send(
+            "export AISHE_FAKE_LLM='%s'; "
+            "[[ \"$AISHE_FAKE_LLM\" == '%s' ]] && "
+            "print -r -- 'FAKE_SET_''MARKER_%d'"
+            % (payload, payload, FAKE_GENERATION)
+        )
+        # The full marker is deliberately split by shell quotes in the typed
+        # command. It can therefore occur only in command output, never in one
+        # or more ZLE redraws of the input line.
+        if sh.expect(marker, timeout=3):
+            sh.buf = ""  # drop anything trailing so the next expect() is clean
+            return
+        # Input can arrive in the narrow redraw window after a foreground
+        # `aishe` child exits. Reset ZLE and retry with a fresh marker.
+        sh.raw(b"\x03")
+        sh.expect_prompt(timeout=3)
+    raise RuntimeError(
+        "failed to install deterministic fake provider\n" + sh.transcript[-2500:]
+    )
 
 
 def answer(text):

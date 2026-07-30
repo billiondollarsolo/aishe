@@ -623,8 +623,67 @@ fn backend_command(command: &BackendCmd) -> Result<u8> {
     match command {
         BackendCmd::Status { json } => {
             let status = manager.status();
+            let loaded = aishe::backend::control::load_state();
+            let verified = aishe::backend::control::verified_state();
+            let (supervisor, supervisor_text) = match verified {
+                Ok(Some(state)) => {
+                    let loopback = state.control_url.starts_with("http://127.0.0.1:")
+                        && state.opencode_url.starts_with("http://127.0.0.1:");
+                    (
+                        serde_json::json!({
+                            "state": "running",
+                            "supervisor_pid": state.supervisor_pid,
+                            "opencode_pid": state.opencode_pid,
+                            "runtime_version": state.runtime_version,
+                            "plugin_sha256": state.plugin_sha256,
+                            "provider_id": state.provider_id,
+                            "model_id": state.model_id,
+                            "started_at_ms": state.started_at_ms,
+                            "loopback": loopback
+                        }),
+                        format!(
+                            "supervisor: running · pid {} · OpenCode pid {} · {}/{}",
+                            state.supervisor_pid,
+                            state.opencode_pid,
+                            aishe::commands::display_safe(&state.provider_id),
+                            aishe::commands::display_safe(&state.model_id)
+                        ),
+                    )
+                }
+                Ok(None) => match loaded {
+                    Ok(Some(_)) => (
+                        serde_json::json!({"state":"stale"}),
+                        "supervisor: stale state (Doctor can repair it)".into(),
+                    ),
+                    Ok(None) => (
+                        serde_json::json!({"state":"stopped"}),
+                        "supervisor: stopped (starts on the next AI turn)".into(),
+                    ),
+                    Err(error) => {
+                        let detail = aishe::redact::redact(&error.to_string());
+                        (
+                            serde_json::json!({"state":"invalid","detail":detail}),
+                            format!("supervisor: invalid state · {detail}"),
+                        )
+                    }
+                },
+                Err(error) => {
+                    let detail = aishe::redact::redact(&error.to_string());
+                    (
+                        serde_json::json!({"state":"invalid","detail":detail}),
+                        format!("supervisor: invalid state · {detail}"),
+                    )
+                }
+            };
             if *json {
-                println!("{}", serde_json::to_string_pretty(&status)?);
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&serde_json::json!({
+                        "schema_version": 1,
+                        "runtime": &status,
+                        "supervisor": supervisor
+                    }))?
+                );
             } else {
                 match &status {
                     RuntimeStatus::Ready {
@@ -649,6 +708,7 @@ fn backend_command(command: &BackendCmd) -> Result<u8> {
                         println!("next: aishe backend repair");
                     }
                 }
+                println!("{supervisor_text}");
             }
             Ok(if matches!(status, RuntimeStatus::Ready { .. }) {
                 0
@@ -839,6 +899,19 @@ fn run() -> Result<u8> {
 
     if matches!(args.cmd, Some(Cmd::BackendSupervisor)) {
         return aishe::backend::supervisor::run_supervisor();
+    }
+
+    // Ordinary one-shot shell commands must remain ordinary shell commands:
+    // prove the route before loading config/policy/providers/plugins or touching
+    // the managed backend. Ambiguous input falls through to the full classifier.
+    if let Some(command) = args
+        .command
+        .as_deref()
+        .and_then(dispatcher::fast_shell_line)
+    {
+        let mut executor = Executor::new()?;
+        executor.set_history_log(fast_history_log()?);
+        return Ok(executor.run(&command) as u8);
     }
 
     // Setup is deliberately handled before ordinary config loading: its job is
@@ -3408,6 +3481,21 @@ fn history_paths(config: &Config) -> (std::path::PathBuf, std::path::PathBuf) {
             data_dir().join(format!("history.{pid}.ext")),
         )
     }
+}
+
+/// History destination for the direct `-c` fast path. A parent Aishe PTY
+/// exports the exact active file; standalone invocations preserve the existing
+/// first-run, migration, malformed-config, and `share_history=false` contracts.
+/// No provider, plugin, MCP registry, or managed backend is constructed.
+fn fast_history_log() -> Result<std::path::PathBuf> {
+    if let Some(path) = std::env::var_os("AISHE_HISTFILE").filter(|path| !path.is_empty()) {
+        return Ok(path.into());
+    }
+    let mut config = Config::load_or_init()?;
+    let _project_overlay = std::env::current_dir()
+        .ok()
+        .and_then(|cwd| config.apply_project_overlay(&cwd));
+    Ok(history_paths(&config).1)
 }
 
 /// The on-disk semantic-history vector store.

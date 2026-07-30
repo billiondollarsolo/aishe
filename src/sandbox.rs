@@ -689,6 +689,107 @@ mod tests {
         std::fs::remove_dir_all(workspace).unwrap();
     }
 
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn functional_agent_bwrap_profile_enforces_workspace_and_network() {
+        if !matches!(
+            crate::dependencies::bubblewrap_probe(),
+            crate::dependencies::BubblewrapState::Usable { .. }
+        ) {
+            return;
+        }
+        let root = std::env::temp_dir().join(format!(
+            "aishe-agent-bwrap-functional-{}-{}",
+            std::process::id(),
+            rand::random::<u64>()
+        ));
+        let workspace = root.join("workspace");
+        let outside = root.join("outside");
+        std::fs::create_dir_all(&workspace).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+        let marker = root.join("host-tmp-marker");
+        std::fs::write(&marker, b"must be hidden").unwrap();
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&outside, workspace.join("escape")).unwrap();
+
+        let run = |network, command: &str, port: Option<u16>| {
+            let mut argv = agent_bwrap_argv(&workspace, &workspace, network).unwrap();
+            let program = argv.remove(0);
+            let mut child = std::process::Command::new(program);
+            child
+                .args(argv)
+                .arg("/bin/sh")
+                .arg("-c")
+                .arg(command)
+                .env("AISHE_TEST_WORKSPACE", &workspace)
+                .env("AISHE_TEST_MARKER", &marker);
+            if let Some(port) = port {
+                child.env("AISHE_TEST_PORT", port.to_string());
+            }
+            child.output().unwrap()
+        };
+
+        let boundary = run(
+            crate::agent::NetworkPolicy::Deny,
+            r#"set -eu
+printf 'ok\n' > "$AISHE_TEST_WORKSPACE/created"
+test -r /etc/passwd
+if touch /etc/aishe-bwrap-must-not-write 2>/dev/null; then exit 40; fi
+test ! -e "$HOME/.config/aishe"
+test ! -e "$AISHE_TEST_MARKER"
+if printf 'escape\n' > "$AISHE_TEST_WORKSPACE/escape/owned" 2>/dev/null; then exit 41; fi
+"#,
+            None,
+        );
+        assert!(
+            boundary.status.success(),
+            "workspace profile failed: {}",
+            String::from_utf8_lossy(&boundary.stderr)
+        );
+        assert_eq!(
+            std::fs::read_to_string(workspace.join("created")).unwrap(),
+            "ok\n"
+        );
+        assert!(!outside.join("owned").exists());
+        assert!(!std::path::Path::new("/etc/aishe-bwrap-must-not-write").exists());
+
+        let python = crate::executor::which("python3").expect("Linux CI must provide python3");
+        let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let accept = std::thread::spawn(move || {
+            use std::io::Read;
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut byte = [0u8; 1];
+            stream.read_exact(&mut byte).unwrap();
+            byte[0]
+        });
+        let connect = format!(
+            "{} -c 'import os,socket;s=socket.create_connection((\"127.0.0.1\",int(os.environ[\"AISHE_TEST_PORT\"])),2);s.sendall(b\"x\")'",
+            python.display()
+        );
+        let allowed = run(crate::agent::NetworkPolicy::Allow, &connect, Some(port));
+        assert!(
+            allowed.status.success(),
+            "allowed network profile failed: {}",
+            String::from_utf8_lossy(&allowed.stderr)
+        );
+        assert_eq!(accept.join().unwrap(), b'x');
+
+        let denied_listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let denied_port = denied_listener.local_addr().unwrap().port();
+        let denied = run(
+            crate::agent::NetworkPolicy::Deny,
+            &connect,
+            Some(denied_port),
+        );
+        assert!(
+            !denied.status.success(),
+            "network-denied profile reached the host loopback listener"
+        );
+        drop(denied_listener);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
     fn cfg_with(confirm: &str, dangerous: bool) -> Config {
         let mut c = Config::default();
         c.aishe.yolo_confirm = confirm.to_string();

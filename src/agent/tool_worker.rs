@@ -1045,6 +1045,40 @@ mod tests {
     }
 
     #[test]
+    fn accepted_yolo_host_scope_can_modify_an_explicit_outside_path() {
+        let root =
+            std::env::temp_dir().join(format!("aishe-tool-host-scope-{}", std::process::id()));
+        let workspace = root.join("workspace");
+        let outside = root.join("host-target");
+        std::fs::create_dir_all(&workspace).unwrap();
+        let mut item = work(
+            &workspace,
+            "write_file",
+            serde_json::json!({
+                "path": outside,
+                "content": "host scope contract\n"
+            }),
+        );
+        item.scope = ExecutionScope::Host;
+        item.network = NetworkPolicy::Allow;
+        let result = execute(
+            &item,
+            &crate::skills::SkillRegistry::default(),
+            &crate::mcp::McpRegistry::default(),
+            &mut HashSet::new(),
+            &Arc::new(AtomicBool::new(false)),
+            &HashSet::new(),
+            false,
+        );
+        assert!(result.success, "{}", result.output);
+        assert_eq!(
+            std::fs::read_to_string(&outside).unwrap(),
+            "host scope contract\n"
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn cancellation_prevents_every_tool_before_dispatch() {
         let root = std::env::temp_dir().join(format!("aishe-tool-cancel-{}", std::process::id()));
         std::fs::create_dir_all(&root).unwrap();

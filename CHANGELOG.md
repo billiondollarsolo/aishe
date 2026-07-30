@@ -6,10 +6,103 @@ breaking changes can land in any release.
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-07-30
+
+### Added
+- A private, compatibility-pinned OpenCode 1.18.9 agent backend now owns
+  provider interaction, durable conversations, reasoning/tool loops,
+  compaction, todos, and child-agent events without opening another TUI.
+  `aishe backend install|status|verify|repair|rollback|stop|logs|gc` provides a
+  versioned operational interface and sanitized JSON.
+- The managed runtime is selected per OS/architecture/libc, downloaded with
+  strict size bounds, SHA-256 verified, safely extracted, version-attested, and
+  activated transactionally with prior-version rollback. System OpenCode
+  installations, user OpenCode config/plugins/credentials, auto-update, and
+  public model-catalog refresh are ignored.
+- A dependency-free, build-hash-verified trusted plugin exposes only Aishe proxy
+  tools. Authenticated foreground leases bind every call to the owning shell,
+  workspace, mode, scope, network policy, session/message/call IDs, and durable
+  idempotency journal.
+- Managed `suggest`, action-gated `auto`, and `yolo` now share one durable
+  session engine. Yolo has explicit `workspace` and `host` scopes, requires one
+  acceptance in each new shell, and does not interrupt an accepted run with
+  per-action approvals.
+- Linux workspace agents have a functional bubblewrap profile with read-only
+  host root, writable project, private `/tmp`, hidden HOME/config, symlink
+  escape protection, and explicit network allow/deny. Setup offers a
+  consent-gated package-manager install and verifies behavior rather than
+  trusting binary presence. macOS is labeled policy-only and warns per shell.
+- The inline renderer presents normalized text, reasoning, tool activity,
+  diffs, todos, subagents, usage, and errors in compact or detailed form without
+  an alternate screen. The status line adds backend, scope, network, sandbox,
+  task, context, elapsed, last-call, session, budget, and request fields.
+- Enterprise setup now discovers existing state/policy, installs or verifies
+  the exact managed runtime, supports local archives and mirrors, validates
+  bubblewrap, checks provider credentials and `/models`, validates listed or
+  manually typed models, offers unknown-model pricing, reviews behavior/scope/UI
+  choices, runs a managed end-to-end check, and applies config/credentials
+  transactionally. Drafts remain resumable and secret-free.
+- Release automation now validates the OpenCode license and every pinned
+  archive, publishes checksums/notices, generates an SPDX JSON SBOM, attests
+  provenance, and keeps the release draft until all binary/package/runtime
+  assets succeed. Root and package third-party notices are included.
+
+### Changed
+- OpenCode is the default for every new AI interaction. The native engine is a
+  compatibility/repair fallback only when failure occurs before prompt
+  admission; an admitted turn is never replayed through another engine after
+  partial output, cost, or a possible effect.
+- Runtime, binary, and ordinary uninstall operations preserve config,
+  credentials, shell history, pricing, project trust, managed/legacy sessions,
+  tasks, audit logs, and undo journals. Destructive uninstall categories are
+  separate, previewable, and require explicit confirmation.
+- `aishe backend status --json` is schema-versioned and separates runtime from
+  supervisor state without serializing listener URLs, tokens, passwords, or
+  nonces.
+- Plain `aishe -c` shell commands use a conservative fast admission path that
+  bypasses provider/plugin/MCP/backend construction while retaining first-run,
+  migration, `.aishrc`, exit-code, and persistent-history behavior.
+
 ### Fixed
 - Natural-language requests submitted through automatic question routing, the
   `?`/`#` sigils, or Alt-Enter now remain visible in terminal scrollback. Aishe
   still accepts an empty executable buffer so zsh cannot run the request.
+- Full-buffer question grammar now also applies to non-interactive dispatch, so
+  `what is ...`, `where is ...`, and `who am ...` do not run merely because the
+  first word is installed as a command.
+- Tool labels correctly unwrap the dependency-free plugin's required `input`
+  object instead of rendering empty or opaque action summaries.
+- Doctor's managed-layout repair is genuinely idempotent and reports only paths
+  changed on that invocation. All intermediate private backend directories are
+  created with mode `0700` on the first pass.
+- Upgrades from development builds that briefly installed an OpenCode plugin
+  SDK now retire that disposable `node_modules`/npm cache while preserving
+  every user-owned state category.
+
+### Security
+- OpenCode's host-effecting built-ins are default-denied for primary and child
+  agents. All effects return through Aishe's authenticated foreground worker;
+  forged ancestry, workspace, host, or call identities fail closed.
+- Provider credentials are delivered through a bounded private bootstrap pipe
+  and removed from model-controlled command, skill, MCP, and file-tool
+  environments. Control credentials and secrets are excluded from mappings,
+  journals, logs, diagnostics, and support bundles.
+- Provider-turn budgets reserve and cap known-price requests before execution,
+  deduplicate child usage, and expire abandoned reservations without allowing
+  duplicate spend or effects.
+
+### Tests
+- Added frozen OpenCode OpenAPI/event fixtures, a real pinned-runtime
+  provider/tool/credential/egress contract, real accepted host-scope tool
+  execution, dependency-free loader migration, Linux bubblewrap isolation,
+  setup width/color/NO_COLOR transactions, installer fault injection, durable
+  interruption/reconciliation, concurrent-session isolation, lifecycle/RSS
+  soak, and a 1,000-command direct-shell latency/backend-isolation gate.
+
+### Rollback
+- Set `[backend] engine = "native"` to use the compatibility engine, or run
+  `aishe backend rollback` to select the prior verified runtime. Neither action
+  deletes config, credentials, history, sessions, tasks, audit, or undo state.
 
 ## [0.4.1] - 2026-07-29
 

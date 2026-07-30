@@ -287,6 +287,29 @@ fn fix_line_prints_a_corrected_command() {
 }
 
 #[test]
+fn dash_c_custom_slash_commands_bypass_only_the_shell_fast_path() {
+    let home = temp_config_home();
+    let commands = home.join("aishe").join("commands");
+    std::fs::create_dir_all(&commands).unwrap();
+    std::fs::write(
+        commands.join("echo-args.md"),
+        "---\ndescription: test custom command\nshell: true\n---\nprintf 'custom=%s\\n' \"$ARGUMENTS\"\n",
+    )
+    .unwrap();
+
+    Command::cargo_bin("aishe")
+        .unwrap()
+        .env("XDG_CONFIG_HOME", &home)
+        .env("XDG_DATA_HOME", home.join("data"))
+        .env("AISHE_CONFIG_DIR", &home)
+        .env("AISHE_DATA_DIR", home.join("data"))
+        .args(["-c", "/echo-args hello world"])
+        .assert()
+        .success()
+        .stdout("custom=hello world\n");
+}
+
+#[test]
 fn dash_c_runs_forced_shell_command() {
     let home = temp_config_home();
     Command::cargo_bin("aishe")
@@ -1429,7 +1452,8 @@ Authorization = "Bearer fake-private-header"
             .as_array()
             .map(Vec::len)
             .unwrap_or(0),
-        0
+        0,
+        "second Doctor repair was not idempotent: {repair}"
     );
     std::fs::remove_dir_all(dir).ok();
 }
@@ -1604,6 +1628,37 @@ auth_required = false
         .stdout(contains("local-model-a").and(contains("local-model-b")));
     server.join().unwrap();
     std::fs::remove_dir_all(dir).ok();
+}
+
+#[test]
+fn backend_status_json_is_versioned_and_never_serializes_private_tokens() {
+    let root = temp_root("backend-status");
+    let output = Command::cargo_bin("aishe")
+        .unwrap()
+        .env("AISHE_DATA_DIR", root.join("data"))
+        .env("AISHE_RUNTIME_DIR", root.join("runtime"))
+        .args(["backend", "status", "--json"])
+        .output()
+        .unwrap();
+    assert!(
+        !output.status.success(),
+        "a missing runtime must remain nonzero"
+    );
+    let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(report["schema_version"], 1);
+    assert_eq!(report["supervisor"]["state"], "stopped");
+    assert!(report.get("runtime").is_some());
+    let serialized = String::from_utf8(output.stdout).unwrap();
+    for forbidden in [
+        "control_token",
+        "opencode_password",
+        "startup_nonce",
+        "control_url",
+        "opencode_url",
+    ] {
+        assert!(!serialized.contains(forbidden));
+    }
+    std::fs::remove_dir_all(root).ok();
 }
 
 #[test]

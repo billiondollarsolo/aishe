@@ -183,6 +183,8 @@ def assert_dependency_free_layout(data_home):
             raise AssertionError(
                 f"trusted bridge unexpectedly installed a runtime SDK: {installed}"
             )
+    if (backend / "home" / ".npm").exists():
+        raise AssertionError("legacy managed npm cache was not retired")
 
     total = sum(
         path.stat().st_size
@@ -444,6 +446,19 @@ def assert_runtime_contract(binary, runtime_dir):
         config_path = config_home / "aishe" / "config.toml"
         usage_path = root / "usage.tsv"
         status_path = root / "status"
+        backend_root = data_home / "aishe" / "backend" / "opencode"
+        for legacy_root in (
+            backend_root / "config",
+            backend_root / "xdg" / "config" / "opencode",
+        ):
+            legacy_sdk = legacy_root / "node_modules" / "@opencode-ai" / "plugin"
+            legacy_sdk.mkdir(parents=True)
+            (legacy_sdk / "package.json").write_text(
+                "legacy disposable SDK", encoding="utf-8"
+            )
+        legacy_npm = backend_root / "home" / ".npm"
+        legacy_npm.mkdir(parents=True)
+        (legacy_npm / "cache").write_text("legacy disposable cache", encoding="utf-8")
         write_config(config_path, endpoint)
 
         env = os.environ.copy()

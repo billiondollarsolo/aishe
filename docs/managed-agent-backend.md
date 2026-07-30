@@ -41,6 +41,16 @@ hash-verified plugin into that environment. OpenCode's host-effecting built-in
 tools are hidden or denied for primary agents and subagents. The plugin exposes
 only Aishe proxy tools.
 
+The bridge is dependency-free plain JavaScript and uses the JSON-Schema
+compatibility surface frozen for OpenCode 1.18.9; it imports no npm package.
+Because that OpenCode version otherwise starts a background plugin-SDK install
+for every config root, Aishe seeds the two private roots with an exact offline
+loader attestation and empty `node_modules` directories. Startup also disables
+the public `models.dev` refresh. A cold managed start therefore performs no
+package or model-catalog egress: only the provider endpoint explicitly selected
+in Aishe config may be contacted. The real-runtime contract test enforces all
+three invariants through a rejecting egress proxy.
+
 Each AI turn creates a short-lived authenticated foreground lease. A tool call is
 accepted only when its session, message, call ID, workspace, mode, scope, network
 policy, and foreground lease agree. The supervisor journals call state before
@@ -100,6 +110,9 @@ server and verifies its health/config/plugin/tool restrictions without making a
 provider call. `repair` stages and verifies a replacement before activation.
 `rollback` swaps to the immediately previous compatible, already-verified
 runtime. `gc` removes only abandoned download/staging paths.
+`status --json` emits schema version 1 with separate `runtime` and sanitized
+`supervisor` objects; private listener credentials, tokens, nonces, and URLs are
+never serialized.
 
 For an offline or mirrored setup:
 

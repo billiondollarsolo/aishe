@@ -127,6 +127,11 @@ jobs:
       - name: Build release binary
         run: cargo build --release --locked
 
+      - name: Direct shell never starts backend and stays within startup SLO
+        run: >-
+          python3 tests/direct_shell_benchmark.py target/release/aishe
+          --commands 100 --warmup 10
+
       - name: Install and live-verify pinned OpenCode runtime
         run: |
           target/release/aishe backend install
@@ -158,6 +163,9 @@ jobs:
 
       - name: Pinned OpenCode provider and tool-bridge contract
         run: python3 tests/opencode_runtime_contract.py target/release/aishe
+
+      - name: Accepted yolo host-scope bridge contract
+        run: python3 tests/opencode_host_scope.py target/release/aishe
 
       - name: Managed OpenCode startup, reconnect, and memory qualification
         run: >-

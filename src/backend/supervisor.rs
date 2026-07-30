@@ -44,6 +44,9 @@ pub struct PreparedRuntime {
     pub state_dir: PathBuf,
     pub plugin_path: PathBuf,
     pub config_json: String,
+    /// Exact private-layout paths created, replaced, or removed by this call.
+    /// Used by Doctor so repeated `--fix` reports are genuinely idempotent.
+    pub changed_paths: Vec<PathBuf>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -62,26 +65,37 @@ pub fn backend_root() -> Result<PathBuf> {
 }
 
 pub fn prepare_layout() -> Result<PreparedRuntime> {
-    let root = backend_root()?.join("opencode");
+    let backend_dir = backend_root()?;
+    let root = backend_dir.join("opencode");
     let home = root.join("home");
     let config_dir = root.join("config");
-    let global_config_dir = root.join("xdg").join("config").join("opencode");
-    let data_dir = root.join("xdg").join("data");
-    let cache_dir = root.join("xdg").join("cache");
-    let state_dir = root.join("xdg").join("state");
+    let xdg_dir = root.join("xdg");
+    let xdg_config_dir = xdg_dir.join("config");
+    let global_config_dir = xdg_config_dir.join("opencode");
+    let data_dir = xdg_dir.join("data");
+    let cache_dir = xdg_dir.join("cache");
+    let state_dir = xdg_dir.join("state");
+    let mut changed_paths = Vec::new();
     for directory in [
+        &backend_dir,
         &root,
         &home,
         &config_dir,
         &config_dir.join("plugins"),
+        &xdg_dir,
+        &xdg_config_dir,
         &global_config_dir,
         &data_dir,
         &cache_dir,
         &state_dir,
     ] {
+        let missing = !directory.exists();
         fs::create_dir_all(directory)
             .with_context(|| format!("creating private backend path {}", directory.display()))?;
         crate::config::set_private_dir(directory);
+        if missing {
+            changed_paths.push(directory.to_path_buf());
+        }
     }
 
     // OpenCode 1.18.9 starts a background SDK installation for every config
@@ -92,8 +106,18 @@ pub fn prepare_layout() -> Result<PreparedRuntime> {
     // and never reaches a package registry. The real-runtime contract test
     // freezes this behavior and fails if the pin's loader contract changes.
     let runtime_version = RuntimeManifest::embedded()?.version;
-    seed_dependency_free_plugin_loader(&config_dir, &runtime_version)?;
-    seed_dependency_free_plugin_loader(&global_config_dir, &runtime_version)?;
+    let npm_cache = home.join(".npm");
+    if remove_disposable_path(&npm_cache)? {
+        changed_paths.push(npm_cache);
+    }
+    changed_paths.extend(seed_dependency_free_plugin_loader(
+        &config_dir,
+        &runtime_version,
+    )?);
+    changed_paths.extend(seed_dependency_free_plugin_loader(
+        &global_config_dir,
+        &runtime_version,
+    )?);
 
     let plugin_path = config_dir.join("plugins").join("aishe-plugin.mjs");
     let expected = env!("AISHE_OPENCODE_PLUGIN_SHA256");
@@ -104,6 +128,7 @@ pub fn prepare_layout() -> Result<PreparedRuntime> {
     if !current_matches {
         crate::config::write_atomic(&plugin_path, PLUGIN)
             .with_context(|| format!("writing trusted plugin {}", plugin_path.display()))?;
+        changed_paths.push(plugin_path.clone());
     }
     let installed = sha256_bytes(&fs::read(&plugin_path)?);
     if installed != expected {
@@ -120,11 +145,37 @@ pub fn prepare_layout() -> Result<PreparedRuntime> {
         state_dir,
         plugin_path,
         config_json: serde_json::to_string(&config)?,
+        changed_paths,
     })
 }
 
-fn seed_dependency_free_plugin_loader(directory: &Path, runtime_version: &str) -> Result<()> {
+fn seed_dependency_free_plugin_loader(
+    directory: &Path,
+    runtime_version: &str,
+) -> Result<Vec<PathBuf>> {
+    let mut changed = Vec::new();
     let node_modules = directory.join("node_modules");
+    // v0.5.0 prerelease builds briefly let OpenCode populate this private,
+    // disposable tree. Always retire it before creating the empty compatibility
+    // directory so upgrades reclaim the duplicate SDK and transitive cache.
+    let populated_or_unsafe = match fs::symlink_metadata(&node_modules) {
+        Ok(metadata) if metadata.is_dir() && !metadata.file_type().is_symlink() => {
+            fs::read_dir(&node_modules)
+                .with_context(|| format!("reading {}", node_modules.display()))?
+                .next()
+                .is_some()
+        }
+        Ok(_) => true,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
+        Err(error) => {
+            return Err(error).with_context(|| format!("inspecting {}", node_modules.display()))
+        }
+    };
+    if populated_or_unsafe {
+        remove_disposable_path(&node_modules)?;
+        changed.push(node_modules.clone());
+    }
+    let missing_node_modules = !node_modules.exists();
     fs::create_dir_all(&node_modules).with_context(|| {
         format!(
             "creating offline OpenCode compatibility path {}",
@@ -132,6 +183,9 @@ fn seed_dependency_free_plugin_loader(directory: &Path, runtime_version: &str) -
         )
     })?;
     crate::config::set_private_dir(&node_modules);
+    if missing_node_modules && !populated_or_unsafe {
+        changed.push(node_modules.clone());
+    }
 
     let package = serde_json::json!({
         "name": "aishe-managed-opencode-config",
@@ -162,9 +216,29 @@ fn seed_dependency_free_plugin_loader(directory: &Path, runtime_version: &str) -
         if fs::read(&path).ok().as_deref() != Some(bytes.as_slice()) {
             crate::config::write_atomic(&path, &bytes)
                 .with_context(|| format!("writing {}", path.display()))?;
+            changed.push(path);
         }
     }
-    Ok(())
+    Ok(changed)
+}
+
+fn remove_disposable_path(path: &Path) -> Result<bool> {
+    let metadata = match fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => {
+            return Err(error)
+                .with_context(|| format!("inspecting disposable path {}", path.display()))
+        }
+    };
+    if metadata.is_dir() && !metadata.file_type().is_symlink() {
+        fs::remove_dir_all(path)
+            .with_context(|| format!("removing disposable directory {}", path.display()))?;
+    } else {
+        fs::remove_file(path)
+            .with_context(|| format!("removing disposable file {}", path.display()))?;
+    }
+    Ok(true)
 }
 
 /// Return a verified compatible supervisor, starting one without inheriting
@@ -910,9 +984,20 @@ mod tests {
             rand::random::<u64>()
         ));
         fs::create_dir_all(&root).unwrap();
-        seed_dependency_free_plugin_loader(&root, "1.18.9").unwrap();
+        fs::create_dir_all(root.join("node_modules/@opencode-ai/plugin")).unwrap();
+        fs::write(
+            root.join("node_modules/@opencode-ai/plugin/package.json"),
+            b"legacy disposable SDK",
+        )
+        .unwrap();
+        let first_changes = seed_dependency_free_plugin_loader(&root, "1.18.9").unwrap();
+        assert!(!first_changes.is_empty());
         let first = fs::read(root.join("package-lock.json")).unwrap();
-        seed_dependency_free_plugin_loader(&root, "1.18.9").unwrap();
+        let second_changes = seed_dependency_free_plugin_loader(&root, "1.18.9").unwrap();
+        assert!(
+            second_changes.is_empty(),
+            "idempotent layout preparation reported changes: {second_changes:?}"
+        );
         assert_eq!(fs::read(root.join("package-lock.json")).unwrap(), first);
         assert!(root.join("node_modules").is_dir());
         assert!(!root

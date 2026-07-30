@@ -148,6 +148,32 @@ impl CommandCache {
         });
     }
 
+    /// Seed only the command names needed to classify one input line.
+    ///
+    /// This is the conservative `aishe -c` fast path: it avoids walking every
+    /// directory in `$PATH`, starting shell-discovery threads, or constructing
+    /// any AI/backend state. Builtins are known locally; every other candidate
+    /// must resolve to an executable regular file on the current `$PATH`.
+    ///
+    /// The caller may use the result only when [`dispatch`] returns
+    /// [`Dispatch::Shell`]. A builtin or natural-language result is deliberately
+    /// inconclusive because an alias/function discovered from `.aishrc` may
+    /// still change full dispatch.
+    fn seed_for_line(&self, line: &str) {
+        {
+            let mut commands = self.write();
+            commands.extend(FALLBACK_BUILTINS.iter().map(|name| name.to_string()));
+        }
+        for segment in split_top_level(line) {
+            let EffectiveHead::Token(head) = effective_command_token(&tokenize(&segment)) else {
+                continue;
+            };
+            if path_executable_exists(&head) {
+                self.write().insert(head);
+            }
+        }
+    }
+
     /// Rebuild synchronously (used by `aishe rehash`).
     pub fn rehash(&self, shell: &Path) {
         let mut fresh: HashSet<String> = scan_path();
@@ -199,6 +225,36 @@ impl CommandCache {
     #[allow(clippy::len_without_is_empty)]
     pub fn len(&self) -> usize {
         self.read().len()
+    }
+}
+
+/// Return a delegated shell line only when it can be proven without loading
+/// user configuration, providers, plugins, MCP servers, or the managed backend.
+///
+/// `None` means "use the normal path", not "this is natural language".
+pub fn fast_shell_line(line: &str) -> Option<String> {
+    let trimmed = line.trim();
+    // `/name` is also Aishe's custom-command namespace. Loading the command
+    // registry is intentionally outside this admission path, so only bypass
+    // configuration for a leading slash when it names a real executable
+    // absolute path. Unknown `/name` input must reach `one_shot`, which resolves
+    // user/project commands before ordinary shell dispatch.
+    if trimmed.starts_with('/') {
+        let tokens = tokenize(trimmed);
+        let EffectiveHead::Token(head) = effective_command_token(&tokens) else {
+            return None;
+        };
+        let executable = std::fs::metadata(&head)
+            .is_ok_and(|metadata| !metadata.is_dir() && metadata.permissions().mode() & 0o111 != 0);
+        if !executable {
+            return None;
+        }
+    }
+    let cache = CommandCache::new();
+    cache.seed_for_line(trimmed);
+    match dispatch(trimmed, &cache) {
+        Dispatch::Shell(command) => Some(command),
+        Dispatch::NaturalLanguage(_) | Dispatch::Builtin(_) => None,
     }
 }
 
@@ -265,6 +321,15 @@ pub fn dispatch(line: &str, cache: &CommandCache) -> Dispatch {
     // `m[k]=v`), possibly followed by `; cmd …` — route the whole line to shell.
     if is_assignment_head(trimmed) {
         return Dispatch::Shell(trimmed.to_string());
+    }
+
+    // A small, conservative full-buffer grammar resolves command-name
+    // collisions such as macOS `/usr/bin/what` and the ubiquitous `who`.
+    // Shell operators/expansions and forced-shell input won above, so a phrase
+    // like `what is the capital of France` reaches the AI while `what app.o`,
+    // `who -u`, and `find . -name foo?` remain real commands.
+    if looks_like_question(trimmed) {
+        return Dispatch::NaturalLanguage(trimmed.to_string());
     }
 
     // 5. Pipelines / compound lines, split quote-aware on `|`/`;`/`&&`/`||`. It's
@@ -425,6 +490,96 @@ fn starts_with_shell_syntax(line: &str) -> bool {
         || line.starts_with("~/")
         || line.starts_with("$(")
         || line.starts_with('(')
+}
+
+/// Conservative question grammar shared by one-shot routing and the zsh
+/// integration's route-aware highlighting.
+fn looks_like_question(line: &str) -> bool {
+    let trimmed = line.trim();
+    if trimmed.is_empty() {
+        return false;
+    }
+    if trimmed.starts_with(['?', '#']) {
+        return true;
+    }
+    if trimmed.starts_with('!') {
+        return false;
+    }
+    // These characters are stronger evidence of shell grammar than English.
+    if trimmed.chars().any(|ch| {
+        matches!(
+            ch,
+            '|' | ';' | '&' | '<' | '>' | '$' | '`' | '(' | ')' | '{' | '}'
+        )
+    }) {
+        return false;
+    }
+    let mut words = trimmed.split_whitespace();
+    let first = words.next().unwrap_or("").to_ascii_lowercase();
+    let second = words
+        .next()
+        .unwrap_or("")
+        .trim_end_matches(|ch: char| !ch.is_ascii_alphanumeric() && ch != '_')
+        .to_ascii_lowercase();
+    if second.is_empty() {
+        return false;
+    }
+    let verb = matches!(
+        second.as_str(),
+        "is" | "are"
+            | "was"
+            | "were"
+            | "do"
+            | "does"
+            | "did"
+            | "can"
+            | "could"
+            | "would"
+            | "should"
+            | "will"
+    );
+    let question_pair = match first.as_str() {
+        "what" | "where" | "when" | "why" => verb,
+        "who" => verb || second == "am",
+        "how" => {
+            verb || matches!(
+                second.as_str(),
+                "many" | "much" | "long" | "far" | "old" | "often"
+            )
+        }
+        "can" | "could" | "would" | "will" => second == "you",
+        "should" => matches!(second.as_str(), "i" | "we"),
+        "is" | "are" => second == "there",
+        "do" => second == "you",
+        "does" | "did" => second == "the",
+        _ => false,
+    };
+    if question_pair {
+        return true;
+    }
+    trimmed.ends_with('?')
+        && matches!(
+            first.as_str(),
+            "what"
+                | "where"
+                | "who"
+                | "when"
+                | "why"
+                | "how"
+                | "which"
+                | "whose"
+                | "whom"
+                | "can"
+                | "could"
+                | "would"
+                | "will"
+                | "should"
+                | "is"
+                | "are"
+                | "do"
+                | "does"
+                | "did"
+        )
 }
 
 /// Split a line into top-level segments on **unquoted, unparenthesized** `|`,
@@ -626,6 +781,23 @@ fn scan_path() -> HashSet<String> {
         }
     }
     set
+}
+
+/// Resolve a bare command without a directory scan. Unlike
+/// [`crate::executor::which`], this admission check requires an executable
+/// non-directory entry; merely sharing a filename with a non-executable file
+/// must not make natural language run as shell.
+fn path_executable_exists(name: &str) -> bool {
+    if name.is_empty() || name.contains('/') {
+        return false;
+    }
+    let Some(path) = std::env::var_os("PATH") else {
+        return false;
+    };
+    std::env::split_paths(&path).any(|dir| {
+        std::fs::metadata(dir.join(name))
+            .is_ok_and(|metadata| !metadata.is_dir() && metadata.permissions().mode() & 0o111 != 0)
+    })
 }
 
 /// Query the shell's builtins, with a 500ms timeout and a hardcoded fallback.
@@ -912,6 +1084,49 @@ mod tests {
             dispatch("show me big files", &c),
             Dispatch::NaturalLanguage(_)
         ));
+    }
+
+    #[test]
+    fn fast_shell_line_is_confident_only_for_shell() {
+        assert_eq!(
+            fast_shell_line("printf '%s\\n' ready").as_deref(),
+            Some("printf '%s\\n' ready")
+        );
+        assert_eq!(
+            fast_shell_line("!unknown-but-forced").as_deref(),
+            Some("unknown-but-forced")
+        );
+        assert!(fast_shell_line("cd /tmp").is_none());
+        assert!(fast_shell_line("please explain this directory").is_none());
+        assert!(fast_shell_line("/echo-args hello").is_none());
+        assert_eq!(
+            fast_shell_line("/bin/sh -c 'exit 0'").as_deref(),
+            Some("/bin/sh -c 'exit 0'")
+        );
+    }
+
+    #[test]
+    fn full_buffer_questions_beat_command_name_collisions() {
+        let c = cache_with(&["what", "where", "who", "find"]);
+        assert!(matches!(
+            dispatch("what is the capital of France", &c),
+            Dispatch::NaturalLanguage(_)
+        ));
+        assert!(matches!(
+            dispatch("where is the ssh config", &c),
+            Dispatch::NaturalLanguage(_)
+        ));
+        assert!(matches!(
+            dispatch("who am i logged in as", &c),
+            Dispatch::NaturalLanguage(_)
+        ));
+        assert!(matches!(dispatch("what app.o", &c), Dispatch::Shell(_)));
+        assert!(matches!(dispatch("who -u", &c), Dispatch::Shell(_)));
+        assert!(matches!(
+            dispatch("find . -name foo?", &c),
+            Dispatch::Shell(_)
+        ));
+        assert!(fast_shell_line("what is the capital of France").is_none());
     }
 
     #[test]

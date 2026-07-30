@@ -47,10 +47,17 @@ the latest release. This policy will tighten once 1.0 ships.
 
 ## Security model
 
-aishe treats the model's output as untrusted input, not as an authorization. Three
-mechanisms sit between a proposed command and your machine. They are listed
-**strongest first**, because they are not equally strong and it matters which one
-you are actually relying on:
+aishe treats model output as untrusted input, never as authorization. The
+managed OpenCode process plans and maintains conversation state, but it has no
+direct host-effecting tools. Aishe starts it with private HOME/XDG directories,
+authenticated loopback endpoints, an exact checksum-verified runtime, and a
+dependency-free trusted plugin. OpenCode's own shell/file/web tools are denied
+for primary and child agents. Every effect crosses an authenticated,
+session-bound foreground lease and is executed by Aishe under the active
+mode/scope/policy.
+
+The controls below are listed **strongest first**, because they are not equally
+strong and it matters which one you are actually relying on:
 
 - **OS-enforced sandbox (Linux only).** With `yolo_sandbox = true` and
   `sandbox_backend = "bwrap"`, every model-run command executes under
@@ -60,11 +67,14 @@ you are actually relying on:
   preview changes before they touch the real tree. **There is no sandbox backend on
   macOS**; there, `yolo` falls back to the layers below. `aishe doctor` reports what
   is actually active.
-- **Graduated confirmation.** `suggest` proposes and waits for you; `auto` runs
-  safe commands but stops on dangerous ones; `yolo` pauses according to the
-  `yolo_confirm` tier (`never` / `dangerous` / `writes` / `all`). See
-  [docs/modes.md](docs/modes.md). A human reading the command is independent of
-  whether the gate understood it.
+- **Mode and scope admission.** `suggest` does not expose effecting tools;
+  `auto` can perform safe/read-only work but holds risky actions for review;
+  `yolo` requires one explicit acceptance for the current shell and selected
+  `workspace` or `host` scope. Once accepted, yolo does not interrupt every
+  action with another approval—the accepted scope, organization policy,
+  deterministic safety classification, budget, network policy, and sandbox are
+  enforced at each tool lease. A new shell must accept yolo again. See
+  [docs/modes.md](docs/modes.md).
 - **Deterministic safety gate.** Every command the model proposes is screened by a
   separate, rule-based check first: it either matches a destructive shape
   (`dangerous`), fails to resolve what would run (`unknown` — fails closed to a
@@ -100,10 +110,11 @@ impossible rather than merely unlikely.
   [docs/safety.md](docs/safety.md#what-the-gate-does-not-catch).
 - **Prompt injection reaching the model at all.** aishe reduces the blast radius of
   a bad proposal; it does not stop hostile content from producing one.
-- **Anything at all, if you run `yolo` with `yolo_confirm = "never"` and no OS
-  sandbox** (which is every macOS `yolo` session). In that configuration the
-  heuristic gate is the *only* thing between the model and your filesystem. Do not
-  use that configuration on a machine whose contents you care about.
+- **A host-scope or policy-only yolo session is intentionally powerful.** On
+  macOS there is no OS sandbox in this release, and Aishe warns once before
+  accepting yolo for that shell. On Linux, `host` scope is also intentionally
+  unsandboxed so administration can work. Do not accept either scope on a
+  machine whose contents you are not prepared for the agent to change.
 
 If you need a hard guarantee, run aishe on Linux with `sandbox_backend = "bwrap"`,
 or inside a VM or container you are willing to lose.
@@ -142,9 +153,14 @@ or inside a VM or container you are willing to lose.
 
 ## Data handling and privacy
 
-- **API keys are never written to the config file.** They are read at runtime from
-  the environment variable named by `api_key_env`. Keep them in your shell
-  environment or a secrets manager, not in `config.toml`.
+- **API keys are never written to ordinary config or backend state.** A named
+  credential profile is stored separately in private `credentials.toml`
+  (directory `0700`, file `0600`) through hidden `aishe auth set` or setup
+  input. The environment variable named by `api_key_env` remains a
+  higher-precedence, process-local override. Provider secrets are injected only
+  into the managed provider process and are stripped from model-controlled
+  command, skill, and MCP tool environments. They are never written to OpenCode
+  config, session mappings, journals, drafts, logs, or support bundles.
 - **What is sent to the model.** For an AI request, aishe sends your prompt plus a
   context block (working directory, recent commands, and, if enabled, a per-project
   `.aishe/context.md`). It is sent only when you trigger an AI action, not on every
@@ -164,12 +180,13 @@ or inside a VM or container you are willing to lose.
 ## Hardening recommendations
 
 - Run untrusted projects in `suggest` mode and review every command.
-- On Linux, install `bubblewrap` and set `sandbox_backend = "bwrap"` for agentic
-  work — it is the only guardrail here that an unusual command shape cannot talk its
-  way past. On macOS, compensate with a stricter `yolo_confirm`, or run aishe in a VM
-  or container.
-- Keep `yolo_sandbox` on and confirmation at `dangerous` or stricter for agentic
-  work.
+- On Linux, install `bubblewrap` and use `workspace` scope for agentic work—it
+  is the only local guardrail here that an unusual command shape cannot talk
+  its way past. Setup offers a consented package-manager install and verifies
+  the sandbox functionally; `aishe doctor` reports the effective result.
+- On macOS, prefer suggest/auto for untrusted work, or run Aishe inside a VM or
+  container. Treat acceptance of policy-only yolo as granting the agent your
+  user's effective filesystem and process privileges.
 - Set a `budget_usd` cap so a runaway loop cannot spend without bound.
 - Treat MCP servers and `fetch_url` targets as you would any third-party
   dependency; only configure ones you trust.

@@ -191,6 +191,11 @@ impl AgentRenderer {
 }
 
 fn tool_label(name: &str, arguments: &serde_json::Value) -> String {
+    // The dependency-free OpenCode plugin presents one top-level `input`
+    // object so optional JSON-Schema fields remain optional in v1.18.9. Events
+    // therefore carry the provider-facing wrapper, while native/fallback tests
+    // and completed bridge calls can still contain the direct argument shape.
+    let arguments = arguments.get("input").unwrap_or(arguments);
     let detail = arguments
         .get("command")
         .or_else(|| arguments.get("path"))
@@ -237,6 +242,11 @@ mod tests {
         );
         assert!(!label.contains('\u{1b}'));
         assert!(label.contains("\\x1b"));
+        assert!(tool_label(
+            "aishe_run_command",
+            &serde_json::json!({"input":{"command":"echo nested"}})
+        )
+        .contains("echo nested"));
         assert_eq!(todo_mark("completed"), "✓");
     }
 }

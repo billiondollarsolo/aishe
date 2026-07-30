@@ -212,10 +212,14 @@ native task records appear in one `aishe sessions` view.
 
 ### Trusted plugin and foreground bridge
 
-The dependency-free plugin in `assets/backend/opencode/aishe-plugin.mjs`
-generates provider configuration from Aishe's active provider/model/credential,
-requires Aishe authorization before each provider turn, reports authoritative
-usage, hides/denies OpenCode built-in host tools, and exposes only proxy tools.
+Rust generates provider configuration from Aishe's active
+provider/model/credential. The dependency-free plugin in
+`assets/backend/opencode/aishe-plugin.mjs` requires Aishe authorization before
+each provider turn, reports authoritative usage, hides/denies OpenCode built-in
+host tools, and exposes only proxy tools. It has no third-party imports; the
+pinned loader's otherwise-unconditional SDK bootstrap is satisfied by a
+managed offline compatibility lock, and external model-catalog refresh is
+disabled.
 Suggest explicitly disables every tool because permission denial alone does not
 remove schemas from some OpenCode/provider requests.
 
@@ -317,8 +321,9 @@ See [development.md](development.md) for commands. The shape:
   launches the exact v1.18.9 runtime with a deterministic local provider and the
   real trusted plugin/bridge. It proves two-turn session continuity,
   suggest-tool absence, Aishe-only auto tools, foreground command execution,
-  provider credential isolation, exact usage, durable journals, and secret
-  non-persistence.
+  provider credential isolation, exact usage, durable journals, secret
+  non-persistence, dependency-free plugin startup, and zero install/catalog
+  egress.
 - **Frozen OpenCode fixtures:** `tests/fixtures/opencode/v1.18.9/` locks the
   supported OpenAPI endpoints and representative text/reasoning/tool/todo/diff/
   compaction/usage/idle event mapping.

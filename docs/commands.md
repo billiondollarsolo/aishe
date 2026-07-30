@@ -65,6 +65,9 @@ aishe backend gc --dry-run
 They always operate on the exact OpenCode version embedded in this Aishe build.
 `--from` supports offline installation but does not bypass checksum, archive
 size, executable-version, or license/notices verification.
+`backend status --json` is schema-versioned and separates runtime state from a
+sanitized running/stopped/stale supervisor summary; it never exposes local
+authentication tokens, passwords, nonces, or listener URLs.
 
 Uninstall is previewable and category-based:
 

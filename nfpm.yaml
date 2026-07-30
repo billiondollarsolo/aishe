@@ -54,6 +54,10 @@ contents:
     dst: /usr/share/doc/aishe/README.md
   - src: CHANGELOG.md
     dst: /usr/share/doc/aishe/CHANGELOG.md
+  - src: THIRD_PARTY_NOTICES.md
+    dst: /usr/share/doc/aishe/THIRD_PARTY_NOTICES.md
+  - src: assets/backend/opencode/LICENSE
+    dst: /usr/share/doc/aishe/OpenCode-LICENSE
 
 deb:
   compression: zstd
