@@ -1061,7 +1061,17 @@ def main():
     report.append("\n**New meta commands (`-c`):**\n")
     for meta in ["/usage", "/reset", "/ghost", "/plan", "/cache", "/sandbox", "/help"]:
         rc, out, err = run([BIN, "-c", meta], env_local, cwd=fixture)
-        ok = rc == 0 and not reached_model_path(err)
+        if meta == "/reset":
+            # Reset is intentionally shell-scoped: a one-shot `-c` process has
+            # no active managed mapping to detach, and must fail locally rather
+            # than reaching the model or deleting durable state.
+            ok = (
+                rc != 0
+                and "must run inside an active Aishe shell" in err
+                and not reached_model_path(err)
+            )
+        else:
+            ok = rc == 0 and not reached_model_path(err)
         add(f"meta: {meta}", ok, "" if ok else f"(rc={rc} err={err.strip()[:60]!r})")
     # `/usage` with no calls reports an empty session rather than erroring.
     rc, out, err = run([BIN, "-c", "/usage"], env_local, cwd=fixture)
