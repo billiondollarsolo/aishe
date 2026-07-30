@@ -191,6 +191,7 @@ pub fn run_turn(
         },
         config.clone(),
         Arc::clone(&cancelled),
+        streams_tool_output(&options.output),
     )
     .map_err(TurnFailure::PreAdmission)?;
 
@@ -288,6 +289,10 @@ pub fn run_turn(
         usage,
         elapsed_ms: started_at.elapsed().as_millis(),
     })
+}
+
+fn streams_tool_output(output: &str) -> bool {
+    output.eq_ignore_ascii_case("detailed")
 }
 
 fn classify_submit_failure(error: anyhow::Error) -> TurnFailure {
@@ -389,5 +394,13 @@ mod tests {
         assert_eq!(usage.input_tokens, 10);
         assert_eq!(usage.output_tokens, 2);
         assert_eq!(usage.cost_usd, Some(0.01));
+    }
+
+    #[test]
+    fn only_detailed_mode_streams_foreground_tool_output() {
+        assert!(!streams_tool_output("focus"));
+        assert!(!streams_tool_output("compact"));
+        assert!(streams_tool_output("detailed"));
+        assert!(streams_tool_output("DETAILED"));
     }
 }

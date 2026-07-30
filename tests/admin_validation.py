@@ -950,7 +950,13 @@ def main():
     add("slash: /config prints config", rc == 0 and "[aishe]" in out,
         "" if "[aishe]" in out else f"(out={out.strip()!r})")
     rc, out, err = run([BIN, "-c", "/help"], env_local, cwd=fixture)
-    add("slash: /help prints help", rc == 0 and "meta commands" in out.lower())
+    add(
+        "slash: /help prints primary command index",
+        rc == 0
+        and "primary slash-commands" in out.lower()
+        and "/status" in out
+        and "Ctrl-O" in out,
+    )
 
     # Custom *shell* command: $ARGUMENTS / $1 templating + `shell: true` exec.
     report.append("\n**Custom command execution (shell + templating):**\n")

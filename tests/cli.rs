@@ -836,6 +836,58 @@ fn output_command_persists_density_without_touching_history() {
 }
 
 #[test]
+fn primary_commands_and_live_status_are_discoverable() {
+    let home = temp_config_home();
+    let data = home.join("data");
+    let usage = home.join("usage.tsv");
+    let status = home.join("status.tsv");
+    std::fs::write(&usage, "1000\t250\t2\tclaude-x\n").unwrap();
+    std::fs::write(
+        &status,
+        "task\ttask abc123\nelapsed\tlast 4.2s\ncontext\tcontext 1,000 tok\n",
+    )
+    .unwrap();
+
+    let mut commands = Command::cargo_bin("aishe").unwrap();
+    commands
+        .env("AISHE_CONFIG_DIR", &home)
+        .env("AISHE_DATA_DIR", &data)
+        .arg("commands")
+        .assert()
+        .success()
+        .stdout(
+            contains("primary slash-commands:")
+                .and(contains("/help"))
+                .and(contains("/status"))
+                .and(contains("/details"))
+                .and(contains("Ctrl-O")),
+        );
+
+    let mut live = Command::cargo_bin("aishe").unwrap();
+    live.env("AISHE_CONFIG_DIR", &home)
+        .env("AISHE_DATA_DIR", &data)
+        .env("AISHE_USAGE_FILE", &usage)
+        .env("AISHE_STATUS_FILE", &status)
+        .env("AISHE_MODEL", "session-model")
+        .env("AISHE_MODE", "yolo")
+        .env("AISHE_SCOPE", "host")
+        .env("AISHE_AGENT_OUTPUT", "focus")
+        .args(["status", "--json"])
+        .assert()
+        .success()
+        .stdout(
+            contains(r#""model": "session-model""#)
+                .and(contains(r#""mode": "yolo""#))
+                .and(contains(r#""scope": "host""#))
+                .and(contains(r#""output": "focus""#))
+                .and(contains("aishe session: 1,000 in · 250 out · 2 reqs"))
+                .and(contains("task abc123")),
+        );
+
+    std::fs::remove_dir_all(home).ok();
+}
+
+#[test]
 fn legacy_llmsh_config_is_migrated_on_run() {
     // A pre-rename ~/.config/llmsh/config.toml (and no aishe config) is ported
     // to the new location on first run, with the [llmsh] section rewritten.
@@ -1043,7 +1095,7 @@ model = "gpt-x"
     run(&["commands"])
         .assert()
         .success()
-        .stdout(contains("no custom commands"));
+        .stdout(contains("custom: none"));
     run(&["skills"])
         .assert()
         .success()

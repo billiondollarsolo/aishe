@@ -309,6 +309,7 @@ aishe models [--provider NAME]       list endpoint models
 aishe scope [workspace|host]         set the next agent execution scope
 aishe network [allow|deny]           set workspace-agent network capability
 aishe output [focus|compact|detailed] set persistent agent transcript density
+aishe status [--json]                show active session settings and spend
 
 aishe mode|model|provider [VALUE]   show or set (and persist) a setting
 aishe config|mcp|commands|skills    print the active config / registries
@@ -320,15 +321,16 @@ per session with the `--mode`/`--model`/`--provider` flags or `$AISHE_MODE`, and
 in the interactive shell **Shift-Tab** cycles the mode. Full reference in
 [docs/commands.md](docs/commands.md).
 
-A few toggles live at the aishe prompt — `rehash`, `sandbox`, `plan`, `cache`,
-`reset`, and `details` (also spellable `/rehash`, …). `reset` is also available
-as `aishe reset`; it retains the previous conversation for later resume. See
-[docs/commands.md](docs/commands.md#prompt-only-meta-commands).
+Aishe advertises `/help` when its standalone shell starts. The primary set is
+`/status`, `/usage`, `/details`, `/settings`, `/reset`, and `/commands`; the last
+one also lists installed custom commands. See
+[docs/commands.md](docs/commands.md#primary-slash-commands).
 
-Agent output defaults to `focus`: live activity is transient and only the final
-answer remains in scrollback. Press Ctrl-O or type `details` to reveal detailed
-tool activity for the current shell. Persist a preference with
-`aishe output focus|compact|detailed`.
+Agent output defaults to `focus`: one transient, width-bounded row shows the
+current command, then one activity summary and the final answer remain in
+scrollback. Press Ctrl-O or type `/details` to reveal detailed tool activity for
+following turns in the current shell. Persist a preference with `aishe output
+focus|compact|detailed`.
 
 Environment variables worth knowing: `$AISHE_MODE` sets the mode for the shell
 hook, and **`AISHE_CONFIG_DIR` / `AISHE_DATA_DIR`** relocate aishe's config and

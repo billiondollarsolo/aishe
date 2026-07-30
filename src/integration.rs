@@ -89,7 +89,24 @@ _aishe_handle_nl() {
 
 # Unknown command: zsh forks a SUBSHELL for this, so it stages via the temp file.
 command_not_found_handler() {
-  _aishe_handle_nl "${(j: :)@}"
+  local line="${(j: :)@}"
+  case "$line" in
+    /help|/commands)
+      command aishe commands < /dev/tty > /dev/tty 2>&1
+      ;;
+    /status)
+      command aishe status < /dev/tty > /dev/tty 2>&1
+      ;;
+    /usage)
+      command aishe -c /usage < /dev/tty > /dev/tty 2>&1
+      ;;
+    /settings)
+      command aishe settings < /dev/tty > /dev/tty 2>&1
+      ;;
+    *)
+      _aishe_handle_nl "$line"
+      ;;
+  esac
   return 0
 }
 
@@ -420,6 +437,34 @@ aishe-accept-line() {
     aishe-toggle-agent-details
     BUFFER=""
     POSTDISPLAY="$submitted"
+  elif [[ "$BUFFER" == "/help" || "$BUFFER" == "/commands" ]]; then
+    local submitted="$BUFFER"
+    print -s -- "$submitted"
+    zle -I
+    command aishe commands < /dev/tty > /dev/tty 2>&1
+    BUFFER=""
+    POSTDISPLAY="$submitted"
+  elif [[ "$BUFFER" == "/status" ]]; then
+    local submitted="$BUFFER"
+    print -s -- "$submitted"
+    zle -I
+    command aishe status < /dev/tty > /dev/tty 2>&1
+    BUFFER=""
+    POSTDISPLAY="$submitted"
+  elif [[ "$BUFFER" == "/usage" ]]; then
+    local submitted="$BUFFER"
+    print -s -- "$submitted"
+    zle -I
+    command aishe -c /usage < /dev/tty > /dev/tty 2>&1
+    BUFFER=""
+    POSTDISPLAY="$submitted"
+  elif [[ "$BUFFER" == "/settings" ]]; then
+    local submitted="$BUFFER"
+    print -s -- "$submitted"
+    zle -I
+    command aishe settings < /dev/tty > /dev/tty 2>&1
+    BUFFER=""
+    POSTDISPLAY="$submitted"
   elif [[ "$BUFFER" == [#?]* ]]; then
     local submitted="$BUFFER"
     print -s -- "$submitted"   # keep the NL line in history (up-arrow recall)
@@ -565,7 +610,11 @@ fi
 
 # --- aishe AI hook (added last) ---
 {ZSH_HOOK}
-{PTY_PROMPT}"#
+{PTY_PROMPT}
+if [[ -z "${{AISHE_COMMAND_HINT_SHOWN:-}}" ]]; then
+  print -P "%F{{244}}aishe: /help commands · Shift-Tab mode · Ctrl-O details%f"
+  export AISHE_COMMAND_HINT_SHOWN=1
+fi"#
     )
 }
 
@@ -674,6 +723,22 @@ command_not_found_handle() {
       ;;
     details|/details)
       __aishe_toggle_details
+      return 0
+      ;;
+    /help|/commands)
+      command aishe commands < /dev/tty > /dev/tty 2>&1
+      return 0
+      ;;
+    /status)
+      command aishe status < /dev/tty > /dev/tty 2>&1
+      return 0
+      ;;
+    /usage)
+      command aishe -c /usage < /dev/tty > /dev/tty 2>&1
+      return 0
+      ;;
+    /settings)
+      command aishe settings < /dev/tty > /dev/tty 2>&1
       return 0
       ;;
   esac
@@ -839,6 +904,16 @@ mod tests {
         assert!(s.contains("aishe-toggle-agent-details"));
         assert!(s.contains("${AISHE_DETAILS_KEY:-^O}"));
         assert!(s.contains(r#""$BUFFER" == "reset" || "$BUFFER" == "/reset""#));
+        assert!(s.contains("/help|/commands"));
+        assert!(s.contains("command aishe status"));
+        assert!(s.contains("command aishe settings"));
+    }
+
+    #[test]
+    fn pty_wrapper_advertises_the_primary_command_surface_once() {
+        let s = wrapper_zshrc();
+        assert!(s.contains("aishe: /help commands · Shift-Tab mode · Ctrl-O details"));
+        assert!(s.contains("AISHE_COMMAND_HINT_SHOWN"));
     }
 
     #[test]

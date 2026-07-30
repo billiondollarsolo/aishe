@@ -53,6 +53,7 @@ You can also ask for the total at any time:
 
 ```sh
 aishe usage        # or /usage
+aishe status       # session settings plus live spend
 ```
 
 Both work in the non-interactive `-c` form too:

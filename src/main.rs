@@ -388,8 +388,14 @@ enum Cmd {
     },
     /// List the MCP tools offered to yolo.
     Mcp,
-    /// List your custom slash-commands.
+    /// List primary and custom slash-commands.
     Commands,
+    /// Show the active model, mode, scope, output density, and live session spend.
+    Status {
+        /// Emit stable JSON.
+        #[arg(long)]
+        json: bool,
+    },
     /// List model-invoked skills.
     Skills,
     /// Undo the most recent AI file change (from the built-in file tools).
@@ -1232,19 +1238,10 @@ fn run() -> Result<u8> {
         }
         Some(Cmd::Commands) => {
             let commands = CommandRegistry::load();
-            if commands.is_empty() {
-                println!(
-                    "no custom commands (add *.md files to {})",
-                    aishe::commands::user_dir().unwrap_or_default().display()
-                );
-            } else {
-                println!("custom slash-commands:");
-                for (name, desc) in commands.list() {
-                    println!("\x20 /{name}  —  {desc}");
-                }
-            }
+            print_command_listing(&commands);
             return Ok(0);
         }
+        Some(Cmd::Status { json }) => return Ok(status_command(&config, *json)),
         Some(Cmd::Skills) => {
             let skills = SkillRegistry::load();
             if skills.is_empty() {
@@ -2516,17 +2513,11 @@ fn one_shot(
                 // commands need the interactive session (persistence/restart).
                 match tokens.get(1).map(|s| s.as_str()) {
                     Some("commands") => {
-                        if commands.is_empty() {
-                            println!(
-                                "no custom commands (add *.md files to {})",
-                                aishe::commands::user_dir().unwrap_or_default().display()
-                            );
-                        } else {
-                            println!("custom slash-commands:");
-                            for (name, desc) in commands.list() {
-                                println!("\x20 /{name}  —  {desc}");
-                            }
-                        }
+                        print_command_listing(commands);
+                    }
+                    Some("help") => print_command_listing(commands),
+                    Some("status") => {
+                        status_command(config, false);
                     }
                     Some("skills") => {
                         if skills.is_empty() {
@@ -2820,6 +2811,156 @@ fn print_mcp_listing(mcp: &aishe::mcp::McpRegistry) {
     }
 }
 
+const PRIMARY_SLASH_COMMANDS: &[(&str, &str)] = &[
+    ("/help", "show this command index"),
+    ("/status", "model, mode, scope, output, and live spend"),
+    ("/usage", "live token and cost totals for this shell"),
+    (
+        "/details",
+        "expand or shrink agent work for following turns",
+    ),
+    ("/settings", "open the interactive settings editor"),
+    ("/reset", "start a fresh conversation"),
+    ("/commands", "list primary and custom slash-commands"),
+];
+
+fn print_command_listing(commands: &CommandRegistry) {
+    println!("primary slash-commands:");
+    for (name, description) in PRIMARY_SLASH_COMMANDS {
+        println!("  {name:<12} {description}");
+    }
+    println!("\nkeys:");
+    println!("  Ctrl-O       focus/detailed output");
+    println!("  Shift-Tab    suggest/auto/yolo mode");
+    if commands.is_empty() {
+        println!(
+            "\ncustom: none (add *.md files to {})",
+            aishe::commands::user_dir().unwrap_or_default().display()
+        );
+    } else {
+        println!("\ncustom slash-commands:");
+        for (name, description) in commands.list() {
+            println!("  /{name:<11} {description}");
+        }
+    }
+}
+
+fn status_command(config: &Config, json: bool) -> u8 {
+    let session = std::env::var_os("AISHE_USAGE_FILE")
+        .filter(|value| !value.is_empty())
+        .and_then(|path| aishe::usagelog::summarize(std::path::Path::new(&path), &config.pricing));
+    let metrics = live_status_metrics();
+    let model = session_value("AISHE_MODEL", config.active_model());
+    let mode = session_value("AISHE_MODE", &config.aishe.mode);
+    let scope = session_value("AISHE_SCOPE", &config.backend.default_scope);
+    let output = session_value("AISHE_AGENT_OUTPUT", &config.backend.output);
+    let status_position = if config.aishe.status_line {
+        config.aishe.status_line_position.as_str()
+    } else {
+        "off"
+    };
+
+    if json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::json!({
+                "model": model,
+                "mode": mode,
+                "backend": config.backend.engine,
+                "scope": scope,
+                "network": config.backend.workspace_network,
+                "output": output,
+                "status_line": status_position,
+                "budget_usd": config.aishe.budget_usd,
+                "session": session,
+                "metrics": metrics,
+            }))
+            .unwrap_or_else(|_| "{}".into())
+        );
+        return 0;
+    }
+
+    println!("aishe status");
+    println!("  model: {}", aishe::commands::display_safe(&model));
+    println!(
+        "  mode: {} · backend: {} · scope: {} · network: {}",
+        aishe::commands::display_safe(&mode),
+        aishe::commands::display_safe(&config.backend.engine),
+        aishe::commands::display_safe(&scope),
+        aishe::commands::display_safe(&config.backend.workspace_network),
+    );
+    println!(
+        "  output: {} · prompt status: {}",
+        aishe::commands::display_safe(&output),
+        aishe::commands::display_safe(status_position),
+    );
+    if let Some(session) = session {
+        println!(
+            "  {}",
+            aishe::commands::display_safe(
+                session.strip_prefix("aishe session: ").unwrap_or(&session)
+            )
+        );
+    } else {
+        println!("  session spend: no model calls yet");
+    }
+    let context = ["task", "elapsed", "context"]
+        .iter()
+        .filter_map(|key| metrics.get(*key))
+        .map(|value| aishe::commands::display_safe(value))
+        .collect::<Vec<_>>();
+    if !context.is_empty() {
+        println!("  {}", context.join(" · "));
+    }
+    if config.aishe.budget_usd > 0.0 {
+        println!("  budget: ${:.2}", config.aishe.budget_usd);
+    } else {
+        println!("  budget: unlimited");
+    }
+    println!("  controls: Ctrl-O details · Shift-Tab mode · /help commands");
+    0
+}
+
+fn session_value(name: &str, fallback: &str) -> String {
+    std::env::var(name)
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| fallback.to_string())
+}
+
+fn live_status_metrics() -> std::collections::BTreeMap<String, String> {
+    const ALLOWED: &[&str] = &[
+        "task",
+        "elapsed",
+        "context",
+        "last_tokens",
+        "last_cost",
+        "session_tokens",
+        "session_cost",
+        "budget",
+        "requests",
+        "network",
+        "sandbox",
+    ];
+    let Some(path) = std::env::var_os("AISHE_STATUS_FILE").filter(|value| !value.is_empty()) else {
+        return std::collections::BTreeMap::new();
+    };
+    let Ok(bytes) = std::fs::read(path) else {
+        return std::collections::BTreeMap::new();
+    };
+    if bytes.len() > 64 * 1024 {
+        return std::collections::BTreeMap::new();
+    }
+    let Ok(text) = String::from_utf8(bytes) else {
+        return std::collections::BTreeMap::new();
+    };
+    text.lines()
+        .filter_map(|line| line.split_once('\t'))
+        .filter(|(key, _)| ALLOWED.contains(key))
+        .map(|(key, value)| (key.to_string(), value.to_string()))
+        .collect()
+}
+
 /// Print the session token/cost summary (`aishe usage` / `/usage`).
 /// Append this process's metered usage to the shared per-session tally named by
 /// `AISHE_USAGE_FILE`, so the interactive PTY can print a one-line session-cost
@@ -2852,6 +2993,16 @@ fn record_session_usage(provider: Option<&dyn Provider>, config: &Config) {
 }
 
 fn print_usage_summary(provider: Option<&dyn Provider>, config: &Config) {
+    if let Some(summary) = std::env::var_os("AISHE_USAGE_FILE")
+        .filter(|value| !value.is_empty())
+        .and_then(|path| aishe::usagelog::summarize(std::path::Path::new(&path), &config.pricing))
+    {
+        println!("{summary}");
+        if config.aishe.budget_usd > 0.0 {
+            println!("budget: ${:.2}", config.aishe.budget_usd);
+        }
+        return;
+    }
     match provider {
         Some(p) => {
             let snap = p.meter().snapshot();

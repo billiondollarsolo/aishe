@@ -223,10 +223,10 @@ upgrade.
 - A changed workspace gets a different conversation by default.
 - `reset`/`/reset` at the prompt, or `aishe reset`, detaches the current
   conversation without deleting it. The command prints its resumable session ID.
-- Focus output is the default: routine tool/reasoning activity is transient and
-  only the final response remains in scrollback. Ctrl-O or `details` toggles
-  detailed output for this shell; `aishe output focus|compact|detailed` persists
-  a preference.
+- Focus output is the default: a width-bounded live row shows the current
+  command, then one activity summary and the final response remain in
+  scrollback. Ctrl-O or `/details` toggles detailed output for following turns in
+  this shell; `aishe output focus|compact|detailed` persists a preference.
 - Private backend/session contents are excluded from support bundles.
 - `memory = false` controls the capped native compatibility transcript during
   the transition; managed conversation durability is part of the backend

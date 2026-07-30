@@ -6,6 +6,37 @@ breaking changes can land in any release.
 
 ## [Unreleased]
 
+## [0.5.2] - 2026-07-30
+
+### Added
+- `/help`, `/status`, `/usage`, `/details`, `/settings`, `/reset`, and
+  `/commands` now form a discoverable primary command surface in interactive
+  shells. A one-time shell hint advertises `/help`, Shift-Tab, and Ctrl-O.
+- `aishe status` (including `--json`) reports the effective model, mode, backend,
+  scope, network policy, output density, prompt-status position, live session
+  spend, budget, and controls.
+
+### Changed
+- Focus mode keeps only one width-bounded live activity line, including the
+  current command, then replaces it with an action/recovery/time summary and the
+  final response. Compact mode preserves one concise completion row per action;
+  detailed mode retains exact commands, raw output, plans, diffs, usage, and
+  diagnostics.
+- Ctrl-O and `/details` switch between focus and detailed output for following
+  turns, while `/status` and `/usage` read the current shell's live usage tally.
+
+### Fixed
+- Command output no longer bypasses the renderer and floods focus-mode
+  scrollback with image downloads, raw tool results, internal call IDs, or
+  recoverable failures.
+- Zero-width pseudo-terminals, including `script` sessions over SSH, now fall
+  back to a readable command status instead of collapsing it to one character.
+
+### Tests
+- Added renderer density, foreground-stream gating, primary-command, live-status,
+  shell routing, startup-hint, and zero-width PTY coverage. Verified focus and
+  detailed modes against a real PostgreSQL Docker login on Linux over SSH.
+
 ## [0.5.1] - 2026-07-30
 
 ### Added

@@ -505,6 +505,20 @@ def main():
             sh.expect_prompt(),
         )
 
+        # Primary slash commands are handled locally and never sent to the model.
+        sh.send("/help")
+        check(
+            sh,
+            "/help exposes the primary command surface",
+            sh.expect("primary slash-commands:"),
+        )
+        check(sh, "/help includes live status", sh.expect("/status"))
+        sh.expect_prompt()
+        sh.send("/status")
+        check(sh, "/status is available at the prompt", sh.expect("aishe status"))
+        check(sh, "/status shows output density", sh.expect("output: focus"))
+        sh.expect_prompt()
+
         # 10. Ctrl-O switches to the detailed agent transcript for this shell
         #     without changing the persistent preference.
         sh.raw(b"\x0f")

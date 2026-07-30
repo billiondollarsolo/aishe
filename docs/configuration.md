@@ -109,7 +109,7 @@ manifest owns them.
 | `idle_timeout_secs` | integer | `1800` | Stop the private per-user supervisor after this idle period (30–86400). |
 | `default_scope` | string | `workspace` | Default `workspace` or `host` selection. Yolo acceptance itself is never persisted. |
 | `workspace_network` | string | `deny` | `allow` or `deny` network capability for workspace agent tools. |
-| `output` | string | `focus` | `focus` (final response plus transient activity), `compact` (persistent one-line tool activity), or `detailed` (expanded summaries, output, diffs, and usage). |
+| `output` | string | `focus` | `focus` (transient current command plus one activity summary and final response), `compact` (one persistent completion row per action), or `detailed` (raw command output, diffs, usage, and agent events). |
 | `max_output_tokens` | integer | `0` | Hard provider output cap; `0` delegates to backend/model unless organization policy caps it. |
 
 ```toml

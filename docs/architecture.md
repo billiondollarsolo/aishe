@@ -255,8 +255,10 @@ OS boundary.
 
 `agent::renderer` presents normalized events in focus, compact, or detailed
 form, honors color/redirected output, and keeps OpenCode implementation details
-out of the default UI. `usagelog` merges authoritative usage, backend/scope/network,
-task, elapsed time, and context-token state into the right/below/off statusline.
+out of the default UI. The foreground tool worker streams child output only in
+detailed mode; focus/compact consume captured results through normalized events.
+`usagelog` merges authoritative usage, backend/scope/network, task, elapsed time,
+and context-token state into the right/below/off statusline and `aishe status`.
 
 ### Provider and native compatibility layer
 

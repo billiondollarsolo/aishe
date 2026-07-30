@@ -35,7 +35,8 @@ aishe readiness [--json]            check autonomous-mode readiness
 aishe price list|set|remove         manage exact model price overrides
 aishe config                        print the active configuration
 aishe mcp                           list the MCP tools offered to yolo
-aishe commands                      list your custom slash-commands
+aishe commands                      list primary and custom slash-commands
+aishe status [--json]               show active session settings and spend
 aishe skills                        list model-invoked skills
 aishe undo [--list]                 revert the most recent AI file change
 aishe log [filters]                 show the audit log of AI calls and actions
@@ -100,6 +101,24 @@ aishe auth path
 When the profile is omitted, the active provider's user-config profile is used.
 Project overlays never choose a credential-writing target.
 
+## Primary slash commands
+
+The standalone Aishe shell prints a one-line `/help` hint at startup. `/help`
+and `aishe commands` show the same compact index:
+
+```text
+/help       command index
+/status     model, mode, scope, output, and live spend
+/usage      live token and cost totals for this shell
+/details    expand/shrink agent work for following turns
+/settings   interactive settings editor
+/reset      fresh conversation; old session is retained
+/commands   primary and installed custom slash-commands
+```
+
+Ctrl-O is the keyboard equivalent of `/details`; Shift-Tab cycles
+`suggest -> auto -> yolo`.
+
 ## Prompt-only meta commands
 
 A few settings are toggled by **meta commands at the aishe prompt**. Type them
@@ -119,9 +138,10 @@ Others in the same family: `editor`, `frontend`, `stream`, `structured`,
 `commands`, `skills`, `usage`, `trust`, and `untrust` are *both* — real
 subcommands and meta commands — so those work in either place.
 
-`reset` is also a real `aishe reset` subcommand. Ctrl-O is the keyboard
-equivalent of `details`; neither detail toggle changes the saved `output`
-preference. Use `aishe output focus|compact|detailed` for a persistent choice.
+`reset` is also a real `aishe reset` subcommand. Neither `/details` nor Ctrl-O
+changes the saved `output` preference. The toggle affects following turns; an
+inline shell cannot safely erase and redraw arbitrary historical scrollback.
+Use `aishe output focus|compact|detailed` for a persistent choice.
 
 ## Reversible AI file edits
 
@@ -186,9 +206,9 @@ an unknown outcome.
 
 ## Inspecting things
 
-`aishe config`, `aishe mcp`, `aishe commands`, and `aishe skills` print the active
-config and registries. They also work as slash-commands in the `-c` form
-(`aishe -c '/config'`, `aishe -c '/usage'`, ...).
+`aishe status`, `aishe config`, `aishe mcp`, `aishe commands`, and `aishe skills`
+print the live shell state, active config, and registries. They also work as
+slash-commands in the `-c` form (`aishe -c '/status'`, `aishe -c '/usage'`, ...).
 
 ## Input prefixes
 

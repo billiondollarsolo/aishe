@@ -34,8 +34,9 @@ impl ToolWorker {
         registration: LeaseRegistration,
         config: Config,
         cancel: Arc<AtomicBool>,
+        stream_output: bool,
     ) -> Result<Self> {
-        Self::start_with_output(client, registration, config, cancel, true)
+        Self::start_with_output(client, registration, config, cancel, stream_output)
     }
 
     /// Start a validation worker without echoing model-requested commands or
@@ -452,7 +453,10 @@ fn run_command(
         .unwrap_or(false)
         || command_requires_interactive_terminal(command);
     if stream_output {
-        println!("  → {}", crate::commands::display_safe(command));
+        let command = crate::commands::display_safe_multiline(command);
+        for (index, line) in command.lines().take(40).enumerate() {
+            println!("  {} {line}", if index == 0 { "→" } else { " " });
+        }
     }
     let (code, output) = if interactive {
         if !work.interactive || !std::io::stdin().is_terminal() || !std::io::stdout().is_terminal()
