@@ -73,6 +73,20 @@ class Pty:
             % (text, self.transcript[-4000:])
         )
 
+    def expect_any(self, texts, timeout=20):
+        end = time.monotonic() + timeout
+        while time.monotonic() < end:
+            for text in texts:
+                position = self.buffer.find(text)
+                if position >= 0:
+                    self.buffer = self.buffer[position + len(text) :]
+                    return text
+            self.drain()
+        raise AssertionError(
+            "did not see any of %r\n---- transcript ----\n%s"
+            % (texts, self.transcript[-4000:])
+        )
+
     def send(self, text):
         os.write(self.master, text.encode())
 
@@ -219,8 +233,19 @@ def cleanup_isolated_root(root):
 
 def setup_to_provider(shell):
     shell.expect("Continue setup")
-    shell.line()  # Step 1: continue; platform/runtime/sandbox auto-verify in CI.
-    shell.expect("Provider service", timeout=60)
+    shell.line()
+    reached = shell.expect_any(
+        ["Provider service", "Linux workspace isolation"], timeout=60
+    )
+    if reached == "Linux workspace isolation":
+        # GitHub-hosted Linux runners install bwrap but prohibit the user/network
+        # namespaces its functional probe needs. Setup must report that honestly;
+        # continue with the explicit policy-only degradation for UI state-machine
+        # coverage. A real Linux node separately qualifies functional bwrap.
+        shell.drain(0.5)
+        choice = 2 if "Install bubblewrap now" in shell.transcript else 1
+        shell.menu(choice)
+        shell.expect("Provider service", timeout=60)
 
 
 def expect_setup_exit(shell, label):

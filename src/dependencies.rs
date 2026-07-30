@@ -290,12 +290,15 @@ mod tests {
     }
 
     #[test]
-    fn installed_bubblewrap_passes_the_functional_probe() {
+    fn installed_bubblewrap_is_reported_truthfully() {
         if cfg!(target_os = "linux") && crate::executor::which("bwrap").is_some() {
-            assert!(
-                matches!(bubblewrap_probe(), BubblewrapState::Usable { .. }),
-                "an installed bubblewrap must prove both allowed and denied writes"
-            );
+            match bubblewrap_probe() {
+                BubblewrapState::Usable { path } => assert!(path.is_absolute()),
+                BubblewrapState::InstalledButUnusable { reason } => {
+                    assert!(!reason.trim().is_empty())
+                }
+                state => panic!("installed bubblewrap was misclassified as {state:?}"),
+            }
         }
     }
 

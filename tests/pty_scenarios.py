@@ -161,6 +161,9 @@ def make_env(binary):
             "pty_prompt = false\n"         # use the plain zsh prompt for stable matching
             '\n[backend]\n'
             'engine = "native"\n'
+            'default_scope = "host"\n'
+            '\n[sandbox]\n'
+            'allow_host_yolo = true\n'
         )
     # A minimal, deterministic zsh config with working history.
     with open(os.path.join(home, ".zshrc"), "w") as f:
@@ -476,21 +479,23 @@ def main():
 
         # 9. Shift-Tab cycles the interaction mode for the session (the config
         #    starts in auto, so one press lands on yolo). Entering yolo requires
-        #    one explicit scope acceptance per shell; after that, the widget
-        #    reports the new mode via `zle -M`.
+        #    one explicit scope acceptance per shell; use host scope so this
+        #    terminal-I/O contract does not depend on whether the CI runner's
+        #    kernel permits unprivileged bubblewrap namespaces. After acceptance,
+        #    the widget reports the new mode via `zle -M`.
         sh.settle(0.3)
         sh.buf = ""
         sh.raw(b"\x1b[Z")  # Shift-Tab
         check(
             sh,
-            "Shift-Tab requests one yolo scope acceptance",
-            sh.expect("Type yolo to continue:"),
+            "Shift-Tab requests one yolo-host scope acceptance",
+            sh.expect("Type yolo-host to continue:"),
         )
-        sh.send("yolo")
+        sh.send("yolo-host")
         check(
             sh,
-            "yolo acceptance phrase is visible, not secret input",
-            sh.expect("yolo\r\n"),
+            "yolo-host acceptance phrase is visible, not secret input",
+            sh.expect("yolo-host\r\n"),
         )
         check(sh, "Shift-Tab cycles the mode", sh.expect("aishe mode: yolo"))
         sh.raw(b"\x03")

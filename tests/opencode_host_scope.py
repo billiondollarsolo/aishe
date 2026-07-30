@@ -6,6 +6,10 @@ switches the same Aishe shell to host scope and writes outside the workspace.
 This proves the managed conversation rotates with authority, the authenticated
 tool bridge preserves host scope, reset is non-destructive, and focus output
 does not leave routine agent scaffolding in terminal scrollback.
+
+Set AISHE_TEST_REQUIRE_BWRAP=1 on a capable Linux qualification node to require
+the functional bubblewrap path. Restricted hosted runners retain policy-only
+workspace checks while still exercising the complete authority transition.
 """
 
 import http.server
@@ -83,11 +87,19 @@ def main():
         contract.write_config(config_path, endpoint)
         config = config_path.read_text(encoding="utf-8")
         config = config.replace('mode = "auto"', 'mode = "yolo"')
-        config = config.replace('linux_backend = "policy"', 'linux_backend = "bwrap"')
-        config = config.replace(
-            "require_functional = false",
-            "require_functional = true\nallow_host_yolo = true",
-        )
+        if os.environ.get("AISHE_TEST_REQUIRE_BWRAP") == "1":
+            config = config.replace(
+                'linux_backend = "policy"', 'linux_backend = "bwrap"'
+            )
+            config = config.replace(
+                "require_functional = false",
+                "require_functional = true\nallow_host_yolo = true",
+            )
+        else:
+            config = config.replace(
+                "require_functional = false",
+                "require_functional = false\nallow_host_yolo = true",
+            )
         config_path.write_text(config, encoding="utf-8")
 
         env = os.environ.copy()
