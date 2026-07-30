@@ -5,10 +5,77 @@
  * the authenticated Aishe supervisor, which routes it to the foreground Aishe
  * client holding the session lease.
  */
-import { tool } from "@opencode-ai/plugin"
-
 const bridgeUrl = process.env.AISHE_BRIDGE_URL
 const bridgeToken = process.env.AISHE_BRIDGE_TOKEN
+
+const stringSchema = (minLength, maxLength) => ({
+  type: "string",
+  minLength,
+  maxLength,
+})
+
+const integerSchema = (minimum, maximum) => ({
+  type: "integer",
+  minimum,
+  maximum,
+})
+
+const booleanSchema = { type: "boolean" }
+
+const objectSchema = (properties, required, additionalProperties = false) => ({
+  type: "object",
+  properties,
+  required,
+  additionalProperties,
+})
+
+function validate(schema, value, path) {
+  if (schema.type === "string") {
+    if (typeof value !== "string") throw new Error(`${path} must be a string`)
+    if (value.length < schema.minLength || value.length > schema.maxLength) {
+      throw new Error(
+        `${path} length must be between ${schema.minLength} and ${schema.maxLength}`,
+      )
+    }
+    return value
+  }
+  if (schema.type === "integer") {
+    if (
+      !Number.isSafeInteger(value) ||
+      value < schema.minimum ||
+      value > schema.maximum
+    ) {
+      throw new Error(
+        `${path} must be an integer between ${schema.minimum} and ${schema.maximum}`,
+      )
+    }
+    return value
+  }
+  if (schema.type === "boolean") {
+    if (typeof value !== "boolean") throw new Error(`${path} must be a boolean`)
+    return value
+  }
+  if (schema.type === "object") {
+    if (typeof value !== "object" || value === null || Array.isArray(value)) {
+      throw new Error(`${path} must be an object`)
+    }
+    for (const name of schema.required) {
+      if (!Object.prototype.hasOwnProperty.call(value, name)) {
+        throw new Error(`${path}.${name} is required`)
+      }
+    }
+    for (const [name, child] of Object.entries(value)) {
+      const childSchema = schema.properties[name]
+      if (childSchema) {
+        validate(childSchema, child, `${path}.${name}`)
+      } else if (schema.additionalProperties !== true) {
+        throw new Error(`${path}.${name} is not allowed`)
+      }
+    }
+    return value
+  }
+  throw new Error(`${path} uses an unsupported bridge schema`)
+}
 
 async function invoke(tool, args, context) {
   if (!bridgeUrl || !bridgeToken) {
@@ -47,14 +114,27 @@ async function invoke(tool, args, context) {
   return decoded.output
 }
 
-function proxy(name, description, args) {
-  return tool({
+function proxy(name, description, properties, required) {
+  // OpenCode 1.18.9 accepts dependency-free JSON Schema values in plugin tool
+  // definitions. It treats every top-level entry as required, so the public
+  // contract deliberately has one `input` object and expresses optional fields
+  // inside it. Aishe validates the same schema again before crossing the bridge.
+  const inputSchema = objectSchema(properties, required)
+  return {
     description,
-    args,
+    args: { input: inputSchema },
     async execute(value, context) {
-      return invoke(name, value, context)
+      if (typeof value !== "object" || value === null || Array.isArray(value)) {
+        throw new Error("tool arguments must be an object")
+      }
+      const input = validate(inputSchema, value.input, "input")
+      const callID = value._aishe_call_id
+      if (typeof callID !== "string" || callID.length === 0 || callID.length > 512) {
+        throw new Error("OpenCode tool call identity is invalid")
+      }
+      return invoke(name, { ...input, _aishe_call_id: callID }, context)
     },
-  })
+  }
 }
 
 export const AisheBridge = async () => ({
@@ -111,79 +191,95 @@ export const AisheBridge = async () => ({
       "run_command",
       "Run one command through Aishe policy, sandbox, audit, and the foreground terminal. Set interactive=true when the command may prompt through a TTY (for example sudo, ssh, passwd, GPG, or a terminal UI).",
       {
-        command: tool.schema.string().min(1).max(65536),
-        cwd: tool.schema.string().max(4096).optional(),
-        timeout_secs: tool.schema.number().int().min(1).max(3600).optional(),
-        interactive: tool.schema.boolean().optional(),
+        command: stringSchema(1, 65536),
+        cwd: stringSchema(0, 4096),
+        timeout_secs: integerSchema(1, 3600),
+        interactive: booleanSchema,
       },
+      ["command"],
     ),
     aishe_read_file: proxy(
       "read_file",
       "Read a bounded file through Aishe workspace policy.",
-      { path: tool.schema.string().min(1).max(4096) },
+      { path: stringSchema(1, 4096) },
+      ["path"],
     ),
     aishe_write_file: proxy(
       "write_file",
       "Atomically write a file through Aishe policy and undo journaling.",
       {
-        path: tool.schema.string().min(1).max(4096),
-        content: tool.schema.string().max(4194304),
+        path: stringSchema(1, 4096),
+        content: stringSchema(0, 4194304),
       },
+      ["path", "content"],
     ),
     aishe_edit_file: proxy(
       "edit_file",
       "Replace exact text through Aishe policy and undo journaling.",
       {
-        path: tool.schema.string().min(1).max(4096),
-        old: tool.schema.string().min(1).max(4194304),
-        new: tool.schema.string().max(4194304),
+        path: stringSchema(1, 4096),
+        old: stringSchema(1, 4194304),
+        new: stringSchema(0, 4194304),
       },
+      ["path", "old", "new"],
     ),
     aishe_apply_patch: proxy(
       "apply_patch",
       "Apply a bounded validated patch transactionally through Aishe policy and undo journaling.",
-      { patch: tool.schema.string().min(1).max(4194304) },
+      { patch: stringSchema(1, 4194304) },
+      ["patch"],
     ),
     aishe_list_dir: proxy(
       "list_dir",
       "List bounded directory metadata through Aishe workspace policy.",
-      { path: tool.schema.string().min(1).max(4096) },
+      { path: stringSchema(1, 4096) },
+      ["path"],
     ),
     aishe_search_files: proxy(
       "search_files",
       "Search files with bounded output through Aishe workspace policy.",
       {
-        query: tool.schema.string().min(1).max(8192),
-        path: tool.schema.string().max(4096).optional(),
+        query: stringSchema(1, 8192),
+        path: stringSchema(0, 4096),
       },
+      ["query"],
     ),
     aishe_fetch_url: proxy(
       "fetch_url",
       "Fetch an approved HTTP(S) URL through Aishe network policy.",
-      { url: tool.schema.string().min(1).max(8192) },
+      { url: stringSchema(1, 8192) },
+      ["url"],
     ),
     aishe_use_skill: proxy(
       "use_skill",
       "Load one Aishe-approved skill through the trusted progressive-disclosure registry.",
-      { name: tool.schema.string().min(1).max(256) },
+      { name: stringSchema(1, 256) },
+      ["name"],
     ),
     aishe_mcp_call: proxy(
       "mcp_call",
       "Call one user-configured and Aishe-approved MCP tool.",
       {
-        server: tool.schema.string().min(1).max(256),
-        tool: tool.schema.string().min(1).max(256),
-        arguments: tool.schema.record(tool.schema.string(), tool.schema.unknown()),
+        server: stringSchema(1, 256),
+        tool: stringSchema(1, 256),
+        arguments: objectSchema({}, [], true),
       },
+      ["server", "tool", "arguments"],
     ),
     aishe_ask_user: proxy(
       "ask_user",
       "Ask the foreground user a non-approval question needed to continue.",
-      { prompt: tool.schema.string().min(1).max(16384) },
+      { prompt: stringSchema(1, 16384) },
+      ["prompt"],
     ),
   },
   "tool.execute.before": async (input, output) => {
-    if (input.tool.startsWith("aishe_")) {
+    if (
+      typeof input?.tool === "string" &&
+      input.tool.startsWith("aishe_") &&
+      typeof output?.args === "object" &&
+      output.args !== null
+    ) {
       // Never trust a call identity supplied by the model. OpenCode owns this
       // value and the bridge uses it as its durable idempotency key.
       output.args._aishe_call_id = input.callID

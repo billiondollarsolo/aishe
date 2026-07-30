@@ -23,7 +23,7 @@ use sha2::{Digest, Sha256};
 
 use super::control::{ServerContext, SupervisorState};
 use super::opencode::config::{ProviderLaunch, ProviderSpec, PROVIDER_KEY_ENV};
-use super::RuntimeManager;
+use super::{RuntimeManager, RuntimeManifest};
 
 const PLUGIN: &[u8] = include_bytes!("../../assets/backend/opencode/aishe-plugin.mjs");
 const MAX_BOOTSTRAP_BYTES: u64 = 256 * 1024;
@@ -65,6 +65,7 @@ pub fn prepare_layout() -> Result<PreparedRuntime> {
     let root = backend_root()?.join("opencode");
     let home = root.join("home");
     let config_dir = root.join("config");
+    let global_config_dir = root.join("xdg").join("config").join("opencode");
     let data_dir = root.join("xdg").join("data");
     let cache_dir = root.join("xdg").join("cache");
     let state_dir = root.join("xdg").join("state");
@@ -73,6 +74,7 @@ pub fn prepare_layout() -> Result<PreparedRuntime> {
         &home,
         &config_dir,
         &config_dir.join("plugins"),
+        &global_config_dir,
         &data_dir,
         &cache_dir,
         &state_dir,
@@ -81,6 +83,17 @@ pub fn prepare_layout() -> Result<PreparedRuntime> {
             .with_context(|| format!("creating private backend path {}", directory.display()))?;
         crate::config::set_private_dir(directory);
     }
+
+    // OpenCode 1.18.9 starts a background SDK installation for every config
+    // directory even when a local plugin has no imports. The trusted Aishe
+    // bridge deliberately uses its pinned JSON-Schema compatibility path and
+    // needs no SDK. Seed the exact lock shape inspected by that pinned loader,
+    // plus an empty node_modules directory, so cold startup is deterministic
+    // and never reaches a package registry. The real-runtime contract test
+    // freezes this behavior and fails if the pin's loader contract changes.
+    let runtime_version = RuntimeManifest::embedded()?.version;
+    seed_dependency_free_plugin_loader(&config_dir, &runtime_version)?;
+    seed_dependency_free_plugin_loader(&global_config_dir, &runtime_version)?;
 
     let plugin_path = config_dir.join("plugins").join("aishe-plugin.mjs");
     let expected = env!("AISHE_OPENCODE_PLUGIN_SHA256");
@@ -108,6 +121,50 @@ pub fn prepare_layout() -> Result<PreparedRuntime> {
         plugin_path,
         config_json: serde_json::to_string(&config)?,
     })
+}
+
+fn seed_dependency_free_plugin_loader(directory: &Path, runtime_version: &str) -> Result<()> {
+    let node_modules = directory.join("node_modules");
+    fs::create_dir_all(&node_modules).with_context(|| {
+        format!(
+            "creating offline OpenCode compatibility path {}",
+            node_modules.display()
+        )
+    })?;
+    crate::config::set_private_dir(&node_modules);
+
+    let package = serde_json::json!({
+        "name": "aishe-managed-opencode-config",
+        "private": true
+    });
+    // This is a compatibility attestation for OpenCode's pinned Npm.install
+    // guard, not a vendored or imported JavaScript package. The bridge itself
+    // has no third-party runtime imports.
+    let package_lock = serde_json::json!({
+        "name": "aishe-managed-opencode-config",
+        "lockfileVersion": 3,
+        "requires": true,
+        "packages": {
+            "": {
+                "name": "aishe-managed-opencode-config",
+                "dependencies": {
+                    "@opencode-ai/plugin": runtime_version
+                }
+            }
+        }
+    });
+    for (path, value) in [
+        (directory.join("package.json"), package),
+        (directory.join("package-lock.json"), package_lock),
+    ] {
+        let mut bytes = serde_json::to_vec_pretty(&value)?;
+        bytes.push(b'\n');
+        if fs::read(&path).ok().as_deref() != Some(bytes.as_slice()) {
+            crate::config::write_atomic(&path, &bytes)
+                .with_context(|| format!("writing {}", path.display()))?;
+        }
+    }
+    Ok(())
 }
 
 /// Return a verified compatible supervisor, starting one without inheriting
@@ -411,6 +468,7 @@ pub fn spawn_opencode(
         .env("OPENCODE_DISABLE_DEFAULT_PLUGINS", "1")
         .env("OPENCODE_DISABLE_EXTERNAL_SKILLS", "1")
         .env("OPENCODE_DISABLE_AUTOUPDATE", "1")
+        .env("OPENCODE_DISABLE_MODELS_FETCH", "1")
         .env("OPENCODE_DISABLE_LSP_DOWNLOAD", "1")
         .env("OPENCODE_SERVER_USERNAME", "aishe")
         .env("OPENCODE_SERVER_PASSWORD", password)
@@ -839,5 +897,34 @@ mod tests {
     #[test]
     fn embedded_plugin_matches_build_time_digest() {
         assert_eq!(sha256_bytes(PLUGIN), env!("AISHE_OPENCODE_PLUGIN_SHA256"));
+        let source = std::str::from_utf8(PLUGIN).unwrap();
+        assert!(!source.contains("@opencode-ai/plugin"));
+        assert!(!source.contains(" from "));
+    }
+
+    #[test]
+    fn dependency_free_loader_seed_is_exact_and_idempotent() {
+        let root = std::env::temp_dir().join(format!(
+            "aishe-opencode-loader-seed-{}-{}",
+            std::process::id(),
+            rand::random::<u64>()
+        ));
+        fs::create_dir_all(&root).unwrap();
+        seed_dependency_free_plugin_loader(&root, "1.18.9").unwrap();
+        let first = fs::read(root.join("package-lock.json")).unwrap();
+        seed_dependency_free_plugin_loader(&root, "1.18.9").unwrap();
+        assert_eq!(fs::read(root.join("package-lock.json")).unwrap(), first);
+        assert!(root.join("node_modules").is_dir());
+        assert!(!root
+            .join("node_modules")
+            .join("@opencode-ai")
+            .join("plugin")
+            .exists());
+        let lock: serde_json::Value = serde_json::from_slice(&first).unwrap();
+        assert_eq!(
+            lock["packages"][""]["dependencies"]["@opencode-ai/plugin"],
+            "1.18.9"
+        );
+        fs::remove_dir_all(root).unwrap();
     }
 }

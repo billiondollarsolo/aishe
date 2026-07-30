@@ -56,6 +56,43 @@ class ContractState:
 STATE = ContractState()
 
 
+class EgressProbeState:
+    def __init__(self):
+        self.lock = threading.Lock()
+        self.requests = []
+
+    def record(self, method, path):
+        with self.lock:
+            self.requests.append((method, path))
+
+
+EGRESS = EgressProbeState()
+
+
+class EgressProbeHandler(http.server.BaseHTTPRequestHandler):
+    """Reject and record any request that escapes localhost through a proxy."""
+
+    protocol_version = "HTTP/1.1"
+
+    def log_message(self, _format, *_args):
+        return
+
+    def reject(self):
+        EGRESS.record(self.command, self.path)
+        self.send_response(502)
+        self.send_header("content-length", "0")
+        self.end_headers()
+
+    do_CONNECT = reject
+    do_DELETE = reject
+    do_GET = reject
+    do_HEAD = reject
+    do_OPTIONS = reject
+    do_PATCH = reject
+    do_POST = reject
+    do_PUT = reject
+
+
 def chunk(delta=None, finish=None, usage=None):
     choice = {"index": 0, "delta": delta or {}}
     if finish is not None:
@@ -107,11 +144,9 @@ def tool_result_messages(body):
 def find_persisted_secret(roots, secret):
     """Return the first persisted file containing secret without retaining trees.
 
-    OpenCode installs plugin dependencies under its isolated data root. That tree
-    is intentionally included in the credential-leak assertion, but concatenating
-    every file into one bytes object makes the scan quadratic and can consume
-    hundreds of megabytes. Stream every regular file with enough overlap to catch
-    a secret split across read boundaries instead.
+    The complete isolated backend tree is intentionally included in the
+    credential-leak assertion. Stream every regular file with enough overlap to
+    catch a secret split across read boundaries without retaining the tree.
     """
     needle = secret.encode()
     overlap = max(len(needle) - 1, 0)
@@ -127,6 +162,37 @@ def find_persisted_secret(roots, secret):
                         return path
                     tail = candidate[-overlap:] if overlap else b""
     return None
+
+
+def assert_dependency_free_layout(data_home):
+    backend = data_home / "aishe" / "backend" / "opencode"
+    roots = (backend / "config", backend / "xdg" / "config" / "opencode")
+    for root in roots:
+        lock_path = root / "package-lock.json"
+        lock = json.loads(lock_path.read_text(encoding="utf-8"))
+        pinned = (
+            lock.get("packages", {})
+            .get("", {})
+            .get("dependencies", {})
+            .get("@opencode-ai/plugin")
+        )
+        if pinned != "1.18.9":
+            raise AssertionError(f"offline loader pin mismatch in {lock_path}: {pinned}")
+        installed = root / "node_modules" / "@opencode-ai" / "plugin"
+        if installed.exists():
+            raise AssertionError(
+                f"trusted bridge unexpectedly installed a runtime SDK: {installed}"
+            )
+
+    total = sum(
+        path.stat().st_size
+        for path in backend.rglob("*")
+        if path.is_file() and not path.is_symlink()
+    )
+    if total > 32 * 1024 * 1024:
+        raise AssertionError(
+            f"private backend tree unexpectedly exceeds 32 MiB ({total} bytes)"
+        )
 
 
 class ProviderHandler(http.server.BaseHTTPRequestHandler):
@@ -205,7 +271,7 @@ class ProviderHandler(http.server.BaseHTTPRequestHandler):
                                 "index": 0,
                                 "function": {
                                     "arguments": json.dumps(
-                                        {"command": TOOL_COMMAND},
+                                        {"input": {"command": TOOL_COMMAND}},
                                         separators=(",", ":"),
                                     )
                                 },
@@ -354,10 +420,19 @@ def read_managed_snapshot(data_home, workspace):
 
 
 def assert_runtime_contract(binary, runtime_dir):
+    with STATE.lock:
+        STATE.requests.clear()
+        STATE.authenticated_requests = 0
+    with EGRESS.lock:
+        EGRESS.requests.clear()
     server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), ProviderHandler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     endpoint = f"http://127.0.0.1:{server.server_port}"
+    proxy = http.server.ThreadingHTTPServer(("127.0.0.1", 0), EgressProbeHandler)
+    proxy_thread = threading.Thread(target=proxy.serve_forever, daemon=True)
+    proxy_thread.start()
+    proxy_endpoint = f"http://127.0.0.1:{proxy.server_port}"
 
     with tempfile.TemporaryDirectory(prefix="aishe-opencode-contract-") as root_text:
         root = pathlib.Path(root_text)
@@ -383,6 +458,12 @@ def assert_runtime_contract(binary, runtime_dir):
                 "AISHE_SHELL_ID": "contractshell0123456789abcdef",
                 "AISHE_USAGE_FILE": str(usage_path),
                 "AISHE_STATUS_FILE": str(status_path),
+                "HTTP_PROXY": proxy_endpoint,
+                "HTTPS_PROXY": proxy_endpoint,
+                "http_proxy": proxy_endpoint,
+                "https_proxy": proxy_endpoint,
+                "NO_PROXY": "127.0.0.1,localhost",
+                "no_proxy": "127.0.0.1,localhost",
                 "NO_COLOR": "1",
                 "TERM": "dumb",
             }
@@ -470,6 +551,26 @@ def assert_runtime_contract(binary, runtime_dir):
             auto_tools = set(tool_names(requests[1]))
             if "aishe_run_command" not in auto_tools:
                 raise AssertionError(f"Aishe proxy tools missing: {sorted(auto_tools)}")
+            run_definition = next(
+                (
+                    item.get("function", {})
+                    for item in requests[1].get("tools", [])
+                    if item.get("function", {}).get("name") == "aishe_run_command"
+                ),
+                {},
+            )
+            parameters = run_definition.get("parameters", {})
+            input_schema = parameters.get("properties", {}).get("input", {})
+            if (
+                parameters.get("required") != ["input"]
+                or input_schema.get("type") != "object"
+                or input_schema.get("required") != ["command"]
+                or input_schema.get("additionalProperties") is not False
+            ):
+                raise AssertionError(
+                    "dependency-free proxy schema contract changed: "
+                    f"{json.dumps(parameters, sort_keys=True)}"
+                )
             forbidden = auto_tools & FORBIDDEN_HOST_TOOLS
             if forbidden:
                 raise AssertionError(
@@ -570,6 +671,14 @@ def assert_runtime_contract(binary, runtime_dir):
                 raise AssertionError(
                     "managed setup validation leaked the provider credential"
                 )
+            assert_dependency_free_layout(data_home)
+            with EGRESS.lock:
+                egress = list(EGRESS.requests)
+            if egress:
+                raise AssertionError(
+                    "managed OpenCode attempted unexpected install-time egress "
+                    f"through the denied proxy: {egress}"
+                )
         finally:
             subprocess.run(
                 [binary, "backend", "stop"],
@@ -583,6 +692,9 @@ def assert_runtime_contract(binary, runtime_dir):
             server.shutdown()
             server.server_close()
             thread.join(timeout=5)
+            proxy.shutdown()
+            proxy.server_close()
+            proxy_thread.join(timeout=5)
 
 
 def main():
