@@ -121,6 +121,7 @@ pub fn provenance() -> Result<(Config, Provenance)> {
             json!(config.aishe.status_line_items),
             &source,
         ),
+        field("backend.output", json!(config.backend.output), &source),
         field(
             "aishe.failure_hints",
             json!(config.aishe.failure_hints),
@@ -432,6 +433,7 @@ fn shell_section(config: &mut Config) -> Result<()> {
                 "Status fields: {}",
                 config.aishe.status_line_items.join(",")
             ),
+            format!("Agent transcript: {}", config.backend.output),
             "Reset this section to defaults".into(),
             "Back".into(),
         ];
@@ -448,11 +450,35 @@ fn shell_section(config: &mut Config) -> Result<()> {
             MenuResult::Selected(3) => choose_hook_timeout(config)?,
             MenuResult::Selected(4) => choose_status_position(config)?,
             MenuResult::Selected(5) => choose_status_items(config)?,
-            MenuResult::Selected(6) => reset_shell_section(config),
-            MenuResult::Selected(7) | MenuResult::Back | MenuResult::Cancel => return Ok(()),
+            MenuResult::Selected(6) => choose_agent_output(config)?,
+            MenuResult::Selected(7) => reset_shell_section(config),
+            MenuResult::Selected(8) | MenuResult::Back | MenuResult::Cancel => return Ok(()),
             MenuResult::Selected(_) => {}
         }
     }
+}
+
+fn choose_agent_output(config: &mut Config) -> Result<()> {
+    let choices = vec![
+        "Focus — final answer; live activity stays off scrollback".into(),
+        "Compact — persistent one-line tool activity".into(),
+        "Detailed — expanded tool summaries, output, diffs, and usage".into(),
+    ];
+    let default = match config.backend.output.as_str() {
+        "compact" => 1,
+        "detailed" => 2,
+        _ => 0,
+    };
+    if let MenuResult::Selected(index) = promptui::menu(
+        "Agent transcript density",
+        &choices,
+        default,
+        true,
+        "Ctrl-O or `details` toggles focus/detailed for only the current shell.",
+    )? {
+        config.backend.output = ["focus", "compact", "detailed"][index].into();
+    }
+    Ok(())
 }
 
 fn choose_hook_timeout(config: &mut Config) -> Result<()> {
@@ -785,6 +811,7 @@ fn reset_shell_section(config: &mut Config) {
     config.aishe.status_line = defaults.aishe.status_line;
     config.aishe.status_line_position = defaults.aishe.status_line_position;
     config.aishe.status_line_items = defaults.aishe.status_line_items;
+    config.backend.output = defaults.backend.output;
 }
 
 fn reset_context_section(config: &mut Config) {
@@ -970,6 +997,7 @@ mod tests {
         config.aishe.status_line = !defaults.aishe.status_line;
         config.aishe.status_line_position = "off".into();
         config.aishe.status_line_items = vec!["requests".into()];
+        config.backend.output = "detailed".into();
         reset_shell_section(&mut config);
         assert_eq!(config.aishe.share_history, defaults.aishe.share_history);
         assert_eq!(config.aishe.pty_prompt, defaults.aishe.pty_prompt);
@@ -987,6 +1015,7 @@ mod tests {
             config.aishe.status_line_items,
             defaults.aishe.status_line_items
         );
+        assert_eq!(config.backend.output, defaults.backend.output);
 
         config.aishe.project_context = !defaults.aishe.project_context;
         config.aishe.project_tasks = !defaults.aishe.project_tasks;

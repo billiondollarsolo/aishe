@@ -25,6 +25,7 @@ aishe untrust [PATH]   drop trust for this repo (or one file); --all for every o
 aishe mode [suggest|auto|yolo]      show or set the interaction mode
 aishe scope [workspace|host]        show or set the next agent execution scope
 aishe network [allow|deny]          show or set workspace-agent network access
+aishe output [focus|compact|detailed]  show or set agent transcript density
 aishe model [NAME]                  show or set the model (for the active provider)
 aishe provider [anthropic|openai]   show or set the provider
 aishe provider test [--live] [--json]  validate the active provider
@@ -44,6 +45,7 @@ aishe runbook [--session ID|-o DIR|--replay]  export a session as a script + run
 aishe sessions [--json]             list managed conversations and legacy tasks
 aishe session show|rename|delete    inspect/manage exactly one session/task
 aishe resume [ID] [--cwd PATH]      resume/bind a durable conversation or task
+aishe reset                         start fresh; retain the prior conversation
 ```
 
 These are real subcommands, so they work the same in the interactive zsh-PTY
@@ -100,23 +102,26 @@ Project overlays never choose a credential-writing target.
 
 ## Prompt-only meta commands
 
-A few settings are toggled by **meta commands that exist only at the aishe
-prompt**. They are not `aishe` subcommands — `aishe rehash` in a terminal fails
-with `error: unrecognized subcommand`. Type them inside the interactive shell,
-bare or with a leading `/`:
+A few settings are toggled by **meta commands at the aishe prompt**. Type them
+inside the interactive shell, bare or with a leading `/`:
 
 ```
 ~/projects/app ❯ rehash            # or /rehash — rebuild the command cache
 ~/projects/app ❯ sandbox on        # yolo_sandbox
 ~/projects/app ❯ plan on           # yolo_plan (plan-first dry run)
 ~/projects/app ❯ cache off         # suggest-response cache
-~/projects/app ❯ reset             # clear conversation memory
+~/projects/app ❯ reset             # fresh conversation; old session is retained
+~/projects/app ❯ details           # toggle focus/detailed output for this shell
 ```
 
 Others in the same family: `editor`, `frontend`, `stream`, `structured`,
 `theme`, `ghost`, `help`. `mode`, `model`, `provider`, `config`, `mcp`,
 `commands`, `skills`, `usage`, `trust`, and `untrust` are *both* — real
 subcommands and meta commands — so those work in either place.
+
+`reset` is also a real `aishe reset` subcommand. Ctrl-O is the keyboard
+equivalent of `details`; neither detail toggle changes the saved `output`
+preference. Use `aishe output focus|compact|detailed` for a persistent choice.
 
 ## Reversible AI file edits
 
@@ -137,9 +142,9 @@ to its original state. The journal lives at `undo.jsonl` in aishe's
 
 ## Changing settings
 
-`aishe mode`, `aishe scope`, `aishe network`, `aishe model`, and `aishe
-provider` show the current value with no argument, or save a new one to your
-user config with an argument
+`aishe mode`, `aishe scope`, `aishe network`, `aishe output`, `aishe model`,
+and `aishe provider` show the current value with no argument, or save a new one
+to your user config with an argument
 (`~/.config/aishe/config.toml` on Linux, `~/Library/Application
 Support/aishe/config.toml` on macOS — `aishe doctor` prints the resolved path;
 see [File locations](configuration.md#file-locations)):
@@ -148,6 +153,7 @@ see [File locations](configuration.md#file-locations)):
 aishe mode auto         # persist the default mode
 aishe scope workspace   # confine the next managed agent turn
 aishe network deny      # no workspace-agent network capability
+aishe output focus      # final responses; transient agent activity
 aishe provider openai   # switch provider...
 aishe model gpt-4o      # ...then set that provider's model
 ```

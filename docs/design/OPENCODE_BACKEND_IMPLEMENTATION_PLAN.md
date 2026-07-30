@@ -1321,7 +1321,7 @@ Extend `aishe setup --non-interactive` with explicit flags:
 --install-system-deps
 --default-scope workspace|host
 --network allow|deny
---output compact|detailed
+--output focus|compact|detailed
 --json
 ```
 
@@ -1448,12 +1448,12 @@ possible.
 
 ## Configuration and Migration
 
-### Proposed schema v4
+### Current schema v5
 
 Add:
 
 ```toml
-version = 4
+version = 5
 
 [aishe]
 mode = "suggest"
@@ -1465,7 +1465,7 @@ managed = true
 idle_timeout_secs = 1800
 default_scope = "workspace"
 workspace_network = "deny"
-output = "compact"
+output = "focus"
 
 [sandbox]
 linux_backend = "bwrap"

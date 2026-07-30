@@ -191,7 +191,7 @@ struct SetupArgs {
     #[arg(long, value_parser = ["allow", "deny"])]
     network: Option<String>,
     /// Native agent transcript density.
-    #[arg(long, value_parser = ["compact", "detailed"])]
+    #[arg(long, value_parser = ["focus", "compact", "detailed"])]
     output: Option<String>,
     /// Emit a stable machine-readable setup result.
     #[arg(long)]
@@ -331,6 +331,11 @@ enum Cmd {
         #[arg(value_parser = ["allow", "deny"])]
         value: Option<String>,
     },
+    /// Show or set persistent agent transcript density.
+    Output {
+        #[arg(value_parser = ["focus", "compact", "detailed"])]
+        value: Option<String>,
+    },
     /// Show or set the model for the active provider (saves it to your config).
     Model { value: Option<String> },
     /// Show or set the provider (with a value, saves it to your config).
@@ -446,6 +451,9 @@ enum Cmd {
         #[arg(long)]
         json: bool,
     },
+    /// Start a fresh conversation in this Aishe shell without deleting the
+    /// previous managed session.
+    Reset,
     /// Inspect or manage one durable AI task session.
     Session {
         #[command(subcommand)]
@@ -1258,6 +1266,7 @@ fn run() -> Result<u8> {
         Some(Cmd::Network { value }) => {
             return Ok(set_or_show("network", value.as_deref(), &config))
         }
+        Some(Cmd::Output { value }) => return Ok(set_or_show("output", value.as_deref(), &config)),
         Some(Cmd::Model { value }) => return Ok(set_or_show("model", value.as_deref(), &config)),
         Some(Cmd::Provider { value, live, json }) => {
             if value.as_deref() == Some("test") {
@@ -1325,6 +1334,7 @@ fn run() -> Result<u8> {
             return Ok(if report.ready { 0 } else { 1 });
         }
         Some(Cmd::Price { cmd }) => return Ok(price_command(&config, cmd)),
+        Some(Cmd::Reset) => return reset_conversation(&config),
         Some(Cmd::Resume { id, cwd }) => {
             return resume_task_command(&config, id.as_deref(), cwd.as_deref())
         }
@@ -1667,6 +1677,39 @@ fn print_llm_unavailable(config: &Config) {
 static YOLO_WORKSPACE_ACCEPTED: AtomicBool = AtomicBool::new(false);
 static YOLO_HOST_ACCEPTED: AtomicBool = AtomicBool::new(false);
 
+/// ZLE invokes the hidden acceptance helper while it owns the terminal and has
+/// echo disabled. The acceptance phrase is not a secret, so make it visible for
+/// this one read and restore the exact inherited terminal flags immediately.
+struct StdinEchoGuard(Option<libc::termios>);
+
+impl StdinEchoGuard {
+    fn visible() -> Self {
+        let mut current = unsafe { std::mem::zeroed::<libc::termios>() };
+        if unsafe { libc::tcgetattr(libc::STDIN_FILENO, &mut current) } != 0
+            || current.c_lflag & libc::ECHO != 0
+        {
+            return Self(None);
+        }
+        let original = current;
+        current.c_lflag |= libc::ECHO | libc::ECHONL;
+        if unsafe { libc::tcsetattr(libc::STDIN_FILENO, libc::TCSANOW, &current) } == 0 {
+            Self(Some(original))
+        } else {
+            Self(None)
+        }
+    }
+}
+
+impl Drop for StdinEchoGuard {
+    fn drop(&mut self) {
+        if let Some(original) = self.0.as_ref() {
+            unsafe {
+                libc::tcsetattr(libc::STDIN_FILENO, libc::TCSANOW, original);
+            }
+        }
+    }
+}
+
 fn ensure_yolo_acceptance(config: &Config) -> Result<()> {
     use aishe::agent::ExecutionScope;
     use std::io::Write;
@@ -1743,9 +1786,12 @@ fn ensure_yolo_acceptance(config: &Config) -> Result<()> {
     }
     std::io::stdout().flush().ok();
     let mut answer = String::new();
-    std::io::stdin()
-        .read_line(&mut answer)
-        .context("reading yolo acceptance")?;
+    {
+        let _echo = StdinEchoGuard::visible();
+        std::io::stdin()
+            .read_line(&mut answer)
+            .context("reading yolo acceptance")?;
+    }
     let expected = match scope {
         ExecutionScope::Workspace => "yolo",
         ExecutionScope::Host => "yolo-host",
@@ -2505,6 +2551,7 @@ fn one_shot(
                         }
                     }
                     Some("usage") => print_usage_summary(provider.as_deref(), config),
+                    Some("reset") => return reset_conversation(config),
                     _ => println!("aishe meta commands are interactive-only"),
                 }
                 return Ok(0);
@@ -2827,8 +2874,8 @@ fn print_usage_summary(provider: Option<&dyn Provider>, config: &Config) {
     }
 }
 
-/// Back the `mode` / `model` / `provider` subcommands. With no `value`, print the
-/// effective current value. With a `value`, persist it to the *user* config file:
+/// Back the small show/set subcommands. With no `value`, print the effective
+/// current value. With a value, persist it to the *user* config file:
 /// we reload a fresh `Config` (no project overlay, no this-invocation flags) so a
 /// project overlay or a `--mode`/`--provider` flag can't get baked into the saved
 /// file. Clap already validated `mode`/`provider` against their allowed sets.
@@ -2839,6 +2886,7 @@ fn set_or_show(field: &str, value: Option<&str>, effective: &Config) -> u8 {
             "provider" => effective.aishe.provider.clone(),
             "scope" => effective.backend.default_scope.clone(),
             "network" => effective.backend.workspace_network.clone(),
+            "output" => effective.backend.output.clone(),
             _ => effective.active_model().to_string(),
         };
         println!("{field}: {current}");
@@ -2865,6 +2913,7 @@ fn set_or_show(field: &str, value: Option<&str>, effective: &Config) -> u8 {
             cfg.backend.workspace_network = value.to_string();
             cfg.aishe.safety_profile = "custom".to_string();
         }
+        "output" => cfg.backend.output = value.to_string(),
         _ => cfg.set_active_model(value.to_string()),
     }
     if let Err(e) = cfg.save() {
@@ -2887,6 +2936,13 @@ fn set_or_show(field: &str, value: Option<&str>, effective: &Config) -> u8 {
             );
         }
     }
+    if field == "output" {
+        // The PTY wrapper exports a session override, so hand the new
+        // persistent setting back to its parent shell for the next prompt.
+        if let Ok(Some(path)) = output_handoff_path() {
+            let _ = std::fs::write(path, aishe::commands::display_safe(&cfg.backend.output));
+        }
+    }
     println!(
         "{} = {}  (saved to {})",
         aishe::commands::display_safe(field),
@@ -2894,6 +2950,40 @@ fn set_or_show(field: &str, value: Option<&str>, effective: &Config) -> u8 {
         aishe::commands::display_safe(&Config::path().display().to_string())
     );
     0
+}
+
+fn output_handoff_path() -> Result<Option<std::path::PathBuf>> {
+    let Some(path) = std::env::var_os("AISHE_OUTPUT_FILE")
+        .filter(|value| !value.is_empty())
+        .map(std::path::PathBuf::from)
+    else {
+        return Ok(None);
+    };
+    let shell_id =
+        std::env::var("AISHE_SHELL_ID").context("AISHE_OUTPUT_FILE requires AISHE_SHELL_ID")?;
+    if !(16..=128).contains(&shell_id.len())
+        || !shell_id
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
+    {
+        anyhow::bail!("AISHE_SHELL_ID is invalid");
+    }
+    let expected = format!("aishe-output-{shell_id}");
+    if path.file_name().and_then(|value| value.to_str()) != Some(expected.as_str()) {
+        anyhow::bail!("AISHE_OUTPUT_FILE does not match this shell identity");
+    }
+    let expected_parent = std::env::temp_dir()
+        .canonicalize()
+        .context("resolving the temporary directory")?;
+    let parent = path
+        .parent()
+        .context("AISHE_OUTPUT_FILE has no parent")?
+        .canonicalize()
+        .context("resolving AISHE_OUTPUT_FILE parent")?;
+    if parent != expected_parent {
+        anyhow::bail!("AISHE_OUTPUT_FILE must be in the shell temporary directory");
+    }
+    Ok(Some(path))
 }
 
 fn models_command(config: &Config, provider: &str, json: bool) -> u8 {
@@ -3141,6 +3231,44 @@ fn tasks_list_command(json_output: bool) -> u8 {
     0
 }
 
+fn reset_conversation(config: &Config) -> Result<u8> {
+    if std::env::var_os("AISHE_SHELL_ID").is_none() {
+        anyhow::bail!("`aishe reset` must run inside an active Aishe shell");
+    }
+    let shell_id = aishe::agent::controller::current_shell_id()?;
+    let workspace = std::env::current_dir().context("resolving the current workspace")?;
+    let detached = aishe::backend::opencode::session::SessionStore::from_default_root()?
+        .reset(&shell_id, &workspace)?;
+
+    // Keep the temporary native-fallback transcript aligned with the managed
+    // reset. Saving an empty transcript uses the same atomic bounded path as
+    // ordinary hook memory and never touches durable shell history.
+    if let Some(path) = hook_session_path(config) {
+        Session::new(true).save_persisted(&path);
+    }
+
+    match detached {
+        Some(mapping) => {
+            println!("conversation reset; the next AI turn starts fresh");
+            println!(
+                "previous session retained: {}",
+                aishe::commands::display_safe(&mapping.backend_session_id)
+            );
+            println!(
+                "resume it with: aishe resume {}",
+                aishe::commands::display_safe(&mapping.backend_session_id)
+            );
+            aishe::audit::action(
+                "agent:reset",
+                &format!("retained_session={}", mapping.backend_session_id),
+                Some(0),
+            );
+        }
+        None => println!("conversation already fresh; the next AI turn starts a new session"),
+    }
+    Ok(0)
+}
+
 fn task_session_command(command: &TaskSessionCmd) -> Result<u8> {
     match command {
         TaskSessionCmd::Show { id, json } => {
@@ -3278,7 +3406,7 @@ fn resume_managed_session(
     id: &str,
     replacement_cwd: Option<&std::path::Path>,
 ) -> Result<u8> {
-    use aishe::agent::{BackendSession, ExecutionScope, Mode};
+    use aishe::agent::{BackendSession, ExecutionScope, Mode, NetworkPolicy};
 
     let already_in_aishe_shell = std::env::var_os("AISHE_SHELL_ID").is_some();
     if !already_in_aishe_shell
@@ -3317,9 +3445,15 @@ fn resume_managed_session(
     let mode = Mode::parse(&config.aishe.mode).context("active mode is invalid")?;
     let scope = ExecutionScope::parse(&config.backend.default_scope)
         .context("active backend scope is invalid")?;
+    let network = if scope == ExecutionScope::Host {
+        NetworkPolicy::Allow
+    } else {
+        NetworkPolicy::parse(&config.backend.workspace_network)
+            .context("active backend network policy is invalid")?
+    };
     let shell_id = aishe::agent::controller::current_shell_id()?;
     aishe::backend::opencode::session::SessionStore::from_default_root()?
-        .bind(&shell_id, &session, mode, scope)?;
+        .bind(&shell_id, &session, mode, scope, network)?;
     println!("resumed managed session {id}");
     println!("workspace: {}", session.workspace.display());
     if already_in_aishe_shell {

@@ -99,6 +99,11 @@ fn run_zsh_inner(config: &Config, history_log: &std::path::Path, shell_id: Strin
     cmd.env("AISHE_MODE", &config.aishe.mode);
     cmd.env("AISHE_SCOPE", &config.backend.default_scope);
     cmd.env("AISHE_BACKEND", &config.backend.engine);
+    cmd.env("AISHE_AGENT_OUTPUT", &config.backend.output);
+    let output_file = std::env::temp_dir().join(format!("aishe-output-{shell_id}"));
+    std::fs::remove_file(&output_file).ok();
+    cmd.env("AISHE_OUTPUT_FILE", &output_file);
+    let _output_guard = FileGuard(output_file);
     let scope_file = std::env::temp_dir().join(format!("aishe-scope-{shell_id}"));
     let _scope_guard = if std::fs::write(&scope_file, &config.backend.default_scope).is_ok() {
         cmd.env("AISHE_SCOPE_FILE", &scope_file);

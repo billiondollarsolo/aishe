@@ -536,7 +536,7 @@ transport = "responses"
         .assert()
         .success();
     let migrated = std::fs::read_to_string(config_dir.join("config.toml")).unwrap();
-    assert!(migrated.contains("version = 4"));
+    assert!(migrated.contains("version = 5"));
     assert!(migrated.contains("[backend]"));
     assert!(migrated.contains("engine = \"opencode\""));
     assert!(migrated.contains("[sandbox]"));
@@ -799,6 +799,40 @@ fn cli_flags_are_accepted_over_config() {
         .assert()
         .success()
         .stdout(contains("flags-ok"));
+}
+
+#[test]
+fn output_command_persists_density_without_touching_history() {
+    let home = temp_config_home();
+    let data = home.join("data");
+    let history = data.join("aishe").join("history.ext");
+    std::fs::create_dir_all(history.parent().unwrap()).unwrap();
+    std::fs::write(&history, ": 1:0;echo keep-output-history\n").unwrap();
+    let unrelated = home.join("must-not-be-an-output-handoff");
+    std::fs::write(&unrelated, "keep-unrelated\n").unwrap();
+
+    let mut command = Command::cargo_bin("aishe").unwrap();
+    command
+        .env("AISHE_CONFIG_DIR", &home)
+        .env("AISHE_DATA_DIR", &data)
+        .env("AISHE_SHELL_ID", "0123456789abcdef")
+        .env("AISHE_OUTPUT_FILE", &unrelated)
+        .args(["output", "detailed"])
+        .assert()
+        .success()
+        .stdout(contains("output = detailed"));
+    let persisted = std::fs::read_to_string(home.join("aishe").join("config.toml")).unwrap();
+    assert!(persisted.contains("output = \"detailed\""));
+    assert_eq!(
+        std::fs::read_to_string(&history).unwrap(),
+        ": 1:0;echo keep-output-history\n"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&unrelated).unwrap(),
+        "keep-unrelated\n"
+    );
+
+    std::fs::remove_dir_all(home).ok();
 }
 
 #[test]

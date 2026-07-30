@@ -126,7 +126,7 @@ or known yet. Rebuild the command cache with the `rehash` meta command, typed
 
 `rehash` is not an `aishe` subcommand — running `aishe rehash` from a terminal
 fails with `error: unrecognized subcommand`. The same is true of `sandbox`,
-`plan`, `cache`, and `reset`; see
+`plan`, `cache`, and `details`; `reset` also has the real `aishe reset` form. See
 [Prompt-only meta commands](commands.md#prompt-only-meta-commands).
 
 If it is a shell builtin or a function from a sourced file, define it in

@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
-pub const CONFIG_SCHEMA_VERSION: u32 = 4;
+pub const CONFIG_SCHEMA_VERSION: u32 = 5;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
@@ -107,7 +107,7 @@ pub struct BackendConfig {
     /// `allow` or `deny` for workspace-confined agent tools.
     #[serde(default = "default_workspace_network")]
     pub workspace_network: String,
-    /// `compact` or `detailed` inline agent rendering.
+    /// `focus`, `compact`, or `detailed` inline agent rendering.
     #[serde(default = "default_backend_output")]
     pub output: String,
     /// Hard provider output cap. `0` delegates to the backend/model default.
@@ -447,7 +447,7 @@ fn default_workspace_network() -> String {
     "deny".to_string()
 }
 fn default_backend_output() -> String {
-    "compact".to_string()
+    "focus".to_string()
 }
 fn default_linux_sandbox() -> String {
     "bwrap".to_string()
@@ -730,6 +730,7 @@ impl Config {
             );
         }
         let mut config = toml::from_str::<Config>(&text)?;
+        config.apply_schema_migrations(version);
         config.fill_credential_profiles();
         Ok(Some(config))
     }
@@ -762,6 +763,7 @@ impl Config {
                     );
                 }
                 if source_version < CONFIG_SCHEMA_VERSION {
+                    cfg.apply_schema_migrations(source_version);
                     let backup = migration_backup_path(path, source_version);
                     std::fs::copy(path, &backup)
                         .with_context(|| format!("backing up to {}", backup.display()))?;
@@ -841,6 +843,16 @@ impl Config {
         if self.providers.openai.credential.trim().is_empty() {
             self.providers.openai.credential =
                 crate::credentials::profile_from_env(&self.providers.openai.api_key_env);
+        }
+    }
+
+    fn apply_schema_migrations(&mut self, source_version: u32) {
+        // Schema 5 introduces a focus transcript that keeps routine
+        // reasoning/tool events out of shell scrollback. Compact was the
+        // previous default, so migrate it once; users who explicitly chose
+        // detailed output keep that preference.
+        if source_version < 5 && self.backend.output == "compact" {
+            self.backend.output = "focus".into();
         }
     }
 
@@ -1188,6 +1200,7 @@ mod tests {
         assert!(parsed.aishe.yolo_confirm_dangerous);
         assert_eq!(parsed.aishe.max_yolo_iterations, 10);
         assert_eq!(parsed.aishe.hook_timeout_secs, 60);
+        assert_eq!(parsed.backend.output, "focus");
     }
 
     #[test]
@@ -1201,6 +1214,20 @@ mod tests {
         // Unspecified fields fall back to defaults.
         assert_eq!(cfg.aishe.provider, "anthropic");
         assert_eq!(cfg.providers.openai.base_url, "https://api.openai.com");
+        assert_eq!(cfg.backend.output, "focus");
+    }
+
+    #[test]
+    fn schema_four_compact_output_migrates_to_focus_but_detailed_is_preserved() {
+        let mut compact: Config =
+            toml::from_str("version = 4\n\n[backend]\noutput = \"compact\"\n").unwrap();
+        compact.apply_schema_migrations(4);
+        assert_eq!(compact.backend.output, "focus");
+
+        let mut detailed: Config =
+            toml::from_str("version = 4\n\n[backend]\noutput = \"detailed\"\n").unwrap();
+        detailed.apply_schema_migrations(4);
+        assert_eq!(detailed.backend.output, "detailed");
     }
 
     #[test]

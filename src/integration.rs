@@ -99,6 +99,18 @@ _aishe_force_nl() { printf '%s' "$1" > "$AISHE_FORCE_FILE"; }
 # Runs in the MAIN shell before each prompt: route a forced-NL line (from the
 # sigil or key), then act on a staged command.
 aishe_precmd() {
+  # A persistent `aishe output ...` runs in a child process under the PTY.
+  # Consume its one-shot handoff without overriding a later Ctrl-O session
+  # toggle on every prompt.
+  local _aishe_output_root="${TMPDIR:-/tmp}"
+  local _aishe_expected_output_file="${_aishe_output_root%/}/aishe-output-${AISHE_SHELL_ID}"
+  if [[ -n "${AISHE_OUTPUT_FILE:-}" &&
+        "$AISHE_OUTPUT_FILE" == "$_aishe_expected_output_file" &&
+        -r "$AISHE_OUTPUT_FILE" ]]; then
+    IFS= read -r AISHE_AGENT_OUTPUT < "$AISHE_OUTPUT_FILE"
+    command rm -f "$AISHE_OUTPUT_FILE"
+    export AISHE_AGENT_OUTPUT
+  fi
   # One concise, configurable hint after an ordinary failure. A signature keeps
   # prompt redraws from repeating it; Ctrl-C (130) is intentionally quiet.
   local _aishe_hint_sig="${AISHE_LAST_EXIT:-0}:${AISHE_LAST_CMD:-}"
@@ -396,7 +408,19 @@ _aishe_should_route_question() {
 # working.
 aishe-accept-line() {
   emulate -L zsh
-  if [[ "$BUFFER" == [#?]* ]]; then
+  if [[ "$BUFFER" == "reset" || "$BUFFER" == "/reset" ]]; then
+    local submitted="$BUFFER"
+    print -s -- "$submitted"
+    command aishe reset < /dev/tty > /dev/tty 2>&1
+    BUFFER=""
+    POSTDISPLAY="$submitted"
+  elif [[ "$BUFFER" == "details" || "$BUFFER" == "/details" ]]; then
+    local submitted="$BUFFER"
+    print -s -- "$submitted"
+    aishe-toggle-agent-details
+    BUFFER=""
+    POSTDISPLAY="$submitted"
+  elif [[ "$BUFFER" == [#?]* ]]; then
     local submitted="$BUFFER"
     print -s -- "$submitted"   # keep the NL line in history (up-arrow recall)
     local body="${submitted#[#?]}"
@@ -414,6 +438,19 @@ aishe-accept-line() {
     POSTDISPLAY="$submitted"
   fi
   zle "${_aishe_orig_accept_line:-.accept-line}"
+}
+
+# Detail toggle (default Ctrl-O; override with AISHE_DETAILS_KEY). Focus is the
+# quiet default: it leaves only the final response in scrollback. Detailed
+# preserves reasoning summaries, tool calls, tool output, diffs, and usage.
+aishe-toggle-agent-details() {
+  emulate -L zsh
+  case "${AISHE_AGENT_OUTPUT:-focus}" in
+    detailed) AISHE_AGENT_OUTPUT=focus ;;
+    *)        AISHE_AGENT_OUTPUT=detailed ;;
+  esac
+  export AISHE_AGENT_OUTPUT
+  zle -M "aishe agent details: ${AISHE_AGENT_OUTPUT}"
 }
 
 # Mode-cycle key (default Shift-Tab; override with AISHE_MODE_KEY). Rotates
@@ -453,6 +490,8 @@ if [[ -o interactive ]]; then
   bindkey "${AISHE_NL_KEY:-^[^M}" aishe-nl-widget
   zle -N aishe-cycle-mode
   bindkey "${AISHE_MODE_KEY:-^[[Z}" aishe-cycle-mode
+  zle -N aishe-toggle-agent-details
+  bindkey "${AISHE_DETAILS_KEY:-^O}" aishe-toggle-agent-details
   zle -N aishe-fix-command
   bindkey "${AISHE_FIX_KEY:-^X^F}" aishe-fix-command
   zle -N aishe-recall
@@ -628,6 +667,16 @@ export AISHE_SHELL_ID
 export AISHE_ACCEPTANCE_FILE
 command_not_found_handle() {
   local line="$*"
+  case "$line" in
+    /reset)
+      command aishe reset < /dev/tty > /dev/tty 2>&1
+      return 0
+      ;;
+    details|/details)
+      __aishe_toggle_details
+      return 0
+      ;;
+  esac
   case "${AISHE_MODE:-suggest}" in
     yolo)
       AISHE_PENDING_FILE="$AISHE_PENDING_FILE" command aishe --yolo-line "$line" < /dev/tty > /dev/tty 2>&1
@@ -760,6 +809,17 @@ __aishe_cycle_mode() {
   printf '\naishe mode: %s\n' "$AISHE_MODE"
 }
 bind -x '"\e[Z": __aishe_cycle_mode' 2>/dev/null
+
+# Focus/detailed transcript toggle. Ctrl-O mirrors the native Aishe zsh hook;
+# AISHE_AGENT_OUTPUT is inherited by each per-prompt Aishe process.
+__aishe_toggle_details() {
+  case "${AISHE_AGENT_OUTPUT:-focus}" in
+    detailed) export AISHE_AGENT_OUTPUT=focus ;;
+    *)        export AISHE_AGENT_OUTPUT=detailed ;;
+  esac
+  printf '\naishe agent details: %s\n' "$AISHE_AGENT_OUTPUT"
+}
+bind -x '"\C-o": __aishe_toggle_details' 2>/dev/null
 "#;
 
 #[cfg(test)]
@@ -776,6 +836,9 @@ mod tests {
         assert!(s.contains("AISHE_MODE"));
         assert!(s.contains("AISHE_SHELL_ID"));
         assert!(s.contains("/dev/urandom"));
+        assert!(s.contains("aishe-toggle-agent-details"));
+        assert!(s.contains("${AISHE_DETAILS_KEY:-^O}"));
+        assert!(s.contains(r#""$BUFFER" == "reset" || "$BUFFER" == "/reset""#));
     }
 
     #[test]
@@ -822,6 +885,9 @@ mod tests {
         assert!(s.contains("AISHE_LAST_EXIT=$?"));
         assert!(s.contains("AISHE_LAST_CMD="));
         assert!(s.contains("__aishe_fix"));
+        assert!(s.contains("__aishe_toggle_details"));
+        assert!(s.contains(r#"bind -x '"\C-o": __aishe_toggle_details'"#));
+        assert!(s.contains("command aishe reset"));
         assert!(s.contains(r#"bind -x '"\C-x\C-f": __aishe_fix'"#));
         assert!(s.contains("AISHE_AUTODIAGNOSE"));
         assert!(s.contains("AISHE_FAILURE_HINTS"));

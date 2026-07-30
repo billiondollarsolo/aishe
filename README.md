@@ -308,6 +308,7 @@ aishe profile [VALUE] | readiness    inspect safety profile/autonomy readiness
 aishe models [--provider NAME]       list endpoint models
 aishe scope [workspace|host]         set the next agent execution scope
 aishe network [allow|deny]           set workspace-agent network capability
+aishe output [focus|compact|detailed] set persistent agent transcript density
 
 aishe mode|model|provider [VALUE]   show or set (and persist) a setting
 aishe config|mcp|commands|skills    print the active config / registries
@@ -319,11 +320,15 @@ per session with the `--mode`/`--model`/`--provider` flags or `$AISHE_MODE`, and
 in the interactive shell **Shift-Tab** cycles the mode. Full reference in
 [docs/commands.md](docs/commands.md).
 
-A few toggles are **meta commands that live only at the aishe prompt** —
-`rehash`, `sandbox`, `plan`, `cache`, `reset` (also spellable `/rehash`, …).
-They are not subcommands: `aishe rehash` in a terminal fails with
-`error: unrecognized subcommand`. See
+A few toggles live at the aishe prompt — `rehash`, `sandbox`, `plan`, `cache`,
+`reset`, and `details` (also spellable `/rehash`, …). `reset` is also available
+as `aishe reset`; it retains the previous conversation for later resume. See
 [docs/commands.md](docs/commands.md#prompt-only-meta-commands).
+
+Agent output defaults to `focus`: live activity is transient and only the final
+answer remains in scrollback. Press Ctrl-O or type `details` to reveal detailed
+tool activity for the current shell. Persist a preference with
+`aishe output focus|compact|detailed`.
 
 Environment variables worth knowing: `$AISHE_MODE` sets the mode for the shell
 hook, and **`AISHE_CONFIG_DIR` / `AISHE_DATA_DIR`** relocate aishe's config and
@@ -342,7 +347,8 @@ aishe remembers natural-language turns so follow-ups have context: after
 knows what "the same" means. Managed conversations are durable per
 shell/workspace and survive backend restarts and Aishe upgrades; private session
 records are never included in support bundles. `aishe sessions` lists them,
-`aishe resume ses_...` reconnects one, and the prompt-only `reset` starts fresh.
+`aishe resume ses_...` reconnects one, and `reset`/`aishe reset` starts fresh
+without deleting the previous session.
 The native compatibility memory remains capped and can be disabled with
 `memory = false`. See [docs/modes.md](docs/modes.md).
 

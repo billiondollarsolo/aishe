@@ -487,10 +487,53 @@ def main():
             sh.expect("Type yolo to continue:"),
         )
         sh.send("yolo")
+        check(
+            sh,
+            "yolo acceptance phrase is visible, not secret input",
+            sh.expect("yolo\r\n"),
+        )
         check(sh, "Shift-Tab cycles the mode", sh.expect("aishe mode: yolo"))
         sh.raw(b"\x03")
+        check(
+            sh,
+            "mode switch returns to a ready prompt",
+            sh.expect_prompt(),
+        )
 
-        # 9. Fix-the-last-command: after a real command fails, Ctrl-X Ctrl-F asks
+        # 10. Ctrl-O switches to the detailed agent transcript for this shell
+        #     without changing the persistent preference.
+        sh.raw(b"\x0f")
+        check(
+            sh,
+            "Ctrl-O reveals agent details for the current shell",
+            sh.expect("aishe agent details: detailed"),
+        )
+        sh.raw(b"\x0f")
+        check(
+            sh,
+            "Ctrl-O returns to focus output",
+            sh.expect("aishe agent details: focus"),
+        )
+        sh.raw(b"\x03")
+        sh.expect_prompt()
+        sh.send("aishe output detailed")
+        check(
+            sh,
+            "persistent output setting is saved",
+            sh.expect("output = detailed"),
+        )
+        sh.expect_prompt()
+        sh.send("print -r -- OUTPUT_MODE=$AISHE_AGENT_OUTPUT")
+        check(
+            sh,
+            "persistent output setting reaches the current shell",
+            sh.expect("OUTPUT_MODE=detailed"),
+        )
+        sh.expect_prompt()
+        sh.send("aishe output focus")
+        sh.expect("output = focus")
+
+        # 11. Fix-the-last-command: after a real command fails, Ctrl-X Ctrl-F asks
         #    the model for a correction and pre-fills it on the line (never runs
         #    it). `false` is a real command that exits non-zero (an *unknown*
         #    command would route to the AI instead, so use a real failing one).

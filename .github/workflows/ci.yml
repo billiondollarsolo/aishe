@@ -164,7 +164,7 @@ jobs:
       - name: Pinned OpenCode provider and tool-bridge contract
         run: python3 tests/opencode_runtime_contract.py target/release/aishe
 
-      - name: Accepted yolo host-scope bridge contract
+      - name: Workspace-to-host authority, focus output, and reset contract
         run: python3 tests/opencode_host_scope.py target/release/aishe
 
       - name: Managed OpenCode startup, reconnect, and memory qualification

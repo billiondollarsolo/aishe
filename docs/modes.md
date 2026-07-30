@@ -218,8 +218,12 @@ upgrade.
 - `aishe resume ses_...` rebinds the current Aishe shell; from a normal TTY it
   opens the real zsh in the recorded workspace already bound to that session.
 - A changed workspace gets a different conversation by default.
-- The prompt-only `reset`/`/reset` starts fresh for the current shell; it is not
-  an `aishe reset` subcommand.
+- `reset`/`/reset` at the prompt, or `aishe reset`, detaches the current
+  conversation without deleting it. The command prints its resumable session ID.
+- Focus output is the default: routine tool/reasoning activity is transient and
+  only the final response remains in scrollback. Ctrl-O or `details` toggles
+  detailed output for this shell; `aishe output focus|compact|detailed` persists
+  a preference.
 - Private backend/session contents are excluded from support bundles.
 - `memory = false` controls the capped native compatibility transcript during
   the transition; managed conversation durability is part of the backend

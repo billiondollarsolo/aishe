@@ -12,9 +12,10 @@ use anyhow::{Context, Result};
 use fs2::FileExt;
 use serde::{Deserialize, Serialize};
 
-use crate::agent::{BackendSession, ExecutionScope, Mode};
+use crate::agent::{BackendSession, ExecutionScope, Mode, NetworkPolicy};
 
 const STORE_SCHEMA_VERSION: u32 = 1;
+const AUTHORITY_CONTEXT_REVISION: u32 = 1;
 const MAX_RECORDS: usize = 10_000;
 
 #[derive(Clone, Debug)]
@@ -31,8 +32,29 @@ pub struct SessionMapping {
     pub backend_session_id: String,
     pub mode: Mode,
     pub scope: ExecutionScope,
+    #[serde(default = "default_network_policy")]
+    pub network: NetworkPolicy,
+    /// Version of the mode/scope/network context used when this backend
+    /// conversation was created. v0.5.0 records deserialize as zero, forcing a
+    /// one-time safe rotation instead of trusting their mutable scope label.
+    #[serde(default)]
+    pub authority_revision: u32,
     pub created_at: u128,
     pub updated_at: u128,
+}
+
+impl SessionMapping {
+    pub fn matches_authority(
+        &self,
+        mode: Mode,
+        scope: ExecutionScope,
+        network: NetworkPolicy,
+    ) -> bool {
+        self.authority_revision == AUTHORITY_CONTEXT_REVISION
+            && self.mode == mode
+            && self.scope == scope
+            && self.network == network
+    }
 }
 
 #[derive(Default, Serialize, Deserialize)]
@@ -94,6 +116,7 @@ impl SessionStore {
         session: &BackendSession,
         mode: Mode,
         scope: ExecutionScope,
+        network: NetworkPolicy,
     ) -> Result<SessionMapping> {
         validate_shell_id(shell_id)?;
         validate_backend_id(&session.id)?;
@@ -108,6 +131,8 @@ impl SessionStore {
                 record.backend_session_id.clone_from(&session.id);
                 record.mode = mode;
                 record.scope = scope;
+                record.network = network;
+                record.authority_revision = AUTHORITY_CONTEXT_REVISION;
                 record.updated_at = now;
                 return Ok(record.clone());
             }
@@ -123,6 +148,8 @@ impl SessionStore {
                 backend_session_id: session.id.clone(),
                 mode,
                 scope,
+                network,
+                authority_revision: AUTHORITY_CONTEXT_REVISION,
                 created_at: now,
                 updated_at: now,
             };
@@ -142,6 +169,24 @@ impl SessionStore {
                 .filter(|record| shell_id.is_none_or(|value| record.aishe_shell_id == value))
                 .cloned()
                 .collect())
+        })
+    }
+
+    /// Detach the active conversation for one live shell/workspace.
+    ///
+    /// The OpenCode conversation itself is deliberately not deleted. Returning
+    /// the mapping lets the caller identify and resume the retained session,
+    /// while the next natural-language turn creates a fresh conversation.
+    pub fn reset(&self, shell_id: &str, workspace: &Path) -> Result<Option<SessionMapping>> {
+        validate_shell_id(shell_id)?;
+        let workspace = Self::resolve_workspace(workspace)?;
+        self.with_index(true, |index| {
+            let position = index.records.iter().position(|record| {
+                record.aishe_shell_id == shell_id
+                    && record.workspace == workspace
+                    && record.backend == "opencode"
+            });
+            Ok(position.map(|position| index.records.remove(position)))
         })
     }
 
@@ -260,6 +305,10 @@ fn unix_millis() -> u128 {
         .as_millis()
 }
 
+fn default_network_policy() -> NetworkPolicy {
+    NetworkPolicy::Deny
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -293,6 +342,7 @@ mod tests {
                 &session,
                 Mode::Auto,
                 ExecutionScope::Workspace,
+                NetworkPolicy::Deny,
             )
             .unwrap();
         let found = store
@@ -320,6 +370,7 @@ mod tests {
                     },
                     Mode::Yolo,
                     ExecutionScope::Host,
+                    NetworkPolicy::Allow,
                 )
                 .unwrap();
         }
@@ -329,6 +380,81 @@ mod tests {
         let raw = fs::read_to_string(store.root.join("mappings.json")).unwrap();
         assert!(!raw.contains("token"));
         assert!(!raw.contains("password"));
+        fs::remove_dir_all(&store.root).unwrap();
+    }
+
+    #[test]
+    fn authority_changes_and_legacy_records_require_rotation() {
+        let store = temp_store("authority");
+        let workspace = store.root.join("workspace");
+        fs::create_dir_all(&workspace).unwrap();
+        let mapping = store
+            .bind(
+                "0123456789abcdef",
+                &BackendSession {
+                    id: "ses_authority".into(),
+                    workspace: workspace.clone(),
+                    backend: "opencode".into(),
+                },
+                Mode::Yolo,
+                ExecutionScope::Workspace,
+                NetworkPolicy::Deny,
+            )
+            .unwrap();
+        assert!(mapping.matches_authority(
+            Mode::Yolo,
+            ExecutionScope::Workspace,
+            NetworkPolicy::Deny
+        ));
+        assert!(!mapping.matches_authority(Mode::Yolo, ExecutionScope::Host, NetworkPolicy::Allow));
+        assert!(!mapping.matches_authority(
+            Mode::Auto,
+            ExecutionScope::Workspace,
+            NetworkPolicy::Deny
+        ));
+
+        let mut legacy = mapping;
+        legacy.authority_revision = 0;
+        assert!(!legacy.matches_authority(
+            Mode::Yolo,
+            ExecutionScope::Workspace,
+            NetworkPolicy::Deny
+        ));
+        fs::remove_dir_all(&store.root).unwrap();
+    }
+
+    #[test]
+    fn reset_detaches_mapping_without_deleting_session_identity() {
+        let store = temp_store("reset");
+        let workspace = store.root.join("workspace");
+        fs::create_dir_all(&workspace).unwrap();
+        store
+            .bind(
+                "fedcba9876543210",
+                &BackendSession {
+                    id: "ses_retained".into(),
+                    workspace: workspace.clone(),
+                    backend: "opencode".into(),
+                },
+                Mode::Yolo,
+                ExecutionScope::Host,
+                NetworkPolicy::Allow,
+            )
+            .unwrap();
+
+        let detached = store
+            .reset("fedcba9876543210", &workspace)
+            .unwrap()
+            .unwrap();
+        assert_eq!(detached.backend_session_id, "ses_retained");
+        assert!(store
+            .find("fedcba9876543210", &workspace)
+            .unwrap()
+            .is_none());
+        assert!(store
+            .reset("fedcba9876543210", &workspace)
+            .unwrap()
+            .is_none());
         fs::remove_dir_all(&store.root).unwrap();
     }
 

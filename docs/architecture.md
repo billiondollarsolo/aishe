@@ -253,9 +253,9 @@ explicitly policy-only. `safety.rs` remains a deterministic defense-in-depth
 screen for suggest/auto and native compatibility; it is not represented as the
 OS boundary.
 
-`agent::renderer` presents normalized events inline in compact or detailed form,
-honors width/color/redirected output, and keeps OpenCode implementation details
-out of the UI. `usagelog` merges authoritative usage, backend/scope/network,
+`agent::renderer` presents normalized events in focus, compact, or detailed
+form, honors color/redirected output, and keeps OpenCode implementation details
+out of the default UI. `usagelog` merges authoritative usage, backend/scope/network,
 task, elapsed time, and context-token state into the right/below/off statusline.
 
 ### Provider and native compatibility layer

@@ -347,7 +347,7 @@ def run(binary, env, cwd, *args, timeout=60):
 def write_config(path, endpoint):
     path.parent.mkdir(parents=True)
     path.write_text(
-        f"""version = 4
+        f"""version = 5
 
 [aishe]
 mode = "auto"
@@ -360,7 +360,7 @@ engine = "opencode"
 fallback = "none"
 default_scope = "workspace"
 workspace_network = "deny"
-output = "compact"
+output = "focus"
 max_output_tokens = 512
 
 [sandbox]

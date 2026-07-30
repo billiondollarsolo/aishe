@@ -25,13 +25,14 @@ use crate::config::Config;
 /// Process-local interrupt state shared by the native and managed loops.
 pub static INTERRUPTED: AtomicBool = AtomicBool::new(false);
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub struct TurnOptions {
     pub mode: Mode,
     pub scope: ExecutionScope,
     pub network: NetworkPolicy,
     pub interactive: bool,
     pub render: bool,
+    pub output: String,
 }
 
 impl TurnOptions {
@@ -47,12 +48,20 @@ impl TurnOptions {
             NetworkPolicy::parse(&config.backend.workspace_network)
                 .context("backend.workspace_network must be allow or deny")?
         };
+        let output = std::env::var("AISHE_AGENT_OUTPUT")
+            .unwrap_or_else(|_| config.backend.output.clone())
+            .trim()
+            .to_ascii_lowercase();
+        if !matches!(output.as_str(), "focus" | "compact" | "detailed") {
+            anyhow::bail!("backend.output must be focus, compact, or detailed");
+        }
         Ok(Self {
             mode,
             scope,
             network,
             interactive: std::io::stdin().is_terminal() && std::io::stdout().is_terminal(),
             render,
+            output,
         })
     }
 }
@@ -229,7 +238,7 @@ pub fn run_turn(
 
     let mut renderer = options
         .render
-        .then(|| super::renderer::AgentRenderer::new(&config.backend.output));
+        .then(|| super::renderer::AgentRenderer::new(&options.output));
     let mut callback = |event: &AgentEvent| {
         if let Some(renderer) = renderer.as_mut() {
             renderer.render(event);

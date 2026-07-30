@@ -6,6 +6,44 @@ breaking changes can land in any release.
 
 ## [Unreleased]
 
+## [0.5.1] - 2026-07-30
+
+### Added
+- Agent transcripts now support `focus`, `compact`, and `detailed` density.
+  Focus is the clean default: routine activity is transient and only the final
+  response remains in scrollback. Ctrl-O or `details` toggles full tool detail
+  for the current shell; `aishe output ...`, setup, and settings persist a
+  preference.
+- `aishe reset` and prompt-level `reset`/`/reset` start a fresh conversation
+  without deleting the prior OpenCode session, and print the retained session
+  ID plus its resume command.
+
+### Changed
+- Config schema 5 migrates the former compact default to focus while preserving
+  an existing detailed preference. Migration retains a byte-for-byte backup and
+  does not touch credentials, history, sessions, audit, undo, or other data.
+- Managed conversations are now bound to an immutable mode/scope/network
+  authority revision. Changing any authority dimension creates a new OpenCode
+  conversation instead of relabeling and reusing a session whose system context
+  was created under a different scope.
+
+### Fixed
+- Switching the same shell from workspace to host scope no longer leaves the
+  agent trapped in its prior workspace context or claiming host commands are
+  unavailable.
+- `yolo` and `yolo-host` acceptance text is visibly echoed even when the prompt
+  invokes the reader while ZLE has terminal echo disabled. The exact inherited
+  terminal flags are restored immediately afterward.
+- Routine OpenCode todo, reasoning, tool-call, diff, and usage events no longer
+  overwhelm the default shell transcript or expose backend-shaped response
+  objects.
+
+### Tests
+- Added workspace-to-host conversation-rotation, accepted host execution,
+  focus-output, non-destructive reset/resume, visible acceptance input,
+  Ctrl-O transcript toggling, schema migration, persistent output preference,
+  and installer state-preservation coverage.
+
 ## [0.5.0] - 2026-07-30
 
 ### Added

@@ -92,37 +92,56 @@ impl AgentBackend for OpenCodeBackend {
             self.client
                 .session(&session)?
                 .context("requested OpenCode session does not exist")?;
-            self.sessions
-                .bind(&request.shell_id, &session, request.mode, request.scope)?;
+            self.sessions.bind(
+                &request.shell_id,
+                &session,
+                request.mode,
+                request.scope,
+                request.network,
+            )?;
             return Ok(session);
         }
         if let Some(mapping) = self.sessions.find(&request.shell_id, &workspace)? {
-            let session = BackendSession {
-                id: mapping.backend_session_id,
-                workspace: mapping.workspace,
-                backend: "opencode".into(),
-            };
-            // Only a definite 404 permits replacement. Connectivity or auth
-            // errors bubble up so they cannot create duplicate conversations.
-            if self.client.session(&session)?.is_some() {
-                self.sessions
-                    .bind(&request.shell_id, &session, request.mode, request.scope)?;
-                return Ok(session);
+            if mapping.matches_authority(request.mode, request.scope, request.network) {
+                let session = BackendSession {
+                    id: mapping.backend_session_id,
+                    workspace: mapping.workspace,
+                    backend: "opencode".into(),
+                };
+                // Only a definite 404 permits replacement. Connectivity or auth
+                // errors bubble up so they cannot create duplicate conversations.
+                if self.client.session(&session)?.is_some() {
+                    self.sessions.bind(
+                        &request.shell_id,
+                        &session,
+                        request.mode,
+                        request.scope,
+                        request.network,
+                    )?;
+                    return Ok(session);
+                }
             }
         }
         self.sessions.serialize_creation(|| {
             // Another process may have created this shell/workspace session
             // while we waited for the creation lock. Recheck before POSTing.
             if let Some(mapping) = self.sessions.find(&request.shell_id, &workspace)? {
-                let session = BackendSession {
-                    id: mapping.backend_session_id,
-                    workspace: mapping.workspace,
-                    backend: "opencode".into(),
-                };
-                if self.client.session(&session)?.is_some() {
-                    self.sessions
-                        .bind(&request.shell_id, &session, request.mode, request.scope)?;
-                    return Ok(session);
+                if mapping.matches_authority(request.mode, request.scope, request.network) {
+                    let session = BackendSession {
+                        id: mapping.backend_session_id,
+                        workspace: mapping.workspace,
+                        backend: "opencode".into(),
+                    };
+                    if self.client.session(&session)?.is_some() {
+                        self.sessions.bind(
+                            &request.shell_id,
+                            &session,
+                            request.mode,
+                            request.scope,
+                            request.network,
+                        )?;
+                        return Ok(session);
+                    }
                 }
             }
             let session = self.client.create_session(
@@ -131,8 +150,13 @@ impl AgentBackend for OpenCodeBackend {
                 request.scope,
                 request.network,
             )?;
-            self.sessions
-                .bind(&request.shell_id, &session, request.mode, request.scope)?;
+            self.sessions.bind(
+                &request.shell_id,
+                &session,
+                request.mode,
+                request.scope,
+                request.network,
+            )?;
             Ok(session)
         })
     }

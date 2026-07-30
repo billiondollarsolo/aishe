@@ -1084,18 +1084,25 @@ fn run_interactive(options: Options) -> Result<Outcome> {
             Step::Status => {
                 step_header(8, "Interface");
                 let output_choices = vec![
-                    "Compact — concise reasoning and bounded tool results".into(),
+                    "Focus — final responses; live activity stays off scrollback".into(),
+                    "Compact — persistent one-line tool activity".into(),
                     "Detailed — expanded tool metadata and timing".into(),
                 ];
+                let output_default = match draft.config.backend.output.as_str() {
+                    "compact" => 1,
+                    "detailed" => 2,
+                    _ => 0,
+                };
                 match promptui::menu(
                     "Agent transcript density",
                     &output_choices,
-                    usize::from(draft.config.backend.output == "detailed"),
+                    output_default,
                     true,
-                    "Both modes redact secrets and bound terminal output. Detailed mode shows more execution evidence, never hidden chain-of-thought.",
+                    "Focus is the clean default. Press Ctrl-O in Aishe to toggle full tool details for the current shell; raw chain-of-thought is never shown.",
                 )? {
-                    MenuResult::Selected(0) => draft.config.backend.output = "compact".into(),
-                    MenuResult::Selected(1) => draft.config.backend.output = "detailed".into(),
+                    MenuResult::Selected(0) => draft.config.backend.output = "focus".into(),
+                    MenuResult::Selected(1) => draft.config.backend.output = "compact".into(),
+                    MenuResult::Selected(2) => draft.config.backend.output = "detailed".into(),
                     MenuResult::Back => {
                         draft.step = draft.step.previous();
                         continue;
@@ -1970,8 +1977,11 @@ pub(crate) fn validate_config(config: &Config) -> Result<()> {
     if !matches!(config.backend.workspace_network.as_str(), "allow" | "deny") {
         anyhow::bail!("backend.workspace_network must be allow or deny");
     }
-    if !matches!(config.backend.output.as_str(), "compact" | "detailed") {
-        anyhow::bail!("backend.output must be compact or detailed");
+    if !matches!(
+        config.backend.output.as_str(),
+        "focus" | "compact" | "detailed"
+    ) {
+        anyhow::bail!("backend.output must be focus, compact, or detailed");
     }
     if !matches!(config.sandbox.linux_backend.as_str(), "bwrap" | "policy") {
         anyhow::bail!("sandbox.linux_backend must be bwrap or policy");

@@ -422,7 +422,7 @@ def complete_setup(root, env, endpoint):
         shell.line("0.5")
 
         shell.expect("Agent transcript density")
-        shell.menu(1)  # compact
+        shell.menu(1)  # focus
         shell.expect("Live status-line placement")
         shell.menu(2)  # below
         shell.expect("Status-line contents")
@@ -546,7 +546,11 @@ def settings_are_transactional(root, env, config):
         apply.menu(1)  # right
         apply.expect("preview (right)")
         apply.expect("Shell, history & statusline")
-        apply.menu(8)  # back
+        apply.menu(7)  # transcript density
+        apply.expect("Agent transcript density")
+        apply.menu(3)  # detailed
+        apply.expect("Shell, history & statusline")
+        apply.menu(9)  # back
         apply.expect("Choose a section")
         apply.menu(8)  # review/apply
         apply.expect("Apply these settings")
@@ -561,6 +565,8 @@ def settings_are_transactional(root, env, config):
         raise AssertionError("settings did not apply selected placement")
     if "hook_timeout_secs = 75" not in text:
         raise AssertionError("settings did not apply selected hook timeout")
+    if 'output = "detailed"' not in text:
+        raise AssertionError("settings did not apply selected transcript density")
     print("  ok   settings provider cancel is transactional; reviewed apply works")
 
 

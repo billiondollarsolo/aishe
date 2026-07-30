@@ -89,10 +89,10 @@ brevity. Read `~/.config/aishe/...` as `<config>/...` and
 | `redact_secrets` | bool | `true` | Scrub likely secrets from the context block sent to the model. See [Logging and privacy](logging.md). |
 
 The toggles named "at the aishe prompt" above (`sandbox`, `plan`, `cache`,
-`reset`, and also `rehash`) are **prompt-only meta commands**, not `aishe`
-subcommands: type them inside the interactive shell (bare, or with a leading `/`
-as `/sandbox`). Running `aishe sandbox` from a terminal fails with
-`error: unrecognized subcommand`. See
+`details`, and `rehash`) are **prompt-only meta commands**: type them inside the
+interactive shell (bare, or with a leading `/` as `/sandbox`). `reset` works
+there too and is also a real `aishe reset` subcommand. Running `aishe sandbox`
+from a terminal fails with `error: unrecognized subcommand`. See
 [Commands: prompt-only meta commands](commands.md#prompt-only-meta-commands).
 
 ## `[backend]` section
@@ -109,7 +109,7 @@ manifest owns them.
 | `idle_timeout_secs` | integer | `1800` | Stop the private per-user supervisor after this idle period (30–86400). |
 | `default_scope` | string | `workspace` | Default `workspace` or `host` selection. Yolo acceptance itself is never persisted. |
 | `workspace_network` | string | `deny` | `allow` or `deny` network capability for workspace agent tools. |
-| `output` | string | `compact` | `compact` or `detailed` normalized inline event rendering. |
+| `output` | string | `focus` | `focus` (final response plus transient activity), `compact` (persistent one-line tool activity), or `detailed` (expanded summaries, output, diffs, and usage). |
 | `max_output_tokens` | integer | `0` | Hard provider output cap; `0` delegates to backend/model unless organization policy caps it. |
 
 ```toml
@@ -120,7 +120,7 @@ managed = true
 idle_timeout_secs = 1800
 default_scope = "workspace"
 workspace_network = "deny"
-output = "compact"
+output = "focus"
 max_output_tokens = 0
 ```
 
@@ -287,6 +287,10 @@ server launched from `command`. List connected tools with `aishe mcp`. See
   sequence, for example `^o`).
 - `AISHE_MODE_KEY`: override the mode-cycle keybinding for the zsh hook (a
   `bindkey` sequence; default `^[[Z`, Shift-Tab).
+- `AISHE_AGENT_OUTPUT`: session override for `focus`, `compact`, or `detailed`
+  agent transcripts. Ctrl-O toggles `focus`/`detailed` in the interactive shell.
+- `AISHE_DETAILS_KEY`: override that zsh detail-toggle key (default `^O`,
+  Ctrl-O).
 - `XDG_CONFIG_HOME`, `XDG_DATA_HOME`: respected for config and history locations
   **on Linux**. macOS follows the platform convention
   (`~/Library/Application Support`) and ignores them — use the two variables

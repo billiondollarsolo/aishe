@@ -55,7 +55,7 @@ def write_config(root):
     config = root / "config" / "aishe" / "config.toml"
     config.parent.mkdir(parents=True)
     config.write_text(
-        """version = 4
+        """version = 5
 
 [aishe]
 mode = "suggest"
