@@ -436,12 +436,15 @@ fn run_managed_live_checks(config: &Config) -> Result<(Check, Check, Check, Chec
         control.model_id(),
     )?;
     client.health().context("managed OpenCode health check")?;
-    let session = client.create_session(
-        &workspace,
-        "Aishe setup validation",
-        ExecutionScope::Workspace,
-        NetworkPolicy::Deny,
-    )?;
+    let scope = ExecutionScope::parse(&config.backend.default_scope)
+        .context("backend.default_scope must be workspace or host")?;
+    let network = if scope == ExecutionScope::Host {
+        NetworkPolicy::Allow
+    } else {
+        NetworkPolicy::parse(&config.backend.workspace_network)
+            .context("backend.workspace_network must be allow or deny")?
+    };
+    let session = client.create_session(&workspace, "Aishe setup validation", scope, network)?;
     let price = crate::usage::budget_price_for(config.active_model(), &config.pricing);
     let shell_id = format!("setup_{:032x}", rand::random::<u128>());
     let resolved = crate::credentials::resolve(active_provider(config))?;
@@ -456,8 +459,8 @@ fn run_managed_live_checks(config: &Config) -> Result<(Check, Check, Check, Chec
                 backend_session_id: session.id.clone(),
                 workspace: workspace.clone(),
                 mode,
-                scope: ExecutionScope::Workspace,
-                network: NetworkPolicy::Deny,
+                scope,
+                network,
                 interactive: false,
                 budget_usd: None,
                 price,

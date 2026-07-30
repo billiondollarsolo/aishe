@@ -34,7 +34,7 @@ pub enum Backend {
 
 /// Resolve the active sandbox backend from config: `yolo_sandbox` (on/off) plus
 /// `sandbox_backend` ("policy" | "bwrap"). A `bwrap` choice degrades to `Policy`
-/// when bubblewrap isn't installed (the caller warns once).
+/// when bubblewrap isn't functional (the caller warns once).
 pub fn backend(config: &Config) -> Backend {
     if !config.aishe.yolo_sandbox {
         return Backend::Off;
@@ -51,9 +51,12 @@ pub fn bwrap_requested_but_missing(config: &Config) -> bool {
     config.aishe.yolo_sandbox && config.aishe.sandbox_backend == "bwrap" && !bwrap_available()
 }
 
-/// Whether `bubblewrap` (`bwrap`) is on `$PATH`.
+/// Whether `bubblewrap` (`bwrap`) is installed and passes its isolation probe.
 pub fn bwrap_available() -> bool {
-    crate::executor::which("bwrap").is_some()
+    matches!(
+        crate::dependencies::bubblewrap_probe(),
+        crate::dependencies::BubblewrapState::Usable { .. }
+    )
 }
 
 /// The `bwrap` wrapper argv (without the trailing shell): a read-only root with

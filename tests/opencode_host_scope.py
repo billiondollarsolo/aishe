@@ -84,7 +84,7 @@ def main():
         host_target.parent.mkdir()
         marker = "managed yolo host scope passed"
         config_path = config_home / "aishe" / "config.toml"
-        contract.write_config(config_path, endpoint)
+        contract.write_config(config_path, endpoint, default_scope="workspace")
         config = config_path.read_text(encoding="utf-8")
         config = config.replace('mode = "auto"', 'mode = "yolo"')
         if os.environ.get("AISHE_TEST_REQUIRE_BWRAP") == "1":

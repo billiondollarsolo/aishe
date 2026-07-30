@@ -348,7 +348,7 @@ def run(binary, env, cwd, *args, timeout=60):
     return result
 
 
-def write_config(path, endpoint):
+def write_config(path, endpoint, default_scope="host"):
     path.parent.mkdir(parents=True)
     path.write_text(
         f"""version = 5
@@ -362,7 +362,7 @@ status_line = true
 [backend]
 engine = "opencode"
 fallback = "none"
-default_scope = "host"
+default_scope = "{default_scope}"
 workspace_network = "deny"
 output = "focus"
 max_output_tokens = 512

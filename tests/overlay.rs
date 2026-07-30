@@ -1,5 +1,5 @@
 //! End-to-end test for `aishe dry-run` (proposal R2 overlay preview). Skips when
-//! bubblewrap isn't installed, since the safe isolation depends on it.
+//! bubblewrap isn't functional, since the safe isolation depends on it.
 
 use std::io::Write;
 
@@ -8,11 +8,7 @@ use predicates::prelude::PredicateBooleanExt;
 use predicates::str::contains;
 
 fn bwrap_available() -> bool {
-    std::process::Command::new("bwrap")
-        .arg("--version")
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false)
+    aishe::overlay::available()
 }
 
 /// A temp working tree with a couple of files, plus a config home so the wizard
@@ -36,7 +32,7 @@ fn setup(label: &str) -> (std::path::PathBuf, std::path::PathBuf) {
 #[test]
 fn dry_run_previews_then_discards_by_default() {
     if !bwrap_available() {
-        eprintln!("SKIP: bubblewrap not installed");
+        eprintln!("SKIP: bubblewrap is not functional");
         return;
     }
     let (cfg, work) = setup("discard");
@@ -66,7 +62,7 @@ fn dry_run_previews_then_discards_by_default() {
 #[test]
 fn dry_run_apply_writes_the_changes() {
     if !bwrap_available() {
-        eprintln!("SKIP: bubblewrap not installed");
+        eprintln!("SKIP: bubblewrap is not functional");
         return;
     }
     let (cfg, work) = setup("apply");
@@ -97,7 +93,7 @@ fn dry_run_apply_writes_the_changes() {
 #[test]
 fn yolo_dry_run_session_previews_applies_and_is_undoable() {
     if !bwrap_available() {
-        eprintln!("SKIP: bubblewrap not installed");
+        eprintln!("SKIP: bubblewrap is not functional");
         return;
     }
     let root = std::env::temp_dir().join(format!("aishe-yolodry-{}", std::process::id()));
@@ -162,7 +158,7 @@ fn yolo_dry_run_session_previews_applies_and_is_undoable() {
 #[test]
 fn dry_run_apply_is_undoable() {
     if !bwrap_available() {
-        eprintln!("SKIP: bubblewrap not installed");
+        eprintln!("SKIP: bubblewrap is not functional");
         return;
     }
     let (cfg, work) = setup("undo");

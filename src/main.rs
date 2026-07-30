@@ -3641,10 +3641,14 @@ fn semhist_path() -> std::path::PathBuf {
 /// working tree under bubblewrap (read-only root, no network), show the file
 /// changes it would make, then keep them (`--apply`) or discard them.
 fn dry_run_command(command: &str, apply: bool) -> Result<u8> {
-    if !aishe::overlay::available() {
+    let bubblewrap = aishe::dependencies::bubblewrap_probe();
+    if !matches!(
+        bubblewrap,
+        aishe::dependencies::BubblewrapState::Usable { .. }
+    ) {
         eprintln!(
-            "aishe: dry-run needs Linux bubblewrap (bwrap) for safe isolation — install it \
-             (apt install bubblewrap | dnf install bubblewrap | pacman -S bubblewrap)."
+            "aishe: dry-run needs functional Linux bubblewrap for safe isolation; \
+             current state: {bubblewrap:?}. Run `aishe doctor` or `aishe setup`."
         );
         return Ok(1);
     }

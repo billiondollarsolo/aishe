@@ -23,7 +23,10 @@ const MAX_BYTES: u64 = 200 * 1024 * 1024;
 /// Whether the dry-run backend can run here (needs bubblewrap for the read-only
 /// root + network isolation that make the preview safe).
 pub fn available() -> bool {
-    crate::sandbox::bwrap_available()
+    matches!(
+        crate::dependencies::bubblewrap_probe(),
+        crate::dependencies::BubblewrapState::Usable { .. }
+    )
 }
 
 /// The bubblewrap argv (without the trailing shell) for a dry-run: a read-only

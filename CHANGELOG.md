@@ -41,6 +41,12 @@ breaking changes can land in any release.
   them as literal `\x0a` sequences. Interactive output uses the same styled
   headings, lists, emphasis, tables, inline code, and syntax-highlighted fenced
   code blocks as the native backend; pipes and `NO_COLOR` retain clean Markdown.
+- Live setup verification now exercises the configured host/workspace scope and
+  network authority instead of always requiring workspace isolation.
+- Dry-run and native bubblewrap backends now require a successful functional
+  isolation probe, not merely an installed `bwrap` executable. Yolo dry-run
+  fails closed if its preview sandbox cannot be created, so it never silently
+  applies changes directly.
 
 ### Tests
 - Added workspace-to-host conversation-rotation, accepted host execution,

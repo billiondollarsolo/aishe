@@ -32,7 +32,7 @@ pub fn run(
 ) -> Result<()> {
     // Optional reversible session: run the whole loop against a throwaway copy of
     // the working tree, then preview + confirm/apply at the end.
-    let dry = DryRun::setup(executor, config);
+    let dry = DryRun::setup(executor, config)?;
     let history = session.history();
     let mut task = crate::tasks::Active::start(config, executor.cwd(), input);
     println!("  {}", format!("task {}", task.id()).dim());
@@ -63,31 +63,28 @@ struct DryRun {
 }
 
 impl DryRun {
-    /// Set up the staging copy and point the executor at it, or `None` (run
-    /// normally) when the feature is off or bubblewrap is unavailable.
-    fn setup(executor: &mut Executor, config: &Config) -> Option<DryRun> {
+    /// Set up the staging copy and point the executor at it, or `None` when the
+    /// feature is off. Fail closed if the requested isolation is unavailable.
+    fn setup(executor: &mut Executor, config: &Config) -> Result<Option<DryRun>> {
         if !config.aishe.yolo_dry_run {
-            return None;
+            return Ok(None);
         }
-        if !crate::overlay::available() {
-            eprintln!(
-                "{}",
-                "aishe: yolo_dry_run is on but bubblewrap isn't installed — running \
-                 normally (changes are applied directly, not previewed)."
-                    .yellow()
+        let state = crate::dependencies::bubblewrap_probe();
+        if !matches!(state, crate::dependencies::BubblewrapState::Usable { .. }) {
+            anyhow::bail!(
+                "yolo_dry_run requires functional bubblewrap and will not execute \
+                 without its preview sandbox; current state: {state:?}. Run `aishe doctor` \
+                 or `aishe setup`"
             );
-            return None;
         }
         let real_cwd = executor.cwd().clone();
         let staging = std::env::temp_dir().join(format!("aishe-yolo-dry-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&staging);
-        if let Err(e) = crate::overlay::copy_tree(&real_cwd, &staging) {
-            eprintln!(
-                "{}",
-                format!("aishe: yolo_dry_run setup failed: {e} — running normally.").yellow()
-            );
+        if let Err(error) = crate::overlay::copy_tree(&real_cwd, &staging) {
             let _ = std::fs::remove_dir_all(&staging);
-            return None;
+            anyhow::bail!(
+                "yolo_dry_run could not create its isolated preview and will not execute: {error}"
+            );
         }
         executor.redirect_cwd(staging.clone());
         executor.set_sandbox_wrap(crate::overlay::dry_run_argv(&staging, &staging));
@@ -96,7 +93,7 @@ impl DryRun {
             "dry-run: this session runs in an isolated copy; changes are previewed at the end."
                 .dim()
         );
-        Some(DryRun { real_cwd, staging })
+        Ok(Some(DryRun { real_cwd, staging }))
     }
 
     /// Restore the executor, then preview the session's file changes and
