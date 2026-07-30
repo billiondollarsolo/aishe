@@ -5,9 +5,9 @@ the same way regardless of mode.
 
 | Mode      | Glyph | Behavior                                                                    |
 |-----------|:-----:|-----------------------------------------------------------------------------|
-| `suggest` |  `❯`  | Default. The LLM proposes a command; you confirm with `[Enter] / [e]dit / [n]`. |
-| `auto`    |  `»`  | Commands the safety gate deems safe run immediately; anything it flags or cannot resolve stops and asks. |
-| `yolo`    |  `⚡`  | Agentic loop: the model runs commands, reads output, and iterates until done. |
+| `suggest` |  `❯`  | Default and least privileged. The model answers or proposes one command; agent tools are unavailable. |
+| `auto`    |  `»`  | Approval-gated agent. Safe actions run; risky or unresolved actions stop and ask. |
+| `yolo`    |  `*`  | Autonomous agent loop after one workspace/host scope grant for the shell. |
 
 Switch at any time:
 
@@ -37,8 +37,10 @@ instead of proposing a command.
 
 ## auto
 
-Same proposal step, but a command the safety gate considers safe runs
-immediately. The gate has three outcomes, so two of them still stop:
+The managed agent can inspect and work iteratively, but Aishe retains per-action
+approval control. Actions that are read-only or clearly safe can run immediately;
+writes, destructive commands, broader paths, network use, or anything Aishe
+cannot resolve stop and ask. The deterministic gate still has three outcomes:
 
 - **safe** — nothing matched and every segment resolved: runs straight away.
 - **could not verify** — the gate could not work out what a segment would run
@@ -47,8 +49,8 @@ immediately. The gate has three outcomes, so two of them still stop:
 - **dangerous** — a rule matched a destructive shape: a red panel, and you must
   type the full word `yes`.
 
-This keeps the convenience of one-step execution while protecting against
-destructive operations. See [Safety gate](safety.md#three-outcomes).
+This keeps the convenience of an iterative agent while preserving a human gate
+around consequential actions. See [Safety gate](safety.md#three-outcomes).
 
 ## yolo
 
@@ -87,6 +89,10 @@ per-action approval into an accepted managed yolo session.
   `mcp__<server>__<tool>` and are invoked by Aishe.
 - [Skills](custom-commands-and-skills.md) are progressively disclosed by Aishe;
   project trust and organization policy still apply.
+
+Tool activity uses plain text labels. Aishe does not add pictographic emoji to
+file, web, skill, or MCP actions; managed turns leave activity rendering to the
+selected focus, compact, or detailed output mode.
 
 Provider keys are available only to the managed provider process. Every
 model-controlled command/tool environment starts from an explicit sanitized

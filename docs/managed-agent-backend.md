@@ -39,7 +39,10 @@ The managed server is isolated from normal OpenCode config and plugins by a
 private `HOME` and private XDG directories. Aishe writes one embedded,
 hash-verified plugin into that environment. OpenCode's host-effecting built-in
 tools are hidden or denied for primary agents and subagents. The plugin exposes
-only Aishe proxy tools.
+only Aishe proxy tools. OpenCode's default plugins remain disabled for API-key
+sessions. An endpoint-bound OpenAI or xAI OAuth session enables only the pinned
+runtime's matching built-in auth hook so it can refresh the private token; user
+plugins and normal OpenCode state remain outside the managed environment.
 
 The bridge is dependency-free plain JavaScript and uses the JSON-Schema
 compatibility surface frozen for OpenCode 1.18.9; it imports no npm package.
@@ -58,11 +61,13 @@ execution; a duplicate completed call receives the recorded result and is not
 run twice. A call that was running when the foreground disappeared is marked
 outcome-unknown rather than repeated.
 
-Provider credentials are passed only to the managed server process for the
-duration of the request. Aishe strips provider variables, `AISHE_*`,
-`OPENCODE_*`, and other likely secrets from every model-controlled command/tool
-environment. Credentials, loopback authentication tokens, and raw environments
-are never written to a session mapping, tool journal, or support bundle.
+API keys are passed only to the managed server process for the duration of the
+request. OAuth tokens remain in the isolated mode-`0600` runtime auth store and
+are read and refreshed by the matching pinned OpenCode auth hook. Aishe strips
+provider variables, `AISHE_*`, `OPENCODE_*`, and other likely secrets from every
+model-controlled command/tool environment. Credentials, loopback authentication
+tokens, and raw environments are never written to a session mapping, tool
+journal, or support bundle.
 
 ## Scope and mode behavior
 

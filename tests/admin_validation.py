@@ -882,7 +882,7 @@ def main():
         counts[key][1] += 1
         if ok:
             counts[key][0] += 1
-        mark = "✅" if ok else "❌"
+        mark = "PASS" if ok else "FAIL"
         emit(f"- {mark} `{name}` {detail}")
         return ok
 
@@ -1306,12 +1306,12 @@ def main():
         rc, out, err = run(
             [BIN, "--mode", "yolo", "-c", f"stamp the file {target} with the project marker"],
             env_llm, cwd=fixture, timeout=120)
-        invoked = "skill: file-stamper" in out or "📖" in out
+        invoked = "skill: file-stamper" in out
         try:
             stamped = os.path.exists(target) and SKILL_TOKEN in open(target).read()
         except Exception:
             stamped = False
-        add("skill: use_skill invoked (📖)", invoked, "" if invoked else f"(out tail={out.strip()[-160:]!r})")
+        add("skill: use_skill invoked", invoked, "" if invoked else f"(out tail={out.strip()[-160:]!r})")
         add("skill: body token written to file", stamped,
             "" if stamped else f"(exists={os.path.exists(target)})")
         shutil.rmtree(skill_dir, ignore_errors=True)
@@ -1375,7 +1375,7 @@ def main():
 
     # Suites in numeric order (1-7), regardless of execution order.
     ordered = sorted(suites, key=lambda s: s["num"])
-    failures = [ln for s in ordered for ln in s["lines"] if ln.startswith("- ❌")]
+    failures = [ln for s in ordered for ln in s["lines"] if ln.startswith("- FAIL")]
     raw_ver = (
         subprocess.run([RAW_SHELL, "--version"], capture_output=True, text=True)
         .stdout.strip()
@@ -1407,9 +1407,9 @@ def main():
     md.append("| Suite | Result | Checks | Time |")
     md.append("|:------|:------:|:------:|-----:|")
     for s in ordered:
-        ok = sum(1 for ln in s["lines"] if ln.startswith("- ✅"))
+        ok = sum(1 for ln in s["lines"] if ln.startswith("- PASS"))
         n = s["n"]
-        badge = "✅ pass" if ok == n and n > 0 else ("⏭️ skipped" if n == 0 else f"⚠️ {n - ok} failed")
+        badge = "pass" if ok == n and n > 0 else ("skipped" if n == 0 else f"{n - ok} failed")
         short = s["title"].split(" — ")[0]
         desc = s["title"].split(" — ", 1)[1] if " — " in s["title"] else ""
         md.append(f"| **{short}** {desc} | {badge} | {ok}/{n} | {s['secs']:.1f}s |")
@@ -1421,14 +1421,14 @@ def main():
     md.append("| Category | Pass / Total |")
     md.append("|:---------|:-----------:|")
     for name, (ok, n) in sorted(counts.items()):
-        flag = "" if ok == n else " ⚠️"
+        flag = "" if ok == n else " !"
         md.append(f"| `{name}` | {ok}/{n}{flag} |")
     md.append("")
     md.append("</details>")
     md.append("")
 
     if failures:
-        md.append("## ❌ Failures")
+        md.append("## Failures")
         md.append("")
         md.extend(failures)
         md.append("")
@@ -1437,7 +1437,7 @@ def main():
     md.append("## Details")
     md.append("")
     for s in ordered:
-        ok = sum(1 for ln in s["lines"] if ln.startswith("- ✅"))
+        ok = sum(1 for ln in s["lines"] if ln.startswith("- PASS"))
         n = s["n"]
         badge = f"{ok}/{n}" if n else "skipped"
         md.append(f"<details><summary><b>{s['title']}</b> - {badge} · {s['secs']:.1f}s</summary>")

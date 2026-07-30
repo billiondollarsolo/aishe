@@ -283,7 +283,7 @@ def main():
             file.write("- Duration: `%.1fs`\n" % duration)
             file.write("- Result: **PASS**\n\n")
             for check in checks:
-                file.write("- ✅ %s\n" % check)
+                file.write("- PASS %s\n" % check)
         print(
             "live-release: PASS (%d checks, %.0fs) -> %s"
             % (len(checks), duration, report)

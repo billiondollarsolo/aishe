@@ -97,6 +97,12 @@ command_not_found_handler() {
     /status)
       command aishe status < /dev/tty > /dev/tty 2>&1
       ;;
+    /reasoning)
+      command aishe reasoning < /dev/tty > /dev/tty 2>&1
+      ;;
+    /log)
+      command aishe log -n 20 < /dev/tty > /dev/tty 2>&1
+      ;;
     /usage)
       command aishe -c /usage < /dev/tty > /dev/tty 2>&1
       ;;
@@ -451,6 +457,20 @@ aishe-accept-line() {
     command aishe status < /dev/tty > /dev/tty 2>&1
     BUFFER=""
     POSTDISPLAY="$submitted"
+  elif [[ "$BUFFER" == "/reasoning" ]]; then
+    local submitted="$BUFFER"
+    print -s -- "$submitted"
+    zle -I
+    command aishe reasoning < /dev/tty > /dev/tty 2>&1
+    BUFFER=""
+    POSTDISPLAY="$submitted"
+  elif [[ "$BUFFER" == "/log" ]]; then
+    local submitted="$BUFFER"
+    print -s -- "$submitted"
+    zle -I
+    command aishe log -n 20 < /dev/tty > /dev/tty 2>&1
+    BUFFER=""
+    POSTDISPLAY="$submitted"
   elif [[ "$BUFFER" == "/usage" ]]; then
     local submitted="$BUFFER"
     print -s -- "$submitted"
@@ -612,9 +632,11 @@ fi
 {ZSH_HOOK}
 {PTY_PROMPT}
 if [[ -z "${{AISHE_COMMAND_HINT_SHOWN:-}}" ]]; then
+  print -r -- '{ascii_logo}'
   print -P "%F{{244}}aishe: /help commands · Shift-Tab mode · Ctrl-O details%f"
   export AISHE_COMMAND_HINT_SHOWN=1
-fi"#
+fi"#,
+        ascii_logo = crate::promptui::ASCII_LOGO,
     )
 }
 
@@ -635,7 +657,7 @@ if [[ -o interactive && "${AISHE_PTY_PROMPT:-1}" == 1 ]]; then
       IFS= read -r AISHE_MODEL < "${AISHE_MODEL_FILE}"
     fi
     case "${AISHE_MODE:-suggest}" in
-      yolo) glyph='⚡' ;;
+      yolo) glyph='*' ;;
       auto) glyph='»' ;;
       *)    glyph='❯' ;;
     esac
@@ -731,6 +753,14 @@ command_not_found_handle() {
       ;;
     /status)
       command aishe status < /dev/tty > /dev/tty 2>&1
+      return 0
+      ;;
+    /reasoning)
+      command aishe reasoning < /dev/tty > /dev/tty 2>&1
+      return 0
+      ;;
+    /log)
+      command aishe log -n 20 < /dev/tty > /dev/tty 2>&1
       return 0
       ;;
     /usage)
@@ -913,6 +943,8 @@ mod tests {
     fn pty_wrapper_advertises_the_primary_command_surface_once() {
         let s = wrapper_zshrc();
         assert!(s.contains("aishe: /help commands · Shift-Tab mode · Ctrl-O details"));
+        assert!(s.contains(".-----. .-----."));
+        assert!(s.contains("AISHE"));
         assert!(s.contains("AISHE_COMMAND_HINT_SHOWN"));
     }
 

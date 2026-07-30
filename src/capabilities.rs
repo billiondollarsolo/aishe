@@ -222,25 +222,37 @@ pub fn validate(config: &Config, live: bool) -> Report {
     };
     let profile = provider.credential_profile();
     let resolution = crate::credentials::resolve(provider);
-    let credential_source = resolution
-        .as_ref()
-        .map(|resolved| resolved.source.label())
-        .unwrap_or_else(|_| "error".to_string());
-    let credential = match &resolution {
-        Ok(resolved) if resolved.secret().is_some() => Check::pass(format!(
+    let oauth = match &resolution {
+        Ok(resolved) if resolved.secret().is_none() => crate::oauth::active_provider(config),
+        _ => Ok(None),
+    };
+    let credential_source = match (&resolution, &oauth) {
+        (Ok(resolved), _) if resolved.secret().is_some() => resolved.source.label(),
+        (_, Ok(Some(provider))) => format!("Aishe {provider} OAuth store"),
+        (Ok(resolved), _) => resolved.source.label(),
+        _ => "error".to_string(),
+    };
+    let credential = match (&resolution, &oauth) {
+        (Ok(resolved), _) if resolved.secret().is_some() => Check::pass(format!(
             "credential available from {}",
             resolved.source.label()
         )),
-        Ok(_) if provider.requires_auth() => Check::fail(
+        (Ok(_), Ok(Some(oauth_provider))) => {
+            Check::pass(format!("OAuth credential available for {oauth_provider}"))
+        }
+        (Ok(_), Ok(None)) if provider.requires_auth() => Check::fail(
             format!(
                 "credential profile '{profile}' is missing; run `aishe auth set {profile}` \
-                 or set ${}",
+                 or `aishe auth login {}` or set ${}",
+                crate::oauth::OAuthProvider::from_base_url(&provider.base_url)
+                    .map(|provider| provider.id())
+                    .unwrap_or("openai"),
                 provider.api_key_env
             ),
             Some(ErrorKind::MissingCredential),
         ),
-        Ok(_) => Check::pass("credential not required for this endpoint"),
-        Err(error) => Check::fail(
+        (Ok(_), Ok(None)) => Check::pass("credential not required for this endpoint"),
+        (Err(error), _) | (_, Err(error)) => Check::fail(
             format!(
                 "credential store unavailable: {}",
                 crate::redact::redact(&error.to_string())
@@ -253,9 +265,13 @@ pub fn validate(config: &Config, live: bool) -> Report {
     // Do not make anonymous network requests that can only add a confusing 401
     // beside the actionable missing-variable diagnosis.
     let credential_missing = credential.state == State::Fail;
+    let using_oauth = matches!(oauth, Ok(Some(_)));
     let (reachability, models, model_list) = if credential_missing {
         let detail = format!("blocked because credential profile '{profile}' is unavailable");
         (Check::skipped(detail.clone()), None, Check::skipped(detail))
+    } else if using_oauth {
+        let detail = "OAuth transport is provided by managed OpenCode; use --live to validate it";
+        (Check::skipped(detail), None, Check::skipped(detail))
     } else {
         let probe = providers::probe(config, &provider_name);
         let reachability = match probe.reach {
@@ -264,6 +280,9 @@ pub fn validate(config: &Config, live: bool) -> Report {
                 format!("endpoint rejected credentials (HTTP {status})"),
                 Some(ErrorKind::InvalidCredential),
             ),
+            Reach::ManagedOAuth(provider) => Check::skipped(format!(
+                "{provider} OAuth is validated through managed OpenCode"
+            )),
             Reach::Down(error) => Check::fail(error, Some(ErrorKind::Network)),
         };
         let (models, model_list) = match list_models(config, &provider_name) {

@@ -71,6 +71,33 @@ pub fn execute(
     confirm_writes: bool,
     preview: bool,
 ) -> (String, String) {
+    execute_with_activity(name, args, cwd, confirm_writes, preview, true)
+}
+
+/// Execute a built-in tool without writing progress directly to the terminal.
+/// Managed agent turns use this path because their renderer already owns the
+/// live activity line and output density.
+pub fn execute_silent(
+    name: &str,
+    args: &Value,
+    cwd: &Path,
+    confirm_writes: bool,
+    preview: bool,
+) -> (String, String) {
+    execute_with_activity(name, args, cwd, confirm_writes, preview, false)
+}
+
+fn execute_with_activity(
+    name: &str,
+    args: &Value,
+    cwd: &Path,
+    confirm_writes: bool,
+    preview: bool,
+    show_activity: bool,
+) -> (String, String) {
+    if show_activity {
+        print_activity(name, args);
+    }
     match name {
         "read_file" => read_file(args, cwd),
         "write_file" => write_file(args, cwd, confirm_writes, preview),
@@ -79,6 +106,36 @@ pub fn execute(
         "fetch_url" => fetch_url(args),
         other => (other.to_string(), format!("Error: unknown tool '{other}'.")),
     }
+}
+
+fn activity_label(name: &str, args: &Value) -> Option<(&'static str, String, bool)> {
+    let (verb, detail, write_like) = match name {
+        "read_file" => ("read", arg(args, "path"), false),
+        "write_file" => ("write", arg(args, "path"), true),
+        "edit_file" => ("edit", arg(args, "path"), true),
+        "list_dir" => {
+            let path = arg(args, "path");
+            ("list", if path.is_empty() { "." } else { path }, false)
+        }
+        "fetch_url" => ("fetch", arg(args, "url"), false),
+        _ => return None,
+    };
+    if detail.is_empty() {
+        return None;
+    }
+    Some((verb, detail.to_string(), write_like))
+}
+
+fn print_activity(name: &str, args: &Value) {
+    let Some((verb, detail, write_like)) = activity_label(name, args) else {
+        return;
+    };
+    let verb = if write_like {
+        verb.yellow()
+    } else {
+        verb.cyan()
+    };
+    println!("  {verb} {}", detail.dim());
 }
 
 fn read_file_tool() -> ToolDef {
@@ -206,7 +263,6 @@ fn read_file(args: &Value, cwd: &Path) -> (String, String) {
     if path.is_empty() {
         return ("read_file".into(), "Error: no path given.".into());
     }
-    println!("  {} {}", "📄".cyan(), format!("read {path}").dim());
     match std::fs::read_to_string(resolve(cwd, path)) {
         Ok(s) => {
             let content = if s.chars().count() > READ_LIMIT {
@@ -230,7 +286,6 @@ fn write_file(args: &Value, cwd: &Path, confirm_writes: bool, preview: bool) -> 
     if path.is_empty() {
         return ("write_file".into(), "Error: no path given.".into());
     }
-    println!("  {} {}", "✏️".yellow(), format!("write {path}").dim());
     let resolved = resolve(cwd, path);
     // Capture the pre-image before overwriting so the change is reversible.
     let existed = resolved.exists();
@@ -360,7 +415,6 @@ fn edit_file(args: &Value, cwd: &Path, confirm_writes: bool, preview: bool) -> (
     } else if confirm_writes && outside_tree(path) && !confirm("edit", path) {
         return (format!("edit {path}"), "User declined the edit.".into());
     }
-    println!("  {} {}", "✏️".yellow(), format!("edit {path}").dim());
     match atomic_replace(&resolved, new.as_bytes()) {
         Ok(_) => {
             crate::undo::record(
@@ -460,7 +514,6 @@ fn list_dir(args: &Value, cwd: &Path) -> (String, String) {
             p
         }
     };
-    println!("  {} {}", "📂".cyan(), format!("list {path}").dim());
     let dir = resolve(cwd, path);
     let entries = match std::fs::read_dir(&dir) {
         Ok(e) => e,
@@ -500,8 +553,6 @@ fn fetch_url(args: &Value) -> (String, String) {
             "Error: only http and https URLs are supported.".into(),
         );
     }
-    println!("  {} {}", "🌐".cyan(), format!("fetch {url}").dim());
-
     let agent = ureq::AgentBuilder::new()
         .timeout_connect(Duration::from_secs(10))
         .timeout_read(Duration::from_secs(FETCH_TIMEOUT_SECS))
@@ -664,6 +715,24 @@ mod tests {
         assert!(!outside_tree("src/main.rs"));
         assert!(!outside_tree("file.txt"));
         assert!(!outside_tree("a/b/c"));
+    }
+
+    #[test]
+    fn built_in_activity_labels_are_plain_text() {
+        for (name, args, expected) in [
+            ("read_file", json!({"path":"README.md"}), "read"),
+            ("write_file", json!({"path":"index.html"}), "write"),
+            ("edit_file", json!({"path":"src/main.rs"}), "edit"),
+            ("list_dir", json!({"path":"."}), "list"),
+            ("fetch_url", json!({"url":"https://example.com"}), "fetch"),
+        ] {
+            let (verb, detail, _) = activity_label(name, &args).expect("activity label");
+            assert_eq!(verb, expected);
+            assert!(verb.is_ascii());
+            assert!(!detail.is_empty());
+        }
+        assert_eq!(activity_label("list_dir", &json!({})).unwrap().1, ".");
+        assert!(activity_label("unknown", &json!({})).is_none());
     }
 
     #[test]

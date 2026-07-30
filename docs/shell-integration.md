@@ -64,7 +64,7 @@ export AISHE_NL_KEY='^o'
 
 Press **Shift-Tab** to rotate the interaction mode for the session
 (`suggest -> auto -> yolo -> suggest`), like Claude Code. The prompt glyph
-updates (`❯` suggest, `»` auto, `⚡` yolo) and the new mode is shown. In zsh,
+updates (`❯` suggest, `»` auto, `*` yolo) and the new mode is shown. In zsh,
 Shift-Tab still navigates an open completion menu first; it only cycles the mode
 when no menu is showing. This changes how the *next* natural-language line routes;
 changing mode does not grant authority: the first yolo turn still requires

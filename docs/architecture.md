@@ -191,6 +191,15 @@ clients validate all of them and the owning processes before connecting.
 Supervisor state, control requests, SSE frames, outputs, and logs are bounded.
 The process exits after a configurable idle timeout.
 
+OpenAI and xAI OAuth also lives inside this isolated XDG tree. `aishe auth
+login` invokes only the checksum-pinned runtime with project config, external
+skills, auto-update, MCP, and arbitrary permissions disabled. Normal managed
+launches keep all OpenCode built-in plugins disabled for API-key providers; an
+OAuth-backed launch enables the pinned built-in provider hooks so they can
+inject and refresh the token. Provider binding is exact (`openai` or `xai`),
+while access and refresh tokens remain in the current-user-owned mode-`0600`
+store and never cross the foreground tool bridge.
+
 ### OpenCode adapter and event recovery
 
 `backend::opencode::client` implements only the pinned v1 REST/SSE surface. It
@@ -300,8 +309,11 @@ Aishe never falls through to native or starts a second provider request.
   expires abandoned reservations, and denies the next call before budget
   overrun. `usagelog.rs` combines short-lived PTY child results into ordered
   live right/below status metrics.
-- **Audit and redaction.** Off by default. When on, prompts/responses/actions are
-  written as JSONL; redaction applies to both the context block and the log.
+- **Audit and redaction.** Off by default. When on, bounded prompts, visible
+  responses, provider-exposed reasoning, managed tool calls/results/approvals,
+  file changes, lifecycle events, usage, and cost are written as JSONL with
+  durable session/message/call identities. Recursive redaction applies to both
+  the context block and every structured log string.
 
 ## Tests and the harness
 

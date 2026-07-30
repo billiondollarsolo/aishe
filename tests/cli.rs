@@ -49,6 +49,108 @@ fn temp_root(label: &str) -> std::path::PathBuf {
     dir
 }
 
+#[test]
+fn oauth_commands_are_discoverable_and_status_never_exposes_tokens() {
+    Command::cargo_bin("aishe")
+        .unwrap()
+        .args(["auth", "--help"])
+        .assert()
+        .success()
+        .stdout(
+            contains("login")
+                .and(contains("logout"))
+                .and(contains("status")),
+        );
+    Command::cargo_bin("aishe")
+        .unwrap()
+        .args(["auth", "login", "--help"])
+        .assert()
+        .success()
+        .stdout(
+            contains("--headless")
+                .and(contains("--browser"))
+                .and(contains("xai")),
+        );
+
+    let config = temp_config_home();
+    let data = temp_root("oauth-data");
+    let store = data
+        .join("aishe/backend/opencode/xdg/data/opencode")
+        .join("auth.json");
+    std::fs::create_dir_all(store.parent().unwrap()).unwrap();
+    std::fs::write(
+        &store,
+        r#"{
+  "openai": {"type":"oauth","refresh":"openai-refresh-secret","access":"openai-access-secret","expires":9999999999999},
+  "xai": {"type":"oauth","refresh":"xai-refresh-secret","access":"xai-access-secret","expires":9999999999999}
+}"#,
+    )
+    .unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&store, std::fs::Permissions::from_mode(0o600)).unwrap();
+    }
+
+    Command::cargo_bin("aishe")
+        .unwrap()
+        .env("AISHE_CONFIG_DIR", &config)
+        .env("AISHE_DATA_DIR", &data)
+        .args(["auth", "status", "xai", "--json"])
+        .assert()
+        .success()
+        .stdout(
+            contains(r#""selected": "oauth""#)
+                .and(contains(r#""usable": true"#))
+                .and(predicates::str::contains("xai-access-secret").not())
+                .and(predicates::str::contains("xai-refresh-secret").not()),
+        );
+
+    std::fs::write(
+        config.join("aishe/config.toml"),
+        r#"[aishe]
+provider = "openai"
+
+[providers.openai]
+base_url = "https://api.x.ai"
+credential = "xai"
+api_key_env = "XAI_API_KEY"
+model = "grok-4.5"
+transport = "responses"
+"#,
+    )
+    .unwrap();
+    Command::cargo_bin("aishe")
+        .unwrap()
+        .env("AISHE_CONFIG_DIR", &config)
+        .env("AISHE_DATA_DIR", &data)
+        .env("XAI_API_KEY", "higher-precedence-api-secret")
+        .args(["auth", "status", "xai", "--json"])
+        .assert()
+        .success()
+        .stdout(
+            contains(r#""selected": "api_key""#)
+                .and(contains(r#""api_key_available": true"#))
+                .and(predicates::str::contains("higher-precedence-api-secret").not()),
+        );
+
+    Command::cargo_bin("aishe")
+        .unwrap()
+        .env("AISHE_CONFIG_DIR", &config)
+        .env("AISHE_DATA_DIR", &data)
+        .args(["auth", "logout", "xai", "--yes"])
+        .assert()
+        .success()
+        .stdout(contains("removed"));
+    let remaining: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&store).unwrap()).unwrap();
+    assert!(remaining.get("openai").is_some());
+    assert!(remaining.get("xai").is_none());
+
+    std::fs::remove_dir_all(config).ok();
+    std::fs::remove_dir_all(data).ok();
+}
+
 fn serve_model_catalog(requests: usize) -> (String, std::thread::JoinHandle<()>) {
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let address = listener.local_addr().unwrap();
@@ -859,6 +961,8 @@ fn primary_commands_and_live_status_are_discoverable() {
             contains("primary slash-commands:")
                 .and(contains("/help"))
                 .and(contains("/status"))
+                .and(contains("/log"))
+                .and(contains("/reasoning"))
                 .and(contains("/details"))
                 .and(contains("Ctrl-O")),
         );
@@ -880,9 +984,42 @@ fn primary_commands_and_live_status_are_discoverable() {
                 .and(contains(r#""mode": "yolo""#))
                 .and(contains(r#""scope": "host""#))
                 .and(contains(r#""output": "focus""#))
+                .and(contains(r#""reasoning_effort": "auto""#))
+                .and(contains(r#""audit""#))
+                .and(contains(r#""enabled": false"#))
+                .and(contains("audit.jsonl"))
                 .and(contains("aishe session: 1,000 in · 250 out · 2 reqs"))
                 .and(contains("task abc123")),
         );
+
+    std::fs::remove_dir_all(home).ok();
+}
+
+#[test]
+fn reasoning_command_persists_and_slash_command_reports_it() {
+    let home = temp_config_home();
+    let data = home.join("data");
+
+    Command::cargo_bin("aishe")
+        .unwrap()
+        .env("AISHE_CONFIG_DIR", &home)
+        .env("AISHE_DATA_DIR", &data)
+        .args(["reasoning", "high"])
+        .assert()
+        .success()
+        .stdout(contains("reasoning = high"));
+
+    let persisted = std::fs::read_to_string(home.join("aishe").join("config.toml")).unwrap();
+    assert!(persisted.contains("reasoning_effort = \"high\""));
+
+    Command::cargo_bin("aishe")
+        .unwrap()
+        .env("AISHE_CONFIG_DIR", &home)
+        .env("AISHE_DATA_DIR", &data)
+        .args(["-c", "/reasoning"])
+        .assert()
+        .success()
+        .stdout(contains("reasoning: high"));
 
     std::fs::remove_dir_all(home).ok();
 }
@@ -1213,7 +1350,9 @@ fn log_and_usage_read_the_audit_log() {
     std::fs::write(
         &log,
         "{\"ts_ms\":1781304002000,\"session\":\"s1\",\"kind\":\"ai_response\",\"model\":\"gpt-4o\",\"tokens_in\":1000,\"tokens_out\":200,\"summary\":\"ok\"}\n\
-         {\"ts_ms\":1781304003000,\"session\":\"s1\",\"kind\":\"action\",\"source\":\"yolo\",\"command\":\"apt-get install nginx\",\"exit\":0}\n",
+         {\"ts_ms\":1781304003000,\"session\":\"s1\",\"kind\":\"action\",\"source\":\"yolo\",\"command\":\"apt-get install nginx\",\"exit\":0}\n\
+         {\"ts_ms\":1781304004000,\"session\":\"s1\",\"kind\":\"tool_call\",\"backend_session\":\"ses_backend\",\"message_id\":\"msg_1\",\"call_id\":\"call_1\",\"tool\":\"write_file\",\"path\":\"README.md\"}\n\
+         {\"ts_ms\":1781304005000,\"session\":\"s1\",\"kind\":\"tool_result\",\"backend_session\":\"ses_backend\",\"message_id\":\"msg_1\",\"call_id\":\"call_1\",\"tool\":\"write_file\",\"success\":true,\"duration_ms\":12,\"output\":\"Wrote README.md\"}\n",
     )
     .unwrap();
 
@@ -1226,7 +1365,11 @@ fn log_and_usage_read_the_audit_log() {
         .arg("log")
         .assert()
         .success()
-        .stdout(contains("apt-get install nginx").and(contains("gpt-4o")));
+        .stdout(
+            contains("apt-get install nginx")
+                .and(contains("gpt-4o"))
+                .and(contains("tool write_file")),
+        );
 
     // `aishe log --action action` filters to the command.
     Command::cargo_bin("aishe")
@@ -1238,6 +1381,32 @@ fn log_and_usage_read_the_audit_log() {
         .assert()
         .success()
         .stdout(contains("apt-get install nginx"));
+
+    // Managed backend session IDs are first-class filters, independent of the
+    // short-lived audit-writer process session.
+    Command::cargo_bin("aishe")
+        .unwrap()
+        .env("AISHE_CONFIG_DIR", dir.join("config"))
+        .env("AISHE_DATA_DIR", dir.join("data"))
+        .env("AISHE_LOG_FILE", &log)
+        .args(["log", "--session", "ses_backend"])
+        .assert()
+        .success()
+        .stdout(contains("tool write_file").and(contains("12ms")));
+
+    // The primary `/log` alias is intentionally concise and reads the same
+    // file without requiring the interactive shell.
+    let slash_home = temp_config_home();
+    Command::cargo_bin("aishe")
+        .unwrap()
+        .env("AISHE_CONFIG_DIR", &slash_home)
+        .env("AISHE_DATA_DIR", dir.join("data"))
+        .env("AISHE_LOG_FILE", &log)
+        .args(["-c", "/log"])
+        .assert()
+        .success()
+        .stdout(contains("apt-get install nginx").and(contains("gpt-4o")));
+    std::fs::remove_dir_all(slash_home).ok();
 
     // `aishe usage` totals tokens and estimates cost (gpt-4o known price).
     Command::cargo_bin("aishe")

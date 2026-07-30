@@ -231,7 +231,7 @@ def main():
                 file.write(
                     "| %s%s | %s | %s / %d | `%s` → `%s` |\n"
                     % (
-                        "" if ok else "❌ ",
+                        "" if ok else "FAIL ",
                         kind,
                         response_kind,
                         risk,

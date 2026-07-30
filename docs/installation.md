@@ -23,8 +23,9 @@ separately.
   offers to install it only after explicit consent. `.deb` and `.rpm` packages
   declare it as a recommended/weak dependency rather than a hard dependency
   because some containers cannot use its namespaces.
-- A network-reachable LLM endpoint and an API key, saved with `aishe auth set`
-  or supplied through an environment override. See [Providers](providers.md).
+- A network-reachable LLM endpoint and either an API key (`aishe auth set` or an
+  environment override) or a supported OpenAI/xAI subscription OAuth login
+  (`aishe auth login`). See [Providers](providers.md).
 - Platforms: macOS (arm64 and x86_64) and Linux (x86_64 and arm64). Windows is
   not supported.
 

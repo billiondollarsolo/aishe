@@ -161,6 +161,12 @@ or inside a VM or container you are willing to lose.
   into the managed provider process and are stripped from model-controlled
   command, skill, and MCP tool environments. They are never written to OpenCode
   config, session mappings, journals, drafts, logs, or support bundles.
+- **OAuth tokens use a separate private runtime store.** OpenAI and xAI login
+  delegates to Aishe's exact pinned OpenCode runtime and writes only its
+  isolated mode-`0600` auth file. OAuth is accepted only for the provider's
+  exact official host, API keys retain precedence, and status, Doctor, logs,
+  and support bundles report metadata without displaying token material. Treat
+  that auth file like a password: do not commit, copy, or share it.
 - **What is sent to the model.** For an AI request, aishe sends your prompt plus a
   context block (working directory, recent commands, and, if enabled, a per-project
   `.aishe/context.md`). It is sent only when you trigger an AI action, not on every

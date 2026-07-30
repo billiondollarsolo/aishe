@@ -1,9 +1,11 @@
 //! Structured audit logging for AI calls, responses, and AI-initiated actions.
 //!
 //! When enabled, aishe appends one JSON object per line (JSONL) to a log file,
-//! recording each model request, its response (with token usage), and every
-//! command the model causes to run (yolo tool calls, auto/confirmed commands),
-//! with exit codes. Secrets in logged text are redacted unless turned off.
+//! recording each model request, its visible response (with token usage), and
+//! every tool the model causes to run. Managed-agent records also carry durable
+//! session/message/call identities, structured arguments, bounded results,
+//! approvals, file changes, and lifecycle events. Secrets in every logged
+//! string are redacted unless turned off.
 //!
 //! Logging is **off by default** (it writes prompts and outputs to disk). Enable
 //! it in `[logging]` or with `AISHE_LOG=1`. The logger is a process-global
@@ -19,9 +21,16 @@ use serde_json::{json, Value};
 
 use crate::redact;
 
-/// Cap on any single logged text field, so one giant prompt/response cannot
-/// produce an unbounded log line.
-const MAX_FIELD_CHARS: usize = 4000;
+/// Cap on a prompt, visible response, reasoning summary, argument string, or
+/// diff. This is intentionally much larger than the old summary-only limit so
+/// the audit trail normally retains complete conversational records while one
+/// pathological value still cannot grow without bound.
+const MAX_FIELD_CHARS: usize = 64 * 1024;
+
+/// Command output is useful evidence but is frequently much larger than the
+/// request that caused it. Keep a meaningful tail-sized record without turning
+/// the audit log into an unbounded transcript of build/download output.
+const MAX_OUTPUT_CHARS: usize = 16 * 1024;
 
 static AUDIT: OnceLock<Audit> = OnceLock::new();
 
@@ -100,6 +109,10 @@ pub fn default_path() -> PathBuf {
 pub fn event(kind: &str, fields: Value) {
     let Some(audit) = AUDIT.get() else { return };
     let Some(sink) = &audit.sink else { return };
+    // `event` is the final write boundary. Sanitize recursively here so a new
+    // structured caller cannot accidentally bypass redaction by placing a
+    // secret inside an array/object rather than a top-level text field.
+    let fields = sanitize_value(&fields, audit.redact, MAX_FIELD_CHARS);
     let mut obj = json!({
         "ts_ms": now_ms(),
         "session": audit.session,
@@ -169,13 +182,46 @@ pub fn action(source: &str, command: &str, exit: Option<i32>) {
     );
 }
 
+/// Redact and bound captured command/tool output before it is embedded in a
+/// structured event. `event` sanitizes it again at the write boundary; this
+/// smaller limit is what keeps noisy tool results practical.
+pub fn bounded_output(output: &str) -> String {
+    let redact_values = AUDIT.get().is_some_and(|audit| audit.redact);
+    sanitize_text(output, redact_values, MAX_OUTPUT_CHARS)
+}
+
 /// Redact (per config) and truncate a text field for logging.
 fn field(s: &str) -> String {
-    let scrubbed = match AUDIT.get() {
-        Some(a) if a.redact => redact::redact(s),
-        _ => s.to_string(),
+    let redact_values = AUDIT.get().is_some_and(|audit| audit.redact);
+    sanitize_text(s, redact_values, MAX_FIELD_CHARS)
+}
+
+fn sanitize_text(s: &str, redact_values: bool, max: usize) -> String {
+    let scrubbed = if redact_values {
+        redact::redact(s)
+    } else {
+        s.to_string()
     };
-    truncate(&scrubbed, MAX_FIELD_CHARS)
+    truncate(&scrubbed, max)
+}
+
+fn sanitize_value(value: &Value, redact_values: bool, max: usize) -> Value {
+    match value {
+        Value::String(value) => Value::String(sanitize_text(value, redact_values, max)),
+        Value::Array(values) => Value::Array(
+            values
+                .iter()
+                .map(|value| sanitize_value(value, redact_values, max))
+                .collect(),
+        ),
+        Value::Object(values) => Value::Object(
+            values
+                .iter()
+                .map(|(key, value)| (key.clone(), sanitize_value(value, redact_values, max)))
+                .collect(),
+        ),
+        _ => value.clone(),
+    }
 }
 
 fn truncate(s: &str, max: usize) -> String {
@@ -209,6 +255,13 @@ pub struct Entry {
     pub source: Option<String>,
     pub command: Option<String>,
     pub exit: Option<i64>,
+    pub backend_session: Option<String>,
+    pub message_id: Option<String>,
+    pub call_id: Option<String>,
+    pub tool: Option<String>,
+    pub event: Option<String>,
+    pub success: Option<bool>,
+    pub duration_ms: Option<u64>,
     /// A short human label: the response summary, request prompt, or error text.
     pub text: Option<String>,
     pub raw: Value,
@@ -240,7 +293,18 @@ fn entry_from(v: Value) -> Entry {
         source: s("source"),
         command: s("command"),
         exit: v.get("exit").and_then(|x| x.as_i64()),
-        text: s("summary").or_else(|| s("prompt")).or_else(|| s("error")),
+        backend_session: s("backend_session"),
+        message_id: s("message_id"),
+        call_id: s("call_id"),
+        tool: s("tool"),
+        event: s("event"),
+        success: v.get("success").and_then(Value::as_bool),
+        duration_ms: u("duration_ms"),
+        text: s("response")
+            .or_else(|| s("summary"))
+            .or_else(|| s("error"))
+            .or_else(|| s("prompt"))
+            .or_else(|| s("output")),
         raw: v,
     }
 }
@@ -294,6 +358,20 @@ mod tests {
     }
 
     #[test]
+    fn structured_values_are_recursively_redacted_and_bounded() {
+        let value = json!({
+            "args": {
+                "token": "API_TOKEN=secret-value",
+                "nested": ["safe", "x".repeat(10)]
+            }
+        });
+        let clean = sanitize_value(&value, true, 4);
+        assert_ne!(clean["args"]["token"], "API_TOKEN=secret-value");
+        assert_eq!(clean["args"]["nested"][0], "safe");
+        assert_eq!(clean["args"]["nested"][1], "xxxx…[+6 chars]");
+    }
+
+    #[test]
     fn default_path_ends_in_audit_jsonl() {
         assert!(default_path().ends_with("aishe/audit.jsonl"));
     }
@@ -332,11 +410,37 @@ mod tests {
     }
 
     #[test]
+    fn read_entries_parses_managed_tool_identity() {
+        let value = json!({
+            "ts_ms": 3,
+            "session": "process-1",
+            "kind": "tool_result",
+            "backend_session": "ses_1",
+            "message_id": "msg_1",
+            "call_id": "call_1",
+            "tool": "run_command",
+            "success": true,
+            "exit": 0,
+            "duration_ms": 42,
+            "output": "ok"
+        });
+        let entry = entry_from(value);
+        assert_eq!(entry.backend_session.as_deref(), Some("ses_1"));
+        assert_eq!(entry.message_id.as_deref(), Some("msg_1"));
+        assert_eq!(entry.call_id.as_deref(), Some("call_1"));
+        assert_eq!(entry.tool.as_deref(), Some("run_command"));
+        assert_eq!(entry.success, Some(true));
+        assert_eq!(entry.duration_ms, Some(42));
+        assert_eq!(entry.text.as_deref(), Some("ok"));
+    }
+
+    #[test]
     fn inactive_logger_is_silent() {
         // Without init(), every helper is a no-op and must not panic.
         ai_request("suggest", "m", "hello");
         ai_response("suggest", "m", "ok", 1, 2);
         action("yolo", "ls", Some(0));
+        assert_eq!(bounded_output("ok"), "ok");
         assert!(!is_active());
     }
 }

@@ -136,7 +136,7 @@ struct SetupArgs {
     /// Configure from flags without opening a terminal UI.
     #[arg(long)]
     non_interactive: bool,
-    /// Service preset: anthropic, openai, groq, openrouter, together, ollama, custom.
+    /// Service preset: anthropic, openai, xai, groq, openrouter, together, ollama, custom.
     #[arg(long)]
     service: Option<String>,
     /// Provider base URL (host root, without /v1).
@@ -211,7 +211,7 @@ enum Cmd {
         #[arg(long)]
         json: bool,
     },
-    /// Manage provider API keys in Aishe's private shared credentials file.
+    /// Manage provider API keys and OAuth subscriptions in Aishe's private stores.
     Auth {
         #[command(subcommand)]
         cmd: aishe::auth::AuthCommand,
@@ -336,6 +336,11 @@ enum Cmd {
         #[arg(value_parser = ["focus", "compact", "detailed"])]
         value: Option<String>,
     },
+    /// Show or set provider reasoning effort; `auto` uses the model default.
+    Reasoning {
+        #[arg(value_parser = ["auto", "none", "low", "medium", "high", "xhigh", "max"])]
+        value: Option<String>,
+    },
     /// Show or set the model for the active provider (saves it to your config).
     Model { value: Option<String> },
     /// Show or set the provider (with a value, saves it to your config).
@@ -390,7 +395,7 @@ enum Cmd {
     Mcp,
     /// List primary and custom slash-commands.
     Commands,
-    /// Show the active model, mode, scope, output density, and live session spend.
+    /// Show model, mode, scope, output, live spend, and audit-log state.
     Status {
         /// Emit stable JSON.
         #[arg(long)]
@@ -409,7 +414,7 @@ enum Cmd {
         /// Only this session id.
         #[arg(long)]
         session: Option<String>,
-        /// Only this event kind (ai_request, ai_response, ai_error, action).
+        /// Only this event kind (for example ai_request, tool_call, tool_result, action).
         #[arg(long)]
         action: Option<String>,
         /// Only entries whose model name contains this substring.
@@ -1264,6 +1269,9 @@ fn run() -> Result<u8> {
             return Ok(set_or_show("network", value.as_deref(), &config))
         }
         Some(Cmd::Output { value }) => return Ok(set_or_show("output", value.as_deref(), &config)),
+        Some(Cmd::Reasoning { value }) => {
+            return Ok(set_or_show("reasoning", value.as_deref(), &config))
+        }
         Some(Cmd::Model { value }) => return Ok(set_or_show("model", value.as_deref(), &config)),
         Some(Cmd::Provider { value, live, json }) => {
             if value.as_deref() == Some("test") {
@@ -2269,7 +2277,7 @@ fn auto_line(
             let code = match safety::assess(command) {
                 Risk::Safe => 0,
                 Risk::Dangerous(reason) => {
-                    eprintln!("{}", format!("⚠ {reason} — pre-filled for review").yellow());
+                    eprintln!("{}", format!("! {reason} — pre-filled for review").yellow());
                     EXIT_AUTO_DANGEROUS
                 }
                 // Same exit code on purpose: the contract's `20` means "do not
@@ -2279,7 +2287,7 @@ fn auto_line(
                 Risk::Unknown(reason) => {
                     eprintln!(
                         "{}",
-                        format!("⚠ could not verify ({reason}) — pre-filled for review").yellow()
+                        format!("! could not verify ({reason}) — pre-filled for review").yellow()
                     );
                     EXIT_AUTO_DANGEROUS
                 }
@@ -2454,9 +2462,9 @@ fn suggest_command(
             eprintln!("{}", explanation.as_str().dim());
         }
         if risk == "dangerous" {
-            eprintln!("{}", format!("⚠ {reason}").yellow());
+            eprintln!("{}", format!("! {reason}").yellow());
         } else if risk == "unknown" {
-            eprintln!("{}", format!("⚠ could not verify ({reason})").yellow());
+            eprintln!("{}", format!("! could not verify ({reason})").yellow());
         }
         println!("{command}");
     } else if !explanation.is_empty() {
@@ -2518,6 +2526,12 @@ fn one_shot(
                     Some("help") => print_command_listing(commands),
                     Some("status") => {
                         status_command(config, false);
+                    }
+                    Some("reasoning") => {
+                        set_or_show("reasoning", tokens.get(2).map(String::as_str), config);
+                    }
+                    Some("log") => {
+                        log_command(config, None, None, None, None, Some(20), false);
                     }
                     Some("skills") => {
                         if skills.is_empty() {
@@ -2813,8 +2827,10 @@ fn print_mcp_listing(mcp: &aishe::mcp::McpRegistry) {
 
 const PRIMARY_SLASH_COMMANDS: &[(&str, &str)] = &[
     ("/help", "show this command index"),
-    ("/status", "model, mode, scope, output, and live spend"),
+    ("/status", "model, mode, scope, spend, and audit state"),
     ("/usage", "live token and cost totals for this shell"),
+    ("/log", "last 20 audit events and tool actions"),
+    ("/reasoning", "show the provider reasoning effort"),
     (
         "/details",
         "expand or shrink agent work for following turns",
@@ -2854,11 +2870,18 @@ fn status_command(config: &Config, json: bool) -> u8 {
     let mode = session_value("AISHE_MODE", &config.aishe.mode);
     let scope = session_value("AISHE_SCOPE", &config.backend.default_scope);
     let output = session_value("AISHE_AGENT_OUTPUT", &config.backend.output);
+    let reasoning = config.aishe.reasoning_effort.clone();
     let status_position = if config.aishe.status_line {
         config.aishe.status_line_position.as_str()
     } else {
         "off"
     };
+    let (audit_enabled, _) = resolve_audit(
+        config,
+        std::env::var("AISHE_LOG").ok().as_deref(),
+        std::env::var("AISHE_LOG_FILE").ok().as_deref(),
+    );
+    let audit_path = audit_log_path(config);
 
     if json {
         println!(
@@ -2870,8 +2893,14 @@ fn status_command(config: &Config, json: bool) -> u8 {
                 "scope": scope,
                 "network": config.backend.workspace_network,
                 "output": output,
+                "reasoning_effort": reasoning,
                 "status_line": status_position,
                 "budget_usd": config.aishe.budget_usd,
+                "audit": {
+                    "enabled": audit_enabled,
+                    "redact": config.logging.redact,
+                    "path": audit_path,
+                },
                 "session": session,
                 "metrics": metrics,
             }))
@@ -2890,9 +2919,16 @@ fn status_command(config: &Config, json: bool) -> u8 {
         aishe::commands::display_safe(&config.backend.workspace_network),
     );
     println!(
-        "  output: {} · prompt status: {}",
+        "  output: {} · reasoning: {} · prompt status: {}",
         aishe::commands::display_safe(&output),
+        aishe::commands::display_safe(&reasoning),
         aishe::commands::display_safe(status_position),
+    );
+    println!(
+        "  audit: {} · redaction: {} · {}",
+        if audit_enabled { "on" } else { "off" },
+        if config.logging.redact { "on" } else { "off" },
+        aishe::commands::display_safe(&audit_path.display().to_string()),
     );
     if let Some(session) = session {
         println!(
@@ -3029,7 +3065,8 @@ fn print_usage_summary(provider: Option<&dyn Provider>, config: &Config) {
 /// current value. With a value, persist it to the *user* config file:
 /// we reload a fresh `Config` (no project overlay, no this-invocation flags) so a
 /// project overlay or a `--mode`/`--provider` flag can't get baked into the saved
-/// file. Clap already validated `mode`/`provider` against their allowed sets.
+/// file. Clap already validated the enumerated settings against their allowed
+/// sets.
 fn set_or_show(field: &str, value: Option<&str>, effective: &Config) -> u8 {
     let Some(value) = value else {
         let current = match field {
@@ -3038,6 +3075,7 @@ fn set_or_show(field: &str, value: Option<&str>, effective: &Config) -> u8 {
             "scope" => effective.backend.default_scope.clone(),
             "network" => effective.backend.workspace_network.clone(),
             "output" => effective.backend.output.clone(),
+            "reasoning" => effective.aishe.reasoning_effort.clone(),
             _ => effective.active_model().to_string(),
         };
         println!("{field}: {current}");
@@ -3065,6 +3103,7 @@ fn set_or_show(field: &str, value: Option<&str>, effective: &Config) -> u8 {
             cfg.aishe.safety_profile = "custom".to_string();
         }
         "output" => cfg.backend.output = value.to_string(),
+        "reasoning" => cfg.aishe.reasoning_effort = value.to_string(),
         _ => cfg.set_active_model(value.to_string()),
     }
     if let Err(e) = cfg.save() {
@@ -4283,7 +4322,7 @@ fn log_command(
             }
         }
         if let Some(s) = session {
-            if e.session != s {
+            if e.session != s && e.backend_session.as_deref() != Some(s) {
                 return false;
             }
         }
@@ -4324,10 +4363,13 @@ fn log_command(
                 e.mode.as_deref().unwrap_or("?")
             ),
             "ai_response" => format!(
-                "← {} · {} in / {} out",
+                "← {} · {} in / {} out{}",
                 e.model.as_deref().unwrap_or("?"),
                 e.tokens_in.unwrap_or(0),
-                e.tokens_out.unwrap_or(0)
+                e.tokens_out.unwrap_or(0),
+                e.duration_ms
+                    .map(|duration| format!(" · {duration}ms"))
+                    .unwrap_or_default(),
             ),
             "ai_error" => format!(
                 "✗ {} {}",
@@ -4343,6 +4385,52 @@ fn log_command(
                     e.source.as_deref().unwrap_or("")
                 )
             }
+            "tool_call" => {
+                let target = e
+                    .command
+                    .as_deref()
+                    .or_else(|| e.raw.get("path").and_then(serde_json::Value::as_str))
+                    .unwrap_or("");
+                format!(
+                    "→ tool {} {}",
+                    e.tool.as_deref().unwrap_or("?"),
+                    aishe::commands::display_safe(target)
+                )
+            }
+            "tool_result" => format!(
+                "← tool {} · {}{}{}",
+                e.tool.as_deref().unwrap_or("?"),
+                if e.success == Some(true) {
+                    "ok"
+                } else {
+                    "failed"
+                },
+                e.exit
+                    .map(|exit| format!(" · exit {exit}"))
+                    .unwrap_or_default(),
+                e.duration_ms
+                    .map(|duration| format!(" · {duration}ms"))
+                    .unwrap_or_default(),
+            ),
+            "tool_approval" => format!(
+                "approval {} · {}",
+                e.tool.as_deref().unwrap_or("?"),
+                e.raw
+                    .get("decision")
+                    .and_then(serde_json::Value::as_str)
+                    .or_else(|| e.raw.get("phase").and_then(serde_json::Value::as_str))
+                    .unwrap_or("recorded")
+            ),
+            "file_change" => format!(
+                "file changed {}",
+                aishe::commands::display_safe(
+                    e.raw
+                        .get("path")
+                        .and_then(serde_json::Value::as_str)
+                        .unwrap_or("?")
+                )
+            ),
+            "agent_event" => format!("agent {}", e.event.as_deref().unwrap_or("event")),
             other => other.to_string(),
         };
         let colored = if e.kind == "ai_error" {

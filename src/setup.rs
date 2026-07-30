@@ -412,6 +412,7 @@ fn print_setup_json(
 }
 
 fn run_interactive(options: Options) -> Result<Outcome> {
+    promptui::brand();
     promptui::header(
         "aishe setup",
         "Configure, verify, and safely apply your Aishe environment.",
@@ -471,6 +472,9 @@ fn run_interactive(options: Options) -> Result<Outcome> {
     ) && active_provider(&draft.config).requires_auth()
         && crate::credentials::resolve(active_provider(&draft.config))
             .map(|resolved| resolved.secret().is_none())
+            .unwrap_or(true)
+        && crate::oauth::active_provider(&draft.config)
+            .map(|provider| provider.is_none())
             .unwrap_or(true)
     {
         println!("  The resumed draft contains no credential; returning to the Credential step.");
@@ -808,6 +812,19 @@ fn run_interactive(options: Options) -> Result<Outcome> {
                 }
                 let profile = provider.credential_profile();
                 let existing = crate::credentials::resolve(&provider);
+                if existing
+                    .as_ref()
+                    .is_ok_and(|resolved| resolved.secret().is_none())
+                {
+                    if let Some(oauth_provider) = crate::oauth::active_provider(&draft.config)? {
+                        promptui::success(&format!(
+                            "Using existing {oauth_provider} OAuth credential from Aishe's private runtime store"
+                        ));
+                        pending_credential = None;
+                        advance(&mut draft)?;
+                        continue;
+                    }
+                }
                 if let Err(error) = &existing {
                     println!(
                         "  ! Credential store unavailable: {}",
@@ -885,6 +902,32 @@ fn run_interactive(options: Options) -> Result<Outcome> {
                 step_header(6, "Model and pricing");
                 let provider_name = draft.config.aishe.provider.clone();
                 let current = active_provider(&draft.config).model.clone();
+                let using_oauth = pending_credential.is_none()
+                    && crate::credentials::resolve(active_provider(&draft.config))
+                        .is_ok_and(|resolved| resolved.secret().is_none())
+                    && crate::oauth::active_provider(&draft.config)?.is_some();
+                if using_oauth {
+                    promptui::success(
+                        "OAuth is ready; model availability is validated through the managed runtime",
+                    );
+                    match promptui::text("Model ID", &current, |value| {
+                        if value.trim().is_empty() {
+                            anyhow::bail!("model cannot be empty");
+                        }
+                        if value.len() > 512 || value.chars().any(char::is_control) {
+                            anyhow::bail!("model must be 1–512 printable characters");
+                        }
+                        Ok(())
+                    })? {
+                        Some(value) if value == ":back" => draft.step = draft.step.previous(),
+                        Some(value) => {
+                            active_provider_mut(&mut draft.config).model = value;
+                            advance(&mut draft)?;
+                        }
+                        None => return cancel(draft),
+                    }
+                    continue;
+                }
                 let catalog = with_pending(&pending_credential, || {
                     capabilities::list_models(&draft.config, &provider_name)
                 })?;
@@ -1041,6 +1084,16 @@ fn run_interactive(options: Options) -> Result<Outcome> {
             }
             Step::Pricing => {
                 let model = draft.config.active_model().to_string();
+                let using_oauth = crate::credentials::resolve(active_provider(&draft.config))
+                    .is_ok_and(|resolved| resolved.secret().is_none())
+                    && crate::oauth::active_provider(&draft.config)?.is_some();
+                if using_oauth {
+                    println!(
+                        "\n  Pricing: provider subscription OAuth; token usage is tracked but API cost is not estimated"
+                    );
+                    advance(&mut draft)?;
+                    continue;
+                }
                 if usage::price_for(&model, &draft.config.pricing).is_some() {
                     println!(
                         "\n  Pricing: configured for {}",
@@ -2073,9 +2126,15 @@ fn print_review(
         if pending_credential.is_some() {
             "will save locally on Apply".to_string()
         } else if active_provider(configured).requires_auth() {
-            crate::credentials::resolve(active_provider(configured))
-                .map(|resolved| resolved.source.label())
-                .unwrap_or_else(|_| "unavailable".into())
+            match crate::credentials::resolve(active_provider(configured)) {
+                Ok(resolved) if resolved.secret().is_some() => resolved.source.label(),
+                Ok(_) => crate::oauth::active_provider(configured)
+                    .ok()
+                    .flatten()
+                    .map(|provider| format!("{provider} OAuth"))
+                    .unwrap_or_else(|| "unavailable".into()),
+                Err(_) => "unavailable".into(),
+            }
         } else {
             "not required".to_string()
         }
@@ -2118,7 +2177,15 @@ fn print_review(
     );
     println!(
         "    pricing/budget: {} · {}",
-        if usage::price_for(configured.active_model(), &configured.pricing).is_some() {
+        if crate::credentials::resolve(active_provider(configured))
+            .is_ok_and(|resolved| resolved.secret().is_none())
+            && crate::oauth::active_provider(configured)
+                .ok()
+                .flatten()
+                .is_some()
+        {
+            "provider subscription; API cost not estimated"
+        } else if usage::price_for(configured.active_model(), &configured.pricing).is_some() {
             "exact price available"
         } else {
             "price unknown; cost budgets disabled"
@@ -2459,6 +2526,22 @@ mod tests {
         assert!(!config.providers.openai.requires_auth());
         assert_eq!(config.aishe.safety_profile, "balanced");
         assert_eq!(config.pricing["qwen-test"].input, 0.0);
+    }
+
+    #[test]
+    fn xai_preset_selects_responses_and_oauth_eligible_endpoint() {
+        let service = provider_catalog::find("xai").unwrap();
+        let mut config = Config::default();
+        apply_service(&mut config, service);
+        assert_eq!(config.aishe.provider, "openai");
+        assert_eq!(config.providers.openai.base_url, "https://api.x.ai");
+        assert_eq!(config.providers.openai.credential, "xai");
+        assert_eq!(config.providers.openai.api_key_env, "XAI_API_KEY");
+        assert_eq!(config.providers.openai.transport, "responses");
+        assert_eq!(
+            crate::oauth::OAuthProvider::from_base_url(&config.providers.openai.base_url),
+            Some(crate::oauth::OAuthProvider::Xai)
+        );
     }
 
     #[test]

@@ -380,7 +380,7 @@ fn run_loop(
                     .unwrap_or("");
                 let content = match skills.get(name) {
                     Some(s) => {
-                        println!("  📖 {}", format!("skill: {name}").dim());
+                        println!("  {} {}", "skill".cyan(), name.dim());
                         s.body.clone()
                     }
                     None => format!("No skill named '{name}'."),
@@ -416,7 +416,7 @@ fn run_loop(
             // MCP tools (namespaced mcp__server__tool) are proxied to the server.
             if crate::mcp::is_mcp_tool(&call.name) {
                 task.mark_pending_started();
-                println!("  🔌 {}", format!("mcp: {}", call.name).dim());
+                println!("  {} {}", "mcp".cyan(), call.name.as_str().dim());
                 let (label, content) = mcp.call(&call.name, &call.arguments);
                 crate::audit::action(&format!("yolo:{}", call.name), &label, None);
                 messages.push(Msg::ToolResult {
@@ -442,7 +442,7 @@ fn run_loop(
 
             println!(
                 "  {} {}: {}",
-                "⚡".yellow(),
+                "*".yellow(),
                 reason.as_str().dim(),
                 command.as_str().white()
             );
@@ -463,7 +463,7 @@ fn run_loop(
             // pre-refuse here.
             if sandbox_backend == sandbox::Backend::Policy {
                 if let Some(reason) = sandbox::sandbox_refusal(&command) {
-                    println!("  {} {}", "⛔".red(), reason.as_str().yellow());
+                    println!("  {} {}", "!".red(), reason.as_str().yellow());
                     crate::audit::action("yolo:sandbox-refused", &command, None);
                     messages.push(Msg::ToolResult {
                         call_id: call.id.clone(),

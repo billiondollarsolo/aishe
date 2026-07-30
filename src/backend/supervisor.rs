@@ -39,6 +39,7 @@ pub struct PreparedRuntime {
     pub root: PathBuf,
     pub home: PathBuf,
     pub config_dir: PathBuf,
+    pub auth_config_dir: PathBuf,
     pub data_dir: PathBuf,
     pub cache_dir: PathBuf,
     pub state_dir: PathBuf,
@@ -69,6 +70,7 @@ pub fn prepare_layout() -> Result<PreparedRuntime> {
     let root = backend_dir.join("opencode");
     let home = root.join("home");
     let config_dir = root.join("config");
+    let auth_config_dir = root.join("auth-config");
     let xdg_dir = root.join("xdg");
     let xdg_config_dir = xdg_dir.join("config");
     let global_config_dir = xdg_config_dir.join("opencode");
@@ -81,6 +83,7 @@ pub fn prepare_layout() -> Result<PreparedRuntime> {
         &root,
         &home,
         &config_dir,
+        &auth_config_dir,
         &config_dir.join("plugins"),
         &xdg_dir,
         &xdg_config_dir,
@@ -115,6 +118,10 @@ pub fn prepare_layout() -> Result<PreparedRuntime> {
         &runtime_version,
     )?);
     changed_paths.extend(seed_dependency_free_plugin_loader(
+        &auth_config_dir,
+        &runtime_version,
+    )?);
+    changed_paths.extend(seed_dependency_free_plugin_loader(
         &global_config_dir,
         &runtime_version,
     )?);
@@ -140,6 +147,7 @@ pub fn prepare_layout() -> Result<PreparedRuntime> {
         root,
         home,
         config_dir,
+        auth_config_dir,
         data_dir,
         cache_dir,
         state_dir,
@@ -470,7 +478,9 @@ pub fn smoke_test(manager: &RuntimeManager) -> Result<()> {
         npm: "@ai-sdk/openai-compatible".into(),
         base_url: "http://127.0.0.1:9/v1".into(),
         requires_auth: false,
+        oauth_provider: None,
         price: None,
+        reasoning_effort: None,
     };
     prepared.config_json = serde_json::to_string(&super::opencode::config::generated_config(
         &prepared.plugin_path,
@@ -539,7 +549,6 @@ pub fn spawn_opencode(
         .env("OPENCODE_CONFIG_DIR", &prepared.config_dir)
         .env("OPENCODE_CONFIG_CONTENT", &prepared.config_json)
         .env("OPENCODE_DISABLE_PROJECT_CONFIG", "1")
-        .env("OPENCODE_DISABLE_DEFAULT_PLUGINS", "1")
         .env("OPENCODE_DISABLE_EXTERNAL_SKILLS", "1")
         .env("OPENCODE_DISABLE_AUTOUPDATE", "1")
         .env("OPENCODE_DISABLE_MODELS_FETCH", "1")
@@ -550,6 +559,9 @@ pub fn spawn_opencode(
         .env("AISHE_BRIDGE_URL", bridge_url)
         .env("AISHE_BRIDGE_TOKEN", bridge_token)
         .env("NO_COLOR", "1");
+    if !prepared_uses_oauth(&prepared.config_json) {
+        command.env("OPENCODE_DISABLE_DEFAULT_PLUGINS", "1");
+    }
     if let Some(api_key) = provider_api_key {
         command.env(PROVIDER_KEY_ENV, api_key);
     }
@@ -567,6 +579,23 @@ pub fn spawn_opencode(
     command
         .spawn()
         .with_context(|| format!("starting managed OpenCode at {}", binary.display()))
+}
+
+/// Generated provider config is the only input here; never inspect OAuth token
+/// contents merely to decide whether the pinned built-in hooks must load.
+fn prepared_uses_oauth(config_json: &str) -> bool {
+    let Ok(config) = serde_json::from_str::<serde_json::Value>(config_json) else {
+        return false;
+    };
+    config
+        .get("enabled_providers")
+        .and_then(serde_json::Value::as_array)
+        .is_some_and(|enabled| {
+            enabled
+                .iter()
+                .filter_map(serde_json::Value::as_str)
+                .any(|provider| matches!(provider, "openai" | "xai"))
+        })
 }
 
 fn verify_smoke_tool_policy(url: &str, password: &str, directory: &Path) -> Result<()> {
@@ -620,7 +649,7 @@ fn verify_smoke_tool_policy(url: &str, password: &str, directory: &Path) -> Resu
     }
 }
 
-fn copy_safe_environment(command: &mut Command) {
+pub(crate) fn copy_safe_environment(command: &mut Command) {
     for name in [
         "PATH",
         "LANG",
@@ -792,6 +821,11 @@ fn read_bootstrap() -> Result<SupervisorBootstrap> {
     }
     if bootstrap.provider.requires_auth && bootstrap.api_key.is_none() {
         anyhow::bail!("backend bootstrap omitted the required provider credential");
+    }
+    if let Some(oauth) = bootstrap.provider.oauth_provider.as_deref() {
+        if !matches!(oauth, "openai" | "xai") || bootstrap.provider.provider_id != oauth {
+            anyhow::bail!("backend bootstrap contains an invalid OAuth provider binding");
+        }
     }
     if let Some(key) = bootstrap.api_key.as_deref() {
         crate::credentials::validate_secret(key)?;

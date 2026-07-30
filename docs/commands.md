@@ -26,6 +26,7 @@ aishe mode [suggest|auto|yolo]      show or set the interaction mode
 aishe scope [workspace|host]        show or set the next agent execution scope
 aishe network [allow|deny]          show or set workspace-agent network access
 aishe output [focus|compact|detailed]  show or set agent transcript density
+aishe reasoning [auto|none|low|medium|high|xhigh|max]  reasoning effort
 aishe model [NAME]                  show or set the model (for the active provider)
 aishe provider [anthropic|openai]   show or set the provider
 aishe provider test [--live] [--json]  validate the active provider
@@ -101,6 +102,20 @@ aishe auth path
 When the profile is omitted, the active provider's user-config profile is used.
 Project overlays never choose a credential-writing target.
 
+OpenAI and xAI subscription OAuth uses Aishe's isolated, pinned OpenCode
+runtime and a separate private token store:
+
+```sh
+aishe auth login openai              # browser locally; device flow over SSH
+aishe auth login openai --headless   # force device authorization
+aishe auth login xai --browser       # force the local loopback flow
+aishe auth status xai --json         # no access/refresh token material
+aishe auth logout xai [--yes]
+```
+
+API keys have precedence over OAuth. OAuth is accepted only for the exact
+official `api.openai.com` and `api.x.ai` endpoints.
+
 ## Primary slash commands
 
 The standalone Aishe shell prints a one-line `/help` hint at startup. `/help`
@@ -108,8 +123,10 @@ and `aishe commands` show the same compact index:
 
 ```text
 /help       command index
-/status     model, mode, scope, output, and live spend
+/status     model, mode, scope, spend, and audit state/path
 /usage      live token and cost totals for this shell
+/log        last 20 audit events and tool actions
+/reasoning  current provider reasoning effort
 /details    expand/shrink agent work for following turns
 /settings   interactive settings editor
 /reset      fresh conversation; old session is retained

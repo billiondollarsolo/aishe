@@ -109,6 +109,18 @@ pub const SERVICES: &[Service] = &[
         auth_required: true,
         help: "Any endpoint implementing Responses or Chat Completions.",
     },
+    Service {
+        key: "xai",
+        label: "xAI",
+        family: Family::OpenAiCompatible,
+        base_url: "https://api.x.ai",
+        model: "grok-4.5",
+        key_env: "XAI_API_KEY",
+        credential: "xai",
+        transport: "responses",
+        auth_required: true,
+        help: "Grok through xAI Responses; supports API keys or SuperGrok OAuth.",
+    },
 ];
 
 pub fn find(key: &str) -> Option<&'static Service> {

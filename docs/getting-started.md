@@ -2,7 +2,7 @@
 
 This page walks through your first session with aishe.
 
-## 1. Save an API key
+## 1. Authenticate a provider
 
 Aishe keeps API keys out of ordinary config using an AWS CLI-style private
 credentials file. Pick the provider you want and enter its key through the
@@ -12,6 +12,14 @@ hidden prompt:
 aishe auth set anthropic
 # or
 aishe auth set openai
+```
+
+OpenAI ChatGPT Plus/Pro and xAI SuperGrok subscriptions can use OAuth instead:
+
+```sh
+aishe auth login openai             # device authorization is automatic over SSH
+# or
+aishe auth login xai
 ```
 
 `aishe setup` can do this step for you. Environment variables remain supported
@@ -43,7 +51,7 @@ It asks for:
 - on Linux, a bubblewrap functional check and an explicit offer to install the
   package when it is missing,
 - the provider/service and safety profile,
-- for an OpenAI-compatible provider, the **service** (OpenAI, Groq, OpenRouter,
+- for an OpenAI-compatible provider, the **service** (OpenAI, xAI, Groq, OpenRouter,
   Together, Ollama, or a custom endpoint) and the **API endpoint (base URL)**,
   pre-filled from the chosen service,
 - a saved credential profile, hidden key entry, or environment-only workflow,

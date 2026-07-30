@@ -174,6 +174,7 @@ pub fn run_turn(
 
     // Provider-turn authorization and every proxy tool require this foreground
     // lease. It is deliberately established before submit.
+    let audit_turn_id = new_turn_id();
     let cancelled = Arc::new(AtomicBool::new(false));
     let worker = ToolWorker::start(
         control,
@@ -189,6 +190,7 @@ pub fn run_turn(
             price,
             baseline_spent_usd: baseline_spent_usd.unwrap_or(0.0),
         },
+        audit_turn_id.clone(),
         config.clone(),
         Arc::clone(&cancelled),
         streams_tool_output(&options.output),
@@ -199,15 +201,45 @@ pub fn run_turn(
     // pre-admission. Once prompt_async is attempted, every error is
     // conservatively treated as admitted so fallback cannot duplicate provider
     // cost or effects.
-    let handle = backend
-        .submit(PromptRequest {
-            session: session.clone(),
-            text: prompt.to_string(),
-            mode: options.mode,
-            max_output_tokens: (config.backend.max_output_tokens > 0)
-                .then_some(config.backend.max_output_tokens),
-        })
-        .map_err(classify_submit_failure)?;
+    let handle = match backend.submit(PromptRequest {
+        session: session.clone(),
+        text: prompt.to_string(),
+        mode: options.mode,
+        max_output_tokens: (config.backend.max_output_tokens > 0)
+            .then_some(config.backend.max_output_tokens),
+    }) {
+        Ok(handle) => handle,
+        Err(error) => {
+            audit_managed_event(
+                config,
+                &options,
+                &session,
+                &audit_turn_id,
+                None,
+                "ai_request",
+                serde_json::json!({ "prompt": prompt, "admitted": false }),
+            );
+            audit_managed_error(
+                config,
+                &options,
+                &session,
+                &audit_turn_id,
+                None,
+                &error.to_string(),
+                started_at.elapsed().as_millis(),
+                false,
+            );
+            return Err(classify_submit_failure(error));
+        }
+    };
+    audit_managed_request(
+        config,
+        &options,
+        &session,
+        &audit_turn_id,
+        &handle.message_id,
+        prompt,
+    );
 
     let monitor_done = Arc::new(AtomicBool::new(false));
     let monitor_finished = Arc::clone(&monitor_done);
@@ -232,9 +264,18 @@ pub fn run_turn(
             // turn running in the background.
             cancelled.store(true, Ordering::SeqCst);
             let _ = client.abort(&session);
-            TurnFailure::Admitted(anyhow::anyhow!(
-                "starting managed-turn interrupt monitor: {error}"
-            ))
+            let error = anyhow::anyhow!("starting managed-turn interrupt monitor: {error}");
+            audit_managed_error(
+                config,
+                &options,
+                &session,
+                &audit_turn_id,
+                Some(&handle.message_id),
+                &error.to_string(),
+                started_at.elapsed().as_millis(),
+                true,
+            );
+            TurnFailure::Admitted(error)
         })?;
 
     let mut renderer = options
@@ -249,12 +290,40 @@ pub fn run_turn(
     monitor_done.store(true, Ordering::SeqCst);
     let _ = monitor.join();
     drop(worker);
-    let events = events_result.map_err(TurnFailure::Admitted)?;
+    let events = match events_result {
+        Ok(events) => events,
+        Err(error) => {
+            audit_managed_error(
+                config,
+                &options,
+                &session,
+                &audit_turn_id,
+                Some(&handle.message_id),
+                &error.to_string(),
+                started_at.elapsed().as_millis(),
+                true,
+            );
+            return Err(TurnFailure::Admitted(error));
+        }
+    };
+    audit_managed_events(
+        config,
+        &options,
+        &session,
+        &audit_turn_id,
+        &handle.message_id,
+        &events,
+    );
     if cancelled.load(Ordering::SeqCst) {
-        crate::audit::action(
-            "agent:abort",
-            &format!("backend=opencode session={}", session.id),
-            Some(130),
+        audit_managed_error(
+            config,
+            &options,
+            &session,
+            &audit_turn_id,
+            Some(&handle.message_id),
+            "agent turn interrupted; provider and tool processes were cancelled",
+            started_at.elapsed().as_millis(),
+            true,
         );
         return Err(TurnFailure::Admitted(anyhow::anyhow!(
             "agent turn interrupted; provider and tool processes were cancelled"
@@ -265,6 +334,16 @@ pub fn run_turn(
         AgentEvent::Failed { error } => Some(error),
         _ => None,
     }) {
+        audit_managed_error(
+            config,
+            &options,
+            &session,
+            &audit_turn_id,
+            Some(&handle.message_id),
+            &format!("{} ({})", error.message, error.code),
+            started_at.elapsed().as_millis(),
+            true,
+        );
         return Err(TurnFailure::Admitted(anyhow::anyhow!(
             "{} ({})",
             error.message,
@@ -272,14 +351,18 @@ pub fn run_turn(
         )));
     }
     let text = collect_text(&events);
+    let reasoning = collect_reasoning(&events);
     let usage = collect_usage(&events);
-    crate::audit::action(
-        "agent:turn",
-        &format!(
-            "backend=opencode session={} mode={:?} scope={:?}",
-            session.id, options.mode, options.scope
-        ),
-        Some(0),
+    audit_managed_response(
+        config,
+        &options,
+        &session,
+        &audit_turn_id,
+        &handle.message_id,
+        &text,
+        &reasoning,
+        &usage,
+        started_at.elapsed().as_millis(),
     );
     Ok(TurnOutcome {
         session_id: session.id,
@@ -326,6 +409,229 @@ fn collect_text(events: &[AgentEvent]) -> String {
         .collect()
 }
 
+fn collect_reasoning(events: &[AgentEvent]) -> String {
+    events
+        .iter()
+        .filter_map(|event| match event {
+            AgentEvent::ReasoningDelta { text } => Some(text.as_str()),
+            _ => None,
+        })
+        .collect()
+}
+
+fn audit_managed_request(
+    config: &Config,
+    options: &TurnOptions,
+    session: &super::BackendSession,
+    turn_id: &str,
+    message_id: &str,
+    prompt: &str,
+) {
+    audit_managed_event(
+        config,
+        options,
+        session,
+        turn_id,
+        Some(message_id),
+        "ai_request",
+        serde_json::json!({ "prompt": prompt }),
+    );
+}
+
+#[allow(clippy::too_many_arguments)]
+fn audit_managed_response(
+    config: &Config,
+    options: &TurnOptions,
+    session: &super::BackendSession,
+    turn_id: &str,
+    message_id: &str,
+    response: &str,
+    reasoning: &str,
+    usage: &UsageDelta,
+    duration_ms: u128,
+) {
+    let mut fields = serde_json::json!({
+        "response": response,
+        "tokens_in": usage.input_tokens,
+        "tokens_out": usage.output_tokens,
+        "reasoning_tokens": usage.reasoning_tokens,
+        "cache_read_tokens": usage.cache_read_tokens,
+        "cache_write_tokens": usage.cache_write_tokens,
+        "cost_usd": usage.cost_usd,
+        "duration_ms": duration_ms,
+    });
+    if !reasoning.is_empty() {
+        fields["reasoning"] = serde_json::Value::String(reasoning.to_string());
+    }
+    audit_managed_event(
+        config,
+        options,
+        session,
+        turn_id,
+        Some(message_id),
+        "ai_response",
+        fields,
+    );
+}
+
+#[allow(clippy::too_many_arguments)]
+fn audit_managed_error(
+    config: &Config,
+    options: &TurnOptions,
+    session: &super::BackendSession,
+    turn_id: &str,
+    message_id: Option<&str>,
+    error: &str,
+    duration_ms: u128,
+    admitted: bool,
+) {
+    audit_managed_event(
+        config,
+        options,
+        session,
+        turn_id,
+        message_id,
+        "ai_error",
+        serde_json::json!({
+            "error": error,
+            "duration_ms": duration_ms,
+            "admitted": admitted,
+        }),
+    );
+}
+
+fn audit_managed_event(
+    config: &Config,
+    options: &TurnOptions,
+    session: &super::BackendSession,
+    turn_id: &str,
+    message_id: Option<&str>,
+    kind: &str,
+    fields: serde_json::Value,
+) {
+    if !crate::audit::is_active() {
+        return;
+    }
+    let mut record = serde_json::json!({
+        "backend": "opencode",
+        "turn_id": turn_id,
+        "provider": config.aishe.provider,
+        "model": config.active_model(),
+        "mode": options.mode,
+        "scope": options.scope,
+        "network": options.network,
+        "backend_session": session.id,
+        "message_id": message_id,
+        "workspace": session.workspace,
+    });
+    if let (Some(record), Some(fields)) = (record.as_object_mut(), fields.as_object()) {
+        record.extend(fields.clone());
+    }
+    crate::audit::event(kind, record);
+}
+
+fn audit_managed_events(
+    config: &Config,
+    options: &TurnOptions,
+    session: &super::BackendSession,
+    turn_id: &str,
+    message_id: &str,
+    events: &[AgentEvent],
+) {
+    if !crate::audit::is_active() {
+        return;
+    }
+    for event in events {
+        let (kind, fields) = match event {
+            AgentEvent::SessionCreated { session_id } => (
+                "agent_event",
+                serde_json::json!({ "event": "session_created", "created_session": session_id }),
+            ),
+            AgentEvent::Diff { diff } => (
+                "file_change",
+                serde_json::json!({ "path": diff.path, "patch": diff.patch }),
+            ),
+            AgentEvent::TodoUpdated { items } => (
+                "agent_event",
+                serde_json::json!({ "event": "todo_updated", "items": items }),
+            ),
+            AgentEvent::SubagentStarted {
+                parent,
+                child,
+                agent,
+            } => (
+                "agent_event",
+                serde_json::json!({
+                    "event": "subagent_started",
+                    "parent": parent,
+                    "child": child,
+                    "agent": agent,
+                }),
+            ),
+            AgentEvent::SubagentCompleted { child, result } => (
+                "agent_event",
+                serde_json::json!({
+                    "event": "subagent_completed",
+                    "child": child,
+                    "result": result,
+                }),
+            ),
+            AgentEvent::Compacted => ("agent_event", serde_json::json!({ "event": "compacted" })),
+            AgentEvent::WaitingForApproval { request } => (
+                "agent_event",
+                serde_json::json!({ "event": "waiting_for_approval", "request": request }),
+            ),
+            AgentEvent::WaitingForUser { request } => (
+                "agent_event",
+                serde_json::json!({ "event": "waiting_for_user", "request": request }),
+            ),
+            AgentEvent::Reconnecting { attempt } => (
+                "agent_event",
+                serde_json::json!({ "event": "reconnecting", "attempt": attempt }),
+            ),
+            AgentEvent::Reconciled => ("agent_event", serde_json::json!({ "event": "reconciled" })),
+            AgentEvent::Aborted => ("agent_event", serde_json::json!({ "event": "aborted" })),
+            AgentEvent::Completed { summary } => (
+                "agent_event",
+                serde_json::json!({ "event": "completed", "summary": summary }),
+            ),
+            AgentEvent::ToolFailed { call_id, error } => (
+                "agent_event",
+                serde_json::json!({
+                    "event": "tool_failed",
+                    "call_id": call_id,
+                    "error": error,
+                }),
+            ),
+            AgentEvent::Failed { error } => (
+                "agent_event",
+                serde_json::json!({ "event": "failed", "error": error }),
+            ),
+            AgentEvent::Connected
+            | AgentEvent::UserPromptAccepted { .. }
+            | AgentEvent::ReasoningStarted
+            | AgentEvent::ReasoningDelta { .. }
+            | AgentEvent::ReasoningCompleted
+            | AgentEvent::TextDelta { .. }
+            | AgentEvent::TextCompleted { .. }
+            | AgentEvent::ToolQueued { .. }
+            | AgentEvent::ToolStarted { .. }
+            | AgentEvent::ToolOutput { .. }
+            | AgentEvent::ToolCompleted { .. }
+            | AgentEvent::Usage { .. } => continue,
+        };
+        audit_managed_event(
+            config,
+            options,
+            session,
+            turn_id,
+            Some(message_id),
+            kind,
+            fields,
+        );
+    }
+}
+
 fn collect_usage(events: &[AgentEvent]) -> UsageDelta {
     let mut total = UsageDelta::default();
     for usage in events.iter().filter_map(|event| match event {
@@ -368,6 +674,18 @@ pub fn current_shell_id() -> Result<String> {
     Ok(bytes.iter().map(|byte| format!("{byte:02x}")).collect())
 }
 
+fn new_turn_id() -> String {
+    let mut bytes = [0u8; 16];
+    rand::rng().fill_bytes(&mut bytes);
+    format!(
+        "turn_{}",
+        bytes
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>()
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -390,10 +708,24 @@ mod tests {
             },
         ];
         assert_eq!(collect_text(&events), "Paris");
+        assert_eq!(collect_reasoning(&events), "");
         let usage = collect_usage(&events);
         assert_eq!(usage.input_tokens, 10);
         assert_eq!(usage.output_tokens, 2);
         assert_eq!(usage.cost_usd, Some(0.01));
+    }
+
+    #[test]
+    fn exposed_reasoning_deltas_are_collected_in_order() {
+        let events = vec![
+            AgentEvent::ReasoningDelta {
+                text: "inspect ".into(),
+            },
+            AgentEvent::ReasoningDelta {
+                text: "then verify".into(),
+            },
+        ];
+        assert_eq!(collect_reasoning(&events), "inspect then verify");
     }
 
     #[test]

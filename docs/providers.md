@@ -2,19 +2,19 @@
 
 Aishe configures three provider shapes:
 
-- the **Anthropic Messages API**, and
-- the official OpenAI **Responses API**, and
+- the **Anthropic Messages API**,
+- the official OpenAI and xAI **Responses APIs**, and
 - any custom **OpenAI-compatible Chat Completions API**.
 
 For normal AI turns, Aishe generates a private provider definition for its
 managed OpenCode engine. Aishe remains authoritative for the endpoint, model,
-credential profile, prices, budget, and organization restrictions. The managed
-runtime receives the resolved secret only in its provider process environment;
-model-controlled tools do not inherit it.
+credential profile, prices, budget, and organization restrictions. API keys
+enter only the provider process environment; OAuth tokens remain in the
+managed runtime's private store. Model-controlled tools inherit neither.
 
 The `[providers.openai]` block's `transport = "auto"` selects the wire format
-from `base_url`. `https://api.openai.com` uses Responses, including
-reasoning-model tool calls and their continuation items. Groq, Ollama,
+from `base_url`. `https://api.openai.com` and `https://api.x.ai` use Responses,
+including reasoning-model tool calls and their continuation items. Groq, Ollama,
 OpenRouter, Together, and other custom URLs use Chat Completions for broad
 compatibility. Set `transport = "responses"` or `"chat"` only when a gateway
 needs an explicit choice.
@@ -25,13 +25,36 @@ higher-precedence override for CI, containers, and temporary testing. Keys are
 never written to ordinary `config.toml`, generated backend config, session
 mappings, tool journals, or support bundles.
 
-During interactive Setup, Aishe calls `GET /v1/models` immediately after the
-credential step. This is a token-free credential/endpoint check and the source
+OpenAI and xAI also support subscription OAuth through Aishe's pinned private
+OpenCode runtime:
+
+```sh
+aishe auth login openai             # browser locally; device flow over SSH
+aishe auth login xai --headless     # force device flow in a VPS/container
+aishe auth status openai            # no token values are displayed
+aishe auth logout xai
+```
+
+OAuth is accepted only when the configured host exactly matches
+`api.openai.com` or `api.x.ai`; it cannot be redirected to a compatible gateway.
+The local callback flow is the default on a workstation, while Aishe
+automatically selects device authorization when SSH or a non-terminal output is
+detected. `--browser` and `--headless` explicitly select either flow. API-key
+environment variables, staged setup keys, and saved key profiles all take
+precedence over OAuth.
+
+With API-key authentication, interactive Setup calls `GET /v1/models`
+immediately after the credential step. This is a token-free
+credential/endpoint check and the source
 of the model picker. Choosing a listed model or typing an ID present anywhere
 in the full response validates it without a generation call. If a custom
 endpoint has an incomplete or unavailable catalog, a manually typed ID must
 pass one minimal generation request before Setup continues; the UI discloses
 that request first.
+
+Subscription OAuth is available only through the managed agent transport, so
+Setup accepts a model ID directly and validates it through that runtime when a
+live check is requested.
 
 ## Anthropic
 
@@ -68,6 +91,8 @@ auth_required = true
 
 ```sh
 aishe auth set openai
+# or use a ChatGPT Plus/Pro subscription:
+aishe auth login openai
 aishe
 ```
 
@@ -77,7 +102,7 @@ models such as GPT-5.6. OpenCode owns provider-native reasoning continuation and
 conversation compaction; Aishe owns the durable session mapping, tool effects,
 usage authorization, and budget.
 
-The native compatibility backend also uses `/v1/responses` with
+With an API key, the native compatibility backend also uses `/v1/responses` with
 Responses-native `max_output_tokens`, reasoning items, and stateless
 continuation. It remains available for legacy task resume and failures that
 occur before the managed engine admits a prompt.
@@ -86,6 +111,34 @@ occur before the managed engine admits a prompt.
 `https://api.openai.com/v1` form and canonicalizes the trailing `/v1` before
 appending `/v1/responses`; compatible and Anthropic endpoints receive the same
 protection against accidental `/v1/v1/...` URLs.
+
+## xAI / Grok
+
+xAI uses the OpenAI-compatible provider block but receives a first-class setup
+preset and the provider-native Responses transport:
+
+```toml
+[aishe]
+provider = "openai"
+
+[providers.openai]
+base_url = "https://api.x.ai"
+credential = "xai"
+api_key_env = "XAI_API_KEY"
+model = "grok-4.5"
+transport = "responses"
+auth_required = true
+```
+
+```sh
+aishe auth login xai                # SuperGrok; device flow is automatic over SSH
+aishe setup --service xai
+# API-key alternative: aishe auth set xai
+```
+
+The OAuth credential binds to OpenCode's exact `xai` provider identity so its
+refresh and bearer-token hooks remain active. A custom `api.x.ai`-lookalike host
+does not qualify.
 
 ## Groq
 

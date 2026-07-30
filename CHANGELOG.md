@@ -6,6 +6,38 @@ breaking changes can land in any release.
 
 ## [Unreleased]
 
+## [0.5.3] - 2026-07-30
+
+### Changed
+- `aishe auth login|logout openai|xai` now provides browser and headless/device
+  OAuth through the pinned private OpenCode runtime. Tokens stay in an isolated
+  mode-`0600` store, API keys retain precedence, exact official endpoint
+  binding prevents credential redirection, and Doctor/status never expose token
+  material. Setup includes an xAI/Grok preset and recognizes existing OAuth.
+- The README now presents Aishe as an AI-driven systems shell built on real zsh
+  and its compatibility-pinned OpenCode SDK/runtime, documents sysadmin use
+  cases and execution modes, and uses the new monochrome SVG mark. Interactive
+  startup and setup show a compact ASCII form of the same mark.
+- `aishe reasoning auto|none|low|medium|high|xhigh|max` now controls managed
+  OpenCode model reasoning options as well as the native compatibility path;
+  `/reasoning` and `aishe status` expose the current value.
+- Managed-agent auditing now records complete bounded prompts and visible
+  responses, provider-exposed reasoning, exact session/message/call identities,
+  recursively redacted tool arguments and results, real shell commands,
+  approvals, file diffs, recovery lifecycle events, duration, usage, and cost.
+  `/log` exposes the latest events, while `aishe status` reports whether audit
+  logging is active, its redaction state, and its resolved path.
+- Built-in file, web, skill, and MCP activity now uses plain text labels rather
+  than colored pictographic emoji. Managed turns suppress the legacy tool
+  printer entirely so focus mode remains under the renderer's control.
+- Prompt, warning, and autonomous-mode status output now uses plain terminal
+  glyphs rather than pictographic emoji.
+
+### Fixed
+- Rust file-tool tests now use isolated undo journals, so release qualification
+  cannot append synthetic temporary-file records to a developer or test node's
+  real undo history.
+
 ## [0.5.2] - 2026-07-30
 
 ### Added
@@ -1192,7 +1224,7 @@ breaking changes can land in any release.
   `AISHE_SKIP_ZSH=1`.
 - **Branded prompt in the zsh-PTY front-end.** When driving your real zsh in a
   PTY, aishe now shows its own prompt (`<cwd> <glyph>`, with the glyph reflecting
-  the mode (❯ suggest, » auto, ⚡ yolo), colored green/red by the last exit code,
+  the mode (❯ suggest, » auto, * yolo), colored green/red by the last exit code,
   plus a dim `model · mode` right prompt), matching the reedline front-end, so
   it's obvious you're in aishe. On by default; disable with `pty_prompt = false`
   to keep your normal zsh prompt. Only the PTY front-end is affected; the

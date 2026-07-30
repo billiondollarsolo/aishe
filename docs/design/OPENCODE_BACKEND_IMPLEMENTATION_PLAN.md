@@ -1591,7 +1591,9 @@ Setup/settings must label constrained values as `Managed by organization`.
 - Existing Aishe MCP configuration remains the user-facing source.
 - Aishe calls configured MCP servers through its current client and exposes
   approved tools through the trusted bridge.
-- OpenCode does not independently load user MCP servers or OAuth tokens.
+- OpenCode does not load user MCP servers or a user's global OpenCode token
+  store. Supported OAuth tokens are created explicitly by `aishe auth login`
+  inside Aishe's isolated managed-runtime data directory.
 - Existing Aishe/Claude-compatible skills remain discoverable through Aishe
   trust and progressive disclosure.
 - OpenCode external skills remain disabled.

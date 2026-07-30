@@ -10,6 +10,27 @@ use crate::credentials::{self, Source, Store};
 
 #[derive(Subcommand, Debug)]
 pub enum AuthCommand {
+    /// Sign in with a provider subscription through Aishe's private runtime.
+    Login {
+        /// OAuth provider: openai or xai.
+        #[arg(value_enum)]
+        provider: crate::oauth::OAuthProvider,
+        /// Use device authorization (recommended for SSH, containers, and VPS hosts).
+        #[arg(long, conflicts_with = "browser")]
+        headless: bool,
+        /// Force a local loopback-browser flow, even when SSH is detected.
+        #[arg(long, conflicts_with = "headless")]
+        browser: bool,
+    },
+    /// Remove one provider OAuth credential from Aishe's private runtime.
+    Logout {
+        /// OAuth provider: openai or xai.
+        #[arg(value_enum)]
+        provider: crate::oauth::OAuthProvider,
+        /// Skip the interactive confirmation.
+        #[arg(long)]
+        yes: bool,
+    },
     /// Save or replace a credential. Secret values are never command arguments.
     Set {
         /// Credential profile (defaults to the active provider's profile).
@@ -85,6 +106,33 @@ fn target(requested: Option<&str>) -> Result<(String, Option<ProviderConfig>)> {
 
 pub fn run(command: &AuthCommand) -> Result<u8> {
     match command {
+        AuthCommand::Login {
+            provider,
+            headless,
+            browser,
+        } => crate::oauth::login(*provider, *headless, *browser),
+        AuthCommand::Logout { provider, yes } => {
+            if !*yes {
+                if !std::io::stdin().is_terminal() {
+                    anyhow::bail!("refusing non-interactive OAuth logout without --yes");
+                }
+                let confirmed = crate::promptui::confirm(
+                    &format!("Remove Aishe OAuth credential for '{provider}'?"),
+                    false,
+                )?;
+                if confirmed != Some(true) {
+                    println!("OAuth logout cancelled");
+                    return Ok(0);
+                }
+            }
+            if crate::oauth::logout(*provider)? {
+                println!("Aishe OAuth credential for '{provider}' removed");
+                Ok(0)
+            } else {
+                eprintln!("aishe: no OAuth credential is saved for '{provider}'");
+                Ok(1)
+            }
+        }
         AuthCommand::Path => {
             println!("{}", credentials::path().display());
             Ok(0)
@@ -135,8 +183,16 @@ pub fn run(command: &AuthCommand) -> Result<u8> {
         }
         AuthCommand::Status { profile, json } => {
             let (profile, provider) = target(profile.as_deref())?;
-            let source = if let Some(provider) = provider {
-                credentials::resolve(&provider)?.source
+            let oauth_provider = provider
+                .as_ref()
+                .and_then(|provider| crate::oauth::OAuthProvider::from_base_url(&provider.base_url))
+                .or(match profile.as_str() {
+                    "openai" => Some(crate::oauth::OAuthProvider::Openai),
+                    "xai" => Some(crate::oauth::OAuthProvider::Xai),
+                    _ => None,
+                });
+            let source = if let Some(provider) = &provider {
+                credentials::resolve(provider)?.source
             } else {
                 let stored =
                     Store::load()?.is_some_and(|store| store.contains(&profile).unwrap_or(false));
@@ -151,27 +207,70 @@ pub fn run(command: &AuthCommand) -> Result<u8> {
                     }
                 }
             };
+            let oauth = oauth_provider.map(crate::oauth::status).transpose()?;
+            let oauth_available = oauth.as_ref().is_some_and(|status| status.available);
+            let selected = if source.is_available() {
+                "api_key"
+            } else if oauth_available {
+                "oauth"
+            } else {
+                "none"
+            };
             if *json {
                 println!(
                     "{}",
                     serde_json::to_string_pretty(&serde_json::json!({
                         "profile": profile,
-                        "available": source.is_available(),
+                        "available": source.is_available() || oauth_available,
+                        "api_key_available": source.is_available(),
                         "source": source,
+                        "oauth": oauth,
+                        "selected": selected,
+                        "usable": source.is_available() || oauth_available,
                         "credentials_file": credentials::path(),
                     }))?
                 );
             } else {
                 println!("profile: {profile}");
-                println!("source: {}", source.label());
-                println!("credentials file: {}", credentials::path().display());
+                println!("API key: {}", source.label());
+                if let Some(oauth) = &oauth {
+                    println!(
+                        "OAuth: {}{}",
+                        if oauth.available {
+                            "available"
+                        } else {
+                            "not saved"
+                        },
+                        if oauth.access_expired && oauth.available {
+                            " (access token will refresh on use)"
+                        } else {
+                            ""
+                        }
+                    );
+                    println!("OAuth store: {}", oauth.path.display());
+                }
+                println!("selected: {selected}");
+                println!("API key store: {}", credentials::path().display());
             }
-            Ok(if source.is_available() { 0 } else { 1 })
+            Ok(if source.is_available() || oauth_available {
+                0
+            } else {
+                1
+            })
         }
         AuthCommand::List { json } => {
             let store = Store::load()?.unwrap_or_default();
             let mut profiles: std::collections::BTreeSet<String> =
                 store.profile_names().into_iter().collect();
+            let oauth_statuses = [
+                crate::oauth::status(crate::oauth::OAuthProvider::Openai)?,
+                crate::oauth::status(crate::oauth::OAuthProvider::Xai)?,
+            ];
+            for status in &oauth_statuses {
+                if status.credential_type.is_some() {
+                    profiles.insert(status.provider.id().to_string());
+                }
+            }
             let config = Config::load_quiet().ok().flatten();
             if let Some(config) = &config {
                 profiles.insert(config.providers.anthropic.credential_profile());
@@ -181,6 +280,10 @@ pub fn run(command: &AuthCommand) -> Result<u8> {
                 .into_iter()
                 .map(|profile| {
                     let saved = store.contains(&profile).unwrap_or(false);
+                    let oauth = oauth_statuses
+                        .iter()
+                        .find(|status| status.provider.id() == profile)
+                        .is_some_and(|status| status.available);
                     let active = config.as_ref().is_some_and(|config| {
                         let provider = if config.aishe.provider == "openai" {
                             &config.providers.openai
@@ -192,6 +295,7 @@ pub fn run(command: &AuthCommand) -> Result<u8> {
                     serde_json::json!({
                         "profile": profile,
                         "saved": saved,
+                        "oauth": oauth,
                         "active": active,
                     })
                 })
@@ -201,12 +305,17 @@ pub fn run(command: &AuthCommand) -> Result<u8> {
             } else if rows.is_empty() {
                 println!("no credential profiles configured");
             } else {
-                println!("PROFILE\tSAVED\tACTIVE");
+                println!("PROFILE\tAPI KEY\tOAUTH\tACTIVE");
                 for row in rows {
                     println!(
-                        "{}\t{}\t{}",
+                        "{}\t{}\t{}\t{}",
                         row["profile"].as_str().unwrap_or(""),
                         if row["saved"].as_bool().unwrap_or(false) {
+                            "yes"
+                        } else {
+                            "no"
+                        },
+                        if row["oauth"].as_bool().unwrap_or(false) {
                             "yes"
                         } else {
                             "no"

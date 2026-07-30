@@ -28,15 +28,44 @@ pub struct ToolWorker {
     thread: Option<JoinHandle<()>>,
 }
 
+#[derive(Clone, Debug)]
+struct ToolAuditContext {
+    turn_id: String,
+    provider: String,
+    model: String,
+}
+
+impl ToolAuditContext {
+    fn new(config: &Config, turn_id: String) -> Self {
+        Self {
+            turn_id,
+            provider: config.aishe.provider.clone(),
+            model: config.active_model().to_string(),
+        }
+    }
+
+    fn generated(config: &Config) -> Self {
+        Self::new(config, format!("turn_{:032x}", rand::random::<u128>()))
+    }
+}
+
 impl ToolWorker {
     pub fn start(
         client: SupervisorClient,
         registration: LeaseRegistration,
+        audit_turn_id: String,
         config: Config,
         cancel: Arc<AtomicBool>,
         stream_output: bool,
     ) -> Result<Self> {
-        Self::start_with_output(client, registration, config, cancel, stream_output)
+        Self::start_with_output(
+            client,
+            registration,
+            ToolAuditContext::new(&config, audit_turn_id),
+            config,
+            cancel,
+            stream_output,
+        )
     }
 
     /// Start a validation worker without echoing model-requested commands or
@@ -48,12 +77,20 @@ impl ToolWorker {
         config: Config,
         cancel: Arc<AtomicBool>,
     ) -> Result<Self> {
-        Self::start_with_output(client, registration, config, cancel, false)
+        Self::start_with_output(
+            client,
+            registration,
+            ToolAuditContext::generated(&config),
+            config,
+            cancel,
+            false,
+        )
     }
 
     fn start_with_output(
         client: SupervisorClient,
         registration: LeaseRegistration,
+        audit: ToolAuditContext,
         config: Config,
         cancel: Arc<AtomicBool>,
         stream_output: bool,
@@ -79,7 +116,13 @@ impl ToolWorker {
                                 message_id: work.message_id.clone(),
                                 call_id: work.call_id.clone(),
                             };
-                            if worker_client.started(&started).is_err() {
+                            if let Err(error) = worker_client.started(&started) {
+                                audit_tool_bridge_error(
+                                    &work,
+                                    &audit,
+                                    "start_delivery_failed",
+                                    &error,
+                                );
                                 break;
                             }
                             let result = execute(
@@ -87,9 +130,12 @@ impl ToolWorker {
                                 &skills,
                                 &mcp,
                                 &mut approvals,
-                                &cancel,
-                                &denied_environment,
-                                stream_output,
+                                &ExecutionContext {
+                                    cancel: &cancel,
+                                    denied_environment: &denied_environment,
+                                    stream_output,
+                                    audit: &audit,
+                                },
                             );
                             let completion = ToolCompletion {
                                 lease_id: worker_identity.lease_id.clone(),
@@ -100,7 +146,13 @@ impl ToolWorker {
                                 output: Value::String(result.output),
                                 exit_code: result.exit_code,
                             };
-                            if worker_client.complete(&completion).is_err() {
+                            if let Err(error) = worker_client.complete(&completion) {
+                                audit_tool_bridge_error_from_completion(
+                                    &completion,
+                                    &audit,
+                                    "result_delivery_failed",
+                                    &error,
+                                );
                                 break;
                             }
                         }
@@ -174,60 +226,274 @@ struct ExecutionResult {
     exit_code: Option<i32>,
 }
 
+struct ExecutionContext<'a> {
+    cancel: &'a Arc<AtomicBool>,
+    denied_environment: &'a HashSet<String>,
+    stream_output: bool,
+    audit: &'a ToolAuditContext,
+}
+
 fn execute(
     work: &ToolWork,
     skills: &crate::skills::SkillRegistry,
     mcp: &crate::mcp::McpRegistry,
     approvals: &mut HashSet<String>,
-    cancel: &Arc<AtomicBool>,
-    denied_environment: &HashSet<String>,
-    stream_output: bool,
+    context: &ExecutionContext<'_>,
 ) -> ExecutionResult {
-    if cancel.load(Ordering::SeqCst) {
-        return failure("Agent tool execution was cancelled before it started.");
+    let started_at = std::time::Instant::now();
+    audit_tool_call(work, context.audit);
+    if context.cancel.load(Ordering::SeqCst) {
+        let result = failure("Agent tool execution was cancelled before it started.");
+        audit_tool_result(
+            work,
+            context.audit,
+            &result,
+            started_at.elapsed().as_millis(),
+        );
+        return result;
     }
     let mut work = work.clone();
-    if let Err(message) = approve(&mut work, approvals) {
-        return failure(&message);
+    if let Err(message) = approve(&mut work, approvals, context.audit) {
+        let result = failure(&message);
+        audit_tool_result(
+            &work,
+            context.audit,
+            &result,
+            started_at.elapsed().as_millis(),
+        );
+        return result;
     }
-    if cancel.load(Ordering::SeqCst) {
-        return failure("Agent tool execution was cancelled before it started.");
+    if context.cancel.load(Ordering::SeqCst) {
+        let result = failure("Agent tool execution was cancelled before it started.");
+        audit_tool_result(
+            &work,
+            context.audit,
+            &result,
+            started_at.elapsed().as_millis(),
+        );
+        return result;
     }
     let result = match work.tool.as_str() {
-        "run_command" => run_command(&work, cancel, denied_environment, stream_output),
+        "run_command" => run_command(
+            &work,
+            context.cancel,
+            context.denied_environment,
+            context.stream_output,
+        ),
         "read_file" | "write_file" | "edit_file" | "list_dir" => run_file_tool(&work),
-        "search_files" => search_files(&work, denied_environment, cancel),
-        "fetch_url" => fetch_url(&work, cancel),
+        "search_files" => search_files(&work, context.denied_environment, context.cancel),
+        "fetch_url" => fetch_url(&work, context.cancel),
         "use_skill" => use_skill(&work, skills),
-        "mcp_call" => mcp_call(&work, mcp, cancel),
+        "mcp_call" => mcp_call(&work, mcp, context.cancel),
         "ask_user" => ask_user(&work),
-        "apply_patch" => apply_patch(&work, denied_environment, cancel),
+        "apply_patch" => apply_patch(&work, context.denied_environment, context.cancel),
         _ => failure("unknown foreground tool"),
     };
-    crate::audit::action(
-        &format!("agent:{}", work.tool),
-        &crate::redact::redact(&format!(
-            "{}:{}:{}",
-            work.session_id, work.message_id, work.call_id
-        )),
-        result.exit_code,
+    audit_tool_result(
+        &work,
+        context.audit,
+        &result,
+        started_at.elapsed().as_millis(),
     );
     result
+}
+
+fn audit_tool_call(work: &ToolWork, audit: &ToolAuditContext) {
+    if !crate::audit::is_active() {
+        return;
+    }
+    crate::audit::event(
+        "tool_call",
+        tool_audit_fields(
+            work,
+            audit,
+            serde_json::json!({
+                "status": "started",
+                "args": work.args,
+            }),
+        ),
+    );
+}
+
+fn audit_tool_result(
+    work: &ToolWork,
+    audit: &ToolAuditContext,
+    result: &ExecutionResult,
+    duration_ms: u128,
+) {
+    if !crate::audit::is_active() {
+        return;
+    }
+    crate::audit::event(
+        "tool_result",
+        tool_audit_fields(
+            work,
+            audit,
+            serde_json::json!({
+                "status": if result.success { "completed" } else { "failed" },
+                "args": work.args,
+                "success": result.success,
+                "exit": result.exit_code,
+                "duration_ms": duration_ms,
+                "output": crate::audit::bounded_output(&result.output),
+            }),
+        ),
+    );
+
+    // Preserve the long-standing `action` record for shell-command runbooks and
+    // existing log filters, but record the actual command instead of the old
+    // opaque session:message:call tuple.
+    if work.tool == "run_command" {
+        crate::audit::action(
+            "agent:run_command",
+            &tool_action_label(work),
+            result.exit_code,
+        );
+    }
+}
+
+fn tool_audit_fields(work: &ToolWork, audit: &ToolAuditContext, extra: Value) -> Value {
+    let mut fields = serde_json::json!({
+        "backend": "opencode",
+        "turn_id": audit.turn_id,
+        "provider": audit.provider,
+        "model": audit.model,
+        "backend_session": work.session_id,
+        "message_id": work.message_id,
+        "call_id": work.call_id,
+        "tool": work.tool,
+        "mode": work.mode,
+        "scope": work.scope,
+        "network": work.network,
+        "workspace": work.workspace,
+        "command": work.args.get("command").and_then(Value::as_str),
+        "path": work.args.get("path").and_then(Value::as_str),
+    });
+    if let (Some(fields), Some(extra)) = (fields.as_object_mut(), extra.as_object()) {
+        fields.extend(extra.clone());
+    }
+    fields
+}
+
+fn tool_action_label(work: &ToolWork) -> String {
+    if let Some(command) = work.args.get("command").and_then(Value::as_str) {
+        return command.to_string();
+    }
+    if let Some(path) = work.args.get("path").and_then(Value::as_str) {
+        return format!("{} {path}", work.tool);
+    }
+    if work.tool == "fetch_url" {
+        return format!(
+            "fetch_url {}",
+            work.args.get("url").and_then(Value::as_str).unwrap_or("")
+        );
+    }
+    if work.tool == "mcp_call" {
+        return format!(
+            "mcp_call {}/{}",
+            work.args
+                .get("server")
+                .and_then(Value::as_str)
+                .unwrap_or(""),
+            work.args.get("tool").and_then(Value::as_str).unwrap_or("")
+        );
+    }
+    work.tool.clone()
+}
+
+fn audit_tool_approval(
+    work: &ToolWork,
+    audit: &ToolAuditContext,
+    phase: &str,
+    decision: Option<&str>,
+    reason: Option<&str>,
+) {
+    if !crate::audit::is_active() {
+        return;
+    }
+    crate::audit::event(
+        "tool_approval",
+        tool_audit_fields(
+            work,
+            audit,
+            serde_json::json!({
+                "phase": phase,
+                "decision": decision,
+                "reason": reason,
+            }),
+        ),
+    );
+}
+
+fn audit_tool_bridge_error(
+    work: &ToolWork,
+    audit: &ToolAuditContext,
+    event: &str,
+    error: &anyhow::Error,
+) {
+    crate::audit::event(
+        "agent_event",
+        tool_audit_fields(
+            work,
+            audit,
+            serde_json::json!({
+                "event": event,
+                "error": error.to_string(),
+            }),
+        ),
+    );
+}
+
+fn audit_tool_bridge_error_from_completion(
+    completion: &ToolCompletion,
+    audit: &ToolAuditContext,
+    event: &str,
+    error: &anyhow::Error,
+) {
+    crate::audit::event(
+        "agent_event",
+        serde_json::json!({
+            "backend": "opencode",
+            "turn_id": audit.turn_id,
+            "provider": audit.provider,
+            "model": audit.model,
+            "backend_session": completion.session_id,
+            "message_id": completion.message_id,
+            "call_id": completion.call_id,
+            "event": event,
+            "error": error.to_string(),
+        }),
+    );
 }
 
 fn approve(
     work: &mut ToolWork,
     approvals: &mut HashSet<String>,
+    audit: &ToolAuditContext,
 ) -> std::result::Result<(), String> {
     match work.mode {
         Mode::Suggest => {
-            return Err("Suggest mode does not execute model-requested host tools.".into())
+            audit_tool_approval(
+                work,
+                audit,
+                "decision",
+                Some("denied"),
+                Some("suggest mode cannot execute tools"),
+            );
+            return Err("Suggest mode does not execute model-requested host tools.".into());
         }
         Mode::Yolo => return Ok(()),
         Mode::Auto => {}
     }
     if !work.interactive || !std::io::stdin().is_terminal() {
         if auto_approval_reason(work).is_some() {
+            audit_tool_approval(
+                work,
+                audit,
+                "decision",
+                Some("unavailable"),
+                Some("interactive approval required"),
+            );
             return Err("Auto mode requires an interactive approval for this tool.".into());
         }
         return Ok(());
@@ -237,9 +503,11 @@ fn approve(
             return Ok(());
         };
         if approvals.contains(&approval_key(work)) {
+            audit_tool_approval(work, audit, "decision", Some("session_rule"), Some(&reason));
             return Ok(());
         }
         let detail = approval_detail(work);
+        audit_tool_approval(work, audit, "requested", None, Some(&reason));
         println!();
         println!("  ┌─ agent action ─────────────────────────────────");
         println!(
@@ -263,12 +531,17 @@ fn approve(
         let _ = std::io::stdout().flush();
         let mut answer = String::new();
         if std::io::stdin().read_line(&mut answer).is_err() {
+            audit_tool_approval(work, audit, "decision", Some("error"), Some(&reason));
             return Err("Could not read the approval decision.".into());
         }
         match answer.trim().to_ascii_lowercase().as_str() {
-            "o" | "once" | "y" | "yes" => return Ok(()),
+            "o" | "once" | "y" | "yes" => {
+                audit_tool_approval(work, audit, "decision", Some("once"), Some(&reason));
+                return Ok(());
+            }
             "s" | "session" | "always" => {
                 approvals.insert(approval_key(work));
+                audit_tool_approval(work, audit, "decision", Some("session_rule"), Some(&reason));
                 return Ok(());
             }
             "e" | "edit" if work.tool == "run_command" => {
@@ -279,11 +552,22 @@ fn approve(
                     || command.trim().is_empty()
                     || command.len() > 65_536
                 {
+                    audit_tool_approval(
+                        work,
+                        audit,
+                        "decision",
+                        Some("invalid_edit"),
+                        Some(&reason),
+                    );
                     return Err("Edited command is empty or invalid.".into());
                 }
                 work.args["command"] = Value::String(command.trim_end().to_string());
+                audit_tool_approval(work, audit, "decision", Some("edited"), Some(&reason));
             }
-            _ => return Err("User declined the agent action.".into()),
+            _ => {
+                audit_tool_approval(work, audit, "decision", Some("denied"), Some(&reason));
+                return Err("User declined the agent action.".into());
+            }
         }
     }
 }
@@ -636,7 +920,7 @@ fn run_file_tool(work: &ToolWork) -> ExecutionResult {
     } else {
         (work.tool.as_str(), work.args.clone())
     };
-    let (_, output) = crate::tools::execute(name, &args, &work.workspace, false, false);
+    let (_, output) = crate::tools::execute_silent(name, &args, &work.workspace, false, false);
     ExecutionResult {
         success: !output.starts_with("Error") && !output.starts_with("User declined"),
         output,
@@ -896,7 +1180,8 @@ fn fetch_url(work: &ToolWork, cancel: &Arc<AtomicBool>) -> ExecutionResult {
     if work.network == NetworkPolicy::Deny {
         return failure("Network access is denied for this workspace tool lease.");
     }
-    let (_, output) = crate::tools::execute("fetch_url", &work.args, &work.workspace, false, false);
+    let (_, output) =
+        crate::tools::execute_silent("fetch_url", &work.args, &work.workspace, false, false);
     ExecutionResult {
         success: !output.starts_with("Error"),
         output,
@@ -987,6 +1272,14 @@ fn failure(message: &str) -> ExecutionResult {
 mod tests {
     use super::*;
 
+    fn audit_context() -> ToolAuditContext {
+        ToolAuditContext {
+            turn_id: "turn_test".into(),
+            provider: "openai".into(),
+            model: "test-model".into(),
+        }
+    }
+
     fn work(workspace: &Path, tool: &str, args: Value) -> ToolWork {
         ToolWork {
             session_id: "ses_test".into(),
@@ -1039,13 +1332,14 @@ mod tests {
             interactive: false,
         };
         let mut approvals = HashSet::new();
-        assert!(approve(&mut item, &mut approvals).is_err());
+        let audit = audit_context();
+        assert!(approve(&mut item, &mut approvals, &audit).is_err());
         item.mode = Mode::Auto;
-        assert!(approve(&mut item, &mut approvals).is_ok());
+        assert!(approve(&mut item, &mut approvals, &audit).is_ok());
         item.args = serde_json::json!({"command":"rm -rf /tmp/aishe-do-not-run"});
-        assert!(approve(&mut item, &mut approvals).is_err());
+        assert!(approve(&mut item, &mut approvals, &audit).is_err());
         item.mode = Mode::Yolo;
-        assert!(approve(&mut item, &mut approvals).is_ok());
+        assert!(approve(&mut item, &mut approvals, &audit).is_ok());
     }
 
     #[test]
@@ -1070,9 +1364,12 @@ mod tests {
             &crate::skills::SkillRegistry::default(),
             &crate::mcp::McpRegistry::default(),
             &mut HashSet::new(),
-            &Arc::new(AtomicBool::new(false)),
-            &HashSet::new(),
-            false,
+            &ExecutionContext {
+                cancel: &Arc::new(AtomicBool::new(false)),
+                denied_environment: &HashSet::new(),
+                stream_output: false,
+                audit: &audit_context(),
+            },
         );
         assert!(result.success, "{}", result.output);
         assert_eq!(
@@ -1098,13 +1395,41 @@ mod tests {
             &crate::skills::SkillRegistry::default(),
             &crate::mcp::McpRegistry::default(),
             &mut approvals,
-            &cancel,
-            &HashSet::new(),
-            false,
+            &ExecutionContext {
+                cancel: &cancel,
+                denied_environment: &HashSet::new(),
+                stream_output: false,
+                audit: &audit_context(),
+            },
         );
         assert!(!result.success);
         assert!(result.output.contains("cancelled"));
         assert!(!root.join("must-not-exist").exists());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn audit_tool_fields_keep_durable_identity_and_real_command() {
+        let root =
+            std::env::temp_dir().join(format!("aishe-tool-audit-fields-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let item = work(
+            &root,
+            "run_command",
+            serde_json::json!({"command":"printf audit-proof"}),
+        );
+        let fields = tool_audit_fields(
+            &item,
+            &audit_context(),
+            serde_json::json!({"status":"started"}),
+        );
+        assert_eq!(fields["turn_id"], "turn_test");
+        assert_eq!(fields["backend_session"], "ses_test");
+        assert_eq!(fields["message_id"], "msg_test");
+        assert_eq!(fields["call_id"], "call_test");
+        assert_eq!(fields["tool"], "run_command");
+        assert_eq!(fields["command"], "printf audit-proof");
+        assert_eq!(tool_action_label(&item), "printf audit-proof");
         std::fs::remove_dir_all(root).unwrap();
     }
 

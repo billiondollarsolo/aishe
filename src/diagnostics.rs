@@ -324,15 +324,27 @@ pub fn inspect(version: &str, options: &Options) -> Report {
     }
 
     let profile = provider_config.credential_profile();
-    checks.push(match crate::credentials::resolve(provider_config) {
-        Ok(resolved) if resolved.secret().is_some() => Check::new(
+    let credential_resolution = crate::credentials::resolve(provider_config);
+    let oauth_resolution = match &credential_resolution {
+        Ok(resolved) if resolved.secret().is_none() => crate::oauth::active_provider(&config),
+        _ => Ok(None),
+    };
+    checks.push(match (&credential_resolution, &oauth_resolution) {
+        (Ok(resolved), _) if resolved.secret().is_some() => Check::new(
             "provider.credential",
             Status::Pass,
             Severity::Warning,
             format!("API key: available ({})", resolved.source.label()),
             format!("profile '{profile}'; the value is never displayed or written to diagnostics"),
         ),
-        Ok(_) if !provider_config.requires_auth() => Check::new(
+        (Ok(_), Ok(Some(oauth_provider))) => Check::new(
+            "provider.credential",
+            Status::Pass,
+            Severity::Warning,
+            format!("OAuth: available ({oauth_provider})"),
+            "tokens stay in Aishe's private managed-runtime store and are never written to diagnostics",
+        ),
+        (Ok(_), Ok(None)) if !provider_config.requires_auth() => Check::new(
             "provider.credential",
             Status::Pass,
             Severity::Warning,
@@ -342,18 +354,21 @@ pub fn inspect(version: &str, options: &Options) -> Report {
                 provider_config.base_url
             ),
         ),
-        Ok(_) => Check::new(
+        (Ok(_), Ok(None)) => Check::new(
             "provider.credential",
             Status::Warn,
             Severity::Warning,
             format!("API key: credential profile '{profile}' is not saved"),
             format!(
-                "LLM features are disabled; run `aishe auth set {profile}` or set ${} \
-                 for an environment override",
+                "LLM features are disabled; run `aishe auth set {profile}`, `aishe auth login {}`, \
+                 or set ${} for an environment override",
+                crate::oauth::OAuthProvider::from_base_url(&provider_config.base_url)
+                    .map(|provider| provider.id())
+                    .unwrap_or("openai"),
                 provider_config.api_key_env
             ),
         ),
-        Err(error) => Check::new(
+        (Err(error), _) | (_, Err(error)) => Check::new(
             "provider.credential",
             Status::Fail,
             Severity::Warning,
@@ -374,6 +389,13 @@ pub fn inspect(version: &str, options: &Options) -> Report {
                 Status::Warn,
                 format!(
                     "{provider}: reachable but key rejected [HTTP {status}] ({})",
+                    probe.endpoint
+                ),
+            ),
+            Reach::ManagedOAuth(oauth_provider) => (
+                Status::Pass,
+                format!(
+                    "{provider}: {oauth_provider} OAuth ready; endpoint validation runs through managed OpenCode ({})",
                     probe.endpoint
                 ),
             ),

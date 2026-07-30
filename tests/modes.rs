@@ -91,6 +91,8 @@ fn named_tool_call(name: &str, args: serde_json::Value) -> ToolCall {
 fn yolo_file_tools_write_and_read() {
     let dir = std::env::temp_dir().join(format!("aishe-ft-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
+    let prior_journal = std::env::var_os("AISHE_UNDO_JOURNAL");
+    std::env::set_var("AISHE_UNDO_JOURNAL", dir.join("undo.jsonl"));
     let target = dir.join("out.txt");
     // Turn 1: write_file with exact content. Turn 2: read it back. Turn 3: finish.
     let provider = MockProvider::with_completions(
@@ -143,6 +145,10 @@ fn yolo_file_tools_write_and_read() {
         std::fs::read_to_string(&target).unwrap(),
         "exact-content-42"
     );
+    match prior_journal {
+        Some(path) => std::env::set_var("AISHE_UNDO_JOURNAL", path),
+        None => std::env::remove_var("AISHE_UNDO_JOURNAL"),
+    }
     std::fs::remove_dir_all(&dir).ok();
 }
 

@@ -23,6 +23,7 @@ pub mod index;
 pub mod integration;
 pub mod mcp;
 pub mod modes;
+pub mod oauth;
 pub mod overlay;
 pub mod policy;
 pub mod profiles;

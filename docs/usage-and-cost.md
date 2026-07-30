@@ -124,7 +124,7 @@ Behavior:
 Example of a budget stopping a yolo run:
 
 ```
-  ⚡ create files ...: echo a.txt > a.txt && ...
+  * create files ...: echo a.txt > a.txt && ...
   budget reached (~$0.50 ≥ $0.50); raise budget_usd to continue
   369 in · 109 out · 1 req · ~$0.0001
 ```

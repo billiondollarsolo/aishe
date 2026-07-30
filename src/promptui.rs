@@ -15,6 +15,15 @@ const WARNING: &str = "1;33";
 const SUCCESS: &str = "1;32";
 const ERROR: &str = "1;31";
 
+/// Monochrome terminal approximation of the README's circuit-brain mark.
+/// ASCII only: terminals never need an emoji font or colored pictograph.
+pub const ASCII_LOGO: &str = r#"  .-----. .-----.
+ /  o--| |--o  \
+|  /---+ +---\  |
+|  \---+ +---/  |
+ \__o--| |--o__/
+       AISHE"#;
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum MenuResult {
     Selected(usize),
@@ -135,6 +144,10 @@ pub fn header(title: &str, description: &str, note: &str) {
     );
     print_wrapped("  ", description, None);
     print_wrapped("  ", note, Some(MUTED));
+}
+
+pub fn brand() {
+    println!("\n{ASCII_LOGO}");
 }
 
 pub fn section(title: &str) {

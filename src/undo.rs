@@ -78,15 +78,21 @@ pub(crate) fn set_test_journal(p: Option<PathBuf>) {
 /// `$XDG_DATA_HOME/aishe/undo.jsonl`.
 pub fn journal_path() -> Option<PathBuf> {
     #[cfg(test)]
-    if let Some(p) = TEST_JOURNAL.with(|t| t.borrow().clone()) {
-        return Some(p);
+    {
+        // Unit tests must be hermetic even when a future test reaches a file
+        // tool without first installing an explicit journal. Falling through
+        // here would append synthetic records to the developer's real journal.
+        TEST_JOURNAL.with(|t| t.borrow().clone())
     }
-    if let Ok(p) = std::env::var("AISHE_UNDO_JOURNAL") {
-        if !p.is_empty() {
-            return Some(PathBuf::from(p));
+    #[cfg(not(test))]
+    {
+        if let Ok(p) = std::env::var("AISHE_UNDO_JOURNAL") {
+            if !p.is_empty() {
+                return Some(PathBuf::from(p));
+            }
         }
+        crate::config::data_root().map(|d| d.join("aishe").join("undo.jsonl"))
     }
-    crate::config::data_root().map(|d| d.join("aishe").join("undo.jsonl"))
 }
 
 /// Record a file change made by a built-in tool. `before` is the prior contents

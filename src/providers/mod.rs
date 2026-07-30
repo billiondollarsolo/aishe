@@ -567,6 +567,9 @@ pub enum Reach {
     Up(u16),
     /// Reachable, but the API key was rejected (401/403).
     Unauthorized(u16),
+    /// OAuth is injected and refreshed inside the managed OpenCode transport,
+    /// so a direct anonymous `/models` probe would be misleading.
+    ManagedOAuth(crate::oauth::OAuthProvider),
     /// No HTTP response at all — connection refused, DNS failure, or timeout.
     Down(String),
 }
@@ -602,6 +605,25 @@ pub fn probe(config: &Config, name: &str) -> Probe {
                 }
             }
         };
+        if key.is_none() {
+            match crate::oauth::active_provider(config) {
+                Ok(Some(provider)) => {
+                    return Probe {
+                        name: name.to_string(),
+                        endpoint: crate::provider_catalog::normalize_base_url(&p.base_url),
+                        reach: Reach::ManagedOAuth(provider),
+                    }
+                }
+                Ok(None) => {}
+                Err(error) => {
+                    return Probe {
+                        name: name.to_string(),
+                        endpoint: crate::provider_catalog::normalize_base_url(&p.base_url),
+                        reach: Reach::Down(crate::redact::redact(&error.to_string())),
+                    }
+                }
+            }
+        }
         (
             p.base_url.clone(),
             key.map(|k| ("Authorization".to_string(), format!("Bearer {k}"))),

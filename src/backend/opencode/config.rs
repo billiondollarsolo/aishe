@@ -18,7 +18,12 @@ pub struct ProviderSpec {
     pub npm: String,
     pub base_url: String,
     pub requires_auth: bool,
+    /// Exact built-in OpenCode OAuth hook required for this launch. `None`
+    /// means the provider uses an Aishe API key or needs no authentication.
+    pub oauth_provider: Option<String>,
     pub price: Option<crate::usage::Price>,
+    /// OpenCode model option. `None` lets the provider/model choose its default.
+    pub reasoning_effort: Option<String>,
 }
 
 /// Contains a secret and therefore deliberately does not implement Debug or
@@ -34,14 +39,23 @@ impl ProviderLaunch {
         let provider = active_provider(config);
         let resolved = crate::credentials::resolve(provider)?;
         let api_key = resolved.into_secret();
-        if provider.requires_auth() && api_key.is_none() {
+        let oauth_provider = if provider.requires_auth() && api_key.is_none() {
+            crate::oauth::active_provider(config)?
+        } else {
+            None
+        };
+        if provider.requires_auth() && api_key.is_none() && oauth_provider.is_none() {
             let profile = provider.credential_profile();
+            let oauth_hint = crate::oauth::OAuthProvider::from_base_url(&provider.base_url)
+                .map(|provider| format!(" or `aishe auth login {provider}`"))
+                .unwrap_or_default();
             anyhow::bail!(
-                "API key missing for credential profile '{profile}' — run `aishe auth set {profile}`"
+                "authentication missing for credential profile '{profile}' — run \
+                 `aishe auth set {profile}`{oauth_hint}"
             );
         }
         Ok(Self {
-            spec: ProviderSpec::from_aishe(config)?,
+            spec: ProviderSpec::from_aishe_with_oauth(config, oauth_provider)?,
             api_key,
         })
     }
@@ -49,6 +63,13 @@ impl ProviderLaunch {
 
 impl ProviderSpec {
     pub fn from_aishe(config: &Config) -> Result<Self> {
+        Self::from_aishe_with_oauth(config, None)
+    }
+
+    fn from_aishe_with_oauth(
+        config: &Config,
+        oauth_provider: Option<crate::oauth::OAuthProvider>,
+    ) -> Result<Self> {
         let provider = active_provider(config);
         validate_model(&provider.model)?;
         let base = crate::provider_catalog::normalize_base_url(&provider.base_url);
@@ -57,11 +78,23 @@ impl ProviderSpec {
             anyhow::bail!("active provider base URL must use HTTP or HTTPS");
         }
         let official_openai = parsed.host_str() == Some("api.openai.com");
+        let official_xai = parsed.host_str() == Some("api.x.ai");
         let local = crate::config::is_loopback_url(&base);
         let anthropic = config.aishe.provider == "anthropic";
+        if matches!(oauth_provider, Some(crate::oauth::OAuthProvider::Openai)) && !official_openai {
+            anyhow::bail!("OpenAI OAuth can only be bound to api.openai.com");
+        }
+        if matches!(oauth_provider, Some(crate::oauth::OAuthProvider::Xai)) && !official_xai {
+            anyhow::bail!("xAI OAuth can only be bound to api.x.ai");
+        }
         let responses =
             provider.transport == "responses" || (provider.transport == "auto" && official_openai);
-        let (provider_id, npm) = if anthropic {
+        let (provider_id, npm) = if let Some(oauth) = oauth_provider {
+            match oauth {
+                crate::oauth::OAuthProvider::Openai => ("openai", "@ai-sdk/openai"),
+                crate::oauth::OAuthProvider::Xai => ("xai", "@ai-sdk/xai"),
+            }
+        } else if anthropic {
             ("aishe-anthropic", "@ai-sdk/anthropic")
         } else if local {
             ("aishe-local", "@ai-sdk/openai-compatible")
@@ -77,8 +110,16 @@ impl ProviderSpec {
             model_id: provider.model.clone(),
             npm: npm.into(),
             base_url: append_v1(&base),
-            requires_auth: provider.requires_auth(),
-            price: crate::usage::price_for(&provider.model, &config.pricing),
+            requires_auth: provider.requires_auth() && oauth_provider.is_none(),
+            oauth_provider: oauth_provider.map(|provider| provider.id().to_string()),
+            price: if oauth_provider.is_some() {
+                None
+            } else {
+                crate::usage::price_for(&provider.model, &config.pricing)
+            },
+            reasoning_effort: (!anthropic)
+                .then(|| explicit_reasoning_effort(&config.aishe.reasoning_effort))
+                .flatten(),
         })
     }
 }
@@ -171,11 +212,16 @@ pub fn generated_config(plugin_path: &Path, provider: Option<&ProviderSpec>) -> 
                     provider.model_id.clone(): {
                         "id": provider.model_id,
                         "name": provider.model_id,
-                        "tool_call": true
+                        "tool_call": true,
+                        "options": {}
                     }
                 }
             }
         });
+        if let Some(effort) = &provider.reasoning_effort {
+            config["provider"][&provider.provider_id]["models"][&provider.model_id]["options"]
+                ["reasoningEffort"] = Value::String(effort.clone());
+        }
         if let Some(price) = provider.price {
             config["provider"][&provider.provider_id]["models"][&provider.model_id]["cost"] =
                 serde_json::json!({"input":price.input,"output":price.output});
@@ -207,6 +253,15 @@ fn active_provider(config: &Config) -> &ProviderConfig {
 
 fn append_v1(base: &str) -> String {
     format!("{}/v1", base.trim_end_matches('/'))
+}
+
+fn explicit_reasoning_effort(value: &str) -> Option<String> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "none" | "low" | "medium" | "high" | "xhigh" | "max" => {
+            Some(value.trim().to_ascii_lowercase())
+        }
+        _ => None,
+    }
 }
 
 fn bridge_permissions(subagents: bool) -> Value {
@@ -393,6 +448,41 @@ mod tests {
     }
 
     #[test]
+    fn oauth_uses_exact_builtin_provider_identity_without_api_key_injection() {
+        for (oauth, base_url, provider_id, npm) in [
+            (
+                crate::oauth::OAuthProvider::Openai,
+                "https://api.openai.com",
+                "openai",
+                "@ai-sdk/openai",
+            ),
+            (
+                crate::oauth::OAuthProvider::Xai,
+                "https://api.x.ai",
+                "xai",
+                "@ai-sdk/xai",
+            ),
+        ] {
+            let mut aishe = Config::default();
+            aishe.aishe.provider = "openai".into();
+            aishe.providers.openai.base_url = base_url.into();
+            aishe.providers.openai.model = "oauth-model".into();
+            let spec = ProviderSpec::from_aishe_with_oauth(&aishe, Some(oauth)).unwrap();
+            assert_eq!(spec.provider_id, provider_id);
+            assert_eq!(spec.npm, npm);
+            assert!(!spec.requires_auth);
+            assert_eq!(spec.oauth_provider.as_deref(), Some(provider_id));
+            assert!(spec.price.is_none());
+            let generated =
+                generated_config(Path::new("/private/aishe-plugin.mjs"), Some(&spec)).unwrap();
+            assert!(generated["provider"][provider_id]["options"]
+                .get("apiKey")
+                .is_none());
+            assert_eq!(generated["enabled_providers"][0], provider_id);
+        }
+    }
+
+    #[test]
     fn generated_config_isolated_and_default_deny_for_every_agent() {
         let spec = spec_for("openai", "https://api.openai.com/v1", "responses", true);
         let config = generated_config(Path::new("/private/aishe-plugin.mjs"), Some(&spec)).unwrap();
@@ -438,5 +528,28 @@ mod tests {
             "allow"
         );
         assert_eq!(config["agent"]["aishe-yolo"]["permission"]["task"], "allow");
+    }
+
+    #[test]
+    fn managed_openai_reasoning_effort_is_an_explicit_model_option() {
+        let mut aishe = Config::default();
+        aishe.aishe.provider = "openai".into();
+        aishe.aishe.reasoning_effort = "HIGH".into();
+        aishe.providers.openai.base_url = "https://api.openai.com".into();
+        aishe.providers.openai.transport = "responses".into();
+        aishe.providers.openai.model = "gpt-5.6-sol".into();
+        let spec = ProviderSpec::from_aishe(&aishe).unwrap();
+        assert_eq!(spec.reasoning_effort.as_deref(), Some("high"));
+        let generated =
+            generated_config(Path::new("/private/aishe-plugin.mjs"), Some(&spec)).unwrap();
+        assert_eq!(
+            generated["provider"]["aishe-openai"]["models"]["gpt-5.6-sol"]["options"]
+                ["reasoningEffort"],
+            "high"
+        );
+
+        aishe.aishe.reasoning_effort = "auto".into();
+        let spec = ProviderSpec::from_aishe(&aishe).unwrap();
+        assert_eq!(spec.reasoning_effort, None);
     }
 }

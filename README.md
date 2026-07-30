@@ -1,13 +1,20 @@
 <p align="center">
-  <img src="assets/aishe-logo.png" alt="aishe" width="420">
+  <img src="assets/aishe-logo.svg" alt="Aishe" width="128">
 </p>
 
-# aishe - AI Shell
+# aishe — an AI-driven shell
 
-**It's your shell, with an AI built in.** `aishe` runs real commands exactly like
-zsh, and treats anything that isn't a command as a plain-English request for an
-LLM — which either **suggests** a command for you to confirm or **runs
-autonomously** until the task is done.
+**It is your real shell, with an agent built into the command line.** Aishe runs
+an actual interactive zsh rather than emulating one, so aliases, plugins,
+completion, job control, history, and ordinary commands keep their native
+behavior. Input that is not a command becomes a plain-English request to the AI.
+
+The agent layer uses a private, compatibility-pinned OpenCode SDK/runtime to
+provide reasoning, tool orchestration, durable conversations, compaction, and
+subagents. Aishe remains the control plane: it owns command routing, execution
+scope, sandbox policy, approvals, credentials, budgets, terminal rendering, and
+the audit trail. The result is an AI-driven systems shell, not a chatbot placed
+beside a terminal.
 
 > Aishe is pre-1.0. Autonomous host access can make irreversible changes; use
 > workspace scope and functional Linux isolation for untrusted work, review
@@ -24,8 +31,9 @@ autonomously** until the task is done.
 # 1. Install (Linux/macOS; downloads the right prebuilt binary + verifies it)
 curl -fsSL https://raw.githubusercontent.com/billiondollarsolo/aishe/main/install.sh | sh
 
-# 2. Save a provider key through a hidden prompt (or let setup ask)
-aishe auth set anthropic                   # or: aishe auth set openai
+# 2. Authenticate with an API key or provider subscription
+aishe auth set anthropic                   # hidden API-key prompt
+aishe auth login openai                    # ChatGPT Plus/Pro OAuth alternative
 
 # 3. Configure, validate, and take the optional guided tour
 aishe setup
@@ -51,67 +59,84 @@ of a shell. Prefix it with `?` to force the natural-language route
 
 ## Features
 
-- 🐚 **Your real zsh, untouched.** aishe wraps your actual interactive zsh, so
+- **Your real zsh, untouched.** Aishe wraps your actual interactive zsh, so
   your plugins, completions, prompt, aliases, key bindings, and job control all
   work unmodified — it's not a shell reimplementation.
-- 🧠 **A real agent engine, still one shell.** Every AI turn uses Aishe's
+- **A real agent engine, still one shell.** Every AI turn uses Aishe's
   private, exact-version-pinned OpenCode backend for durable conversations,
   reasoning, compaction, and subagents. It starts lazily on authenticated
   loopback, never opens another TUI, and never touches direct zsh commands.
-- 🗣️ **Plain English → commands.** Anything that isn't a real command is routed to
+- **Plain English to commands.** Anything that isn't a real command is routed to
   the model. A leading `?` forces a question; a leading `!` forces a raw command.
-- 🎚️ **Three modes.** `suggest` (propose, you confirm), `auto` (run safe commands,
+- **Three modes.** `suggest` (propose, you confirm), `auto` (run safe commands,
   confirm risky ones), and `yolo` (an agentic loop that runs, reads output, and
   iterates). Cycle them live with Shift-Tab.
-- 🛡️ **A safety gate you control.** A deterministic, quote/subshell/substitution-aware,
+- **A safety gate you control.** A deterministic, quote/subshell/substitution-aware,
   path-aware screen flags destructive commands (`rm -rf /`, recursive `chmod`/`chown`
   on system paths, danger hidden in `$(…)` or `<(…)`, …) and asks before running them —
   and when it can't tell what a line would actually run, it asks instead of assuming.
   It's a best-effort screen for mistakes, not a security boundary; the sandbox below
   is the real isolation.
-- ↩️ **Reversible.** Built-in file edits are journaled (`aishe undo`), and — on
+- **Reversible.** Built-in file edits are journaled (`aishe undo`), and — on
   **Linux with bubblewrap** — you can preview a command or a whole agentic session
   against a throwaway copy (`aishe dry-run "<cmd>"`, `yolo_dry_run`) to see the exact
   diff, then apply or discard. On macOS the sandbox/overlay isn't available, so yolo
   falls back to the best-effort policy gate (`aishe doctor` shows what's active).
-- 🔎 **Semantic history.** Recall past commands by meaning, not substring:
+- **Semantic history.** Recall past commands by meaning, not substring:
   `aishe history search "the docker run with the prometheus volume"` (or **Ctrl-X
   Ctrl-R** in the shell). Embeddings go to an OpenAI-compatible `/v1/embeddings`
   endpoint, and Ollama serves embedding models on that same route — so
   `ollama pull nomic-embed-text` plus `embedding_model = "nomic-embed-text"`
   keeps the whole feature on your machine. The index is a local file either way.
   See [docs/providers.md](docs/providers.md#embeddings-fully-offline-semantic-history).
-- 🕘 **Persistent shell history.** Aishe preserves your existing zsh/Oh My Zsh
+- **Persistent shell history.** Aishe preserves your existing zsh/Oh My Zsh
   history setup. On minimal accounts without one, its own timestamped history
   log backs native Up-arrow, `Ctrl-R`, and history expansion across concurrent
   sessions, restarts, and binary upgrades.
-- 🩹 **Fix-the-last-command.** When a command fails, **Ctrl-X Ctrl-F** asks the
+- **Fix the last command.** When a command fails, **Ctrl-X Ctrl-F** asks the
   model for a correction (optionally re-running the failed read-only command to
   read its real error) and pre-fills it for review.
-- 🔌 **Any provider, validated.** Anthropic and OpenAI-compatible endpoints —
-  OpenAI, Groq, Ollama (local), OpenRouter, Together — with live model discovery
+- **Providers, validated.** Anthropic and OpenAI-compatible endpoints —
+  OpenAI, xAI/Grok, Groq, Ollama (local), OpenRouter, Together — with live model discovery
   and capability checks. A managed turn is never duplicated after admission or
   a side effect; interruption is durable and resumable.
-- 🧰 **Agentic tools.** In yolo, the model edits files precisely, fetches web pages,
+- **Agentic tools.** In yolo, the model edits files precisely, fetches web pages,
   and calls your [MCP servers](docs/mcp.md) and [skills](docs/custom-commands-and-skills.md).
-- 💸 **Cost-aware.** Per-call and whole-session token/cost metering with an optional
+- **Cost-aware.** Per-call and whole-session token/cost metering with an optional
   hard budget cap, plus a configurable right-prompt or below-prompt status line.
   Setup asks for exact prices when the selected model is unknown.
-- 💾 **Durable AI tasks.** Agentic sessions checkpoint before and after tool calls,
+- **Durable AI tasks.** Agentic sessions checkpoint before and after tool calls,
   so `aishe sessions` and `aishe resume` can recover interrupted work without
   blindly repeating a command that may already have run.
-- 📦 **Managed and recoverable.** Setup installs the exact checksum-pinned
+- **Managed and recoverable.** Setup installs the exact checksum-pinned
   OpenCode runtime, offers consent-gated bubblewrap installation on Linux, and
   verifies the whole path end to end. Runtime repair/rollback and a
   state-preserving category-based uninstaller are built in.
-- 🧭 **Guided setup and diagnostics.** `aishe setup`, `aishe settings`, and
+- **Guided setup and diagnostics.** `aishe setup`, `aishe settings`, and
   `aishe tour` are resumable interactive flows; `aishe doctor --json`,
   `--fix`, `--bundle`, and `--live` make problems actionable.
-- 🔒 **Private by default.** API keys live in a separate mode-`0600` shared
-  credentials file (or a higher-precedence environment override), never in
-  ordinary config; secret entry is hidden and context/log output is redacted.
-- ⚡ **Works anywhere.** `aishe -c '<line>'`, piped stdin, and a bash hook
+- **Private by default.** API keys live in a separate mode-`0600` shared
+  credentials file (or a higher-precedence environment override). OpenAI and
+  xAI OAuth tokens use the managed runtime's separate mode-`0600` store.
+  Neither appears in ordinary config, tool environments, status, or audit output.
+- **Works anywhere.** `aishe -c '<line>'`, piped stdin, and a bash hook
   (`aishe init bash`) all work without launching the interactive shell.
+
+## Built for systems work
+
+Aishe is especially useful to sysadmins, SREs, infrastructure engineers, and
+operators who already live in a shell. Ask it to inspect a failing service,
+correlate logs, find disk pressure, verify ports and DNS, operate containers,
+edit configuration, or carry a deployment through its validation checks. The
+agent sees command results and can iterate instead of stopping after one guess.
+
+That power stays visible and governable. Aishe shows the command associated
+with each action in its compact status, expands the full transcript with Ctrl-O
+or `/details`, exposes live spend and policy with `/status`, and can record
+prompts, responses, tool calls, approvals, file changes, outputs, usage, and
+errors in a redacted JSONL audit trail. Start in `suggest`, use `auto` for
+approval-gated work, and grant `yolo` host scope only when the task truly needs
+unrestricted system access.
 
 ## Install
 
@@ -150,7 +175,9 @@ arm64) — no Rust toolchain or separate OpenCode installation is needed.
 ## Quickstart
 
 ```sh
-aishe auth set anthropic              # or openai; hidden, saved privately
+aishe auth set anthropic              # API key; hidden and saved privately
+# or: aishe auth login openai         # ChatGPT Plus/Pro subscription
+# or: aishe auth login xai            # SuperGrok subscription
 aishe setup                           # guided, resumable configuration
 aishe                                 # launch your real zsh with aishe active
 ```
@@ -177,9 +204,11 @@ README writes these paths in their Linux form.
 
 ## Contents
 
+- [Built for systems work](#built-for-systems-work)
 - [Modes](#modes)
 - [Front-ends](#front-ends)
 - [Providers](#providers)
+- [Reasoning effort](#reasoning-effort)
 - [Commands and settings](#commands-and-settings)
 - [Custom commands and skills](#custom-commands-and-skills)
 - [Token usage and cost](#token-usage-and-cost)
@@ -193,9 +222,9 @@ README writes these paths in their Linux form.
 
 | Mode      | Glyph | Behavior                                                                    |
 |-----------|:-----:|-----------------------------------------------------------------------------|
-| `suggest` |  `❯`  | Default. The LLM proposes a command; you confirm with `[Enter] / [e]dit / [n]`. |
-| `auto`    |  `»`  | Commands the safety gate deems safe run immediately; anything it flags or cannot resolve stops and asks (see below). |
-| `yolo`    |  `⚡`  | Agentic loop: the model runs commands, reads output, and iterates until done. |
+| `suggest` |  `❯`  | Default and least privileged. The model answers or proposes a command; it cannot invoke agent tools. You review before anything runs. |
+| `auto`    |  `»`  | Approval-gated agent. Safe actions can run; risky, unresolved, or broader actions stop for confirmation. |
+| `yolo`    |  `*`  | Autonomous agent loop. After one scope grant for the shell, it runs tools, reads results, and iterates until done or interrupted. |
 
 The gate has **three** outcomes, not two. *Safe* (nothing matched) runs. *Could
 not verify* — the gate couldn't work out what a segment would actually run —
@@ -255,10 +284,10 @@ There are three ways to use aishe. Details in
 
 Aishe remains the source of truth for provider, model, credential profile,
 prices, and budgets, then generates an isolated provider configuration for its
-managed agent engine. It supports the **Anthropic Messages API**, OpenAI's
-**Responses API**, and **OpenAI-compatible Chat Completions APIs**. The official
-OpenAI URL uses Responses; Groq, Ollama, OpenRouter, Together, and other custom
-`base_url` values use Chat Completions.
+managed agent engine. It supports the **Anthropic Messages API**, OpenAI and
+xAI **Responses APIs**, and **OpenAI-compatible Chat Completions APIs**. The
+official OpenAI and xAI URLs use Responses; Groq, Ollama, OpenRouter, Together,
+and other custom `base_url` values use Chat Completions.
 
 ```toml
 [providers.openai]
@@ -271,9 +300,41 @@ model = "openai/gpt-oss-120b"
 API keys are read from the named private credential profile; the environment
 variable remains a higher-precedence override. They are never stored in
 `config.toml`, backend config, session files, tool journals, or model-controlled
-tool environments. See [docs/providers.md](docs/providers.md) for per-provider
+tool environments. OpenAI and xAI can instead use provider subscription OAuth:
+
+```sh
+aishe auth login openai             # local browser; device flow is automatic over SSH
+aishe auth login xai --headless     # explicit VPS/container device flow
+aishe auth status openai            # reports provenance, never token values
+aishe auth logout xai
+```
+
+OAuth is endpoint-bound (`api.openai.com` or `api.x.ai`) and available only to
+the managed OpenCode transport. An API key environment override or saved key
+takes precedence when both exist. See [docs/providers.md](docs/providers.md) for per-provider
 setup and [managed agent backend](docs/managed-agent-backend.md) for the process
 boundary.
+
+## Reasoning effort
+
+Reasoning depth is independent of transcript detail. Ctrl-O and `/details`
+change what Aishe displays; `aishe reasoning` changes how much reasoning the
+provider is asked to perform. `auto` is the default and leaves the choice to the
+model. An explicit setting is passed through the managed OpenCode model options:
+
+```sh
+aishe reasoning                 # show the current value
+aishe reasoning low             # favor latency and lower reasoning use
+aishe reasoning medium          # balanced
+aishe reasoning max             # deepest supported effort
+aishe reasoning auto            # return control to the model/provider
+```
+
+Accepted values are `auto`, `none`, `low`, `medium`, `high`, `xhigh`, and
+`max`. Support is model-dependent. OpenAI's Luna, Terra, and Sol GPT-5.6 models
+support this range; other providers may ignore or reject levels they do not
+implement. `/reasoning` shows the active value, and `/status` includes it with
+the model, mode, scope, output density, spend, and audit state.
 
 ## Commands and settings
 
@@ -285,7 +346,7 @@ aishe zsh              the same, explicitly
 aishe -c '<line>'      run one line non-interactively and exit
 aishe setup            guided/resumable configuration; --verify checks only
 aishe settings         interactive settings hub with source/provenance
-aishe auth ...         save/status/list/remove private credential profiles
+aishe auth ...         API-key and OpenAI/xAI OAuth login/status/logout
 aishe tour             resumable first-session walkthrough
 aishe init zsh|bash    print the shell-hook snippet (for ~/.zshrc / ~/.bashrc)
 aishe doctor           diagnostics; --probe/--live/--json/--fix/--bundle
@@ -309,21 +370,22 @@ aishe models [--provider NAME]       list endpoint models
 aishe scope [workspace|host]         set the next agent execution scope
 aishe network [allow|deny]           set workspace-agent network capability
 aishe output [focus|compact|detailed] set persistent agent transcript density
+aishe reasoning [auto|none|low|medium|high|xhigh|max] set reasoning effort
 aishe status [--json]                show active session settings and spend
 
 aishe mode|model|provider [VALUE]   show or set (and persist) a setting
 aishe config|mcp|commands|skills    print the active config / registries
 ```
 
-`aishe mode`, `model`, and `provider` show the current value with no argument or
-save a new one to your config with one (`aishe mode auto`). You can also override
+`aishe mode`, `model`, `provider`, and `reasoning` show the current value with no
+argument or save a new one to your config with one (`aishe reasoning high`). You can also override
 per session with the `--mode`/`--model`/`--provider` flags or `$AISHE_MODE`, and
 in the interactive shell **Shift-Tab** cycles the mode. Full reference in
 [docs/commands.md](docs/commands.md).
 
 Aishe advertises `/help` when its standalone shell starts. The primary set is
-`/status`, `/usage`, `/details`, `/settings`, `/reset`, and `/commands`; the last
-one also lists installed custom commands. See
+`/status`, `/usage`, `/log`, `/reasoning`, `/details`, `/settings`, `/reset`, and
+`/commands`; the last one also lists installed custom commands. See
 [docs/commands.md](docs/commands.md#primary-slash-commands).
 
 Agent output defaults to `focus`: one transient, width-bounded row shows the
@@ -453,10 +515,13 @@ each request. To avoid leaking credentials, it **redacts likely secrets**
 (tokens, passwords, URL credentials) from that block before sending. This is on
 by default (`redact_secrets`).
 
-An optional **audit log** records every AI call, response (with token usage), and
-AI-initiated command (with exit code) as JSONL. It is off by default; enable it
-with `[logging] enabled = true` or `AISHE_LOG=1`. Logged text is redacted too.
-See [docs/logging.md](docs/logging.md).
+An optional **audit log** records a bounded, redacted managed-agent trail as
+JSONL: prompts, visible responses and provider-exposed reasoning, tool arguments
+and results, exact commands, approvals, file diffs, lifecycle/recovery events,
+durable identities, timing, usage, and cost. It is off by default; enable it with
+`[logging] enabled = true` or `AISHE_LOG=1`. Use `/log` for the latest events,
+`aishe log --json` for the raw records, and `/status` to confirm the resolved
+path and redaction state. See [docs/logging.md](docs/logging.md).
 
 ## Startup file (.aishrc)
 
@@ -489,6 +554,7 @@ mode = "suggest"               # suggest | auto | yolo
 provider = "anthropic"         # anthropic | openai
 pty_prompt = true              # branded prompt in the zsh-PTY shell
 structured = "schema"          # schema | json | prompt
+reasoning_effort = "auto"      # auto | none | low | medium | high | xhigh | max
 stream = false                 # stream answers token-by-token
 show_usage = true              # print token/cost after each model call
 budget_usd = 0.0               # 0 = unlimited

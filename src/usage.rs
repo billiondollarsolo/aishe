@@ -62,6 +62,13 @@ pub struct Price {
 /// are best-effort estimates; override exact figures in `[pricing]`.
 const BUILTIN_PRICES: &[(&str, Price)] = &[
     (
+        "grok-4.5",
+        Price {
+            input: 2.0,
+            output: 6.0,
+        },
+    ),
+    (
         "claude-opus",
         Price {
             input: 15.0,

@@ -206,7 +206,7 @@ def main():
                     risk,
                     rc,
                     detail.replace("|", "\\|"),
-                    "✅" if ok else "❌",
+                    "PASS" if ok else "FAIL",
                 )
             )
     print(

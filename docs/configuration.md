@@ -75,7 +75,7 @@ brevity. Read `~/.config/aishe/...` as `<config>/...` and
 | `structured` | string | `schema` | Suggest output format: `schema`, `json`, or `prompt`. |
 | `stream` | bool | `false` | Stream answers token-by-token (suggest and auto). |
 | `hook_timeout_secs` | integer | `60` | Maximum wait (1–600 seconds) for a prompt-blocking native shell hook. Explicit `aishe suggest` calls wait through the provider's retry policy and are not signal-truncated; exhausted provider failures return exit 1. |
-| `reasoning_effort` | string | `auto` | Provider reasoning effort; `auto` lets the model/endpoint choose. |
+| `reasoning_effort` | string | `auto` | Provider reasoning effort: `auto`, `none`, `low`, `medium`, `high`, `xhigh`, or `max`. Managed OpenCode turns receive an explicit model option unless this is `auto`; support remains model-dependent. |
 | `failure_hints` | bool | `true` | Show one concise recovery hint after an interactive command fails. |
 | `context_exclude` | array | `[]` | Optional context section IDs to omit. Manage with `aishe context`. |
 | `show_usage` | bool | `true` | Record and display model-call usage in the interactive session. |
@@ -161,7 +161,9 @@ Then `cd ~proj` and `cd ~proj/app` work.
 
 ## `[logging]` section (optional)
 
-Audit logging of AI calls, responses, and AI-initiated actions. Off by default.
+Audit logging of AI calls, complete bounded visible responses, managed tool
+lifecycle records, approvals, file diffs, usage/cost, and AI-initiated actions.
+Off by default because it persists conversation and command history.
 
 | Field | Type | Default | Meaning |
 |-------|------|---------|---------|
@@ -233,6 +235,21 @@ overwrite the file. New files and atomic temporary files are mode `0600`, and
 the containing config directory is mode `0700`. Aishe rejects symlinked,
 non-regular, oversized, malformed, or group/world-readable credential files;
 `aishe doctor --fix` can repair permissions without printing or changing a key.
+
+OpenAI and xAI subscription OAuth is deliberately separate:
+
+```sh
+aishe auth login openai              # ChatGPT Plus/Pro
+aishe auth login xai --headless      # SuperGrok; device flow for SSH/VPS
+aishe auth status openai --json
+aishe auth logout openai
+```
+
+Tokens are written by the pinned runtime to Aishe's isolated OpenCode
+`auth.json`, which is also required to be a current-user-owned regular file
+with mode `0600`. Status and diagnostics deserialize only the provider, type,
+and expiration metadata; they never serialize access or refresh tokens. API
+keys keep precedence over OAuth when both are available.
 
 ## `[pricing."<model>"]` (optional)
 
