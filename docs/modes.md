@@ -178,7 +178,10 @@ automatically). Streaming is not used for the scriptable suggest `-c` path.
 Model answers are rendered as markdown: headers, lists, emphasis, tables, inline
 code, and fenced code blocks. Fenced code blocks are syntax-highlighted by
 language (for example ```python or ```rust), using a bundled set of syntaxes and
-a dark theme. This applies to both streamed and non-streamed answers.
+a dark theme. Blocks get a subdued language label and closing rule without
+prefixing copied source lines. This applies to both native and managed OpenCode
+answers, whether streamed or buffered. Redirected output, `TERM=dumb`, and
+`NO_COLOR` preserve the original Markdown structure without ANSI styling.
 
 Highlighting is built in by default. To build a smaller binary without the
 bundled syntaxes, compile with `--no-default-features`; code blocks then render as

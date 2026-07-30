@@ -128,6 +128,27 @@ pub fn display_safe(s: &str) -> String {
     out
 }
 
+/// Escape terminal controls while preserving the line structure of prose.
+///
+/// Model answers and Markdown need real newlines to remain readable. Carriage
+/// returns, escape sequences, and the other C0/C1 controls are still rendered
+/// visibly so untrusted output cannot repaint the terminal. Tabs are expanded
+/// to four spaces for deterministic wrapping and copy/paste.
+pub fn display_safe_multiline(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        match c {
+            '\n' => out.push('\n'),
+            '\t' => out.push_str("    "),
+            '\u{0}'..='\u{1f}' | '\u{7f}'..='\u{9f}' => {
+                out.push_str(&format!("\\x{:02x}", c as u32));
+            }
+            _ => out.push(c),
+        }
+    }
+    out
+}
+
 /// Registry of custom commands, keyed by name (sorted for stable listing).
 #[derive(Debug, Default, Clone)]
 pub struct CommandRegistry {
@@ -406,6 +427,18 @@ mod tests {
         );
         assert_eq!(display_safe("echo hi"), "echo hi"); // untouched
         assert_eq!(display_safe("a\u{7f}b\u{9b}c"), "a\\x7fb\\x9bc");
+    }
+
+    #[test]
+    fn display_safe_multiline_preserves_layout_but_not_repainting_controls() {
+        assert_eq!(
+            display_safe_multiline("# Audit\n\n- **ok**\n```bash\nprintf 'ok'\n```\n"),
+            "# Audit\n\n- **ok**\n```bash\nprintf 'ok'\n```\n"
+        );
+        assert_eq!(
+            display_safe_multiline("one\r\u{1b}[2J\ttwo"),
+            "one\\x0d\\x1b[2J    two"
+        );
     }
 
     // T4.7: a project command must not overwrite a same-named user command.

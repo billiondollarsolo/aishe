@@ -4,7 +4,7 @@
 pub mod suggest;
 pub mod yolo;
 
-use std::io::Write;
+use std::io::{IsTerminal, Write};
 
 use crossterm::style::Stylize;
 use serde_json::json;
@@ -153,14 +153,46 @@ pub fn run_command_tool() -> ToolDef {
 /// Render markdown text to the terminal. Prose is rendered with termimad; fenced
 /// code blocks are syntax-highlighted (when the `highlight` feature is on).
 pub fn render_markdown(text: &str) {
+    let text = crate::commands::display_safe_multiline(text);
+    let styled = std::io::stdout().is_terminal()
+        && std::env::var_os("NO_COLOR").is_none()
+        && std::env::var("TERM").ok().as_deref() != Some("dumb");
+    if !styled {
+        print!("{text}");
+        if !text.ends_with('\n') {
+            println!();
+        }
+        let _ = std::io::stdout().flush();
+        return;
+    }
+
     #[cfg(not(feature = "highlight"))]
     {
-        termimad::MadSkin::default().print_text(text);
+        markdown_skin().print_text(&text);
     }
     #[cfg(feature = "highlight")]
     {
-        render_markdown_highlighted(text);
+        render_markdown_highlighted(&text);
     }
+}
+
+fn markdown_skin() -> termimad::MadSkin {
+    use termimad::crossterm::style::{Attribute, Color};
+
+    let mut skin = termimad::MadSkin::default();
+    for (depth, header) in skin.headers.iter_mut().enumerate() {
+        header.align = termimad::Alignment::Left;
+        header.compound_style.remove_attr(Attribute::Underlined);
+        header.set_fg(if depth == 0 {
+            Color::Cyan
+        } else {
+            Color::DarkCyan
+        });
+    }
+    skin.bullet.set_fg(Color::Cyan);
+    skin.quote_mark.set_fg(Color::DarkCyan);
+    skin.horizontal_rule.set_fg(Color::DarkGrey);
+    skin
 }
 
 /// Split `text` into prose segments (rendered by termimad) and fenced code
@@ -168,7 +200,7 @@ pub fn render_markdown(text: &str) {
 /// is still rendered as code.
 #[cfg(feature = "highlight")]
 fn render_markdown_highlighted(text: &str) {
-    let skin = termimad::MadSkin::default();
+    let skin = markdown_skin();
     let mut prose = String::new();
     let mut code = String::new();
     let mut lang = String::new();
@@ -234,9 +266,14 @@ mod highlight {
     }
 
     /// Print one fenced code block, syntax-highlighted by `lang` (falling back to
-    /// plain text for unknown or empty languages). Foreground colors only (no
-    /// background fill), with a reset at the end so styling does not leak.
+    /// plain text for unknown or empty languages). A subdued label and rule make
+    /// the block distinct without prefixing copied code with border characters.
     pub fn print_code_block(code: &str, lang: &str) {
+        print!("{}", render_code_block(code, lang));
+        let _ = std::io::stdout().flush();
+    }
+
+    pub(super) fn render_code_block(code: &str, lang: &str) -> String {
         let ss = syntaxes();
         let syntax = (!lang.is_empty())
             .then(|| {
@@ -247,23 +284,25 @@ mod highlight {
             .unwrap_or_else(|| ss.find_syntax_plain_text());
 
         let mut h = HighlightLines::new(syntax, theme());
-        let mut out = std::io::stdout();
+        let mut out = String::new();
+        let label = if lang.is_empty() { "code" } else { lang };
+        out.push_str(&format!("\x1b[2;36m  {label}\x1b[0m\n"));
         for line in LinesWithEndings::from(code) {
             match h.highlight_line(line, ss) {
                 Ok(ranges) => {
-                    let _ = write!(out, "{}", as_24_bit_terminal_escaped(&ranges[..], false));
+                    out.push_str(&as_24_bit_terminal_escaped(&ranges[..], false));
                 }
                 Err(_) => {
-                    let _ = write!(out, "{line}");
+                    out.push_str(line);
                 }
             }
         }
-        // Reset attributes; ensure the block ends on its own line.
-        let _ = write!(out, "\x1b[0m");
+        out.push_str("\x1b[0m");
         if !code.ends_with('\n') {
-            let _ = writeln!(out);
+            out.push('\n');
         }
-        let _ = out.flush();
+        out.push_str("\x1b[2;36m  ────────────────────\x1b[0m\n");
+        out
     }
 }
 
@@ -275,7 +314,7 @@ mod highlight {
 /// just terminate the line and keep the raw text.
 pub fn rerender_streamed_markdown(text: &str) {
     use crossterm::{cursor, terminal, ExecutableCommand};
-    use std::io::IsTerminal;
+    let text = crate::commands::display_safe_multiline(text);
     // In a pipe/file there is no cursor to move; the raw markdown already streamed
     // out, so just end the line and leave it.
     if !std::io::stdout().is_terminal() {
@@ -283,7 +322,7 @@ pub fn rerender_streamed_markdown(text: &str) {
         return;
     }
     let (cols, rows) = terminal::size().unwrap_or((80, 24));
-    let used = streamed_rows(text, cols);
+    let used = streamed_rows(&text, cols);
     if used + 1 < rows as usize {
         let mut out = std::io::stdout();
         let _ = out.execute(cursor::MoveToColumn(0));
@@ -291,9 +330,23 @@ pub fn rerender_streamed_markdown(text: &str) {
             let _ = out.execute(cursor::MoveUp((used - 1) as u16));
         }
         let _ = out.execute(terminal::Clear(terminal::ClearType::FromCursorDown));
-        render_markdown(text);
+        render_markdown(&text);
     } else {
         println!();
+    }
+}
+
+#[cfg(test)]
+mod markdown_tests {
+    #[cfg(feature = "highlight")]
+    #[test]
+    fn fenced_code_highlighting_is_visually_delimited_and_preserves_code() {
+        let rendered = super::highlight::render_code_block("echo \"$HOME\"\n", "bash");
+        assert!(rendered.contains("bash"));
+        assert!(rendered.contains("echo"));
+        assert!(rendered.contains("HOME"));
+        assert!(rendered.contains("\x1b["));
+        assert!(rendered.contains("────────────────────"));
     }
 }
 

@@ -37,6 +37,10 @@ breaking changes can land in any release.
 - Routine OpenCode todo, reasoning, tool-call, diff, and usage events no longer
   overwhelm the default shell transcript or expose backend-shaped response
   objects.
+- Managed-agent answers now preserve Markdown line breaks instead of displaying
+  them as literal `\x0a` sequences. Interactive output uses the same styled
+  headings, lists, emphasis, tables, inline code, and syntax-highlighted fenced
+  code blocks as the native backend; pipes and `NO_COLOR` retain clean Markdown.
 
 ### Tests
 - Added workspace-to-host conversation-rotation, accepted host execution,

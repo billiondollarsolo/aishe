@@ -221,6 +221,7 @@ jobs:
           for arch in amd64 arm64; do
             # Render a concrete config per arch (nfpm does not reliably expand
             # ${...} env vars in the contents.src field).
+            # shellcheck disable=SC2016
             VERSION="$version" ARCH="$arch" BINARY="dist/$arch/aishe" \
               envsubst '${VERSION} ${ARCH} ${BINARY}' < nfpm.yaml > "nfpm.$arch.yaml"
             for pkger in deb rpm; do

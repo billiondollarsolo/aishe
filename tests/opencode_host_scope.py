@@ -50,6 +50,13 @@ def main():
     with contract.STATE.lock:
         contract.STATE.requests.clear()
         contract.STATE.authenticated_requests = 0
+    contract.FINAL_TEXT = (
+        "# Current capacity\n\n"
+        "- **managed auto contract passed**\n\n"
+        "```bash\n"
+        "printf 'ok\\n'\n"
+        "```\n"
+    )
 
     server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), contract.ProviderHandler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
@@ -150,6 +157,21 @@ def main():
                     raise AssertionError(
                         f"focus output leaked routine agent scaffolding {noise!r}:\n{rendered}"
                     )
+            if "\\x0a" in rendered:
+                raise AssertionError(
+                    f"focus output escaped Markdown line breaks:\n{rendered}"
+                )
+            markdown = (
+                "# Current capacity\n\n"
+                "- **managed auto contract passed**\n\n"
+                "```bash\n"
+                "printf 'ok\\n'\n"
+                "```\n"
+            )
+            if rendered.count(markdown) != 2:
+                raise AssertionError(
+                    f"focus output did not preserve Markdown structure:\n{rendered}"
+                )
             if rendered.count("managed auto contract passed") != 2:
                 raise AssertionError(f"focus output omitted a final response:\n{rendered}")
             if host_target.read_text(encoding="utf-8") != f"{marker}\n":

@@ -24,6 +24,7 @@ import urllib.request
 MODEL = "aishe-contract-model"
 CANARY = "sk-proj-contract-canary-0123456789abcdefghijklmnopqrstuvwxyz"
 TOOL_COMMAND = "env"
+FINAL_TEXT = "managed auto contract passed"
 FORBIDDEN_HOST_TOOLS = {
     "bash",
     "read",
@@ -245,7 +246,7 @@ class ProviderHandler(http.server.BaseHTTPRequestHandler):
         elif tool_result_messages(body):
             events = [
                 chunk({"role": "assistant"}),
-                chunk({"content": "managed auto contract passed"}),
+                chunk({"content": FINAL_TEXT}),
                 chunk({}, "stop", (17, 5)),
             ]
         else:

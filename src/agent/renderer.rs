@@ -73,9 +73,9 @@ impl AgentRenderer {
             AgentEvent::ReasoningCompleted => {}
             AgentEvent::TextDelta { text } => {
                 if self.mode == OutputMode::Focus {
-                    self.focus_text.push_str(&safe(text, 64 * 1024));
+                    self.focus_text.push_str(&safe_multiline(text, 64 * 1024));
                 } else {
-                    print!("{}", safe(text, 64 * 1024));
+                    print!("{}", safe_multiline(text, 64 * 1024));
                     let _ = std::io::stdout().flush();
                     self.text_streamed = true;
                 }
@@ -85,12 +85,12 @@ impl AgentRenderer {
                     // TextCompleted is authoritative for one assistant message.
                     // Keep only the latest completed message so intermediate
                     // narration never pollutes the native shell transcript.
-                    self.focus_text = safe(text, 256 * 1024);
+                    self.focus_text = safe_multiline(text, 256 * 1024);
                 } else {
                     if !self.text_streamed && !text.is_empty() {
-                        println!("{}", safe(text, 256 * 1024));
+                        crate::modes::render_markdown(&safe_multiline(text, 256 * 1024));
                     } else if self.text_streamed {
-                        println!();
+                        crate::modes::rerender_streamed_markdown(&safe_multiline(text, 256 * 1024));
                     }
                     self.text_streamed = false;
                 }
@@ -256,12 +256,12 @@ impl AgentRenderer {
             AgentEvent::Completed { summary } if self.mode == OutputMode::Focus => {
                 self.clear_focus_status();
                 let final_text = if self.focus_text.trim().is_empty() {
-                    safe(summary, 256 * 1024)
+                    safe_multiline(summary, 256 * 1024)
                 } else {
                     std::mem::take(&mut self.focus_text)
                 };
                 if !final_text.trim().is_empty() {
-                    println!("{final_text}");
+                    crate::modes::render_markdown(&final_text);
                 }
             }
             AgentEvent::Completed { summary }
@@ -355,6 +355,15 @@ fn safe(value: &str, limit: usize) -> String {
     output
 }
 
+fn safe_multiline(value: &str, limit: usize) -> String {
+    let mut output = crate::commands::display_safe_multiline(value);
+    if output.chars().count() > limit {
+        output = output.chars().take(limit).collect::<String>();
+        output.push('…');
+    }
+    output
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -373,5 +382,17 @@ mod tests {
         )
         .contains("echo nested"));
         assert_eq!(todo_mark("completed"), "✓");
+    }
+
+    #[test]
+    fn final_markdown_keeps_newlines_but_escapes_terminal_controls() {
+        let text = safe_multiline(
+            "# Current capacity\n\n- **2 vCPUs**\n```bash\necho ok\n```\u{1b}[2J",
+            1024,
+        );
+        assert!(text.contains("# Current capacity\n\n- **2 vCPUs**"));
+        assert!(text.contains("```bash\necho ok\n```"));
+        assert!(!text.contains('\u{1b}'));
+        assert!(text.ends_with("\\x1b[2J"));
     }
 }

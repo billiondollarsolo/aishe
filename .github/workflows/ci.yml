@@ -24,14 +24,16 @@ jobs:
   test:
     name: test (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
-    env:
-      AISHE_RUNTIME_DIR: ${{ runner.temp }}/aishe-runtime
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest]
     steps:
       - uses: actions/checkout@v7
+
+      - name: Isolate the managed runtime
+        shell: bash
+        run: echo "AISHE_RUNTIME_DIR=$RUNNER_TEMP/aishe-runtime" >> "$GITHUB_ENV"
 
       # aishe wraps a real zsh, so `aishe doctor` reports a failed check and
       # exits non-zero without it. macOS runners ship zsh; ubuntu does not, so
@@ -95,10 +97,12 @@ jobs:
   pty-smoke:
     name: PTY smoke tests (zsh-pty)
     runs-on: ubuntu-latest
-    env:
-      AISHE_RUNTIME_DIR: ${{ runner.temp }}/aishe-runtime
     steps:
       - uses: actions/checkout@v7
+
+      - name: Isolate the managed runtime
+        shell: bash
+        run: echo "AISHE_RUNTIME_DIR=$RUNNER_TEMP/aishe-runtime" >> "$GITHUB_ENV"
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
