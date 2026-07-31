@@ -69,16 +69,39 @@ Picker navigation: ↑/↓ or j/k, type to filter, Esc cancels. Full reference:
 [Commands](commands.md#primary-slash-commands). The shell handoff writes
 connection, model, and reasoning together; a main-shell prompt hook applies it
 even when the branded AIShe prompt is disabled.
-### force-NL keybinding
+### Force-NL and input prefixes
 
-Sometimes your input is a valid command but you mean it as natural language.
-Press Alt-Enter (zsh) or Ctrl-G (bash) to send the current line to the LLM as a
-request and replace it with the suggestion. Override the zsh key with a `bindkey`
-sequence:
+AIShe is **shell-first**. If the first word is a real binary, the line runs in
+zsh — even when the rest is English:
+
+```text
+install kubectl please     # shell: /usr/bin/install …
+? install kubectl please   # natural language (recommended)
+```
+
+| Prefix / key | Effect |
+|--------------|--------|
+| **`?…` or `#…`** | Force natural language (stripped before the model) |
+| **`!…`** | Force shell, skip safety gate |
+| **Meta/Alt+Return** (zsh default `^[^M`) | Force-NL the current buffer and submit |
+| **Ctrl-G** (bash hook default) | Force-NL on bash |
+
+**Mac:** Meta/Alt is **⌥ Option**. Option+Return only works if the terminal
+sends Option as Meta:
+
+- **iTerm2:** Profiles → Keys → Option key → **Esc+**
+- **Terminal.app:** Profiles → Keyboard → **Use Option as Meta key**
+- **VS Code / Cursor:** `terminal.integrated.macOptionIsMeta` = true
+
+If Meta is awkward, **use `?`** — it always works. Override the zsh key:
 
 ```sh
-export AISHE_NL_KEY='^o'
+export AISHE_NL_KEY='^G'   # Ctrl-G
 ```
+
+Buffer colors (when highlighting is on): **green** = shell, **magenta** =
+natural language. Empty buffer + force-NL key does nothing. See
+[Getting started §6](getting-started.md#6-force-a-route-when-needed).
 
 ### mode-cycle keybinding
 

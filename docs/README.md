@@ -16,7 +16,9 @@ live in the [root README](../README.md).
 ## Guide
 
 - [Installation](installation.md) — prebuilt releases, packages, or source
-- [Getting started](getting-started.md) — guided setup and your first requests
+- [Getting started](getting-started.md) — guided setup, first requests, and
+  [forcing natural language (`?`)](getting-started.md#6-force-a-route-when-needed)
+  when a line starts with a real binary (`install`, `find`, …)
 - [Commands and slash-commands](commands.md) — CLI surface, `/help`, `/connection` vs `/model`
 - [Providers](providers.md) — Anthropic, OpenAI/Codex, xAI/Grok, Groq, Ollama, OAuth
 - [Managed agent backend](managed-agent-backend.md) — pinned OpenCode runtime, security boundary, recovery
@@ -30,9 +32,11 @@ live in the [root README](../README.md).
 - [Safety gate](safety.md) — how dangerous commands are screened
 - [Logging and privacy](logging.md) — secret redaction and the audit log
 - [Runbooks](runbooks.md) — export a yolo session as a script + markdown runbook
-- [Shell integration and .aishrc](shell-integration.md) — the native hook and startup file
+- [Shell integration and .aishrc](shell-integration.md) — native hook, startup
+  file, [force-NL / Option-as-Meta on Mac](shell-integration.md#force-nl-and-input-prefixes)
 - [Per-project config and trust](project-config.md) — project overlays and `aishe trust`
-- [Troubleshooting](troubleshooting.md) — common issues and `aishe doctor`
+- [Troubleshooting](troubleshooting.md) — common issues (`install` ran as shell,
+  `aishe doctor`, …)
 - [Development](development.md) — building, testing, and the validation harness
 - [Roadmap](ROADMAP.md) — where aishe is headed
 - [Master plan](design/PLAN.md) — long-form plan and acceptance criteria

@@ -64,12 +64,18 @@ tokens/cost, budget, and request count.
 
 The router recognizes a conservative set of full-line question forms beginning
 with collision-prone commands such as `what`, `where`, and `who`. Ambiguous
-imperatives such as `find large files` remain commands. To force any line to the
-AI, **start it with `?` or `#`** (e.g. `? find large files`); the sigil is
-stripped by the line editor before zsh sees it, so the shell's comment and glob
-rules never apply. The force-NL key (Alt-Enter, or `AISHE_NL_KEY`) does the same
-for the line you are editing. **Shift-Tab** (or
-`AISHE_MODE_KEY`) cycles the interaction mode for the session
+imperatives such as `find large files` or `install kubectl please` remain
+**shell** commands when the first word is a real binary (`install` is
+`/usr/bin/install`). To force any line to the AI, **start it with `?` or `#`**
+(e.g. `? install kubectl please`); the sigil is stripped before zsh sees it.
+That is the reliable path on every platform.
+
+Optional force-NL key: Meta/Alt+Return on zsh (`AISHE_NL_KEY`, default `^[^M`).
+On Mac that is **Option+Return**, only if the terminal treats Option as Meta
+(iTerm: Option → Esc+; Terminal.app: “Use Option as Meta key”). Prefer `?` if
+keys are unreliable. Details:
+[Shell integration — force-NL](shell-integration.md#force-nl-and-input-prefixes).
+**Shift-Tab** (or `AISHE_MODE_KEY`) cycles mode
 (`suggest -> auto -> yolo`); the prompt glyph updates to match.
 
 When a command **fails**, press **Ctrl-X Ctrl-F** (or `AISHE_FIX_KEY`) to ask the

@@ -59,10 +59,25 @@ aishe suggest --json "list files by size" | jq -r .command
 echo 'eval "$(aishe init zsh)"' >> ~/.zshrc   # or: aishe init bash
 ```
 
-Inside the shell: **`/help`** for a task-oriented index (`/help accounts`,
-`/help models`, …). A request whose first word is a real binary runs as that
-command — prefix with `?` to force natural language. See
-[getting started](docs/getting-started.md#6-force-a-route-when-needed).
+### Everyday controls (in the shell)
+
+| Do this | How |
+|--------|-----|
+| Help | **`/help`** · topics: `/help accounts` · `models` · `session` · `config` |
+| Switch account / model | **`/connection`** · **`/model`** (model is *this account only*) |
+| Cycle mode | **Shift-Tab** → suggest `❯` · auto `»` · yolo `*` |
+| **Force English to the AI** | Start with **`?`** — e.g. `? install kubectl please` |
+| Force raw shell | Start with **`!`** (bypasses the safety gate) |
+
+**Common trap:** lines whose **first word is a real binary** run as shell — even
+if the rest is English. `install` is `/usr/bin/install` on every Mac/Linux box,
+so `install kubectl please` is **not** “please install the package”; use
+`? install kubectl please`. Buffer color (when highlighting is on): **green** =
+shell, **magenta** = natural language.
+
+Full routing, Option/Alt+Return, and Mac terminal Meta settings:
+[Getting started §6](docs/getting-started.md#6-force-a-route-when-needed) ·
+[Shell integration](docs/shell-integration.md#force-nl-and-input-prefixes).
 
 ---
 
@@ -74,8 +89,9 @@ command — prefix with `?` to force natural language. See
   version-pinned OpenCode backend for durable conversations, reasoning,
   compaction, and subagents. It starts lazily on authenticated loopback, never
   opens a second TUI, and never hijacks direct zsh commands.
-- **Plain English to commands.** Non-commands go to the model. `?` forces a
-  question; `!` forces a raw shell line past the safety gate.
+- **Plain English to commands.** Non-commands go to the model. **`?`** forces
+  natural language when the first word is also a real binary (e.g. `install`);
+  **`!`** forces raw shell past the safety gate.
 - **Three modes.** `suggest` (propose, you confirm), `auto` (run safe commands,
   confirm risky ones), `yolo` (agent loop that runs, reads output, iterates).
   Cycle live with **Shift-Tab**.
@@ -191,9 +207,10 @@ install the optional hook). Walkthrough:
 | `auto`    |  `»`  | Approval-gated agent. Safe actions run; risky or unresolved actions stop for confirmation. |
 | `yolo`    |  `*`  | Autonomous loop after one scope grant per shell. Tools, results, iteration until done. |
 
-Input prefixes: `?…` force NL · `!…` force shell (bypass safety gate) · bare `?`
-after a failed command asks for diagnosis. Details: [docs/modes.md](docs/modes.md),
-[docs/safety.md](docs/safety.md).
+Input prefixes: **`?…` force NL** (prefer this over Option/Alt+Return on Mac) ·
+`!…` force shell (bypass safety gate) · bare `?` after a failed command asks for
+diagnosis. Details: [docs/getting-started.md#6-force-a-route-when-needed](docs/getting-started.md#6-force-a-route-when-needed),
+[docs/modes.md](docs/modes.md), [docs/safety.md](docs/safety.md).
 
 ## Accounts, providers, and models
 
@@ -263,9 +280,9 @@ aishe sessions|resume|reset|undo|log|usage|history|runbook|…
 /commands       same as /help
 ```
 
-**Shift-Tab** cycles modes · **Ctrl-O** toggles details · ask naturally
-(“how do I add a Codex OAuth account?”) — product answers use the built-in
-`aishe-product` skill.
+**Shift-Tab** cycles modes · **Ctrl-O** toggles details · **`?`** forces NL ·
+ask naturally (“how do I add a Codex OAuth account?”) — product answers use the
+built-in `aishe-product` skill.
 
 ## Front-ends
 

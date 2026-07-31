@@ -114,6 +114,26 @@ natural-language route with the `?` prefix:
 ?find large files
 ```
 
+## Natural language ran as a shell command (`install`, `find`, …)
+
+If English starts with a real binary name, AIShe runs **shell**, not the agent:
+
+```text
+install kubectl please
+# → /usr/bin/install …  often: install: No such file or directory
+```
+
+**Fix:** force natural language with a leading `?` (most reliable):
+
+```text
+? install kubectl please
+```
+
+Green buffer = shell; magenta = natural language. There is no separate NL mode
+on the status line. Optional Meta/Alt+Return needs Option-as-Meta in the
+terminal (iTerm/Terminal/VS Code); see
+[Getting started §6](getting-started.md#6-force-a-route-when-needed).
+
 ## A command was treated as natural language
 
 If a valid command was sent to the model, the command may not be on your `PATH`

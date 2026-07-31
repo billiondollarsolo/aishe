@@ -170,20 +170,62 @@ See [Modes](modes.md) for the full behavior of each.
 
 ## 6. Force a route when needed
 
-Sometimes a request happens to start with a real command name (for example
-"find all large files"), so it would run as a command. Use the prefixes:
+AIShe is **shell-first**: if the first word is a real binary on `PATH`, the
+line runs in zsh. That is intentional so real tools keep working — and it is
+the #1 source of “why didn’t the AI hear me?” confusion.
 
-- `?<text>` forces natural-language: `?find all large files`
-- `!<cmd>` forces shell and skips the safety gate: `!rm -rf build`
+### Prefer `?` for natural language
 
-The built-in highlighter uses the same full-line routing grammar. Thus
-`what --version` stays green as a command, while `what is the capital of France?`
-changes to the natural-language color even if a binary named `what` exists.
-Ambiguous phrasing cannot be perfect, so `?` and `!` remain the explicit escape
-hatches.
+| You type | What happens |
+|----------|----------------|
+| `install kubectl please` | **Shell.** `install` is `/usr/bin/install` (copy files). Often fails with `No such file or directory`. |
+| `? install kubectl please` | **AI.** The `?` is stripped; the agent gets the English request. |
+| `!rm -rf build` | **Shell**, safety gate skipped (dangerous by design). |
+| `?` alone after a failed command | Ask the model to diagnose the last failure. |
 
-After a command fails, type `?` alone on the next line to ask the model to
-diagnose the error.
+`# …` is the same force-NL prefix as `?` (stripped before the model runs).
+
+### Colors (when command highlighting is on)
+
+| Buffer color | Meaning |
+|--------------|---------|
+| **Green** | Routed as a **shell** command |
+| **Magenta** | Routed as **natural language** |
+
+There is no separate “NL mode” badge on the status line. Mode glyphs are still
+suggest `❯` / auto `»` / yolo `*`. Force-NL only changes **that one line**.
+
+### Option / Alt + Return (optional)
+
+A force-NL key can submit the current buffer as natural language without a
+`?` prefix:
+
+- **Default (zsh):** Meta/Alt + Return (bindkey `^[^M`)
+- **Mac:** that is **⌥ Option + Return**, but only if the terminal treats
+  Option as Meta (see below)
+- **bash hook:** often Ctrl-G
+- Override: `export AISHE_NL_KEY='^G'` (Ctrl-G) before starting aishe
+
+If the line is **empty**, the key does nothing. Prefer **`?`** if keys are
+finicky.
+
+**Enable Option-as-Meta (so ⌥+Return works):**
+
+| App | Setting |
+|-----|---------|
+| **iTerm2** | Settings → Profiles → Keys → Left/Right Option key → **Esc+** |
+| **Terminal.app** | Settings → Profiles → Keyboard → **Use Option as Meta key** |
+| **VS Code / Cursor** | `"terminal.integrated.macOptionIsMeta": true` |
+
+Full keybinding detail: [Shell integration — force-NL](shell-integration.md#force-nl-and-input-prefixes).
+
+### Why green `install` is not a bug
+
+The built-in highlighter uses the same routing as the shell. Thus
+`what --version` stays green, while `what is the capital of France?` can go
+magenta. Imperatives that start with a real binary (`install …`, `find …`,
+`open …`) stay **green** unless you force NL. Ambiguous phrasing cannot be
+perfect; **`?` and `!` are the reliable escape hatches.**
 
 ## 7. Check your setup any time
 
