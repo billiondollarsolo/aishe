@@ -275,19 +275,50 @@ impl OrganizationPolicy {
     }
 }
 
+/// On-disk macOS organization policy directory uses the historical install name
+/// `Aishe` (a filesystem path identifier, not the product wordmark). Do **not**
+/// rename this — existing fleet installs load `/Library/Application Support/Aishe/policy.toml`.
+pub const MACOS_ORG_POLICY_PATH: &str = "/Library/Application Support/Aishe/policy.toml";
+
+/// Transient path briefly introduced by a brand-sweep typo; still loaded as a
+/// fallback so any install created during that window keeps working.
+const MACOS_ORG_POLICY_PATH_LEGACY_TYPO: &str = "/Library/Application Support/AIShe/policy.toml";
+
+pub const LINUX_ORG_POLICY_PATH: &str = "/etc/aishe/policy.toml";
+
 pub fn path() -> PathBuf {
     if let Some(value) = std::env::var_os("AISHE_POLICY_FILE").filter(|value| !value.is_empty()) {
         return PathBuf::from(value);
     }
     if cfg!(target_os = "macos") {
-        PathBuf::from("/Library/Application Support/AIShe/policy.toml")
+        PathBuf::from(MACOS_ORG_POLICY_PATH)
     } else {
-        PathBuf::from("/etc/aishe/policy.toml")
+        PathBuf::from(LINUX_ORG_POLICY_PATH)
+    }
+}
+
+/// Candidate policy files in priority order (env override wins via [`path`]).
+pub fn candidate_paths() -> Vec<PathBuf> {
+    if let Some(value) = std::env::var_os("AISHE_POLICY_FILE").filter(|value| !value.is_empty()) {
+        return vec![PathBuf::from(value)];
+    }
+    if cfg!(target_os = "macos") {
+        vec![
+            PathBuf::from(MACOS_ORG_POLICY_PATH),
+            PathBuf::from(MACOS_ORG_POLICY_PATH_LEGACY_TYPO),
+        ]
+    } else {
+        vec![PathBuf::from(LINUX_ORG_POLICY_PATH)]
     }
 }
 
 pub fn load() -> Result<Option<LoadedPolicy>> {
-    load_from(&path())
+    for candidate in candidate_paths() {
+        if let Some(loaded) = load_from(&candidate)? {
+            return Ok(Some(loaded));
+        }
+    }
+    Ok(None)
 }
 
 pub fn load_from(path: &Path) -> Result<Option<LoadedPolicy>> {
@@ -387,6 +418,45 @@ fn wildcard_matches(value: &str, pattern: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn macos_org_policy_path_stays_on_historical_aishe_directory() {
+        // Product wordmark is AIShe; on-disk macOS org policy path remains Aishe
+        // so fleet installs at /Library/Application Support/Aishe/policy.toml load.
+        assert_eq!(
+            MACOS_ORG_POLICY_PATH,
+            "/Library/Application Support/Aishe/policy.toml"
+        );
+        assert!(
+            MACOS_ORG_POLICY_PATH.contains("/Aishe/"),
+            "stable path segment must be historical Aishe, not product AIShe"
+        );
+        assert!(
+            !MACOS_ORG_POLICY_PATH.contains("/AIShe/"),
+            "product spelling must not rename the org policy directory"
+        );
+        let candidates = candidate_paths();
+        // Without AISHE_POLICY_FILE, Linux CI sees /etc/aishe; macos sees Aishe first.
+        if cfg!(target_os = "macos") {
+            assert_eq!(
+                candidates.first().map(|p| p.as_path()),
+                Some(std::path::Path::new(MACOS_ORG_POLICY_PATH))
+            );
+            assert!(candidates.iter().any(|p| p.ends_with("Aishe/policy.toml")));
+        } else {
+            assert_eq!(
+                candidates,
+                vec![std::path::PathBuf::from(LINUX_ORG_POLICY_PATH)]
+            );
+        }
+    }
+
+    #[test]
+    fn load_from_missing_policy_is_none() {
+        let missing = std::env::temp_dir().join("aishe-missing-org-policy-does-not-exist.toml");
+        let _ = std::fs::remove_file(&missing);
+        assert!(load_from(&missing).unwrap().is_none());
+    }
 
     #[test]
     fn policy_constrains_without_widening() {
