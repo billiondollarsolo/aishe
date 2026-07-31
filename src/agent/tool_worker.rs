@@ -1295,13 +1295,67 @@ fn ask_user(work: &ToolWork) -> ExecutionResult {
         .get("prompt")
         .and_then(Value::as_str)
         .unwrap_or("Agent question");
-    print!("  {} ", crate::commands::display_safe(prompt));
+    // Clear any in-place status line ("running ask user …") so the question is
+    // not appended mid-line and typing does not look "random" at the end.
+    print!("\r\x1b[2K");
+    println!();
+    println!("  ┌─ agent question ────────────────────────────────");
+    for line in wrap_prompt_lines(prompt, 72) {
+        if line.is_empty() {
+            println!("  │");
+        } else {
+            println!("  │ {line}");
+        }
+    }
+    println!("  │");
+    println!("  │ Type an answer and press Enter to continue.");
+    println!("  └────────────────────────────────────────────────");
+    print!("  your answer: ");
     let _ = std::io::stdout().flush();
     let mut answer = String::new();
     match std::io::stdin().read_line(&mut answer) {
         Ok(_) => success(answer.trim_end().to_string()),
         Err(error) => failure(&error.to_string()),
     }
+}
+
+/// Display-safe soft-wrapped lines for the ask_user panel body.
+fn wrap_prompt_lines(prompt: &str, width: usize) -> Vec<String> {
+    let width = width.max(16);
+    let body = crate::commands::display_safe_multiline(prompt);
+    let mut out = Vec::new();
+    for raw in body.lines() {
+        let line = raw.trim_end();
+        if line.is_empty() {
+            out.push(String::new());
+            continue;
+        }
+        let mut rest: &str = line;
+        while !rest.is_empty() {
+            let mut end = rest.len();
+            for (count, (idx, _)) in rest.char_indices().enumerate() {
+                if count == width {
+                    end = idx;
+                    break;
+                }
+            }
+            // Prefer breaking on a space when the chunk is full-width.
+            if end < rest.len() {
+                if let Some(space) = rest[..end].rfind(char::is_whitespace) {
+                    if space > 0 {
+                        end = space;
+                    }
+                }
+            }
+            let chunk = rest[..end].trim_end();
+            out.push(chunk.to_string());
+            rest = rest[end..].trim_start();
+        }
+    }
+    if out.is_empty() {
+        out.push(String::new());
+    }
+    out
 }
 
 fn success(output: String) -> ExecutionResult {

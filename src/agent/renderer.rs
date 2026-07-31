@@ -121,7 +121,8 @@ impl AgentRenderer {
             }
             AgentEvent::ToolStarted { call } => {
                 let label = tool_label(&call.name, &call.arguments);
-                if tool_name(&call.name) == "run command" {
+                let name = tool_name(&call.name);
+                if name == "run command" {
                     self.commands.push(label.clone());
                 }
                 self.tools.insert(
@@ -129,14 +130,22 @@ impl AgentRenderer {
                     ActiveTool {
                         started_at: Instant::now(),
                         label: label.clone(),
-                        name: tool_name(&call.name),
+                        name: name.clone(),
                     },
                 );
-                if self.mode == OutputMode::Detailed {
+                // ask_user owns the terminal for a real prompt panel; do not
+                // leave a sticky "running ask user …" status that steals the
+                // cursor line before the worker prints its box.
+                if name == "ask user" {
+                    self.clear_status();
+                    if self.mode == OutputMode::Detailed {
+                        self.line("  ▶ agent is asking you a question…", "36");
+                    }
+                } else if self.mode == OutputMode::Detailed {
                     // run_command prints its exact command immediately before
                     // streaming child output. Other tools have no foreground
                     // stream, so render their label here.
-                    if tool_name(&call.name) != "run command" {
+                    if name != "run command" {
                         self.line(&format!("  ▶ {label}"), "36");
                     }
                 } else {
