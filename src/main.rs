@@ -3735,7 +3735,7 @@ fn connection_pick_command(effective: &Config, value: Option<&str>, save_default
                         &format!(
                             "Make '{}' the default connection?",
                             aishe::commands::display_safe(
-                                &selected
+                                selected
                                     .active_connection()
                                     .map(|c| c.label.as_str())
                                     .unwrap_or(selected.active_connection_id())

@@ -604,7 +604,7 @@ pub fn branded_connection_label(
     auth: &ConnectionAuth,
 ) -> Option<String> {
     let oauth =
-        crate::oauth::OAuthProvider::from_base_url(base_url).or_else(|| match provider_key {
+        crate::oauth::OAuthProvider::from_base_url(base_url).or(match provider_key {
             "openai" => Some(crate::oauth::OAuthProvider::Openai),
             "xai" => Some(crate::oauth::OAuthProvider::Xai),
             _ => None,
