@@ -8,7 +8,8 @@
     Scale so the mark is ~80% of banner height (≈288px): 1080 * s ≈ 960 → s≈0.89
     for the full frame, but content is tighter — use ~0.72 and center.
   -->
-  <g transform="translate(480, 180) scale(0.88) translate(-540, -520)">
+  <!-- ~80% of 360px height for the mark, fully in-frame and centered -->
+  <g transform="translate(480, 185) scale(0.78) translate(-540, -530)">
     <g transform="matrix(1.9463 0 0 1.9463 475.4074 595.1805)">
       <g transform="matrix(0.3906 0 0 0.3906 -63.6367 -33.6988)">
         <path fill="#000000" transform="translate(-93.09, -169.7307)"
