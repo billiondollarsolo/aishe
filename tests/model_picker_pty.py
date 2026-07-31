@@ -156,7 +156,19 @@ def select_connection(shell, filter_text, save=False):
     shell.expect("Select a connection")
     shell.raw(filter_text.encode())
     shell.expect("filter: " + filter_text)
-    shell.raw(b"d" if save else b"\r")
+    if save:
+        # d applies and saves as durable default without the post-Enter prompt.
+        shell.raw(b"d")
+    else:
+        # Enter is shell-local; when the choice differs from config, Aishe asks
+        # whether to make it the default — answer n to keep this shell only.
+        shell.raw(b"\r")
+        try:
+            shell.expect("the default connection?", timeout=3)
+            shell.raw(b"n\r")
+        except AssertionError:
+            # Same as current default: no follow-up confirm.
+            pass
 
 
 def select_model(shell, filter_text="", save=False):
@@ -165,7 +177,15 @@ def select_model(shell, filter_text="", save=False):
     if filter_text:
         shell.raw(filter_text.encode())
         shell.expect("filter: " + filter_text)
-    shell.raw(b"d" if save else b"\r")
+    if save:
+        shell.raw(b"d")
+    else:
+        shell.raw(b"\r")
+        try:
+            shell.expect("the default for this connection?", timeout=3)
+            shell.raw(b"n\r")
+        except AssertionError:
+            pass
 
 
 def main():
