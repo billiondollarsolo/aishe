@@ -1,8 +1,8 @@
 <p align="center">
-  <img src="assets/aishe-banner.png" alt="AISHE — AI Shell" width="480">
+  <img src="assets/aishe-banner.png" alt="AIshe — AI Shell" width="420">
 </p>
 
-<p align="center"><strong>AISHE</strong> · <em>AI Shell</em></p>
+<p align="center"><strong>AIshe</strong> · <em>AI Shell</em></p>
 
 Your real shell, with an agent built into the command line.
 

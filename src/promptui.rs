@@ -17,16 +17,16 @@ const WARNING: &str = "1;33";
 const SUCCESS: &str = "1;32";
 const ERROR: &str = "1;31";
 
-/// Monochrome terminal approximation of the AISHE robot mark (antennae + chassis).
+/// Monochrome terminal approximation of the AIshe glasses mark + wordmark.
 /// ASCII only: terminals never need an emoji font or colored pictograph.
-/// Branding: **AISHE** = **AI Shell**.
-pub const ASCII_LOGO: &str = r#"  .-----. .-----.
- /  o--| |--o  \
-|  /---+ +---\  |
-|  \---+ +---/  |
- \__o--| |--o__/
-       AISHE
-      AI Shell"#;
+/// Branding: **AIshe** / **AISHE** = **AI Shell**.
+pub const ASCII_LOGO: &str = r#"   \     /
+    \___/
+   /     \
+  | o   o |
+   \__v__/
+     AIshe
+    AI Shell"#;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum MenuResult {
