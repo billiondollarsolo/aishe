@@ -26,6 +26,7 @@ pub struct ToolWorker {
     client: SupervisorClient,
     identity: LeaseIdentity,
     thread: Option<JoinHandle<()>>,
+    keepalive: Option<JoinHandle<()>>,
 }
 
 #[derive(Clone, Debug)]
@@ -101,6 +102,43 @@ impl ToolWorker {
         let worker_stop = Arc::clone(&stop);
         let worker_client = client.clone();
         let worker_identity = identity.clone();
+        // Keep the lease alive for the whole managed turn — including long
+        // run_command tools and slow model steps between tools. Without this,
+        // LEASE_TTL (2m) expires mid-install and the next provider turn dies
+        // with foreground_unavailable.
+        let keepalive_stop = Arc::clone(&stop);
+        let keepalive_client = client.clone();
+        let keepalive_identity = identity.clone();
+        let keepalive = std::thread::Builder::new()
+            .name("aishe-lease-keepalive".into())
+            .spawn(move || {
+                use crate::backend::bridge::LEASE_KEEPALIVE_INTERVAL;
+                while !keepalive_stop.load(Ordering::SeqCst) {
+                    // Slice sleeps so shutdown is prompt.
+                    let deadline = std::time::Instant::now() + LEASE_KEEPALIVE_INTERVAL;
+                    while std::time::Instant::now() < deadline {
+                        if keepalive_stop.load(Ordering::SeqCst) {
+                            return;
+                        }
+                        std::thread::sleep(Duration::from_millis(200));
+                    }
+                    if keepalive_stop.load(Ordering::SeqCst) {
+                        break;
+                    }
+                    if let Err(error) = keepalive_client.heartbeat(&keepalive_identity) {
+                        // Lease may already be gone on shutdown; stop quietly.
+                        if keepalive_stop.load(Ordering::SeqCst) {
+                            break;
+                        }
+                        eprintln!(
+                            "aishe: foreground lease keepalive failed: {}",
+                            crate::redact::redact(&error.to_string())
+                        );
+                        break;
+                    }
+                }
+            })
+            .ok();
         let thread = std::thread::Builder::new()
             .name("aishe-tool-worker".into())
             .spawn(move || {
@@ -176,6 +214,7 @@ impl ToolWorker {
             client,
             identity,
             thread: Some(thread),
+            keepalive,
         })
     }
 
@@ -186,6 +225,9 @@ impl ToolWorker {
     fn shutdown(&mut self) {
         self.stop.store(true, Ordering::SeqCst);
         let _ = self.client.unregister(&self.identity);
+        if let Some(keepalive) = self.keepalive.take() {
+            let _ = keepalive.join();
+        }
         if let Some(thread) = self.thread.take() {
             // Unregister wakes an idle bridge poll immediately. A command also
             // observes the shared cancellation flag and tears down its process

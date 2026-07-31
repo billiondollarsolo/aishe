@@ -6,6 +6,14 @@ breaking changes can land in any release.
 
 ## [Unreleased]
 
+### Fixed
+- Long multi-tool yolo turns no longer die with `503 (foreground_unavailable)`
+  after slow installs: the foreground **lease keepalive** thread renews every
+  20s for the whole managed turn, tool start/complete also renew, lease TTL is
+  120s, and the OpenCode plugin retries brief lease/control blips before
+  failing with a clearer AIShe message (tools may still have succeeded — check
+  host state and say “continue”).
+
 ### Changed
 - Suggest product how-to injects the compact **product brief** only (not the full
   `aishe-product` skill body); yolo still uses progressive skill disclosure.

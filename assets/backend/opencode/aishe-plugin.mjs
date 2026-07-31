@@ -286,7 +286,7 @@ export const AisheBridge = async () => ({
     }
   },
   "chat.params": async (input, output) => {
-    if (!bridgeUrl || !bridgeToken) throw new Error("Aishe budget bridge is unavailable")
+    if (!bridgeUrl || !bridgeToken) throw new Error("AIShe provider-turn bridge is unavailable")
     if (typeof input?.sessionID !== "string" || input.sessionID.length === 0) {
       throw new Error("OpenCode provider turn is missing its session identity")
     }
@@ -295,7 +295,10 @@ export const AisheBridge = async () => ({
         ? output.maxOutputTokens
         : null
     let decision
-    for (let attempt = 0; attempt < 2; attempt += 1) {
+    // Retries are safe: authorize is pre-provider (no model call started yet).
+    // Long multi-tool turns can race a just-renewed lease or a brief control
+    // blip; wait for the foreground keepalive before failing closed.
+    for (let attempt = 0; attempt < 5; attempt += 1) {
       const response = await fetch(`${bridgeUrl}/v1/plugin/provider-turn`, {
         method: "POST",
         redirect: "error",
@@ -319,12 +322,19 @@ export const AisheBridge = async () => ({
           code = body.error.code
         }
       } catch {}
-      // No provider call has begun when the private control listener rejects a
-      // malformed transport request. A single fresh-connection retry is safe
-      // and avoids losing an admitted foreground turn to an intermittent HTTP
-      // framing failure under long-running OpenCode sessions.
-      if (attempt === 0 && response.status === 400 && code === "invalid_request") continue
-      throw new Error(`Aishe budget gate rejected provider turn: ${response.status} (${code})`)
+      const retriable =
+        (response.status === 400 && code === "invalid_request") ||
+        (response.status === 503 &&
+          (code === "foreground_unavailable" || code === "lease_expired"))
+      if (attempt < 4 && retriable) {
+        await new Promise((resolve) => setTimeout(resolve, 250 * (attempt + 1)))
+        continue
+      }
+      throw new Error(
+        `AIShe refused the next model step: ${response.status} (${code}). ` +
+          `If tools already ran, check host state and say "continue" — this is a ` +
+          `foreground lease/control issue, not proof the install failed.`,
+      )
     }
     // ChatGPT/Codex and SuperGrok OAuth use subscription transports that reject
     // `max_output_tokens` (OpenCode's built-in openai/xai OAuth hooks clear it).
