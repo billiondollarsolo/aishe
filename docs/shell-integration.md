@@ -51,15 +51,24 @@ fast-syntax-highlighting, and either plugin automatically takes precedence. Set
 
 ### Primary slash commands
 
-Inside an Aishe zsh session, `/help` lists the short command surface. `/model`
-opens the filterable connection/model picker; Enter changes only this shell,
-`d` also saves the durable default, and Esc cancels without changing either.
-`/model MODEL` and `/model CONNECTION/MODEL` are direct forms. `/provider` opens
-the same picker, `/auth` reports the selected connection's exact auth binding,
-and `/status` shows identity, backend readiness, usage, and spend. The shell
-handoff writes connection, model, and reasoning together, and a main-shell
-prompt hook applies it even when the branded Aishe prompt is disabled.
+Inside an Aishe zsh session, `/help` is task-first (`/help accounts`,
+`/help models`, `/help session`, `/help config`). Account and model are
+**separate**:
 
+- **`/connection`** (alias **`/provider`**) — switch named account for this
+  shell; Enter is shell-local, `d` (or the post-Enter default prompt) saves the
+  durable default. Footer explains how to add accounts (`aishe setup`,
+  `connection add`, `auth login`).
+- **`/model`** — models for the **active** connection only. Never changes login.
+  OAuth catalogs come from managed OpenCode; API-key catalogs from the endpoint.
+- **`/auth`** — exact auth binding for the selected connection.
+- **`/status`** — identity (including **Codex - API** / **Codex - OAuth · …** /
+  **Grok - …** brands), backend readiness, usage, spend/plan.
+
+Picker navigation: ↑/↓ or j/k, type to filter, Esc cancels. Full reference:
+[Commands](commands.md#primary-slash-commands). The shell handoff writes
+connection, model, and reasoning together; a main-shell prompt hook applies it
+even when the branded Aishe prompt is disabled.
 ### force-NL keybinding
 
 Sometimes your input is a valid command but you mean it as natural language.

@@ -4,6 +4,8 @@
 //! on every exit path.
 
 use std::io::{IsTerminal, Read, Write};
+#[cfg(unix)]
+use std::os::unix::io::AsRawFd;
 
 use anyhow::{Context, Result};
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyModifiers};
@@ -53,6 +55,10 @@ enum PickerKey {
 /// Filterable single-column picker used by `/model`. It intentionally uses
 /// plain text and ASCII focus marks so terminal font/theme choices never turn
 /// status into colored pictographs.
+///
+/// The interactive body runs in raw mode. Every redraw must use `\r\n` (not
+/// bare `\n`) and move the cursor back to the top of the previous frame;
+/// otherwise multi-row lists staircase to the right on each line.
 pub fn filter_picker(title: &str, options: &[String], default: usize) -> Result<PickerResult> {
     if options.is_empty() {
         anyhow::bail!("picker '{title}' has no options");
@@ -60,46 +66,31 @@ pub fn filter_picker(title: &str, options: &[String], default: usize) -> Result<
     if !std::io::stdin().is_terminal() || !std::io::stdout().is_terminal() {
         anyhow::bail!("interactive picker requires a terminal");
     }
+    // Title/help print in cooked mode so their newlines behave normally.
     println!(
         "\n  {}",
         paint(&crate::commands::display_safe(title), ACCENT)
     );
-    println!("  Type to filter · Enter use in this shell · d save as default · Esc cancel");
+    println!(
+        "  ↑/↓ or j/k move · type to filter · Enter use in this shell · d save as default · Esc cancel"
+    );
+    // Read keys from an unbuffered /dev/tty (not StdinLock). A buffered stdin
+    // read of ESC leaves the rest of an arrow CSI in the user-space buffer
+    // while poll(STDIN) sees an empty kernel buffer and treats ↑ as Esc cancel.
+    let mut keys = PickerInput::open().context("opening picker input")?;
     let guard = RawGuard::enter()?;
-    let stdin = std::io::stdin();
-    let mut input = stdin.lock();
     let mut filter = String::new();
     let mut selected = default.min(options.len() - 1);
+    let mut drawn_rows = 0_usize;
     loop {
-        let matches: Vec<usize> = options
-            .iter()
-            .enumerate()
-            .filter(|(_, option)| {
-                option
-                    .to_ascii_lowercase()
-                    .contains(&filter.to_ascii_lowercase())
-            })
-            .map(|(index, _)| index)
-            .collect();
+        let matches = picker_matches(options, &filter);
         if selected >= matches.len() {
             selected = 0;
         }
-        print!(
-            "\r\x1b[2K  filter: {}\r\n\x1b[J",
-            crate::commands::display_safe(&filter)
-        );
-        for (row, index) in matches.iter().take(20).enumerate() {
-            let marker = if row == selected { ">" } else { " " };
-            println!(
-                "  {marker} {}",
-                crate::commands::display_safe(&options[*index])
-            );
-        }
-        if matches.is_empty() {
-            println!("    no matches");
-        }
+        let lines = picker_frame_lines(options, &matches, &filter, selected);
+        draw_raw_frame(&lines, &mut drawn_rows);
         std::io::stdout().flush().ok();
-        match read_picker_key(&mut input).context("reading picker input")? {
+        match keys.read_key().context("reading picker input")? {
             PickerKey::Up => {
                 selected = selected
                     .checked_sub(1)
@@ -123,12 +114,24 @@ pub fn filter_picker(title: &str, options: &[String], default: usize) -> Result<
                 return Ok(PickerResult::SaveDefault(matches[selected]));
             }
             PickerKey::SaveDefault => {
+                // 'd' with an active filter string is typing, not "save default".
                 filter.push('d');
                 selected = 0;
             }
             PickerKey::Backspace => {
                 filter.pop();
                 selected = 0;
+            }
+            // j/k navigate when not filtering (vim-style + no accidental filter noise).
+            PickerKey::Character('k') if filter.is_empty() => {
+                selected = selected
+                    .checked_sub(1)
+                    .unwrap_or(matches.len().saturating_sub(1))
+            }
+            PickerKey::Character('j') if filter.is_empty() => {
+                if !matches.is_empty() {
+                    selected = (selected + 1) % matches.len();
+                }
             }
             PickerKey::Character(c) => {
                 if !c.is_control() {
@@ -146,63 +149,238 @@ pub fn filter_picker(title: &str, options: &[String], default: usize) -> Result<
     }
 }
 
-/// Crossterm's global Unix input reader cannot initialize while this process is
-/// launched synchronously from a live zsh ZLE widget. Read this picker's small
-/// key vocabulary directly from the already-verified terminal instead. This
-/// keeps `/model` usable both as a standalone command and inside Aishe's shell.
-fn read_picker_key(input: &mut impl Read) -> std::io::Result<PickerKey> {
-    let mut first = [0_u8; 1];
-    input.read_exact(&mut first)?;
-    Ok(match first[0] {
-        b'\r' | b'\n' => PickerKey::Enter,
-        3 => PickerKey::Cancel,
-        8 | 127 => PickerKey::Backspace,
-        27 => {
+fn picker_matches(options: &[String], filter: &str) -> Vec<usize> {
+    let needle = filter.to_ascii_lowercase();
+    options
+        .iter()
+        .enumerate()
+        .filter(|(_, option)| option.to_ascii_lowercase().contains(&needle))
+        .map(|(index, _)| index)
+        .collect()
+}
+
+/// Build the filter line plus up to 20 option rows for one picker frame.
+fn picker_frame_lines(
+    options: &[String],
+    matches: &[usize],
+    filter: &str,
+    selected: usize,
+) -> Vec<String> {
+    let mut lines = vec![format!(
+        "  filter: {}",
+        crate::commands::display_safe(filter)
+    )];
+    for (row, index) in matches.iter().take(20).enumerate() {
+        let marker = if row == selected { ">" } else { " " };
+        lines.push(format!(
+            "  {marker} {}",
+            crate::commands::display_safe(&options[*index])
+        ));
+    }
+    if matches.is_empty() {
+        lines.push("    no matches".into());
+    }
+    lines
+}
+
+/// Redraw a multi-line frame under raw mode without staircasing columns.
+///
+/// `drawn_rows` is the number of content lines written on the previous frame.
+/// After each frame the cursor sits on the blank line immediately below the
+/// last content row, so the next redraw moves up exactly `drawn_rows` lines.
+fn draw_raw_frame(lines: &[String], drawn_rows: &mut usize) {
+    let width = columns().max(1);
+    if *drawn_rows > 0 {
+        // Cursor is on the blank line under the previous frame.
+        print!("\r\x1b[{}A", *drawn_rows);
+    }
+    for line in lines {
+        let content = truncate_to_width(line, width);
+        // Clear the full row, write content, then CRLF so the next row starts
+        // at column 0 even when the terminal is in raw mode.
+        print!("\r\x1b[2K{content}\r\n");
+    }
+    // Drop any leftover rows from a taller previous frame.
+    print!("\x1b[J");
+    *drawn_rows = lines.len();
+}
+
+/// Unbuffered controlling-terminal input for the filter picker.
+///
+/// Important: do **not** read arrow keys through `std::io::stdin().lock()`
+/// (a `BufReader`). One `read_exact` of ESC can pull the entire CSI sequence
+/// into the user-space buffer; a subsequent `poll(STDIN)` then sees no kernel
+/// data and times out as bare Esc → cancel. That is why ↑ looked like cancel
+/// in `/model` and `/connection` over SSH and local PTYs.
+struct PickerInput {
+    #[cfg(unix)]
+    file: std::fs::File,
+    #[cfg(not(unix))]
+    // Fallback: unbuffered stdin (best-effort).
+    _stdin: std::io::Stdin,
+    /// Bytes already taken from a multi-byte read but not yet consumed as keys.
+    pending: Vec<u8>,
+}
+
+impl PickerInput {
+    fn open() -> Result<Self> {
+        #[cfg(unix)]
+        {
+            let file = std::fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .open("/dev/tty")
+                .context("opening /dev/tty for interactive picker keys")?;
+            Ok(Self {
+                file,
+                pending: Vec::new(),
+            })
+        }
+        #[cfg(not(unix))]
+        {
+            Ok(Self {
+                _stdin: std::io::stdin(),
+                pending: Vec::new(),
+            })
+        }
+    }
+
+    fn read_byte(&mut self) -> std::io::Result<u8> {
+        if let Some(byte) = self.pending.first().copied() {
+            self.pending.remove(0);
+            return Ok(byte);
+        }
+        let mut buf = [0_u8; 1];
+        #[cfg(unix)]
+        {
+            self.file.read_exact(&mut buf)?;
+        }
+        #[cfg(not(unix))]
+        {
+            std::io::stdin().read_exact(&mut buf)?;
+        }
+        Ok(buf[0])
+    }
+
+    /// Non-blocking peek: return next byte if already pending or readable soon.
+    fn poll_byte(&mut self, timeout_ms: i32) -> std::io::Result<Option<u8>> {
+        if let Some(byte) = self.pending.first().copied() {
+            self.pending.remove(0);
+            return Ok(Some(byte));
+        }
+        if !self.poll_ready(timeout_ms) {
+            return Ok(None);
+        }
+        Ok(Some(self.read_byte()?))
+    }
+
+    fn poll_ready(&self, timeout_ms: i32) -> bool {
+        #[cfg(unix)]
+        {
             let mut pollfd = libc::pollfd {
-                fd: libc::STDIN_FILENO,
+                fd: self.file.as_raw_fd(),
                 events: libc::POLLIN,
                 revents: 0,
             };
-            // SAFETY: `pollfd` points to one initialized entry and the call
-            // does not outlive it. A short timeout distinguishes Esc from an
-            // arrow-key escape sequence without making cancellation feel slow.
-            let available = unsafe { libc::poll(&mut pollfd, 1, 25) };
-            if available <= 0 || pollfd.revents & libc::POLLIN == 0 {
-                PickerKey::Cancel
-            } else {
-                let mut sequence = [0_u8; 2];
-                input.read_exact(&mut sequence)?;
-                match sequence {
-                    [b'[', b'A'] => PickerKey::Up,
-                    [b'[', b'B'] => PickerKey::Down,
-                    _ => PickerKey::Other,
+            // SAFETY: one initialized pollfd for the duration of the call.
+            let available = unsafe { libc::poll(&mut pollfd, 1, timeout_ms) };
+            available > 0 && pollfd.revents & libc::POLLIN != 0
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = timeout_ms;
+            true
+        }
+    }
+
+    fn read_key(&mut self) -> std::io::Result<PickerKey> {
+        let first = self.read_byte()?;
+        Ok(match first {
+            b'\r' | b'\n' => PickerKey::Enter,
+            3 => PickerKey::Cancel,
+            8 | 127 => PickerKey::Backspace,
+            27 => self.read_escape_sequence()?,
+            b'd' => PickerKey::SaveDefault,
+            byte if byte.is_ascii() => PickerKey::Character(char::from(byte)),
+            byte => {
+                let width = if byte & 0b1110_0000 == 0b1100_0000 {
+                    2
+                } else if byte & 0b1111_0000 == 0b1110_0000 {
+                    3
+                } else if byte & 0b1111_1000 == 0b1111_0000 {
+                    4
+                } else {
+                    1
+                };
+                let mut bytes = vec![byte];
+                for _ in 1..width {
+                    bytes.push(self.read_byte()?);
                 }
+                std::str::from_utf8(&bytes)
+                    .ok()
+                    .and_then(|value| value.chars().next())
+                    .map(PickerKey::Character)
+                    .unwrap_or(PickerKey::Other)
             }
+        })
+    }
+
+    /// Parse ESC + CSI (`\x1b[…A`) or SS3 (`\x1bOA`) arrow sequences.
+    fn read_escape_sequence(&mut self) -> std::io::Result<PickerKey> {
+        // Prefer bytes already available; only then wait (SSH lag).
+        let Some(second) = self.poll_byte(300)? else {
+            return Ok(PickerKey::Cancel);
+        };
+        match second {
+            // SS3 cursor keys (application cursor mode): ESC O A/B
+            b'O' => {
+                let Some(third) = self.poll_byte(150)? else {
+                    return Ok(PickerKey::Other);
+                };
+                return Ok(match third {
+                    b'A' => PickerKey::Up,
+                    b'B' => PickerKey::Down,
+                    _ => PickerKey::Other,
+                });
+            }
+            // CSI: ESC [ … final
+            b'[' => {}
+            _ => return Ok(PickerKey::Other),
         }
-        b'd' => PickerKey::SaveDefault,
-        byte if byte.is_ascii() => PickerKey::Character(char::from(byte)),
-        byte => {
-            let width = if byte & 0b1110_0000 == 0b1100_0000 {
-                2
-            } else if byte & 0b1111_0000 == 0b1110_0000 {
-                3
-            } else if byte & 0b1111_1000 == 0b1111_0000 {
-                4
-            } else {
-                1
+
+        // Read CSI parameter/intermediate bytes until a final byte (0x40–0x7E).
+        let mut final_byte = None;
+        for _ in 0..16 {
+            let Some(byte) = self.poll_byte(150)? else {
+                break;
             };
-            let mut bytes = [0_u8; 4];
-            bytes[0] = byte;
-            if width > 1 {
-                input.read_exact(&mut bytes[1..width])?;
+            if (0x40..=0x7e).contains(&byte) {
+                final_byte = Some(byte);
+                break;
             }
-            std::str::from_utf8(&bytes[..width])
-                .ok()
-                .and_then(|value| value.chars().next())
-                .map(PickerKey::Character)
-                .unwrap_or(PickerKey::Other)
         }
-    })
+        Ok(match final_byte {
+            Some(b'A') => PickerKey::Up,
+            Some(b'B') => PickerKey::Down,
+            _ => PickerKey::Other,
+        })
+    }
+}
+
+#[cfg(test)]
+impl PickerInput {
+    fn from_bytes(bytes: &[u8]) -> Self {
+        Self {
+            #[cfg(unix)]
+            file: std::fs::OpenOptions::new()
+                .read(true)
+                .open("/dev/null")
+                .expect("open /dev/null"),
+            #[cfg(not(unix))]
+            _stdin: std::io::stdin(),
+            pending: bytes.to_vec(),
+        }
+    }
 }
 
 struct RawGuard;
@@ -397,6 +575,7 @@ pub fn menu(
             }
             KeyCode::Enter => {
                 drop(guard);
+                // Leave raw mode before emitting a cooked newline.
                 println!();
                 return Ok(MenuResult::Selected(selected));
             }
@@ -454,6 +633,8 @@ fn print_option(index: usize, option: &str, terminal_columns: usize) {
 }
 
 fn print_selection(index: usize, label: &str, terminal_columns: usize) {
+    // Single bottom focus row: rewrite the current line in place with CR, never
+    // emit bare LF under raw mode (that would staircase subsequent output).
     let safe = crate::commands::display_safe(label);
     let prefix = format!("› {}) ", index + 1);
     let available = terminal_columns.saturating_sub(2).max(1);
@@ -463,6 +644,7 @@ fn print_selection(index: usize, label: &str, terminal_columns: usize) {
 }
 
 fn print_help(help: &str, terminal_columns: usize) {
+    // Help is printed under raw mode; use CRLF so wrapped lines stay left-aligned.
     let safe = crate::commands::display_safe(help);
     let available = terminal_columns.saturating_sub(2).max(1);
     print!("\r\x1b[2K");
@@ -658,5 +840,79 @@ mod tests {
         assert!(!color_enabled_for(true, true, Some("xterm-256color")));
         assert!(!color_enabled_for(true, false, Some("dumb")));
         assert!(!color_enabled_for(false, false, Some("xterm-256color")));
+    }
+
+    #[test]
+    fn picker_frame_keeps_selection_marker_left_aligned() {
+        let options = vec![
+            "Anthropic            Auto (legacy)            claude-sonnet-4-20250514".into(),
+            "OpenAI               Auto (legacy)            gpt-5.6-luna".into(),
+        ];
+        let matches = picker_matches(&options, "");
+        assert_eq!(matches, vec![0, 1]);
+        let lines = picker_frame_lines(&options, &matches, "", 1);
+        assert_eq!(lines[0], "  filter: ");
+        assert_eq!(
+            lines[1],
+            "    Anthropic            Auto (legacy)            claude-sonnet-4-20250514"
+        );
+        assert_eq!(
+            lines[2],
+            "  > OpenAI               Auto (legacy)            gpt-5.6-luna"
+        );
+        // Marker column is fixed so raw-mode CRLF redraw cannot look "selected mid-row".
+        assert!(lines[1].starts_with("    "));
+        assert!(lines[2].starts_with("  > "));
+        assert_eq!(lines[1].find("Anthropic"), Some(4));
+        assert_eq!(lines[2].find("OpenAI"), Some(4));
+    }
+
+    #[test]
+    fn picker_filter_narrows_matches_and_handles_empty() {
+        let options = vec![
+            "Anthropic · claude".into(),
+            "OpenAI · gpt".into(),
+            "xAI · grok".into(),
+        ];
+        assert_eq!(picker_matches(&options, "open"), vec![1]);
+        assert_eq!(picker_matches(&options, "nope"), Vec::<usize>::new());
+        let empty = picker_frame_lines(&options, &[], "nope", 0);
+        assert_eq!(empty[0], "  filter: nope");
+        assert_eq!(empty[1], "    no matches");
+    }
+
+    #[test]
+    fn arrow_csi_and_ss3_sequences_are_not_treated_as_cancel() {
+        // Complete multi-byte sequences must never look like bare Esc cancel.
+        // (Buffered-stdin + poll(STDIN) used to do exactly that.)
+        assert_eq!(
+            PickerInput::from_bytes(b"\x1b[A").read_key().unwrap(),
+            PickerKey::Up
+        );
+        assert_eq!(
+            PickerInput::from_bytes(b"\x1b[B").read_key().unwrap(),
+            PickerKey::Down
+        );
+        assert_eq!(
+            PickerInput::from_bytes(b"\x1bOA").read_key().unwrap(),
+            PickerKey::Up
+        );
+        assert_eq!(
+            PickerInput::from_bytes(b"\x1bOB").read_key().unwrap(),
+            PickerKey::Down
+        );
+        // Modified CSI (e.g. from some terminals): ESC [ 1 ; 5 A
+        assert_eq!(
+            PickerInput::from_bytes(b"\x1b[1;5A").read_key().unwrap(),
+            PickerKey::Up
+        );
+        assert_eq!(
+            PickerInput::from_bytes(b"j").read_key().unwrap(),
+            PickerKey::Character('j')
+        );
+        assert_eq!(
+            PickerInput::from_bytes(b"\r").read_key().unwrap(),
+            PickerKey::Enter
+        );
     }
 }

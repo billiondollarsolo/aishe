@@ -97,6 +97,22 @@ impl OpenCodeClient {
         Ok(value)
     }
 
+    /// Models OpenCode currently exposes for this client's provider.
+    ///
+    /// For OAuth (ChatGPT/Codex, SuperGrok) this is the subscription-filtered
+    /// catalog from the managed runtime — not a public `/v1/models` API call.
+    pub fn list_provider_models(&self) -> Result<Vec<String>> {
+        let value = self.get_json("/config/providers", None)?;
+        let models = provider_model_ids(&value, &self.provider_id);
+        if models.is_empty() {
+            anyhow::bail!(
+                "OpenCode /config/providers returned no models for provider '{}'",
+                self.provider_id
+            );
+        }
+        Ok(models)
+    }
+
     pub fn create_session(
         &self,
         workspace: &Path,
@@ -619,6 +635,34 @@ fn push_events(
     }
 }
 
+/// Extract sorted unique model ids for `provider_id` from a
+/// `/config/providers` JSON body (`{ "providers": [ { "id", "models": {…} } ] }`).
+fn provider_model_ids(value: &Value, provider_id: &str) -> Vec<String> {
+    let mut models = Vec::new();
+    let Some(providers) = value.get("providers").and_then(Value::as_array) else {
+        return models;
+    };
+    for provider in providers {
+        if provider.get("id").and_then(Value::as_str) != Some(provider_id) {
+            continue;
+        }
+        if let Some(map) = provider.get("models").and_then(Value::as_object) {
+            for (key, model) in map {
+                let id = model
+                    .get("id")
+                    .and_then(Value::as_str)
+                    .unwrap_or(key.as_str());
+                if !id.is_empty() {
+                    models.push(id.to_string());
+                }
+            }
+        }
+    }
+    models.sort();
+    models.dedup();
+    models
+}
+
 fn agent_for_mode(mode: Mode) -> &'static str {
     match mode {
         Mode::Suggest => "aishe-suggest",
@@ -724,6 +768,41 @@ mod tests {
     use std::net::{TcpListener, TcpStream};
 
     #[test]
+    fn parses_config_providers_model_ids_for_one_provider() {
+        let body = serde_json::json!({
+            "providers": [
+                {
+                    "id": "openai",
+                    "models": {
+                        "gpt-5.4": {"id": "gpt-5.4"},
+                        "gpt-5.5": {"id": "gpt-5.5"},
+                        "gpt-5.6-luna": {"name": "Luna"}
+                    }
+                },
+                {
+                    "id": "xai",
+                    "models": {
+                        "grok-4.5": {"id": "grok-4.5"}
+                    }
+                }
+            ]
+        });
+        assert_eq!(
+            provider_model_ids(&body, "openai"),
+            vec![
+                "gpt-5.4".to_string(),
+                "gpt-5.5".to_string(),
+                "gpt-5.6-luna".to_string()
+            ]
+        );
+        assert_eq!(
+            provider_model_ids(&body, "xai"),
+            vec!["grok-4.5".to_string()]
+        );
+        assert!(provider_model_ids(&body, "missing").is_empty());
+    }
+
+    #[test]
     fn refuses_non_loopback_servers() {
         assert!(OpenCodeClient::new(
             OpenCodeConnection {
@@ -756,6 +835,7 @@ mod tests {
         for (path, method) in [
             ("/global/health", "get"),
             ("/global/event", "get"),
+            ("/config/providers", "get"),
             ("/session", "get"),
             ("/session", "post"),
             ("/session/status", "get"),

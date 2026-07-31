@@ -1,5 +1,8 @@
 # Getting started
 
+> **Alpha (pre-1.0).** Behavior and config may still change; see the
+> [docs index](README.md) and [root README](../README.md).
+
 This page walks through your first session with aishe.
 
 ## 1. Authenticate a provider
@@ -51,10 +54,13 @@ It asks for:
 - on Linux, a bubblewrap functional check and an explicit offer to install the
   package when it is missing,
 - the provider/service and safety profile,
-- for an OpenAI-compatible provider, the **service** (OpenAI, xAI, Groq, OpenRouter,
-  Together, Ollama, or a custom endpoint) and the **API endpoint (base URL)**,
-  pre-filled from the chosen service,
-- a saved credential profile, hidden key entry, or environment-only workflow,
+- for an OpenAI-compatible provider, the **service** (including explicit
+  **ChatGPT / Codex OAuth** and **Grok OAuth** shortcuts, plus OpenAI, xAI, Groq,
+  OpenRouter, Together, Ollama, or a custom endpoint) and the **API endpoint
+  (base URL)** for non-OAuth rows,
+- a saved credential profile, subscription OAuth login (labeled
+  **Codex - OAuth · work** / **Grok - OAuth · work**), or API-key paths labeled
+  **Codex - API** / **Grok - API**, hidden key entry, or environment-only workflow,
 - a current model catalog from the endpoint and a validated model selection,
 - per-million-token input/output prices when that exact model has no known price,
 - suggest/auto/yolo behavior, workspace/host scope, and workspace network policy,
@@ -192,8 +198,27 @@ state. Add `--live` for the pinned runtime/server and minimal provider feature
 probes; `--json` for automation; `--fix` for safe local repairs; or `--bundle
 PATH` for a redacted support bundle.
 
+## 8. Switch accounts and models
+
+Inside the shell:
+
+```
+/help                # task-first index
+/connection          # switch account (Codex/Grok OAuth vs API, Anthropic, …)
+/model               # models for the *active* account only
+/status              # connection brand, model, mode, spend/plan
+```
+
+After `aishe auth login openai --profile work` or `aishe auth login xai
+--profile work`, Aishe creates a connection if one is missing so `/connection`
+lists **Codex - OAuth · work** or **Grok - OAuth · work** immediately. Details:
+[Commands](commands.md#primary-slash-commands) and [Providers](providers.md).
+
 ## Where to go next
 
+- [Commands and slash-commands](commands.md) for the full CLI and `/help` topics.
+- [Providers](providers.md) for Anthropic, Codex/OpenAI, Grok/xAI, OAuth, and
+  OpenAI-compatible endpoints.
 - [Modes](modes.md) for streaming and structured output.
 - [Front-ends](front-ends.md) for the zsh-PTY shell, the native hook, and `-c`.
 - [Managed agent backend](managed-agent-backend.md) for runtime, sessions,
@@ -201,3 +226,4 @@ PATH` for a redacted support bundle.
 - [Custom commands and skills](custom-commands-and-skills.md) to add your own
   `/commands`.
 - [Configuration reference](configuration.md) for every setting.
+- [Root README](../README.md) for marketing overview and the 60-second start.

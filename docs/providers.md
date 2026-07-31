@@ -66,7 +66,12 @@ that request first.
 
 Subscription OAuth is available only through the managed agent transport, so
 Setup accepts a model ID directly and validates it through that runtime when a
-live check is requested.
+live check is requested. Interactive `/model` for **Codex - OAuth** and
+**Grok - OAuth** lists models from the managed OpenCode runtime
+(`GET /config/providers` on the private loopback server) — the same
+subscription-filtered catalog OpenCode uses — not from public
+`GET /v1/models`. API-key connections still use the endpoint `/v1/models`
+catalog.
 
 ## Anthropic
 
@@ -98,7 +103,7 @@ connection = "openai-work"
 
 [connections.openai-work]
 provider = "openai"
-label = "OpenAI work"
+label = "Codex - OAuth · work"
 base_url = "https://api.openai.com"
 model = "gpt-5.6-luna"
 transport = "responses"
@@ -108,11 +113,14 @@ profile = "work"
 ```
 
 ```sh
-aishe auth login --connection openai-work
+aishe auth login openai --profile work
+# or: aishe auth login --connection openai-work
 # API-key alternative: create an api_key connection and run aishe auth set PROFILE
 aishe
 ```
 
+Status and pickers brand this as **Codex - OAuth · work** (vs **Codex - API**
+for an API-key connection).
 The managed engine uses OpenAI Responses for reasoning and tools, avoiding the
 Chat Completions incompatibility between reasoning effort and function tools on
 models such as GPT-5.6. OpenCode owns provider-native reasoning continuation and
@@ -140,7 +148,7 @@ connection = "xai-prod"
 
 [connections.xai-prod]
 provider = "xai"
-label = "xAI production"
+label = "Grok - OAuth · prod"
 base_url = "https://api.x.ai"
 model = "grok-4.5"
 transport = "responses"
@@ -150,10 +158,12 @@ profile = "prod"
 ```
 
 ```sh
-aishe auth login --connection xai-prod
+aishe auth login xai --profile prod
+# or: aishe auth login --connection xai-prod
 # API-key alternative: a separate api_key connection with credential = "xai"
 ```
 
+Branded as **Grok - OAuth · prod** (vs **Grok - API** for API-key auth).
 The OAuth credential binds to OpenCode's exact `xai` provider identity so its
 refresh and bearer-token hooks remain active. A custom `api.x.ai`-lookalike host
 does not qualify.
@@ -253,23 +263,43 @@ Any service that speaks the OpenAI Chat Completions format works. Set `base_url`
 to the service root, `api_key_env` to your key variable, and `model` to a model
 the service exposes.
 
-## Switching providers and models at runtime
+## Switching accounts and models at runtime
+
+Account and model are separate surfaces so changing a model never quietly
+changes logins:
 
 ```sh
-aishe model                         # filterable connection/model picker
-aishe model gpt-5.6-terra           # current connection, this shell
-aishe model gpt-5.6-sol --connection openai-work
-aishe model openai-api/gpt-5.6-luna
-aishe model default                 # restore the durable default
+# Switch account (this shell; d in picker = durable default)
+aishe connection pick               # or /connection in the shell
 aishe connection use openai-work --default
+
+# Change model on the *active* connection only
+aishe model                         # or /model in the shell
+aishe model gpt-5.6-terra
+aishe model gpt-5.6-sol --connection openai-work
+aishe model default                 # restore the durable default model
+aishe models --connection openai-work
 ```
 
-In an interactive terminal, Enter applies the highlighted pair only to that
-shell and `d` both applies and saves it. `aishe models --connection ID` performs
-connection-scoped discovery. OAuth discovery falls back to configured, cached,
-recently audited, and typed model IDs when the pinned runtime cannot enumerate
-the subscription account. Aishe never queries `models.dev`.
+In an interactive terminal, Enter applies the highlighted choice only to that
+shell; `d` (or the post-Enter “make this the default?” prompt) saves it.
+Navigation is ↑/↓ or j/k. Brands on status and `/status`:
 
+| Brand | Meaning |
+|-------|---------|
+| **Codex - API** | OpenAI with API key |
+| **Codex - OAuth · {profile}** | ChatGPT/Codex subscription OAuth |
+| **Grok - API** | xAI with API key |
+| **Grok - OAuth · {profile}** | SuperGrok subscription OAuth |
+
+For **Codex - OAuth** and **Grok - OAuth**, `/model` lists models from the
+managed OpenCode runtime (`GET /config/providers` on the private loopback
+server) — the same subscription-filtered catalog OpenCode uses. When the
+runtime cannot enumerate the account, Aishe falls back to configured, cached,
+recently audited, and typed model IDs. API-key connections use endpoint
+`GET /v1/models`. Aishe never queries `models.dev`. After `aishe auth login
+openai|xai [--profile …]` without an existing connection, Aishe creates one
+(e.g. `xai-work`) so `/connection` lists it immediately.
 The native compatibility/provider-probe layer supports both `max_tokens` and
 `max_completion_tokens` for custom Chat Completions endpoints and caches the
 accepted spelling. Managed OpenCode turns use the endpoint's provider adapter.

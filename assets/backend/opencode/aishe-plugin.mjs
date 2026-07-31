@@ -326,7 +326,17 @@ export const AisheBridge = async () => ({
       if (attempt === 0 && response.status === 400 && code === "invalid_request") continue
       throw new Error(`Aishe budget gate rejected provider turn: ${response.status} (${code})`)
     }
-    if (typeof decision?.max_output_tokens === "number") {
+    // ChatGPT/Codex and SuperGrok OAuth use subscription transports that reject
+    // `max_output_tokens` (OpenCode's built-in openai/xai OAuth hooks clear it).
+    // Never re-apply a budget token cap as maxOutputTokens for those providers.
+    // API-key launches use aishe-* provider IDs and still accept the cap.
+    const providerId =
+      typeof input?.model?.providerID === "string" ? input.model.providerID : ""
+    const oauthOmitsMaxOutputTokens =
+      providerId === "openai" || providerId === "xai"
+    if (oauthOmitsMaxOutputTokens) {
+      output.maxOutputTokens = undefined
+    } else if (typeof decision?.max_output_tokens === "number") {
       output.maxOutputTokens = decision.max_output_tokens
     }
   },

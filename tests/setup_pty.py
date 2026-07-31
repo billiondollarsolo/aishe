@@ -281,10 +281,14 @@ def setup_visual_style_and_alignment():
                 raise AssertionError("current setup selection was not highlighted")
             if "…\x1b[0m" not in shell.transcript:
                 raise AssertionError("narrow focus row was not kept to one line")
-            if "       reasoning and tools." not in shell.transcript:
+            if "       ChatGPT/Codex OAuth above for Plus/Pro." not in shell.transcript:
                 raise AssertionError("long provider help did not word-wrap with indentation")
+            if "ChatGPT / Codex OAuth" not in shell.transcript:
+                raise AssertionError("explicit ChatGPT/Codex OAuth option missing from setup menu")
+            if "Grok OAuth" not in shell.transcript:
+                raise AssertionError("explicit Grok OAuth option missing from setup menu")
 
-            shell.menu(2)
+            shell.menu(4)  # OpenAI API-key catalog row (after two OAuth shortcuts)
             shell.expect("API endpoint")
             shell.drain(0.2)
             aligned = "\x1b[0m\r\n  \x1b[1;36mAPI endpoint\x1b[0m"
@@ -320,7 +324,7 @@ def setup_width_and_no_color_matrix():
                     raise AssertionError(
                         "setup lost its visible focus row at %d columns" % cols
                     )
-                shell.menu(2)
+                shell.menu(4)  # OpenAI catalog row after OAuth shortcuts
                 shell.expect("API endpoint")
                 shell.line(":cancel")
                 shell.expect("Setup paused")
@@ -364,7 +368,7 @@ def setup_checks_catalog_credential_and_manual_model():
             rejected = Pty([BINARY, "setup"], env)
             try:
                 setup_to_provider(rejected)
-                rejected.menu(7)
+                rejected.menu(9)  # custom (+2 for OAuth shortcuts)
                 rejected.expect("API endpoint")
                 rejected.line(endpoint)
                 rejected.expect("Credential profile 'custom'")
@@ -384,7 +388,7 @@ def setup_checks_catalog_credential_and_manual_model():
             restarted = Pty([BINARY, "setup", "--restart"], env)
             try:
                 setup_to_provider(restarted)
-                restarted.menu(7)
+                restarted.menu(9)  # custom (+2 for OAuth shortcuts)
                 restarted.expect("API endpoint")
                 restarted.line(endpoint)
                 restarted.expect("Credential profile 'custom'")
@@ -425,7 +429,7 @@ def complete_setup(root, env, endpoint):
     shell = Pty([BINARY, "setup"], env)
     try:
         setup_to_provider(shell, install_runtime=True)
-        shell.menu(6)  # Ollama
+        shell.menu(8)  # Ollama (+2 for OAuth shortcuts)
 
         shell.expect("API endpoint")
         shell.line("ftp://bad")
@@ -706,7 +710,7 @@ def hidden_auth_and_staged_setup_are_secret_safe(runtime_root):
         shell = Pty([BINARY, "setup"], env)
         try:
             setup_to_provider(shell)
-            shell.menu(7)  # custom, with authentication required
+            shell.menu(9)  # custom, with authentication required (+2 for OAuth shortcuts)
             shell.expect("API endpoint")
             shell.line(endpoint)
             shell.expect("Credential profile 'custom'")

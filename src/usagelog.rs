@@ -244,8 +244,11 @@ fn status_values_for_connection(
                 total.requests,
                 if total.requests == 1 { "" } else { "s" }
             )),
-            // model/mode are handled in the parent shell; unknown fields are
-            // ignored for forward/backward compatibility.
+            // Subscription marker / future quota text. Shell also reads
+            // AISHE_PLAN_LABEL; this keeps the metric file self-describing.
+            "plan" => Some("plan".into()),
+            // model/mode/auth/connection are handled in the parent shell;
+            // unknown fields are ignored for forward/backward compatibility.
             _ => None,
         };
         if let Some(value) = value {

@@ -1,5 +1,9 @@
 # Commands and slash-commands
 
+> **Alpha (pre-1.0).** The command surface can still change; prefer `/help` in a
+> live shell for the current task-oriented index. Overview:
+> [docs index](README.md) · [root README](../README.md).
+
 aishe's interactive shell is your real zsh; aishe adds a small set of
 subcommands, a few inspection commands, and input prefixes that control routing.
 
@@ -28,7 +32,8 @@ aishe scope [workspace|host]        show or set the next agent execution scope
 aishe network [allow|deny]          show or set workspace-agent network access
 aishe output [focus|compact|detailed]  show or set agent transcript density
 aishe reasoning [LEVEL] [--default]   shell-local or saved reasoning effort
-aishe model [NAME] [--connection ID] [--default]  unified connection/model selection
+aishe model [NAME] [--connection ID] [--default]  models for the active connection (OAuth via OpenCode)
+aishe connection pick [ID] [--default]            switch account/connection
 aishe provider [NAME]               select a unique provider connection (legacy form)
 aishe provider test [--live] [--json]  validate the active provider
 aishe models [--connection ID]      list models returned for one connection
@@ -137,26 +142,69 @@ same-provider connections may remain active concurrently up to
 ## Primary slash commands
 
 The standalone Aishe shell prints a one-line `/help` hint at startup. `/help`
-and `aishe commands` show the same compact index:
+is **task-first** (not a raw dump of every flag). Topics:
 
 ```text
-/help       command index
-/model      filter/select connection and model; Enter shell-only, d save
-/provider   open the same connection/model picker
-/auth       active connection authentication state and remediation
-/status     model, mode, scope, spend, and audit state/path
-/usage      live token and cost totals for this shell
-/log        last 20 audit events and tool actions
-/reasoning [LEVEL]  show or set shell-local reasoning effort
-/details    expand/shrink agent work for following turns
-/settings   interactive settings editor
-/reset      fresh conversation; old session is retained
-/commands   primary and installed custom slash-commands
+/help              overview — accounts, models, session, config
+/help accounts     add/switch accounts, OAuth vs API key, brands
+/help models       models for the active connection only
+/help session      status, usage, reset, reasoning, mode keys
+/help config       setup, settings, doctor, tour, backend
 ```
 
-Ctrl-O is the keyboard equivalent of `/details`; Shift-Tab cycles
-`suggest -> auto -> yolo`.
+`aishe commands` and `/commands` share the same help surface.
 
+```text
+/connection   switch account (provider + auth + endpoint)
+/model        list/set models for the *active* connection only
+/provider     alias for /connection
+/auth         active connection authentication state and remediation
+/status       connection, model, mode, scope, spend/plan, audit
+/usage        live token and cost totals for this shell
+/log          last 20 audit events and tool actions
+/reasoning [LEVEL]  show or set shell-local reasoning effort
+/details      expand/shrink agent work for following turns
+/settings     interactive settings editor
+/reset        fresh conversation; old session is retained
+/commands     same as /help
+```
+
+### `/connection` vs `/model`
+
+| Command | Changes | Does not |
+|---------|---------|----------|
+| `/connection` | Active **account** (connection ID, auth, endpoint, default model for that account) | — |
+| `/model` | **Model** on the current connection only | Login / credential / other accounts |
+
+This split is intentional: picking a model must never quietly switch OAuth
+profiles. After `aishe auth login openai|xai [--profile …]`, Aishe creates a
+matching connection when none exists (e.g. `xai-work` / **Grok - OAuth · work**)
+so `/connection` lists it immediately.
+
+### Picker controls
+
+Both `/connection` and `/model` use the same filterable picker when run on a
+TTY:
+
+- **↑ / ↓** or **j / k** — move selection
+- type to filter
+- **Enter** — apply for this shell only
+- **d** (or the post-Enter “make this the default?” prompt when the choice
+  differs from config) — save as durable default
+- **Esc** — cancel
+
+Direct forms: `/connection ID`, `/model NAME`,
+`aishe model NAME --connection ID`, `aishe connection use ID --default`.
+
+OAuth model lists for **Codex - OAuth** and **Grok - OAuth** come from the
+managed OpenCode runtime (`GET /config/providers`), not public
+`GET /v1/models`. API-key connections use the endpoint catalog. See
+[Providers](providers.md).
+
+Ctrl-O is the keyboard equivalent of `/details`; Shift-Tab cycles
+`suggest -> auto -> yolo`. Ask product how-to questions in natural language
+(“how do I add a Codex OAuth account?”) — answers use the built-in
+`aishe-product` skill.
 ## Prompt-only meta commands
 
 A few settings are toggled by **meta commands at the aishe prompt**. Type them
@@ -201,7 +249,7 @@ to its original state. The journal lives at `undo.jsonl` in aishe's
 ## Changing settings
 
 `aishe mode`, `aishe scope`, `aishe network`, `aishe output`, and legacy
-`aishe provider` show or save durable settings. Model/connection selection is
+`aishe provider` show or save durable settings. Account and model selection is
 shell-local by default and is saved only with `d`, `--default`, or
 `aishe connection use ID --default`. Reasoning follows the same rule inside an
 Aishe shell: `/reasoning high` is local and `aishe reasoning high --default`
@@ -215,12 +263,12 @@ aishe mode auto         # persist the default mode
 aishe scope workspace   # confine the next managed agent turn
 aishe network deny      # no workspace-agent network capability
 aishe output focus      # final responses; transient agent activity
-aishe model             # unified filterable picker
+aishe connection pick   # account picker (or /connection in shell)
+aishe model             # models for the *active* connection
 aishe model gpt-5.6-terra --connection openai-work
 aishe reasoning high --default
 aishe connection use openai-work --default
 ```
-
 Use `aishe settings` for the interactive editor. It shows whether each effective
 value came from defaults, the user config, a trusted project overlay, or a
 session override; changes are staged and written only when you apply them.

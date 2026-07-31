@@ -6,6 +6,53 @@ breaking changes can land in any release.
 
 ## [Unreleased]
 
+## [0.6.2] - 2026-07-31
+
+### Fixed
+- `/model` and `/connection` pickers read keys from unbuffered `/dev/tty` so
+  multi-byte arrow sequences (CSI/SS3) are not misread as Esc cancel when the
+  rest of the sequence was already buffered in stdin. Supports ↑/↓, j/k, and
+  after Enter prompts to save as default when the choice differs from config.
+- `/model` no longer staircases rows under raw mode. The filter picker redraws
+  with CRLF line ends, trims rows to the terminal width, and moves the cursor
+  back to the top of the previous frame so the `>` marker stays left-aligned.
+- **Codex / Grok OAuth model discovery** uses the managed OpenCode runtime
+  (`GET /config/providers`) so `/model` lists the same subscription-filtered
+  catalog OpenCode exposes (e.g. gpt-5.4, gpt-5.5, gpt-5.6-luna, …), not only
+  the single configured default. Public `GET /v1/models` remains API-key only.
+- ChatGPT/Codex and SuperGrok OAuth turns no longer fail with
+  `Unsupported parameter: max_output_tokens`. The managed plugin still runs the
+  budget admission bridge, but does not re-apply a token cap that those
+  subscription transports reject (OpenCode clears it for `openai`/`xai` OAuth).
+
+### Added
+- After `aishe auth login openai|xai [--profile …]`, Aishe creates a matching
+  connection (e.g. `xai-work` / **Grok - OAuth · work**) when none exists, so
+  `/connection` lists it immediately, and can switch the active connection.
+- Task-first `/help` (topics: `accounts`, `models`, `session`, `config`) with
+  recipes for adding accounts, OAuth, and model switching.
+- Built-in **`aishe-product`** skill plus product brief in suggest/yolo so natural
+  language “how do I use Aishe?” questions get exact commands.
+- `/connection` picker footer explains how to **add** a new account (`setup` /
+  `connection add` / `auth login`).
+
+### Changed
+- Setup lists explicit **ChatGPT / Codex OAuth** and **Grok OAuth** provider
+  choices first. Selecting either binds the official OpenAI or xAI endpoint and
+  jumps to the subscription login path; the credential step labels those flows
+  by name instead of a generic "provider subscription" wording.
+- Account switching is `/connection` (and `/provider` as an alias). `/model`
+  only lists models for the **active** connection so changing models does not
+  quietly change logins.
+- OpenAI/xAI connections use explicit brands by auth method:
+  **`Codex - API`** vs **`Codex - OAuth · {profile}`**, and **`Grok - API`** vs
+  **`Grok - OAuth · {profile}`**. Statusline for OAuth prefers connection +
+  model + mode + tokens and shows a `plan` marker instead of dollar cost.
+  Remaining 5-hour/weekly plan quota is not exposed by the current OpenCode
+  OAuth path; when a stable signal appears it will feed the `plan` item.
+- README and user docs mark **alpha (pre-1.0)**, document `/connection` vs
+  `/model`, Codex/Grok branding, OAuth discovery, and link README ↔ docs.
+
 ## [0.6.1] - 2026-07-30
 
 ### Fixed

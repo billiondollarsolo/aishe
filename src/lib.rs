@@ -27,6 +27,7 @@ pub mod modes;
 pub mod oauth;
 pub mod overlay;
 pub mod policy;
+pub mod product_help;
 pub mod profiles;
 pub mod promptui;
 pub mod provider_catalog;

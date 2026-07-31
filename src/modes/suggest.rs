@@ -146,7 +146,15 @@ fn run_stream(
         .unwrap_or_else(|| "sh".to_string());
     let system = super::suggest_stream_system_prompt(&shell, std::env::consts::OS);
     let mut messages = session.history();
-    messages.push(Msg::User(format!("{ctx}\nUser request: {input}")));
+    let mut user = format!("{ctx}\nUser request: {input}");
+    if crate::product_help::looks_like_product_question(input) {
+        user.push_str("\n\n--- Aishe product reference (authoritative) ---\n");
+        user.push_str(crate::product_help::product_skill_body());
+        user.push_str(
+            "\n--- end product reference ---\nAnswer in prose with exact commands (no CMD:).",
+        );
+    }
+    messages.push(Msg::User(user));
 
     let model = config.active_model();
     let mode = config.aishe.mode.as_str();
@@ -369,7 +377,15 @@ pub fn request_strict(
     let os = std::env::consts::OS;
     let system = super::suggest_system_prompt(&shell, os);
     let mut messages = history;
-    messages.push(Msg::User(format!("{ctx}\nUser request: {input}")));
+    let mut user = format!("{ctx}\nUser request: {input}");
+    if crate::product_help::looks_like_product_question(input) {
+        user.push_str("\n\n--- Aishe product reference (authoritative) ---\n");
+        user.push_str(crate::product_help::product_skill_body());
+        user.push_str(
+            "\n--- end product reference ---\nAnswer as type \"answer\" with exact commands.",
+        );
+    }
+    messages.push(Msg::User(user));
 
     let model = config.active_model();
     let mode = config.aishe.mode.as_str();

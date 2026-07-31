@@ -76,7 +76,9 @@ shell command. Informational questions (for example who/what/why/when,\n\
 define/explain, or what a command does) MUST use type \"answer\". Do not turn a\n\
 fact into echo/printf/python, and do not substitute man for an explanation.\n\
 Use type \"command\" only when the user wants to inspect or change the current\n\
-machine, filesystem, processes, network, or other local state."
+machine, filesystem, processes, network, or other local state.\n\n\
+{}\n",
+        crate::product_help::product_brief()
     )
 }
 
@@ -103,7 +105,9 @@ shell command. Informational questions (for example who/what/why/when,\n\
 define/explain, or what a command does) must be answered directly in prose.\n\
 Never turn a fact into echo/printf/python, and do not substitute man for an\n\
 explanation. Use CMD only when the user wants to inspect or change the current\n\
-machine, filesystem, processes, network, or other local state."
+machine, filesystem, processes, network, or other local state.\n\n\
+{}\n",
+        crate::product_help::product_brief()
     )
 }
 

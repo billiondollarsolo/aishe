@@ -102,6 +102,12 @@ command_not_found_handler() {
     /help|/commands)
       command aishe commands < /dev/tty > /dev/tty 2>&1
       ;;
+    /help\ *)
+      command aishe commands ${line#/help } < /dev/tty > /dev/tty 2>&1
+      ;;
+    /commands\ *)
+      command aishe commands ${line#/commands } < /dev/tty > /dev/tty 2>&1
+      ;;
     /status)
       command aishe status < /dev/tty > /dev/tty 2>&1
       ;;
@@ -117,8 +123,14 @@ command_not_found_handler() {
     /model\ *)
       command aishe model "${line#/model }" < /dev/tty > /dev/tty 2>&1
       ;;
+    /connection)
+      command aishe connection pick < /dev/tty > /dev/tty 2>&1
+      ;;
+    /connection\ *)
+      command aishe connection pick "${line#/connection }" < /dev/tty > /dev/tty 2>&1
+      ;;
     /provider)
-      command aishe model < /dev/tty > /dev/tty 2>&1
+      command aishe connection pick < /dev/tty > /dev/tty 2>&1
       ;;
     /auth)
       _aishe_show_auth
@@ -490,6 +502,16 @@ aishe-accept-line() {
     command aishe commands < /dev/tty > /dev/tty 2>&1
     BUFFER=""
     POSTDISPLAY="$submitted"
+  elif [[ "$BUFFER" == "/help "* || "$BUFFER" == "/commands "* ]]; then
+    local submitted="$BUFFER"
+    local help_arg="${BUFFER#/help }"
+    [[ "$BUFFER" == /commands* ]] && help_arg="${BUFFER#/commands }"
+    help_arg="${help_arg# }"
+    print -s -- "$submitted"
+    zle -I
+    command aishe commands "$help_arg" < /dev/tty > /dev/tty 2>&1
+    BUFFER=""
+    POSTDISPLAY="$submitted"
   elif [[ "$BUFFER" == "/status" ]]; then
     local submitted="$BUFFER"
     print -s -- "$submitted"
@@ -523,11 +545,24 @@ aishe-accept-line() {
     fi
     BUFFER=""
     POSTDISPLAY="$submitted"
+  elif [[ "$BUFFER" == "/connection" || "$BUFFER" == "/connection "* ]]; then
+    local submitted="$BUFFER"
+    local connection_arg="${BUFFER#/connection}"
+    connection_arg="${connection_arg# }"
+    print -s -- "$submitted"
+    zle -I
+    if [[ -n "$connection_arg" ]]; then
+      command aishe connection pick "$connection_arg" < /dev/tty > /dev/tty 2>&1
+    else
+      command aishe connection pick < /dev/tty > /dev/tty 2>&1
+    fi
+    BUFFER=""
+    POSTDISPLAY="$submitted"
   elif [[ "$BUFFER" == "/provider" ]]; then
     local submitted="$BUFFER"
     print -s -- "$submitted"
     zle -I
-    command aishe model < /dev/tty > /dev/tty 2>&1
+    command aishe connection pick < /dev/tty > /dev/tty 2>&1
     BUFFER=""
     POSTDISPLAY="$submitted"
   elif [[ "$BUFFER" == "/auth" ]]; then
@@ -706,7 +741,7 @@ fi
 {PTY_PROMPT}
 if [[ -z "${{AISHE_COMMAND_HINT_SHOWN:-}}" ]]; then
   print -r -- '{ascii_logo}'
-  print -P "%F{{244}}aishe: /help commands · Shift-Tab mode · Ctrl-O details · /model switch%f"
+  print -P "%F{{244}}aishe: /help · /connection · /model · Shift-Tab mode · Ctrl-O details · ask \"how do I…\"%f"
   export AISHE_COMMAND_HINT_SHOWN=1
 fi"#,
         ascii_logo = crate::promptui::ASCII_LOGO,
@@ -777,7 +812,7 @@ if [[ -o interactive && "${AISHE_PTY_PROMPT:-1}" == 1 ]]; then
       value=""
       case "$item" in
         identity) value="$identity" ;;
-        connection) value="${connection_label} (${connection})" ;;
+        connection) value="${connection_label}" ;;
         provider) value="$provider" ;;
         endpoint) value="$endpoint" ;;
         auth) value="$auth" ;;
@@ -787,6 +822,15 @@ if [[ -o interactive && "${AISHE_PTY_PROMPT:-1}" == 1 ]]; then
         mode) value="$mode" ;;
         backend) value="$backend" ;;
         scope) value="$scope" ;;
+        plan)
+          if [[ -n "${AISHE_PLAN_LABEL:-}" ]]; then
+            value="${AISHE_PLAN_LABEL}"
+          elif [[ "${AISHE_AUTH_KIND:-}" == oauth ]]; then
+            value="plan"
+          else
+            value="${metrics[plan]:-}"
+          fi
+          ;;
         *) value="${metrics[$item]:-}" ;;
       esac
       [[ -n "$value" ]] && status_text="${status_text:+${status_text} · }${value}"
@@ -861,6 +905,14 @@ command_not_found_handle() {
       command aishe commands < /dev/tty > /dev/tty 2>&1
       return 0
       ;;
+    /help\ *)
+      command aishe commands ${line#/help } < /dev/tty > /dev/tty 2>&1
+      return 0
+      ;;
+    /commands\ *)
+      command aishe commands ${line#/commands } < /dev/tty > /dev/tty 2>&1
+      return 0
+      ;;
     /status)
       command aishe status < /dev/tty > /dev/tty 2>&1
       return 0
@@ -881,8 +933,16 @@ command_not_found_handle() {
       command aishe model "${line#/model }" < /dev/tty > /dev/tty 2>&1
       return 0
       ;;
+    /connection)
+      command aishe connection pick < /dev/tty > /dev/tty 2>&1
+      return 0
+      ;;
+    /connection\ *)
+      command aishe connection pick "${line#/connection }" < /dev/tty > /dev/tty 2>&1
+      return 0
+      ;;
     /provider)
-      command aishe model < /dev/tty > /dev/tty 2>&1
+      command aishe connection pick < /dev/tty > /dev/tty 2>&1
       return 0
       ;;
     /auth)
@@ -1088,7 +1148,7 @@ mod tests {
     #[test]
     fn pty_wrapper_advertises_the_primary_command_surface_once() {
         let s = wrapper_zshrc();
-        assert!(s.contains("aishe: /help commands · Shift-Tab mode · Ctrl-O details"));
+        assert!(s.contains("aishe: /help · /connection · /model"));
         assert!(s.contains(".-----. .-----."));
         assert!(s.contains("AISHE"));
         assert!(s.contains("AISHE_COMMAND_HINT_SHOWN"));

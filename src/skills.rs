@@ -86,6 +86,10 @@ impl SkillRegistry {
             let contents = std::fs::read_to_string(src).unwrap_or_default();
             crate::trust::is_trusted(src, &contents)
         });
+        // Built-in product help: only if the user did not define the same name.
+        reg.skills
+            .entry("aishe-product".into())
+            .or_insert_with(crate::product_help::product_skill);
         reg
     }
 

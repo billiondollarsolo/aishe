@@ -20,10 +20,17 @@
               "application/json": {
                 "schema": {
                   "type": "object",
-                  "required": ["healthy", "version"],
+                  "required": [
+                    "healthy",
+                    "version"
+                  ],
                   "properties": {
-                    "healthy": {"type": "boolean"},
-                    "version": {"type": "string"}
+                    "healthy": {
+                      "type": "boolean"
+                    },
+                    "version": {
+                      "type": "string"
+                    }
                   },
                   "additionalProperties": true
                 }
@@ -53,12 +60,24 @@
     "/session": {
       "get": {
         "operationId": "session.list",
-        "parameters": [{"$ref": "#/components/parameters/Directory"}],
-        "responses": {"200": {"$ref": "#/components/responses/Json"}}
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/Directory"
+          }
+        ],
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/Json"
+          }
+        }
       },
       "post": {
         "operationId": "session.create",
-        "parameters": [{"$ref": "#/components/parameters/Directory"}],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/Directory"
+          }
+        ],
         "requestBody": {
           "required": true,
           "content": {
@@ -66,35 +85,61 @@
               "schema": {
                 "type": "object",
                 "properties": {
-                  "title": {"type": "string"},
-                  "agent": {"type": "string"},
-                  "model": {"$ref": "#/components/schemas/Model"}
+                  "title": {
+                    "type": "string"
+                  },
+                  "agent": {
+                    "type": "string"
+                  },
+                  "model": {
+                    "$ref": "#/components/schemas/Model"
+                  }
                 },
                 "additionalProperties": true
               }
             }
           }
         },
-        "responses": {"200": {"$ref": "#/components/responses/Json"}}
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/Json"
+          }
+        }
       }
     },
     "/session/status": {
       "get": {
         "operationId": "session.status",
-        "parameters": [{"$ref": "#/components/parameters/Directory"}],
-        "responses": {"200": {"$ref": "#/components/responses/Json"}}
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/Directory"
+          }
+        ],
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/Json"
+          }
+        }
       }
     },
     "/session/{sessionID}": {
       "get": {
         "operationId": "session.get",
         "parameters": [
-          {"$ref": "#/components/parameters/SessionID"},
-          {"$ref": "#/components/parameters/Directory"}
+          {
+            "$ref": "#/components/parameters/SessionID"
+          },
+          {
+            "$ref": "#/components/parameters/Directory"
+          }
         ],
         "responses": {
-          "200": {"$ref": "#/components/responses/Json"},
-          "404": {"description": "Session not found"}
+          "200": {
+            "$ref": "#/components/responses/Json"
+          },
+          "404": {
+            "description": "Session not found"
+          }
         }
       }
     },
@@ -102,18 +147,30 @@
       "get": {
         "operationId": "session.messages",
         "parameters": [
-          {"$ref": "#/components/parameters/SessionID"},
-          {"$ref": "#/components/parameters/Directory"}
+          {
+            "$ref": "#/components/parameters/SessionID"
+          },
+          {
+            "$ref": "#/components/parameters/Directory"
+          }
         ],
-        "responses": {"200": {"$ref": "#/components/responses/Json"}}
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/Json"
+          }
+        }
       }
     },
     "/session/{sessionID}/prompt_async": {
       "post": {
         "operationId": "session.prompt_async",
         "parameters": [
-          {"$ref": "#/components/parameters/SessionID"},
-          {"$ref": "#/components/parameters/Directory"}
+          {
+            "$ref": "#/components/parameters/SessionID"
+          },
+          {
+            "$ref": "#/components/parameters/Directory"
+          }
         ],
         "requestBody": {
           "required": true,
@@ -121,23 +178,38 @@
             "application/json": {
               "schema": {
                 "type": "object",
-                "required": ["model", "agent", "parts"],
+                "required": [
+                  "model",
+                  "agent",
+                  "parts"
+                ],
                 "properties": {
                   "messageID": {
                     "type": "string",
                     "description": "Optional upstream field. Aishe deliberately omits it so OpenCode creates a monotonic ID."
                   },
-                  "model": {"$ref": "#/components/schemas/Model"},
-                  "agent": {"type": "string"},
+                  "model": {
+                    "$ref": "#/components/schemas/Model"
+                  },
+                  "agent": {
+                    "type": "string"
+                  },
                   "parts": {
                     "type": "array",
                     "minItems": 1,
                     "items": {
                       "type": "object",
-                      "required": ["type", "text"],
+                      "required": [
+                        "type",
+                        "text"
+                      ],
                       "properties": {
-                        "type": {"const": "text"},
-                        "text": {"type": "string"}
+                        "type": {
+                          "const": "text"
+                        },
+                        "text": {
+                          "type": "string"
+                        }
                       },
                       "additionalProperties": true
                     }
@@ -148,24 +220,54 @@
             }
           }
         },
-        "responses": {"204": {"description": "Prompt admitted"}}
+        "responses": {
+          "204": {
+            "description": "Prompt admitted"
+          }
+        }
       }
     },
     "/session/{sessionID}/abort": {
       "post": {
         "operationId": "session.abort",
         "parameters": [
-          {"$ref": "#/components/parameters/SessionID"},
-          {"$ref": "#/components/parameters/Directory"}
+          {
+            "$ref": "#/components/parameters/SessionID"
+          },
+          {
+            "$ref": "#/components/parameters/Directory"
+          }
         ],
-        "responses": {"204": {"description": "Abort requested"}}
+        "responses": {
+          "204": {
+            "description": "Abort requested"
+          }
+        }
       }
     },
     "/experimental/tool/ids": {
       "get": {
         "operationId": "experimental.tool.ids",
-        "parameters": [{"$ref": "#/components/parameters/Directory"}],
-        "responses": {"200": {"$ref": "#/components/responses/Json"}}
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/Directory"
+          }
+        ],
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/Json"
+          }
+        }
+      }
+    },
+    "/config/providers": {
+      "get": {
+        "summary": "List configured providers and their available models",
+        "responses": {
+          "200": {
+            "description": "ok"
+          }
+        }
       }
     }
   },
@@ -175,22 +277,34 @@
         "name": "directory",
         "in": "query",
         "required": false,
-        "schema": {"type": "string"}
+        "schema": {
+          "type": "string"
+        }
       },
       "SessionID": {
         "name": "sessionID",
         "in": "path",
         "required": true,
-        "schema": {"type": "string", "pattern": "^ses_"}
+        "schema": {
+          "type": "string",
+          "pattern": "^ses_"
+        }
       }
     },
     "schemas": {
       "Model": {
         "type": "object",
-        "required": ["providerID", "modelID"],
+        "required": [
+          "providerID",
+          "modelID"
+        ],
         "properties": {
-          "providerID": {"type": "string"},
-          "modelID": {"type": "string"}
+          "providerID": {
+            "type": "string"
+          },
+          "modelID": {
+            "type": "string"
+          }
         },
         "additionalProperties": true
       }

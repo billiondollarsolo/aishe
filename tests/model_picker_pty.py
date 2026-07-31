@@ -151,11 +151,20 @@ class Shell:
             pass
 
 
-def select_picker(shell, filter_text, save=False):
-    shell.line("/model")
-    shell.expect("Select a connection and model")
+def select_connection(shell, filter_text, save=False):
+    shell.line("/connection")
+    shell.expect("Select a connection")
     shell.raw(filter_text.encode())
     shell.expect("filter: " + filter_text)
+    shell.raw(b"d" if save else b"\r")
+
+
+def select_model(shell, filter_text="", save=False):
+    shell.line("/model")
+    shell.expect("Select a model")
+    if filter_text:
+        shell.raw(filter_text.encode())
+        shell.expect("filter: " + filter_text)
     shell.raw(b"d" if save else b"\r")
 
 
@@ -182,7 +191,7 @@ def main():
         if not all(value in first.transcript for value in initial_identity):
             raise AssertionError("compact identity disclosure is incomplete")
 
-        select_picker(first, "personal")
+        select_connection(first, "personal")
         first.expect("connection = openai-personal")
         first.expect("OpenAI personal (openai-personal)")
         first.expect("this shell")
@@ -200,7 +209,7 @@ def main():
         second.expect("SECOND_REASONING:auto")
 
         first.line("/model")
-        first.expect("Select a connection and model")
+        first.expect("Select a model")
         first.raw(b"\x1b")
         first.expect("model selection cancelled")
         first.identity("CANCELLED")
@@ -211,7 +220,7 @@ def main():
         first.identity("ROLLED_BACK")
         first.expect("ROLLED_BACK:openai-personal:personal-model")
 
-        select_picker(first, "work", save=True)
+        select_connection(first, "work", save=True)
         first.expect("connection = openai-work")
         first.line("print -r -- SAVED_SCOPE:$AISHE_SELECTION_SCOPE")
         first.expect("SAVED_SCOPE:default")
@@ -224,7 +233,7 @@ def main():
         if 'connection = "openai-work"' not in durable:
             raise AssertionError("d did not save the durable connection")
 
-        select_picker(second, "personal")
+        select_connection(second, "personal")
         second.expect("connection = openai-personal")
         second.line("/model default")
         second.expect("restored saved default")
@@ -234,7 +243,7 @@ def main():
         combined = first.transcript + second.transcript
         if EMOJI.search(combined):
             raise AssertionError("picker output contains emoji")
-        print("  ok   filter/select/save/cancel/rollback/default are connection-safe")
+        print("  ok   connection/model split, save/cancel/rollback/default are connection-safe")
         print("  ok   compact identity/scope, concurrent shells, and plain output work")
     finally:
         first.close()

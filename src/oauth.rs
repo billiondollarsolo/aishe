@@ -325,6 +325,29 @@ pub fn logout_profile(provider: OAuthProvider, profile: &str) -> Result<bool> {
     Ok(removed)
 }
 
+/// Optional plan-quota summary for subscription OAuth accounts.
+///
+/// ChatGPT/Codex and SuperGrok do not currently expose a stable, documented
+/// remaining 5-hour / weekly window through the managed OpenCode path Aishe
+/// uses. When a reliable signal appears, implement it here and surface it via
+/// the statusline `plan` item. Until then returns `None` so the UI shows a
+/// plain `plan` marker instead of inventing percentages.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PlanUsage {
+    pub summary: String,
+}
+
+pub fn plan_usage(_provider: OAuthProvider, _profile: &str) -> Option<PlanUsage> {
+    None
+}
+
+/// Compact statusline fragment for an OAuth connection (`plan` or future quota).
+pub fn plan_status_label(provider: OAuthProvider, profile: &str) -> String {
+    plan_usage(provider, profile)
+        .map(|usage| usage.summary)
+        .unwrap_or_else(|| "plan".into())
+}
+
 fn status_from(file: &Path, provider: OAuthProvider, profile: &str) -> Result<OAuthStatus> {
     let Some(values) = load_from(file)? else {
         return Ok(OAuthStatus::missing(provider, profile, file.to_path_buf()));

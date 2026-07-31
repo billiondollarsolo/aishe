@@ -664,6 +664,7 @@ fn choose_status_items(config: &mut Config) -> Result<()> {
         "session_tokens",
         "session_cost",
         "requests",
+        "plan",
     ];
     let default = config.aishe.status_line_items.join(",");
     let Some(value) = promptui::text("Ordered comma-separated status fields", &default, |value| {
@@ -726,7 +727,12 @@ fn print_status_preview(config: &Config) {
         .iter()
         .filter_map(|item| match item.as_str() {
             "identity" => Some(identity.clone()),
-            "connection" => Some(config.active_connection_id().to_string()),
+            "connection" => Some(
+                config
+                    .active_connection()
+                    .map(|connection| connection.label.clone())
+                    .unwrap_or_else(|| config.active_connection_id().to_string()),
+            ),
             "provider" => Some(config.active_provider_name().to_string()),
             "endpoint" => Some(endpoint.clone()),
             "auth" => Some(auth.clone()),
@@ -744,6 +750,7 @@ fn print_status_preview(config: &Config) {
             "session_tokens" => Some("session 1,697/374 tok".into()),
             "session_cost" => Some("session cost n/a".into()),
             "requests" => Some("2 reqs".into()),
+            "plan" => Some("plan".into()),
             _ => None,
         })
         .map(|value| crate::commands::display_safe(&value))

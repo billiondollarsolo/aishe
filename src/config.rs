@@ -486,16 +486,133 @@ impl ConnectionConfig {
 
     pub fn auth_label(&self) -> String {
         match &self.auth {
-            ConnectionAuth::ApiKey { credential, .. } => format!(
-                "API key · {}",
-                credential
-                    .as_deref()
-                    .unwrap_or(self.settings.credential.as_str())
-            ),
-            ConnectionAuth::OAuth { profile } => format!("OAuth · {profile}"),
+            ConnectionAuth::ApiKey { credential, .. } => {
+                if let Some(brand) = subscription_brand(self) {
+                    format!("{brand} - API")
+                } else {
+                    format!(
+                        "API key · {}",
+                        credential
+                            .as_deref()
+                            .unwrap_or(self.settings.credential.as_str())
+                    )
+                }
+            }
+            ConnectionAuth::OAuth { profile } => {
+                if let Some(brand) = subscription_brand(self) {
+                    format!("{brand} - OAuth · {profile}")
+                } else {
+                    format!("OAuth · {profile}")
+                }
+            }
             ConnectionAuth::None => "No auth".into(),
             ConnectionAuth::Auto => "Auto (legacy)".into(),
         }
+    }
+
+    pub fn uses_oauth(&self) -> bool {
+        matches!(self.auth, ConnectionAuth::OAuth { .. })
+    }
+}
+
+impl Config {
+    /// Statusline fields actually rendered for the active connection.
+    /// Subscription OAuth suppresses dollar cost and prefers profile + tokens.
+    pub fn effective_status_line_items(&self) -> Vec<String> {
+        let oauth = self
+            .active_connection()
+            .is_some_and(ConnectionConfig::uses_oauth);
+        let mut items = self.aishe.status_line_items.clone();
+        if !oauth {
+            return items;
+        }
+        items.retain(|item| !matches!(item.as_str(), "last_cost" | "session_cost"));
+        let has_account = items
+            .iter()
+            .any(|item| matches!(item.as_str(), "auth" | "connection" | "identity"));
+        if !has_account {
+            // Connection label is "Codex - OAuth · work" / "Grok - OAuth · …".
+            items.insert(0, "connection".into());
+        }
+        if !items
+            .iter()
+            .any(|item| matches!(item.as_str(), "model" | "identity"))
+        {
+            let insert_at = items
+                .iter()
+                .position(|item| item == "connection" || item == "auth")
+                .map(|index| index + 1)
+                .unwrap_or(0)
+                .min(items.len());
+            items.insert(insert_at, "model".into());
+        }
+        if !items.iter().any(|item| item == "mode") {
+            items.push("mode".into());
+        }
+        if !items.iter().any(|item| {
+            matches!(
+                item.as_str(),
+                "session_tokens" | "last_tokens" | "requests" | "plan"
+            )
+        }) {
+            items.push("session_tokens".into());
+        }
+        if !items.iter().any(|item| item == "plan") {
+            items.push("plan".into());
+        }
+        items
+    }
+}
+
+/// Brand name used when OpenAI/xAI can be paid either by API key or subscription.
+fn subscription_brand(connection: &ConnectionConfig) -> Option<&'static str> {
+    if let Some(oauth) = crate::oauth::OAuthProvider::from_base_url(&connection.settings.base_url) {
+        return Some(match oauth {
+            crate::oauth::OAuthProvider::Openai => "Codex",
+            crate::oauth::OAuthProvider::Xai => "Grok",
+        });
+    }
+    match connection.provider.as_str() {
+        "openai" => Some("Codex"),
+        "xai" => Some("Grok"),
+        _ => None,
+    }
+}
+
+/// Human connection label for a subscription OAuth binding.
+/// Example: `Codex - OAuth · work`, `Grok - OAuth · personal`.
+pub fn oauth_connection_label(provider: crate::oauth::OAuthProvider, profile: &str) -> String {
+    match provider {
+        crate::oauth::OAuthProvider::Openai => format!("Codex - OAuth · {profile}"),
+        crate::oauth::OAuthProvider::Xai => format!("Grok - OAuth · {profile}"),
+    }
+}
+
+/// Human connection label for the official API-key path.
+/// Example: `Codex - API`, `Grok - API`.
+pub fn api_connection_label(provider: crate::oauth::OAuthProvider) -> String {
+    match provider {
+        crate::oauth::OAuthProvider::Openai => "Codex - API".into(),
+        crate::oauth::OAuthProvider::Xai => "Grok - API".into(),
+    }
+}
+
+/// Prefer a Codex/Grok brand label when the endpoint is official OpenAI/xAI.
+pub fn branded_connection_label(
+    provider_key: &str,
+    base_url: &str,
+    auth: &ConnectionAuth,
+) -> Option<String> {
+    let oauth =
+        crate::oauth::OAuthProvider::from_base_url(base_url).or_else(|| match provider_key {
+            "openai" => Some(crate::oauth::OAuthProvider::Openai),
+            "xai" => Some(crate::oauth::OAuthProvider::Xai),
+            _ => None,
+        })?;
+    match auth {
+        ConnectionAuth::OAuth { profile } => Some(oauth_connection_label(oauth, profile)),
+        ConnectionAuth::ApiKey { .. } | ConnectionAuth::Auto => Some(api_connection_label(oauth)),
+        ConnectionAuth::None => None,
     }
 }
 
@@ -1697,6 +1814,68 @@ mod tests {
         assert_eq!(parsed.aishe.max_yolo_iterations, 10);
         assert_eq!(parsed.aishe.hook_timeout_secs, 60);
         assert_eq!(parsed.backend.output, "focus");
+    }
+
+    #[test]
+    fn codex_and_grok_labels_differentiate_api_and_oauth() {
+        assert_eq!(
+            oauth_connection_label(crate::oauth::OAuthProvider::Openai, "work"),
+            "Codex - OAuth · work"
+        );
+        assert_eq!(
+            oauth_connection_label(crate::oauth::OAuthProvider::Xai, "prod"),
+            "Grok - OAuth · prod"
+        );
+        assert_eq!(
+            api_connection_label(crate::oauth::OAuthProvider::Openai),
+            "Codex - API"
+        );
+        assert_eq!(
+            api_connection_label(crate::oauth::OAuthProvider::Xai),
+            "Grok - API"
+        );
+
+        let mut cfg = Config::default();
+        cfg.aishe.provider = "openai".into();
+        cfg.aishe.connection = "openai".into();
+        cfg.connections.insert(
+            "openai".into(),
+            ConnectionConfig {
+                provider: "openai".into(),
+                label: "OpenAI".into(),
+                settings: ProviderConfig {
+                    base_url: "https://api.openai.com".into(),
+                    model: "gpt-5.6-luna".into(),
+                    transport: "responses".into(),
+                    auth_required: Some(true),
+                    ..ProviderConfig::default()
+                },
+                auth: ConnectionAuth::OAuth {
+                    profile: "work".into(),
+                },
+                reasoning_effort: None,
+            },
+        );
+        assert_eq!(
+            cfg.connections["openai"].auth_label(),
+            "Codex - OAuth · work"
+        );
+        let items = cfg.effective_status_line_items();
+        assert!(
+            items.contains(&"connection".into())
+                || items.contains(&"identity".into())
+                || items.contains(&"auth".into())
+        );
+        assert!(!items
+            .iter()
+            .any(|item| item == "last_cost" || item == "session_cost"));
+        assert!(items.contains(&"plan".into()));
+
+        cfg.connections.get_mut("openai").unwrap().auth = ConnectionAuth::ApiKey {
+            credential: Some("openai".into()),
+            api_key_env: Some("OPENAI_API_KEY".into()),
+        };
+        assert_eq!(cfg.connections["openai"].auth_label(), "Codex - API");
     }
 
     #[test]

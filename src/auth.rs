@@ -234,13 +234,30 @@ pub fn run(command: &AuthCommand) -> Result<u8> {
             headless,
             browser,
         } => {
+            let bound_connection = connection.clone();
             let (provider, profile) =
                 oauth_target(*provider, connection.as_deref(), profile.as_deref())?;
-            if let Some(profile) = profile {
-                crate::oauth::login_profile(provider, &profile, *headless, *browser)
+            let code = if let Some(profile) = &profile {
+                crate::oauth::login_profile(provider, profile, *headless, *browser)?
             } else {
-                crate::oauth::login(provider, *headless, *browser)
+                crate::oauth::login(provider, *headless, *browser)?
+            };
+            if code == 0 {
+                // Login only writes the private OAuth store. Ensure a selectable
+                // connection exists so /connection and statusline can use it.
+                // Skip when the user logged in against an explicit --connection.
+                if bound_connection.is_none() {
+                    let profile_label = profile.as_deref().unwrap_or("default");
+                    if let Err(error) = ensure_oauth_connection_after_login(provider, profile_label)
+                    {
+                        eprintln!(
+                            "aishe: OAuth is ready, but could not update connections: {}",
+                            crate::commands::display_safe(&error.to_string())
+                        );
+                    }
+                }
             }
+            Ok(code)
         }
         AuthCommand::Logout {
             provider,
@@ -558,4 +575,144 @@ pub fn run(command: &AuthCommand) -> Result<u8> {
             Ok(0)
         }
     }
+}
+
+/// After a successful bare `auth login`, ensure a selectable connection binds
+/// that OAuth provider/profile so `/connection` and the statusline can use it.
+fn ensure_oauth_connection_after_login(
+    provider: crate::oauth::OAuthProvider,
+    profile: &str,
+) -> Result<()> {
+    let profile = crate::oauth::normalize_profile(profile)?;
+    let label = crate::config::oauth_connection_label(provider, &profile);
+    let mut config = match Config::load_quiet()? {
+        Some(config) => config,
+        None => Config::load_or_init()?,
+    };
+
+    // Already bound: any connection with this OAuth endpoint + profile.
+    let existing: Vec<String> = config
+        .connections
+        .iter()
+        .filter(|(_, connection)| {
+            matches!(
+                &connection.auth,
+                crate::config::ConnectionAuth::OAuth { profile: p } if p == &profile
+            ) && crate::oauth::OAuthProvider::from_base_url(&connection.settings.base_url)
+                == Some(provider)
+        })
+        .map(|(id, _)| id.clone())
+        .collect();
+    if let Some(id) = existing.first() {
+        println!(
+            "connection '{}' already uses {} — select it with `/connection` or `aishe connection use {}`",
+            crate::commands::display_safe(id),
+            crate::commands::display_safe(&label),
+            crate::commands::display_safe(id)
+        );
+        // Refresh brand label if still a generic OpenAI/xAI name.
+        if let Some(connection) = config.connections.get_mut(id) {
+            if connection.label == "OpenAI"
+                || connection.label == "xAI"
+                || connection.label == id.as_str()
+            {
+                connection.label = label.clone();
+                config.validate_connections()?;
+                config.save()?;
+            }
+        }
+        offer_use_connection(&mut config, id)?;
+        return Ok(());
+    }
+
+    let id = unique_oauth_connection_id(&config, provider, &profile)?;
+    let service_key = provider.id(); // openai | xai
+    let mut settings = if service_key == "xai" {
+        // xAI lives in the openai-compatible settings block until applied.
+        config.providers.openai.clone()
+    } else {
+        config.providers.openai.clone()
+    };
+    if let Some(service) = crate::provider_catalog::find(service_key) {
+        crate::provider_catalog::apply(service, &mut settings);
+    }
+    let auth = crate::config::ConnectionAuth::OAuth {
+        profile: profile.clone(),
+    };
+    config.connections.insert(
+        id.clone(),
+        crate::config::ConnectionConfig {
+            provider: service_key.into(),
+            label: label.clone(),
+            settings,
+            auth,
+            reasoning_effort: None,
+        },
+    );
+    config.validate_connections()?;
+    config.save()?;
+    println!(
+        "created connection '{}' ({}) bound to {} OAuth · {}",
+        crate::commands::display_safe(&id),
+        crate::commands::display_safe(&label),
+        provider,
+        crate::commands::display_safe(&profile)
+    );
+    println!(
+        "select it: /connection  or  aishe connection use {}",
+        crate::commands::display_safe(&id)
+    );
+    offer_use_connection(&mut config, &id)?;
+    Ok(())
+}
+
+fn unique_oauth_connection_id(
+    config: &Config,
+    provider: crate::oauth::OAuthProvider,
+    profile: &str,
+) -> Result<String> {
+    let base = if profile == "default" {
+        provider.id().to_string()
+    } else {
+        format!("{}-{}", provider.id(), profile)
+    };
+    let base = crate::config::normalize_connection_id(&base)?;
+    if !config.connections.contains_key(&base) {
+        return Ok(base);
+    }
+    for index in 2..100 {
+        let candidate = format!("{base}-{index}");
+        if !config.connections.contains_key(&candidate) {
+            return Ok(candidate);
+        }
+    }
+    anyhow::bail!("could not allocate a free connection id for {base}")
+}
+
+fn offer_use_connection(config: &mut Config, id: &str) -> Result<()> {
+    if !std::io::stdin().is_terminal() || !std::io::stdout().is_terminal() {
+        return Ok(());
+    }
+    if config.active_connection_id() == id {
+        return Ok(());
+    }
+    let use_it = crate::promptui::confirm(
+        &format!(
+            "Switch active connection to '{}' now?",
+            crate::commands::display_safe(id)
+        ),
+        true,
+    )?;
+    if use_it != Some(true) {
+        return Ok(());
+    }
+    config.select_connection(id)?;
+    config.save()?;
+    let _ = crate::connection::write_shell_selection(config, "default");
+    println!(
+        "connection = {} · model = {} (saved default)",
+        crate::commands::display_safe(config.active_connection_id()),
+        crate::commands::display_safe(config.active_model())
+    );
+    Ok(())
 }

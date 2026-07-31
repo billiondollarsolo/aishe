@@ -61,7 +61,7 @@ brevity. Read `~/.config/aishe/...` as `<config>/...` and
 |-------|------|---------|---------|
 | `safety_profile` | string | `custom` | Named settings bundle: `conservative`, `balanced`, `autonomous`, or `custom`. |
 | `mode` | string | `suggest` | Interaction mode: `suggest`, `auto`, or `yolo`. |
-| `connection` | string | `anthropic` | Durable default named connection ID. `/model` changes only the current shell unless `d` or `--default` is used. |
+| `connection` | string | `anthropic` | Durable default named connection ID. `/connection` switches account for this shell unless `d` or `--default` is used; `/model` changes only the model on the active connection. |
 | `connection_fallback` | string | active connection | Named compatibility fallback connection. |
 | `provider` | string | `anthropic` | Which provider block to use: `anthropic` or `openai`. |
 | `provider_fallback` | array | `[]` | Native compatibility-provider fallback chain. Managed turns do not start a second provider request after prompt admission or any effect. |
@@ -236,9 +236,11 @@ OAuth endpoints must normalize exactly to `https://api.openai.com` or
 `https://api.x.ai`. Profile labels are normalized for their private directory;
 config validation rejects two connections that would collide on one path.
 
-Use `aishe connection list|show|add|edit|remove|use`; use `/model` for the normal
-shell-local switch. `aishe models --connection ID` scopes discovery and its
-cache to the connection's safe launch identity.
+Use `aishe connection list|show|add|edit|remove|use|pick` (or `/connection` in
+the shell) to switch accounts; use `/model` only for models on the active
+connection. `aishe models --connection ID` scopes discovery and its cache to the
+connection's safe launch identity. See
+[Commands — primary slash commands](commands.md#primary-slash-commands).
 
 ### Legacy `[providers.anthropic]` and `[providers.openai]`
 

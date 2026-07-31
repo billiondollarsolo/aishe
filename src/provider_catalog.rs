@@ -47,7 +47,7 @@ pub const SERVICES: &[Service] = &[
         credential: "openai",
         transport: "responses",
         auth_required: true,
-        help: "Official OpenAI. Responses is used for reasoning and tools.",
+        help: "Codex - API key path. Prefer ChatGPT/Codex OAuth above for Plus/Pro.",
     },
     Service {
         key: "groq",
@@ -119,7 +119,7 @@ pub const SERVICES: &[Service] = &[
         credential: "xai",
         transport: "responses",
         auth_required: true,
-        help: "Grok through xAI Responses; supports API keys or SuperGrok OAuth.",
+        help: "Grok - API key path. Prefer Grok OAuth above for SuperGrok subscriptions.",
     },
 ];
 

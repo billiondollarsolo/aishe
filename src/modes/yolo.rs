@@ -208,6 +208,8 @@ fn run_loop(
         tools.push(use_skill_tool());
     }
     let mut system = YOLO_SYSTEM.to_string();
+    system.push_str("\n\n");
+    system.push_str(crate::product_help::product_brief());
     if config.aishe.file_tools {
         system.push_str(
             "\n\nFor files, prefer the read_file / write_file / edit_file / list_dir \
@@ -222,7 +224,7 @@ fn run_loop(
     if !skills.is_empty() {
         system.push_str(&format!(
             "\n\nAvailable skills (call use_skill to load one's instructions when \
-             relevant):\n{}",
+             relevant; use aishe-product for how-to questions about Aishe itself):\n{}",
             skills.catalog()
         ));
     }

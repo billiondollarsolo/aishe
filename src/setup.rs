@@ -119,7 +119,79 @@ struct Draft {
     schema_version: u32,
     step: Step,
     service: String,
+    /// When true, setup preselects subscription OAuth after an explicit
+    /// ChatGPT/Codex or Grok OAuth service choice.
+    #[serde(default)]
+    prefer_oauth: bool,
     config: Config,
+}
+
+/// Setup-only service picker entries. Catalog services stay shared with
+/// Settings; explicit OAuth rows are discoverability wrappers around the
+/// official OpenAI and xAI endpoints.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ServiceMenuEntry {
+    ChatGptCodexOAuth,
+    GrokOAuth,
+    Catalog(usize),
+}
+
+fn service_menu_entries() -> Vec<ServiceMenuEntry> {
+    let mut entries = vec![
+        ServiceMenuEntry::ChatGptCodexOAuth,
+        ServiceMenuEntry::GrokOAuth,
+    ];
+    entries.extend((0..provider_catalog::SERVICES.len()).map(ServiceMenuEntry::Catalog));
+    entries
+}
+
+fn service_menu_label(entry: ServiceMenuEntry) -> String {
+    match entry {
+        ServiceMenuEntry::ChatGptCodexOAuth => {
+            "ChatGPT / Codex OAuth — Sign in with ChatGPT Plus/Pro (no API key)".into()
+        }
+        ServiceMenuEntry::GrokOAuth => {
+            "Grok OAuth — Sign in with SuperGrok subscription (no API key)".into()
+        }
+        ServiceMenuEntry::Catalog(index) => {
+            let service = &provider_catalog::SERVICES[index];
+            format!("{} — {}", service.label, service.help)
+        }
+    }
+}
+
+fn service_menu_default(draft: &Draft) -> usize {
+    let entries = service_menu_entries();
+    if draft.prefer_oauth {
+        let oauth_entry = match draft.service.as_str() {
+            "openai" => Some(ServiceMenuEntry::ChatGptCodexOAuth),
+            "xai" => Some(ServiceMenuEntry::GrokOAuth),
+            _ => None,
+        };
+        if let Some(wanted) = oauth_entry {
+            if let Some(index) = entries.iter().position(|entry| *entry == wanted) {
+                return index;
+            }
+        }
+    }
+    entries
+        .iter()
+        .position(|entry| match entry {
+            ServiceMenuEntry::Catalog(index) => {
+                provider_catalog::SERVICES[*index].key == draft.service
+            }
+            ServiceMenuEntry::ChatGptCodexOAuth | ServiceMenuEntry::GrokOAuth => false,
+        })
+        .unwrap_or(0)
+}
+
+fn oauth_subscription_choice(provider: crate::oauth::OAuthProvider) -> &'static str {
+    match provider {
+        crate::oauth::OAuthProvider::Openai => {
+            "Sign in with ChatGPT / Codex OAuth (Plus/Pro subscription)"
+        }
+        crate::oauth::OAuthProvider::Xai => "Sign in with Grok OAuth (SuperGrok subscription)",
+    }
 }
 
 #[derive(Clone, Debug, Default)]
@@ -759,27 +831,47 @@ fn run_interactive(options: Options) -> Result<Outcome> {
             }
             Step::Service => {
                 step_header(5, "Provider and credential");
-                let labels: Vec<String> = provider_catalog::SERVICES
-                    .iter()
-                    .map(|service| format!("{} — {}", service.label, service.help))
-                    .collect();
-                let default = provider_catalog::SERVICES
-                    .iter()
-                    .position(|service| service.key == draft.service)
-                    .unwrap_or(1);
+                let entries = service_menu_entries();
+                let labels: Vec<String> = entries.iter().copied().map(service_menu_label).collect();
+                let default = service_menu_default(&draft);
                 match promptui::menu(
                     "Provider service",
                     &labels,
                     default,
                     false,
-                    "Choose the service that owns the endpoint. Custom keeps every field editable.",
+                    "ChatGPT/Codex and Grok OAuth use a subscription login. Other rows use API keys, local models, or custom endpoints.",
                 )? {
                     MenuResult::Selected(index) => {
-                        let service = &provider_catalog::SERVICES[index];
                         pending_credential = None;
-                        apply_service(&mut draft.config, service);
-                        draft.service = service.key.to_string();
-                        advance(&mut draft)?;
+                        match entries[index] {
+                            ServiceMenuEntry::ChatGptCodexOAuth => {
+                                let service = provider_catalog::find("openai")
+                                    .expect("openai catalog service");
+                                apply_service(&mut draft.config, service);
+                                draft.service = service.key.to_string();
+                                draft.prefer_oauth = true;
+                                // Official OAuth is endpoint-bound; skip the
+                                // editable URL step and go straight to login.
+                                draft.step = Step::Credential;
+                                save_draft(&draft)?;
+                            }
+                            ServiceMenuEntry::GrokOAuth => {
+                                let service = provider_catalog::find("xai")
+                                    .expect("xai catalog service");
+                                apply_service(&mut draft.config, service);
+                                draft.service = service.key.to_string();
+                                draft.prefer_oauth = true;
+                                draft.step = Step::Credential;
+                                save_draft(&draft)?;
+                            }
+                            ServiceMenuEntry::Catalog(service_index) => {
+                                let service = &provider_catalog::SERVICES[service_index];
+                                apply_service(&mut draft.config, service);
+                                draft.service = service.key.to_string();
+                                draft.prefer_oauth = false;
+                                advance(&mut draft)?;
+                            }
+                        }
                     }
                     _ => return cancel(draft),
                 }
@@ -787,13 +879,18 @@ fn run_interactive(options: Options) -> Result<Outcome> {
             Step::Endpoint => {
                 let provider = active_provider_mut(&mut draft.config);
                 match promptui::text("API endpoint", &provider.base_url, validate_url)? {
-                    Some(value) if value == ":back" => draft.step = draft.step.previous(),
+                    Some(value) if value == ":back" => {
+                        draft.prefer_oauth = false;
+                        draft.step = draft.step.previous();
+                    }
                     Some(value) => {
                         provider.base_url = provider_catalog::normalize_base_url(&value);
                         if provider.auth_required.is_none() {
                             provider.auth_required =
                                 Some(!crate::config::is_loopback_url(&provider.base_url));
                         }
+                        // Editing the endpoint leaves the generic credential path.
+                        draft.prefer_oauth = false;
                         advance(&mut draft)?;
                     }
                     None => return cancel(draft),
@@ -851,8 +948,8 @@ fn run_interactive(options: Options) -> Result<Outcome> {
                 };
                 let oauth_provider = crate::oauth::OAuthProvider::from_base_url(&provider.base_url);
                 let oauth_index = oauth_provider.map(|_| choices.len());
-                if oauth_provider.is_some() {
-                    choices.push("Sign in with a provider subscription (OAuth)".into());
+                if let Some(oauth_provider) = oauth_provider {
+                    choices.push(oauth_subscription_choice(oauth_provider).into());
                 }
                 let save_key_index = choices.len();
                 choices.push("Enter and save an API key locally (recommended)".into());
@@ -861,15 +958,21 @@ fn run_interactive(options: Options) -> Result<Outcome> {
                     "Use environment variable only (${env})",
                     env = provider.api_key_env
                 ));
+                let default_credential = if draft.prefer_oauth {
+                    oauth_index.or(existing_index).unwrap_or(0)
+                } else {
+                    existing_index.unwrap_or(0)
+                };
                 match promptui::menu(
                     &format!("Credential profile '{profile}'"),
                     &choices,
-                    existing_index.unwrap_or(0),
+                    default_credential,
                     true,
-                    "Saved keys live in a private credentials file; environment variables remain available for automation and overrides.",
+                    "Saved keys live in a private credentials file; subscription OAuth uses Aishe's private runtime store; environment variables remain available for automation and overrides.",
                 )? {
                     MenuResult::Selected(index) if Some(index) == existing_index => {
                         pending_credential = None;
+                        draft.prefer_oauth = false;
                         set_active_auth(
                             &mut draft.config,
                             crate::config::ConnectionAuth::ApiKey {
@@ -899,6 +1002,7 @@ fn run_interactive(options: Options) -> Result<Outcome> {
                             &mut draft.config,
                             crate::config::ConnectionAuth::OAuth { profile: label },
                         );
+                        draft.prefer_oauth = true;
                         pending_credential = None;
                         advance(&mut draft)?;
                     }
@@ -911,6 +1015,7 @@ fn run_interactive(options: Options) -> Result<Outcome> {
                             return cancel(draft);
                         };
                         crate::credentials::validate_secret(&secret)?;
+                        draft.prefer_oauth = false;
                         set_active_auth(
                             &mut draft.config,
                             crate::config::ConnectionAuth::ApiKey {
@@ -933,6 +1038,7 @@ fn run_interactive(options: Options) -> Result<Outcome> {
                                 provider.api_key_env = value;
                                 let credential = provider.credential_profile();
                                 let key_env = provider.api_key_env.clone();
+                                draft.prefer_oauth = false;
                                 set_active_auth(
                                     &mut draft.config,
                                     crate::config::ConnectionAuth::ApiKey {
@@ -946,7 +1052,16 @@ fn run_interactive(options: Options) -> Result<Outcome> {
                             None => return cancel(draft),
                         }
                     }
-                    MenuResult::Back => draft.step = draft.step.previous(),
+                    MenuResult::Back => {
+                        // Explicit OAuth service rows skip Endpoint; send the
+                        // user back to the provider list instead of a URL they
+                        // never saw.
+                        draft.step = if draft.prefer_oauth {
+                            Step::Service
+                        } else {
+                            draft.step.previous()
+                        };
+                    }
                     MenuResult::Cancel => return cancel(draft),
                     MenuResult::Selected(_) => unreachable!(),
                 }
@@ -1718,13 +1833,20 @@ fn apply_service(config: &mut Config, service: &provider_catalog::Service) {
         } else {
             config.providers.openai.clone()
         };
+        let provider_name = match service.family {
+            Family::Anthropic => "anthropic",
+            Family::OpenAiCompatible => service.key,
+        };
+        let auth = crate::config::ConnectionAuth::Auto;
+        let label = crate::config::branded_connection_label(provider_name, service.base_url, &auth)
+            .unwrap_or_else(|| service.label.into());
         config.connections.insert(
             id.into(),
             crate::config::ConnectionConfig {
-                provider: id.into(),
-                label: service.label.into(),
+                provider: provider_name.into(),
+                label,
                 settings,
-                auth: crate::config::ConnectionAuth::Auto,
+                auth,
                 reasoning_effort: None,
             },
         );
@@ -1742,6 +1864,16 @@ fn apply_service(config: &mut Config, service: &provider_catalog::Service) {
     };
     if let Some(connection) = config.active_connection_mut() {
         connection.provider = provider_name.into();
+        // Keep brand labels current when switching openai/xai presets before auth.
+        if !connection.uses_oauth() {
+            if let Some(label) = crate::config::branded_connection_label(
+                provider_name,
+                &connection.settings.base_url,
+                &connection.auth,
+            ) {
+                connection.label = label;
+            }
+        }
     }
     config.aishe.provider = provider_name.into();
 }
@@ -1833,6 +1965,13 @@ fn active_provider_mut(config: &mut Config) -> &mut crate::config::ProviderConfi
 
 fn set_active_auth(config: &mut Config, auth: crate::config::ConnectionAuth) {
     if let Some(connection) = config.active_connection_mut() {
+        if let Some(label) = crate::config::branded_connection_label(
+            &connection.provider,
+            &connection.settings.base_url,
+            &auth,
+        ) {
+            connection.label = label;
+        }
         connection.auth = auth;
     }
 }
@@ -1856,10 +1995,17 @@ fn fresh_draft(config: Config) -> Draft {
             })
         })
         .map_or("custom", |service| service.key);
+    let prefer_oauth = matches!(
+        config
+            .active_connection()
+            .map(|connection| &connection.auth),
+        Some(crate::config::ConnectionAuth::OAuth { .. })
+    ) && matches!(service, "openai" | "xai");
     Draft {
         schema_version: DRAFT_SCHEMA_VERSION,
         step: Step::Discovery,
         service: service.into(),
+        prefer_oauth,
         config,
     }
 }
@@ -1980,7 +2126,7 @@ fn choose_status_items(draft: &mut Draft) -> Result<bool> {
         &choices,
         0,
         true,
-        "Fields: identity, connection, provider, endpoint, auth, selection, model, reasoning, mode, backend, scope, task, elapsed, context, last_tokens, last_cost, session_tokens, session_cost, requests.",
+        "Fields: identity, connection, provider, endpoint, auth, selection, model, reasoning, mode, backend, scope, task, elapsed, context, last_tokens, last_cost, session_tokens, session_cost, requests, plan.",
     )? {
         MenuResult::Selected(0) => {
             draft.config.aishe.status_line_items =
@@ -2060,6 +2206,7 @@ fn validate_status_items(items: &[String]) -> Result<()> {
         "session_tokens",
         "session_cost",
         "requests",
+        "plan",
     ];
     if items.is_empty() || items.iter().all(|item| item.is_empty()) {
         anyhow::bail!("choose at least one status field");
@@ -2096,7 +2243,10 @@ fn print_status_preview(config: &Config) {
                 config.active_model(),
                 config.active_reasoning_effort(),
             ),
-            "connection" => config.active_connection_id().to_string(),
+            "connection" => config
+                .active_connection()
+                .map(|connection| connection.label.clone())
+                .unwrap_or_else(|| config.active_connection_id().to_string()),
             "provider" => config.active_provider_name().to_string(),
             "endpoint" => endpoint.clone(),
             "auth" => config
@@ -2117,6 +2267,7 @@ fn print_status_preview(config: &Config) {
             "session_tokens" => "session 8,421/1,904 tok".into(),
             "session_cost" => "session ~$0.0174".into(),
             "requests" => "6 reqs".into(),
+            "plan" => "plan".into(),
             _ => String::new(),
         })
         .map(|value| crate::commands::display_safe(&value))
@@ -2755,6 +2906,84 @@ mod tests {
             let mut config = Config::default();
             apply_service(&mut config, provider_catalog::find(key).unwrap());
             assert_eq!(fresh_draft(config).service, key);
+        }
+    }
+
+    #[test]
+    fn setup_service_menu_surfaces_explicit_oauth_options_first() {
+        let entries = service_menu_entries();
+        assert_eq!(entries[0], ServiceMenuEntry::ChatGptCodexOAuth);
+        assert_eq!(entries[1], ServiceMenuEntry::GrokOAuth);
+        assert_eq!(
+            service_menu_label(ServiceMenuEntry::ChatGptCodexOAuth),
+            "ChatGPT / Codex OAuth — Sign in with ChatGPT Plus/Pro (no API key)"
+        );
+        assert_eq!(
+            service_menu_label(ServiceMenuEntry::GrokOAuth),
+            "Grok OAuth — Sign in with SuperGrok subscription (no API key)"
+        );
+        assert!(entries.iter().any(|entry| {
+            matches!(entry, ServiceMenuEntry::Catalog(index)
+                if provider_catalog::SERVICES[*index].key == "openai")
+        }));
+        assert!(entries.iter().any(|entry| {
+            matches!(entry, ServiceMenuEntry::Catalog(index)
+                if provider_catalog::SERVICES[*index].key == "xai")
+        }));
+
+        let mut draft = fresh_draft(Config::default());
+        draft.service = "openai".into();
+        draft.prefer_oauth = true;
+        assert_eq!(service_menu_default(&draft), 0);
+        draft.service = "xai".into();
+        assert_eq!(service_menu_default(&draft), 1);
+        draft.prefer_oauth = false;
+        draft.service = "ollama".into();
+        let ollama = service_menu_default(&draft);
+        assert!(matches!(
+            service_menu_entries()[ollama],
+            ServiceMenuEntry::Catalog(index)
+                if provider_catalog::SERVICES[index].key == "ollama"
+        ));
+
+        assert_eq!(
+            oauth_subscription_choice(crate::oauth::OAuthProvider::Openai),
+            "Sign in with ChatGPT / Codex OAuth (Plus/Pro subscription)"
+        );
+        assert_eq!(
+            oauth_subscription_choice(crate::oauth::OAuthProvider::Xai),
+            "Sign in with Grok OAuth (SuperGrok subscription)"
+        );
+    }
+
+    #[test]
+    fn explicit_oauth_service_choices_bind_official_endpoints() {
+        for (entry, key, oauth) in [
+            (
+                ServiceMenuEntry::ChatGptCodexOAuth,
+                "openai",
+                crate::oauth::OAuthProvider::Openai,
+            ),
+            (
+                ServiceMenuEntry::GrokOAuth,
+                "xai",
+                crate::oauth::OAuthProvider::Xai,
+            ),
+        ] {
+            let service = match entry {
+                ServiceMenuEntry::ChatGptCodexOAuth => provider_catalog::find("openai").unwrap(),
+                ServiceMenuEntry::GrokOAuth => provider_catalog::find("xai").unwrap(),
+                ServiceMenuEntry::Catalog(_) => unreachable!(),
+            };
+            let mut config = Config::default();
+            apply_service(&mut config, service);
+            assert_eq!(config.active_provider_name(), key);
+            assert_eq!(
+                crate::oauth::OAuthProvider::from_base_url(
+                    &config.active_provider_config().base_url
+                ),
+                Some(oauth)
+            );
         }
     }
 

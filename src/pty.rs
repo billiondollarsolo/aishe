@@ -180,12 +180,13 @@ fn run_zsh_inner(config: &Config, history_log: &std::path::Path, shell_id: Strin
     // A separately rendered status file lets the next prompt show last-call and
     // session totals without spawning a helper process from every `precmd`.
     let status_file = std::env::temp_dir().join(format!("aishe-status-{}", std::process::id()));
+    let status_items = config.effective_status_line_items();
     crate::usagelog::write_status_for_connection(
         &status_file,
         &usage_file,
         &config.pricing,
         None,
-        &config.aishe.status_line_items,
+        &status_items,
         config.active_connection_id(),
     );
     cmd.env("AISHE_STATUS_FILE", &status_file);
@@ -197,10 +198,20 @@ fn run_zsh_inner(config: &Config, history_log: &std::path::Path, shell_id: Strin
             "off"
         },
     );
-    cmd.env(
-        "AISHE_STATUS_ITEMS",
-        config.aishe.status_line_items.join(","),
-    );
+    cmd.env("AISHE_STATUS_ITEMS", status_items.join(","));
+    let oauth_plan = config.active_connection().and_then(|connection| {
+        let crate::config::ConnectionAuth::OAuth { profile } = &connection.auth else {
+            return None;
+        };
+        let provider = crate::oauth::OAuthProvider::from_base_url(&connection.settings.base_url)?;
+        Some(crate::oauth::plan_status_label(provider, profile))
+    });
+    if let Some(plan) = oauth_plan {
+        cmd.env("AISHE_PLAN_LABEL", plan);
+        cmd.env("AISHE_AUTH_KIND", "oauth");
+    } else {
+        cmd.env("AISHE_AUTH_KIND", "key");
+    }
     let _status_guard = FileGuard(status_file);
     // Persist interactive commands to aishe's timestamped history log (via a zsh
     // preexec hook), so `aishe history` and semantic search have data — the PTY's

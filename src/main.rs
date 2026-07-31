@@ -347,10 +347,10 @@ enum Cmd {
         #[arg(long)]
         default: bool,
     },
-    /// Select a connection/model for this shell, or save it as the default.
+    /// Select a model for the active connection (this shell, or save default).
     Model {
         value: Option<String>,
-        /// Select a named connection together with the model.
+        /// Apply the model on a named connection (scripting; prefer `/connection` interactively).
         #[arg(long)]
         connection: Option<String>,
         /// Persist the selection instead of limiting it to this shell.
@@ -415,8 +415,11 @@ enum Cmd {
     },
     /// List the MCP tools offered to yolo.
     Mcp,
-    /// List primary and custom slash-commands.
-    Commands,
+    /// List primary slash-commands, or show task-oriented help.
+    Commands {
+        /// Optional topic: accounts, models, session, config.
+        topic: Option<String>,
+    },
     /// Show model, mode, scope, output, live spend, and audit-log state.
     Status {
         /// Emit stable JSON.
@@ -555,6 +558,14 @@ enum ConnectionCmd {
         id: Option<String>,
         #[arg(long)]
         json: bool,
+    },
+    /// Interactively pick a connection for this shell (or save as default).
+    Pick {
+        /// Optional connection id/label filter or exact id.
+        value: Option<String>,
+        /// Persist the selection instead of limiting it to this shell.
+        #[arg(long)]
+        default: bool,
     },
     /// Add a connection.
     Add {
@@ -1429,9 +1440,8 @@ fn run() -> Result<u8> {
             print_mcp_listing(&aishe::mcp::McpRegistry::connect(&config.mcp_servers));
             return Ok(0);
         }
-        Some(Cmd::Commands) => {
-            let commands = CommandRegistry::load();
-            print_command_listing(&commands);
+        Some(Cmd::Commands { topic }) => {
+            print_help_command(topic.as_deref());
             return Ok(0);
         }
         Some(Cmd::Status { json }) => return Ok(status_command(&config, *json)),
@@ -2177,7 +2187,7 @@ fn record_managed_usage(outcome: &TurnOutcome, config: &Config) {
                 std::path::Path::new(&path),
                 &config.pricing,
                 Some((usage, config.active_model())),
-                &config.aishe.status_line_items,
+                &config.effective_status_line_items(),
                 config.active_connection_id(),
             );
             let task = outcome
@@ -2712,9 +2722,11 @@ fn one_shot(
                 // commands need the interactive session (persistence/restart).
                 match tokens.get(1).map(|s| s.as_str()) {
                     Some("commands") => {
-                        print_command_listing(commands);
+                        print_help_command(tokens.get(2).map(String::as_str));
                     }
-                    Some("help") => print_command_listing(commands),
+                    Some("help") => {
+                        print_help_command(tokens.get(2).map(String::as_str));
+                    }
                     Some("status") => {
                         status_command(config, false);
                     }
@@ -3016,41 +3028,45 @@ fn print_mcp_listing(mcp: &aishe::mcp::McpRegistry) {
     }
 }
 
-const PRIMARY_SLASH_COMMANDS: &[(&str, &str)] = &[
-    ("/help", "show this command index"),
-    ("/model", "choose a connection and model for this shell"),
-    ("/provider", "open the connection and model picker"),
-    ("/auth", "show authentication for the active connection"),
-    ("/status", "model, mode, scope, spend, and audit state"),
-    ("/usage", "live token and cost totals for this shell"),
-    ("/log", "last 20 audit events and tool actions"),
-    ("/reasoning", "show the provider reasoning effort"),
-    (
-        "/details",
-        "expand or shrink agent work for following turns",
-    ),
-    ("/settings", "open the interactive settings editor"),
-    ("/reset", "start a fresh conversation"),
-    ("/commands", "list primary and custom slash-commands"),
-];
-
-fn print_command_listing(commands: &CommandRegistry) {
-    println!("primary slash-commands:");
-    for (name, description) in PRIMARY_SLASH_COMMANDS {
-        println!("  {name:<12} {description}");
-    }
-    println!("\nkeys:");
-    println!("  Ctrl-O       focus/detailed output");
-    println!("  Shift-Tab    suggest/auto/yolo mode");
-    if commands.is_empty() {
-        println!(
-            "\ncustom: none (add *.md files to {})",
-            aishe::commands::user_dir().unwrap_or_default().display()
-        );
-    } else {
-        println!("\ncustom slash-commands:");
-        for (name, description) in commands.list() {
-            println!("  /{name:<11} {description}");
+fn print_help_command(topic: Option<&str>) {
+    aishe::product_help::print_help(topic);
+    if topic.is_none() {
+        let commands = CommandRegistry::load();
+        println!("Slash commands (in-shell):");
+        for (name, description) in [
+            (
+                "/help [topic]",
+                "this help (topics: accounts models session config)",
+            ),
+            (
+                "/connection",
+                "switch account · see footer to add a new one",
+            ),
+            ("/model", "models for the active account only"),
+            ("/provider", "alias for /connection"),
+            ("/auth", "auth state for the active connection"),
+            ("/status", "connection, model, mode, spend, audit"),
+            ("/usage", "live token/cost totals"),
+            ("/log", "recent audit events"),
+            ("/reasoning", "reasoning effort"),
+            ("/details", "agent transcript density"),
+            ("/settings", "interactive settings hub"),
+            ("/reset", "fresh conversation"),
+            ("/commands", "same as /help"),
+        ] {
+            println!("  {name:<16} {description}");
+        }
+        println!("\nkeys:  Ctrl-O focus/detailed · Shift-Tab suggest/auto/yolo");
+        if commands.is_empty() {
+            println!(
+                "\ncustom slash-commands: none (add *.md under {})",
+                aishe::commands::user_dir().unwrap_or_default().display()
+            );
+        } else {
+            println!("\ncustom slash-commands:");
+            for (name, description) in commands.list() {
+                println!("  /{name:<14} {description}");
+            }
         }
     }
 }
@@ -3204,7 +3220,9 @@ fn status_command(config: &Config, json: bool) -> u8 {
     } else {
         println!("  budget: unlimited");
     }
-    println!("  controls: /model switch · Ctrl-O details · Shift-Tab mode · /help commands");
+    println!(
+        "  controls: /help · /connection · /model · Ctrl-O · Shift-Tab · ask how-to questions"
+    );
     0
 }
 
@@ -3454,43 +3472,38 @@ fn model_command(
                     "default"
                 }
             );
-            println!("use `aishe model MODEL --connection ID` or run in a terminal for the picker");
+            println!(
+                "use `aishe model MODEL` for this connection, `aishe connection pick` for accounts"
+            );
             return 0;
         }
-        let mut choices = Vec::new();
-        for (id, connection) in &selected.connections {
-            let models = aishe::capabilities::known_models(&selected, id)
-                .unwrap_or_else(|_| vec![connection.settings.model.clone()]);
-            for model in models {
-                choices.push((id.clone(), model));
-            }
-        }
-        let rows: Vec<String> = choices
+        let connection_id = selected.active_connection_id().to_string();
+        let models = aishe::capabilities::known_models(&selected, &connection_id)
+            .unwrap_or_else(|_| vec![selected.active_model().to_string()]);
+        let connection = selected
+            .connections
+            .get(&connection_id)
+            .expect("active connection exists");
+        let rows: Vec<String> = models
             .iter()
-            .map(|(id, model)| {
-                let connection = &selected.connections[id];
-                format!(
-                    "{:<20} {:<24} {}",
-                    connection.label,
-                    connection.auth_label(),
-                    model
-                )
-            })
+            .map(|model| format!("{:<28} {}", model, connection.auth_label()))
             .collect();
-        let default = choices
+        let default = models
             .iter()
-            .position(|(id, model)| {
-                id == selected.active_connection_id() && model == selected.active_model()
-            })
+            .position(|model| model == selected.active_model())
             .unwrap_or(0);
-        let result =
-            match aishe::promptui::filter_picker("Select a connection and model", &rows, default) {
-                Ok(result) => result,
-                Err(error) => {
-                    eprintln!("aishe: {error:#}");
-                    return 1;
-                }
-            };
+        let title = format!(
+            "Select a model · {} ({})",
+            aishe::commands::display_safe(&connection.label),
+            aishe::commands::display_safe(&connection_id)
+        );
+        let result = match aishe::promptui::filter_picker(&title, &rows, default) {
+            Ok(result) => result,
+            Err(error) => {
+                eprintln!("aishe: {error:#}");
+                return 1;
+            }
+        };
         let index = match result {
             aishe::promptui::PickerResult::Use(index) => index,
             aishe::promptui::PickerResult::SaveDefault(index) => {
@@ -3502,11 +3515,27 @@ fn model_command(
                 return 0;
             }
         };
-        if let Err(error) = selected.select_connection(&choices[index].0) {
-            eprintln!("aishe: {error}");
-            return 1;
+        selected.set_active_model(models[index].clone());
+        if !save_default {
+            if let Ok(Some(durable)) = Config::load_quiet() {
+                let durable_model = durable
+                    .connections
+                    .get(selected.active_connection_id())
+                    .map(|c| c.settings.model.as_str())
+                    .unwrap_or(durable.active_model());
+                if durable_model != selected.active_model() {
+                    if let Ok(Some(true)) = aishe::promptui::confirm(
+                        &format!(
+                            "Make model '{}' the default for this connection?",
+                            aishe::commands::display_safe(selected.active_model())
+                        ),
+                        true,
+                    ) {
+                        save_default = true;
+                    }
+                }
+            }
         }
-        selected.set_active_model(choices[index].1.clone());
     } else {
         if let Some(connection) = requested_connection {
             let id = match selected.resolve_connection_id(connection) {
@@ -3522,6 +3551,8 @@ fn model_command(
             }
         }
         if let Some(value) = value {
+            // Scripting form connection/model still accepted; interactive account
+            // switching is `/connection` (or `aishe connection pick`).
             if requested_connection.is_none() {
                 if let Some((candidate, model)) = value.split_once('/') {
                     let connection_prefix = selected.connections.contains_key(candidate)
@@ -3552,11 +3583,16 @@ fn model_command(
                     } else {
                         selected.set_active_model(value.to_string());
                     }
-                } else if selected.connections.contains_key(value) {
-                    if let Err(error) = selected.select_connection(value) {
-                        eprintln!("aishe: {error}");
-                        return 1;
-                    }
+                } else if selected.connections.contains_key(value)
+                    || selected
+                        .connections
+                        .values()
+                        .any(|connection| connection.label.eq_ignore_ascii_case(value))
+                {
+                    eprintln!(
+                        "aishe: '{value}' looks like a connection; use `aishe connection pick` or `/connection`"
+                    );
+                    return 1;
                 } else if let Err(error) = aishe::connection::validate_model_id(value) {
                     eprintln!("aishe: {error}");
                     return 1;
@@ -3604,8 +3640,154 @@ fn model_command(
     0
 }
 
+fn connection_pick_command(effective: &Config, value: Option<&str>, save_default: bool) -> u8 {
+    let mut selected = effective.clone();
+    let mut save_default = save_default;
+    if let Some(value) = value {
+        if value == "default" {
+            return model_command(effective, Some("default"), None, false);
+        }
+        let id = match selected.resolve_connection_id(value) {
+            Ok(id) => id,
+            Err(error) => {
+                eprintln!("aishe: {error}");
+                return 1;
+            }
+        };
+        if let Err(error) = selected.select_connection(&id) {
+            eprintln!("aishe: {error}");
+            return 1;
+        }
+    } else {
+        if !std::io::stdin().is_terminal() || !std::io::stdout().is_terminal() {
+            println!(
+                "connection: {} · model: {} ({})",
+                aishe::commands::display_safe(selected.active_connection_id()),
+                aishe::commands::display_safe(selected.active_model()),
+                if aishe::connection::selection_is_shell_local() {
+                    "this shell"
+                } else {
+                    "default"
+                }
+            );
+            println!("use `aishe connection pick ID` or run in a terminal for the picker");
+            println!("add a new account: aishe setup  |  aishe connection add --help");
+            return 0;
+        }
+        let choices: Vec<(String, String)> = selected
+            .connections
+            .iter()
+            .map(|(id, connection)| (id.clone(), connection.label.clone()))
+            .collect();
+        if choices.is_empty() {
+            println!("No connections configured yet.");
+            println!("  aishe setup");
+            println!("  aishe connection add ID --provider openai --auth oauth --profile work");
+            println!("  /help accounts");
+            return 0;
+        }
+        println!("  ↑/↓ move · Enter use in this shell · d save as default · Esc cancel");
+        println!("  Add a new account: aishe setup  ·  /help accounts\n");
+        let rows: Vec<String> = choices
+            .iter()
+            .map(|(id, _)| {
+                let connection = &selected.connections[id];
+                format!(
+                    "{:<28} {:<22} {}",
+                    connection.label,
+                    connection.auth_label(),
+                    connection.settings.model
+                )
+            })
+            .collect();
+        let default = choices
+            .iter()
+            .position(|(id, _)| id == selected.active_connection_id())
+            .unwrap_or(0);
+        let result = match aishe::promptui::filter_picker("Select a connection", &rows, default) {
+            Ok(result) => result,
+            Err(error) => {
+                eprintln!("aishe: {error:#}");
+                return 1;
+            }
+        };
+        let index = match result {
+            aishe::promptui::PickerResult::Use(index) => index,
+            aishe::promptui::PickerResult::SaveDefault(index) => {
+                save_default = true;
+                index
+            }
+            aishe::promptui::PickerResult::Cancel => {
+                println!("connection selection cancelled");
+                return 0;
+            }
+        };
+        if let Err(error) = selected.select_connection(&choices[index].0) {
+            eprintln!("aishe: {error}");
+            return 1;
+        }
+        // After Enter (shell-only), offer to promote to durable default when
+        // the choice differs from the saved default connection.
+        if !save_default {
+            if let Ok(Some(durable)) = Config::load_quiet() {
+                if durable.active_connection_id() != selected.active_connection_id() {
+                    if let Ok(Some(true)) = aishe::promptui::confirm(
+                        &format!(
+                            "Make '{}' the default connection?",
+                            aishe::commands::display_safe(
+                                &selected
+                                    .active_connection()
+                                    .map(|c| c.label.as_str())
+                                    .unwrap_or(selected.active_connection_id())
+                            )
+                        ),
+                        true,
+                    ) {
+                        save_default = true;
+                    }
+                }
+            }
+        }
+    }
+
+    let shell_local = aishe::connection::selection_path().is_some() && !save_default;
+    let result = if shell_local {
+        aishe::connection::write_shell_selection(&selected, "shell").map(|_| ())
+    } else {
+        (|| -> Result<()> {
+            let mut durable = Config::load_or_init()?;
+            durable.select_connection(selected.active_connection_id())?;
+            durable.set_active_model(selected.active_model().to_string());
+            durable.set_active_reasoning_effort(selected.active_reasoning_effort().to_string());
+            durable.save()?;
+            let _ = aishe::connection::write_shell_selection(&selected, "default");
+            Ok(())
+        })()
+    };
+    if let Err(error) = result {
+        eprintln!("aishe: {error}");
+        return 1;
+    }
+    println!(
+        "connection = {} · model = {} ({})",
+        aishe::commands::display_safe(selected.active_connection_id()),
+        aishe::commands::display_safe(selected.active_model()),
+        if shell_local {
+            "this shell"
+        } else {
+            "saved default"
+        }
+    );
+    0
+}
+
 fn connection_command(effective: &Config, command: &ConnectionCmd) -> Result<u8> {
     match command {
+        ConnectionCmd::Pick { value, default } => Ok(connection_pick_command(
+            effective,
+            value.as_deref(),
+            *default,
+        )),
         ConnectionCmd::List { json } => {
             if *json {
                 let rows: Vec<_> = effective
@@ -3726,11 +3908,17 @@ fn connection_command(effective: &Config, command: &ConnectionCmd) -> Result<u8>
                 key_env.as_deref(),
                 &settings,
             )?;
+            let default_label = aishe::config::branded_connection_label(
+                &provider.to_ascii_lowercase(),
+                &settings.base_url,
+                &connection_auth,
+            )
+            .unwrap_or_else(|| id.clone());
             config.connections.insert(
                 id.clone(),
                 aishe::config::ConnectionConfig {
                     provider: provider.to_ascii_lowercase(),
-                    label: label.clone().unwrap_or_else(|| id.clone()),
+                    label: label.clone().unwrap_or(default_label),
                     settings,
                     auth: connection_auth,
                     reasoning_effort: reasoning.clone(),
@@ -3807,6 +3995,15 @@ fn connection_command(effective: &Config, command: &ConnectionCmd) -> Result<u8>
                         }
                     }
                     _ => {}
+                }
+            }
+            if label.is_none() {
+                if let Some(branded) = aishe::config::branded_connection_label(
+                    &connection.provider,
+                    &connection.settings.base_url,
+                    &connection.auth,
+                ) {
+                    connection.label = branded;
                 }
             }
             config.validate_connections()?;

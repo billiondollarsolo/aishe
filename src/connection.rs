@@ -475,7 +475,7 @@ pub fn write_shell_selection(config: &Config, selection_scope: &str) -> Result<b
             Path::new(&usage_path),
             &config.pricing,
             None,
-            &config.aishe.status_line_items,
+            &config.effective_status_line_items(),
             config.active_connection_id(),
         );
     }

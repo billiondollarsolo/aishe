@@ -130,11 +130,10 @@ pub fn list_models(config: &Config, provider_name: &str) -> Result<Vec<String>, 
             message: crate::redact::redact(&error.to_string()),
         }
     })?;
-    // The pinned OpenCode OAuth runtime does not expose a stable account-scoped
-    // model enumeration API. Present the configured model and allow `/model ID`
-    // typed selection rather than making an anonymous or wrong-account request.
+    // Subscription OAuth (Codex / Grok) is enumerated through the managed
+    // OpenCode runtime for this connection — not public /v1/models.
     if matches!(resolved.auth, crate::connection::ResolvedAuth::OAuth { .. }) {
-        return Ok(vec![resolved.settings.model]);
+        return list_models_via_opencode(config, &connection_id, &resolved.settings.model);
     }
     let anthropic = resolved.provider == "anthropic";
     let provider = resolved.settings;
@@ -714,8 +713,8 @@ pub fn load(config: &Config) -> Option<Report> {
 }
 
 /// Configured, cached, static-catalog, and recently audited models for a single
-/// connection. This is deliberately offline so opening `/model` never makes a
-/// surprise network request or crosses an account boundary.
+/// connection. For OAuth connections this also asks the managed OpenCode
+/// runtime (may start it) so `/model` mirrors the subscription catalog.
 pub fn known_models(config: &Config, connection_id: &str) -> Result<Vec<String>> {
     let id = config.resolve_connection_id(connection_id)?;
     let mut selected = config.clone();
@@ -748,6 +747,13 @@ pub fn known_models(config: &Config, connection_id: &str) -> Result<Vec<String>>
             .filter_map(|entry| entry.model)
             .take(20),
     );
+    // Live OpenCode catalog for subscription OAuth (Codex / Grok). Fail soft so
+    // a stopped runtime still leaves the configured model pickable.
+    if connection.uses_oauth() {
+        if let Ok(live) = list_models(config, &id) {
+            models.extend(live);
+        }
+    }
     models.retain(|model| crate::connection::validate_model_id(model).is_ok());
     models.sort();
     models.dedup();
@@ -756,6 +762,57 @@ pub fn known_models(config: &Config, connection_id: &str) -> Result<Vec<String>>
         .position(|model| model == &connection.settings.model)
     {
         models.swap(0, position);
+    }
+    Ok(models)
+}
+
+/// Ask the managed OpenCode server for models on the active OAuth connection.
+fn list_models_via_opencode(
+    config: &Config,
+    connection_id: &str,
+    configured_model: &str,
+) -> Result<Vec<String>, ProviderError> {
+    let mut selected = config.clone();
+    selected
+        .select_connection(connection_id)
+        .map_err(|error| ProviderError::Api {
+            status: 0,
+            message: crate::redact::redact(&error.to_string()),
+        })?;
+    let state = crate::backend::supervisor::ensure_running(&selected).map_err(|error| {
+        ProviderError::Api {
+            status: 0,
+            message: crate::redact::redact(&format!(
+                "managed OpenCode could not start for model discovery: {error}"
+            )),
+        }
+    })?;
+    let client = crate::backend::opencode::OpenCodeClient::new(
+        state.opencode_connection(),
+        state.provider_id,
+        state.model_id,
+    )
+    .map_err(|error| ProviderError::Api {
+        status: 0,
+        message: crate::redact::redact(&error.to_string()),
+    })?;
+    let mut models = client
+        .list_provider_models()
+        .map_err(|error| ProviderError::Api {
+            status: 0,
+            message: crate::redact::redact(&error.to_string()),
+        })?;
+    if !configured_model.is_empty() && !models.iter().any(|model| model == configured_model) {
+        models.push(configured_model.to_string());
+    }
+    models.retain(|model| crate::connection::validate_model_id(model).is_ok());
+    models.sort();
+    models.dedup();
+    if let Some(position) = models.iter().position(|model| model == configured_model) {
+        models.swap(0, position);
+    }
+    if models.is_empty() {
+        return Ok(vec![configured_model.to_string()]);
     }
     Ok(models)
 }
