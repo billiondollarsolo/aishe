@@ -208,6 +208,7 @@ def isolated_env(root):
             "HOME": root,
             "AISHE_CONFIG_DIR": os.path.join(root, "config"),
             "AISHE_DATA_DIR": os.path.join(root, "data"),
+            "AISHE_RUNTIME_DIR": os.path.join(root, "data", "aishe", "runtime"),
             "XDG_CONFIG_HOME": os.path.join(root, "config"),
             "XDG_DATA_HOME": os.path.join(root, "data"),
             "TERM": "xterm-256color",
