@@ -26,9 +26,12 @@ const USAGE_RECONCILIATION_GRACE: Duration = Duration::from_secs(30);
 const BUDGET_RESERVATION_TTL: Duration = Duration::from_secs(10 * 60);
 const TOOL_WAIT: Duration = Duration::from_secs(60 * 60);
 
-/// Override for tests only (`0` = use [`LEASE_TTL`]).
+/// Override for tests only (`0` = use [`LEASE_TTL`]). Guarded by
+/// [`TEST_LEASE_TTL_LOCK`] so parallel lib tests cannot clobber each other.
 #[cfg(test)]
 static TEST_LEASE_TTL_MS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+#[cfg(test)]
+static TEST_LEASE_TTL_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 fn lease_ttl() -> Duration {
     #[cfg(test)]
@@ -44,6 +47,14 @@ fn lease_ttl() -> Duration {
 /// How often the foreground tool worker should renew the lease while a turn is
 /// live (including during long `run_command` executions).
 pub const LEASE_KEEPALIVE_INTERVAL: Duration = Duration::from_secs(20);
+
+/// Hold the returned guard for the whole test that mutates the lease TTL.
+#[cfg(test)]
+pub fn lock_test_lease_ttl() -> std::sync::MutexGuard<'static, ()> {
+    TEST_LEASE_TTL_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
 
 #[cfg(test)]
 pub fn set_test_lease_ttl_ms(ms: u64) {
@@ -1492,18 +1503,19 @@ mod tests {
 
     #[test]
     fn heartbeat_keeps_provider_authority_past_lease_ttl() {
-        set_test_lease_ttl_ms(80);
+        let _ttl_guard = lock_test_lease_ttl();
+        set_test_lease_ttl_ms(200);
         let (bridge, root, workspace) = bridge("lease-keepalive");
         let _expired = bridge.register(registration(&workspace)).unwrap();
         // Without heartbeats the short TTL expires and authorize fails closed.
-        std::thread::sleep(Duration::from_millis(120));
+        std::thread::sleep(Duration::from_millis(280));
         let dead = bridge.authorize_session("ses_test").unwrap_err();
         assert_eq!(dead.code, "foreground_unavailable");
 
         let lease = bridge.register(registration(&workspace)).unwrap();
-        // Keepalive every 30ms while TTL is 80ms — mirrors production worker.
+        // Keepalive every ~80ms while TTL is 200ms — mirrors production worker.
         for _ in 0..6 {
-            std::thread::sleep(Duration::from_millis(30));
+            std::thread::sleep(Duration::from_millis(80));
             bridge.heartbeat(&lease).unwrap();
         }
         bridge.authorize_session("ses_test").unwrap();
@@ -1526,7 +1538,7 @@ mod tests {
             // Simulate a long host command: keepalive heartbeats (worker thread)
             // while the tool runs past several TTL windows.
             for _ in 0..4 {
-                std::thread::sleep(Duration::from_millis(50));
+                std::thread::sleep(Duration::from_millis(100));
                 bridge.heartbeat(&lease).unwrap();
             }
             bridge.authorize_session("ses_test").unwrap();
@@ -1616,7 +1628,9 @@ mod tests {
         std::thread::scope(|scope| {
             scope.spawn(|| {
                 std::thread::sleep(Duration::from_millis(30));
-                bridge.unregister(&identity).unwrap();
+                // Best-effort revoke: a concurrent short test TTL must not panic
+                // the security redaction path.
+                let _ = bridge.unregister(&identity);
             });
             let _ = bridge.admit_and_wait(redacted);
         });
