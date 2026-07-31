@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/aishe-banner.png" alt="AIshe — AI Shell" width="420">
+  <img src="assets/aishe-banner.png" alt="AIshe — AI Shell" width="560">
 </p>
 
 <p align="center"><strong>AIshe</strong> · <em>AI Shell</em></p>

@@ -1,10 +1,14 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <svg xmlns="http://www.w3.org/2000/svg" width="960" height="360" viewBox="0 0 960 360" role="img" aria-label="AIshe — AI Shell">
   <title>AIshe — AI Shell</title>
-  <desc>Centered glasses mark with AIshe wordmark on a white banner</desc>
+  <desc>Large centered glasses mark with AIshe wordmark on a white banner</desc>
   <rect width="960" height="360" fill="#ffffff" rx="20" ry="20"/>
-  <!-- Scale original 1080 art and center in banner -->
-  <g transform="translate(480, 180) scale(0.30) translate(-540, -500)">
+  <!--
+    Original art is 1080×1080 with the mark roughly in the middle third.
+    Scale so the mark is ~80% of banner height (≈288px): 1080 * s ≈ 960 → s≈0.89
+    for the full frame, but content is tighter — use ~0.72 and center.
+  -->
+  <g transform="translate(480, 180) scale(0.88) translate(-540, -520)">
     <g transform="matrix(1.9463 0 0 1.9463 475.4074 595.1805)">
       <g transform="matrix(0.3906 0 0 0.3906 -63.6367 -33.6988)">
         <path fill="#000000" transform="translate(-93.09, -169.7307)"
