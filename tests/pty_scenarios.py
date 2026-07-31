@@ -516,8 +516,9 @@ def main():
         check(
             sh,
             "/help exposes the primary command surface",
-            sh.expect("primary slash-commands:"),
+            sh.expect("aishe help"),
         )
+        check(sh, "/help includes /connection", sh.expect("/connection"))
         check(sh, "/help includes live status", sh.expect("/status"))
         sh.expect_prompt()
         sh.send("/status")

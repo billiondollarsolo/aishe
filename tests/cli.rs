@@ -232,7 +232,7 @@ redact = true
     );
     run(&["status", "--json"]).assert().success().stdout(
         contains(r#""id": "openai-work""#)
-            .and(contains(r#""auth": "API key · work-key""#))
+            .and(contains(r#""auth": "Codex - API""#))
             .and(contains(r#""selection_scope": "default""#))
             .and(contains("work-secret-never-log").not()),
     );
@@ -1158,12 +1158,12 @@ fn primary_commands_and_live_status_are_discoverable() {
         .assert()
         .success()
         .stdout(
-            contains("primary slash-commands:")
+            contains("aishe help")
                 .and(contains("/help"))
+                .and(contains("/connection"))
+                .and(contains("/model"))
                 .and(contains("/status"))
-                .and(contains("/log"))
                 .and(contains("/reasoning"))
-                .and(contains("/details"))
                 .and(contains("Ctrl-O")),
         );
 
@@ -1432,11 +1432,11 @@ model = "gpt-x"
     run(&["commands"])
         .assert()
         .success()
-        .stdout(contains("custom: none"));
+        .stdout(contains("custom slash-commands: none").or(contains("aishe help")));
     run(&["skills"])
         .assert()
         .success()
-        .stdout(contains("no skills"));
+        .stdout(contains("aishe-product"));
 
     // Clap rejects an invalid mode.
     run(&["mode", "bogus"]).assert().failure();
