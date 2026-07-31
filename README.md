@@ -1,21 +1,24 @@
 <p align="center">
-  <img src="assets/aishe-logo.svg" alt="Aishe" width="128">
+  <img src="assets/aishe-logo.svg" alt="AISHE — AI Shell" width="160">
 </p>
 
-# aishe — an AI-driven shell
+# AISHE — AI Shell
+
+**AISHE** stands for **AI Shell**: your real shell, with an agent built into the
+command line.
 
 > **Alpha (pre-1.0).** The product is usable day to day, but APIs, config shape,
 > and UX can still change. Autonomous host access can make irreversible changes —
 > prefer workspace scope and Linux isolation for untrusted work, read
 > [the safety model](docs/safety.md), and keep backups.
 
-**It is your real shell, with an agent built into the command line.** Aishe runs
-an actual interactive zsh rather than emulating one, so aliases, plugins,
-completion, job control, history, and ordinary commands keep their native
-behavior. Input that is not a command becomes a plain-English request to the AI.
+AISHE runs an actual interactive zsh rather than emulating one, so aliases,
+plugins, completion, job control, history, and ordinary commands keep their
+native behavior. Input that is not a command becomes a plain-English request to
+the AI.
 
 The agent layer uses a private, compatibility-pinned OpenCode SDK/runtime for
-reasoning, tools, durable conversations, compaction, and subagents. Aishe stays
+reasoning, tools, durable conversations, compaction, and subagents. AISHE stays
 the control plane: routing, execution scope, sandbox policy, approvals,
 credentials, budgets, terminal rendering, and the audit trail. The result is an
 AI-driven systems shell — not a chatbot parked next to a terminal.

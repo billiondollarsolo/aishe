@@ -5,7 +5,7 @@
 # `aishe-<target>.tar.gz.sha256` files attached by .github/workflows/release.yml).
 # Then drop this file into a tap (e.g. homebrew-tap/Formula/aishe.rb).
 class Aishe < Formula
-  desc "Natural-language-aware shell: zsh for commands, an LLM for everything else"
+  desc "AISHE (AI Shell): natural-language-aware shell — zsh for commands, an agent for everything else"
   homepage "https://github.com/billiondollarsolo/aishe"
   version "0.6.2"
   license "MIT"

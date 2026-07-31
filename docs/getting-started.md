@@ -3,7 +3,7 @@
 > **Alpha (pre-1.0).** Behavior and config may still change; see the
 > [docs index](README.md) and [root README](../README.md).
 
-This page walks through your first session with aishe.
+This page walks through your first session with **AISHE** (**AI Shell**).
 
 ## 1. Authenticate a provider
 

@@ -1151,6 +1151,7 @@ mod tests {
         assert!(s.contains("aishe: /help · /connection · /model"));
         assert!(s.contains(".-----. .-----."));
         assert!(s.contains("AISHE"));
+        assert!(s.contains("AI Shell"));
         assert!(s.contains("AISHE_COMMAND_HINT_SHOWN"));
     }
 
