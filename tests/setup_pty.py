@@ -236,10 +236,14 @@ def setup_to_provider(shell, install_runtime=False):
     shell.expect("Continue setup")
     shell.line()
     reached = shell.expect_any(
-        ["Provider service", "Linux workspace isolation", "OpenCode Agent Runtime"],
+        [
+            "Provider service",
+            "Linux workspace isolation",
+            "› 1) Install",
+        ],
         timeout=30,
     )
-    if reached == "OpenCode Agent Runtime":
+    if reached == "› 1) Install":
         shell.menu(1 if install_runtime else 4)
         reached = shell.expect_any(
             ["Provider service", "Linux workspace isolation"],
@@ -254,6 +258,7 @@ def setup_to_provider(shell, install_runtime=False):
         choice = 2 if "Install bubblewrap now" in shell.transcript else 1
         shell.menu(choice)
         shell.expect("Provider service", timeout=60)
+    shell.expect("› ")
 
 
 def expect_setup_exit(shell, label):
