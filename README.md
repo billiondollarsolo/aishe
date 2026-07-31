@@ -1,11 +1,10 @@
 <p align="center">
-  <img src="assets/aishe-logo.svg" alt="AISHE — AI Shell" width="160">
+  <img src="assets/aishe-banner.png" alt="AISHE — AI Shell" width="480">
 </p>
 
-# AISHE — AI Shell
+<p align="center"><strong>AISHE</strong> · <em>AI Shell</em></p>
 
-**AISHE** stands for **AI Shell**: your real shell, with an agent built into the
-command line.
+Your real shell, with an agent built into the command line.
 
 > **Alpha (pre-1.0).** The product is usable day to day, but APIs, config shape,
 > and UX can still change. Autonomous host access can make irreversible changes —
