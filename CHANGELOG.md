@@ -6,6 +6,8 @@ breaking changes can land in any release.
 
 ## [Unreleased]
 
+## [0.6.4] - 2026-07-31
+
 ### Fixed
 - Long multi-tool yolo turns no longer die with `503 (foreground_unavailable)`
   after slow installs: the foreground **lease keepalive** thread renews every
@@ -25,6 +27,13 @@ breaking changes can land in any release.
 - `aishe --help` epilog documents AIShe branding and `/connection` vs `/model`.
 - User-facing copy brand-swept to **AIShe** (CLI remains `aishe`).
 - Design PRD for unified `/model` marked superseded.
+- README and docs highlight force natural language with **`?`** (shell-first trap:
+  `install kubectl please` is `/usr/bin/install`); green/magenta buffer colors;
+  Mac Option-as-Meta notes for optional Meta+Return.
+- OS paths use lowercase **`aishe`** (e.g. macOS org policy
+  `/Library/Application Support/aishe/policy.toml`); legacy `Aishe`/`AIShe`
+  directories are still dual-loaded.
+
 
 ## [0.6.3] - 2026-07-31
 

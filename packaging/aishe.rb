@@ -7,7 +7,7 @@
 class Aishe < Formula
   desc "AIShe (AI Shell): natural-language-aware shell — zsh for commands, an agent for everything else"
   homepage "https://github.com/billiondollarsolo/aishe"
-  version "0.6.3"
+  version "0.6.4"
   license "MIT"
 
   on_macos do
