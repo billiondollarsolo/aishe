@@ -397,14 +397,26 @@ fn hex_prefix(bytes: &[u8], count: usize) -> String {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ShellSelection {
     pub connection_id: String,
+    pub connection_label: String,
+    pub provider: String,
+    pub endpoint_host: String,
+    pub auth_label: String,
     pub model_id: String,
     pub reasoning_effort: String,
+    /// `shell` for an ephemeral override or `default` for the durable choice.
+    pub selection_scope: String,
 }
 
 pub fn selection_path() -> Option<PathBuf> {
     std::env::var_os("AISHE_SELECTION_FILE")
         .filter(|value| !value.is_empty())
         .map(PathBuf::from)
+}
+
+pub fn selection_is_shell_local() -> bool {
+    selection_path()
+        .and_then(|path| read_selection(&path).ok())
+        .is_some_and(|selection| selection.selection_scope == "shell")
 }
 
 pub fn apply_shell_selection(config: &mut Config) -> Result<bool> {
@@ -422,7 +434,7 @@ pub fn apply_shell_selection(config: &mut Config) -> Result<bool> {
     Ok(true)
 }
 
-pub fn write_shell_selection(config: &Config) -> Result<bool> {
+pub fn write_shell_selection(config: &Config, selection_scope: &str) -> Result<bool> {
     if let Some(model_file) = std::env::var_os("AISHE_MODEL_FILE").filter(|v| !v.is_empty()) {
         crate::config::write_atomic(
             Path::new(&model_file),
@@ -436,20 +448,69 @@ pub fn write_shell_selection(config: &Config) -> Result<bool> {
         &path,
         &ShellSelection {
             connection_id: config.active_connection_id().to_string(),
+            connection_label: config
+                .active_connection()
+                .map(|value| value.label.clone())
+                .unwrap_or_else(|| config.active_connection_id().to_string()),
+            provider: config.active_provider_name().to_string(),
+            endpoint_host: url::Url::parse(&config.active_provider_config().base_url)
+                .ok()
+                .and_then(|url| url.host_str().map(ToOwned::to_owned))
+                .unwrap_or_else(|| "unknown".into()),
+            auth_label: config
+                .active_connection()
+                .map(crate::config::ConnectionConfig::auth_label)
+                .unwrap_or_else(|| "Auto (legacy)".into()),
             model_id: config.active_model().to_string(),
             reasoning_effort: config.active_reasoning_effort().to_string(),
+            selection_scope: selection_scope.to_string(),
         },
     )?;
+    if let (Some(status_path), Some(usage_path)) = (
+        std::env::var_os("AISHE_STATUS_FILE").filter(|value| !value.is_empty()),
+        std::env::var_os("AISHE_USAGE_FILE").filter(|value| !value.is_empty()),
+    ) {
+        crate::usagelog::write_status_for_connection(
+            Path::new(&status_path),
+            Path::new(&usage_path),
+            &config.pricing,
+            None,
+            &config.aishe.status_line_items,
+            config.active_connection_id(),
+        );
+    }
     Ok(true)
 }
 
 pub fn write_selection(path: &Path, selection: &ShellSelection) -> Result<()> {
     crate::config::normalize_connection_id(&selection.connection_id)?;
+    for (name, value) in [
+        ("connection label", &selection.connection_label),
+        ("provider", &selection.provider),
+        ("endpoint host", &selection.endpoint_host),
+        ("auth label", &selection.auth_label),
+    ] {
+        if value.is_empty()
+            || value.len() > 512
+            || value.contains(['\n', '\r', '\0'])
+            || value.chars().any(char::is_control)
+        {
+            anyhow::bail!("{name} is not safe for a shell selection handoff");
+        }
+    }
     validate_model_id(&selection.model_id)?;
     validate_reasoning(&selection.reasoning_effort)?;
+    validate_selection_scope(&selection.selection_scope)?;
     let text = format!(
-        "{}\n{}\n{}\n",
-        selection.connection_id, selection.model_id, selection.reasoning_effort
+        "{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n",
+        selection.connection_id,
+        selection.connection_label,
+        selection.provider,
+        selection.endpoint_host,
+        selection.auth_label,
+        selection.model_id,
+        selection.reasoning_effort,
+        selection.selection_scope
     );
     crate::config::write_atomic(path, text.as_bytes())?;
     crate::config::set_private_file(path);
@@ -481,15 +542,61 @@ pub fn read_selection(path: &Path) -> Result<ShellSelection> {
     }
     let text = String::from_utf8(bytes).context("AISHE_SELECTION_FILE is not UTF-8")?;
     let mut lines = text.lines();
+    let connection_id = lines.next().unwrap_or_default().to_string();
+    let remaining: Vec<&str> = lines.collect();
+    let current_format = remaining.len() >= 7;
     let selection = ShellSelection {
-        connection_id: lines.next().unwrap_or_default().to_string(),
-        model_id: lines.next().unwrap_or_default().to_string(),
-        reasoning_effort: lines.next().unwrap_or("auto").to_string(),
+        connection_label: if current_format {
+            remaining[0].to_string()
+        } else {
+            connection_id.clone()
+        },
+        provider: if current_format {
+            remaining[1].to_string()
+        } else {
+            "unknown".into()
+        },
+        endpoint_host: if current_format {
+            remaining[2].to_string()
+        } else {
+            "unknown".into()
+        },
+        auth_label: if current_format {
+            remaining[3].to_string()
+        } else {
+            "Auto (legacy)".into()
+        },
+        connection_id,
+        model_id: remaining
+            .get(if current_format { 4 } else { 0 })
+            .copied()
+            .unwrap_or_default()
+            .to_string(),
+        reasoning_effort: remaining
+            .get(if current_format { 5 } else { 1 })
+            .copied()
+            .unwrap_or("auto")
+            .to_string(),
+        // Three-line v0.6.0 handoffs represented a shell-local selection.
+        selection_scope: remaining
+            .get(if current_format { 6 } else { 2 })
+            .copied()
+            .unwrap_or("shell")
+            .to_string(),
     };
     crate::config::normalize_connection_id(&selection.connection_id)?;
     validate_model_id(&selection.model_id)?;
     validate_reasoning(&selection.reasoning_effort)?;
+    validate_selection_scope(&selection.selection_scope)?;
     Ok(selection)
+}
+
+fn validate_selection_scope(value: &str) -> Result<()> {
+    if matches!(value, "shell" | "default") {
+        Ok(())
+    } else {
+        anyhow::bail!("selection scope must be shell or default")
+    }
 }
 
 pub fn validate_model_id(value: &str) -> Result<()> {
@@ -633,13 +740,18 @@ mod tests {
         ));
         let selection = ShellSelection {
             connection_id: "openai-work".into(),
+            connection_label: "OpenAI work".into(),
+            provider: "openai".into(),
+            endpoint_host: "api.openai.com".into(),
+            auth_label: "OAuth · work".into(),
             model_id: "gpt-test".into(),
             reasoning_effort: "high".into(),
+            selection_scope: "shell".into(),
         };
         write_selection(&path, &selection).unwrap();
         assert_eq!(read_selection(&path).unwrap(), selection);
         let raw = std::fs::read_to_string(&path).unwrap();
-        assert_eq!(raw.lines().count(), 3);
+        assert_eq!(raw.lines().count(), 8);
         assert!(!raw.to_ascii_lowercase().contains("token"));
         let _ = std::fs::remove_file(path);
     }

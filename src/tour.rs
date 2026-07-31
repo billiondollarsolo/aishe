@@ -146,7 +146,7 @@ fn print_lesson(index: usize, workspace: &Path) -> Result<()> {
             );
             println!("     Alt-Enter forces the current buffer through Aishe.");
             println!(
-                "     The statusline can show model, mode, scope, context tokens, call cost, and session cost."
+                "     The statusline can show connection/auth/model identity, selection scope, context tokens, call cost, and connection cost."
             );
             println!(
                 "     Customize its fields and right/below/off placement in `aishe settings`."

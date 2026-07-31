@@ -141,8 +141,22 @@ fn run_zsh_inner(config: &Config, history_log: &std::path::Path, shell_id: Strin
         &selection_file,
         &crate::connection::ShellSelection {
             connection_id: config.active_connection_id().to_string(),
+            connection_label: config
+                .active_connection()
+                .map(|value| value.label.clone())
+                .unwrap_or_else(|| config.active_connection_id().to_string()),
+            provider: config.active_provider_name().to_string(),
+            endpoint_host: url::Url::parse(&config.active_provider_config().base_url)
+                .ok()
+                .and_then(|url| url.host_str().map(ToOwned::to_owned))
+                .unwrap_or_else(|| "unknown".into()),
+            auth_label: config
+                .active_connection()
+                .map(crate::config::ConnectionConfig::auth_label)
+                .unwrap_or_else(|| "Auto (legacy)".into()),
             model_id: config.active_model().to_string(),
             reasoning_effort: config.active_reasoning_effort().to_string(),
+            selection_scope: "default".into(),
         },
     )
     .is_ok()
@@ -166,12 +180,13 @@ fn run_zsh_inner(config: &Config, history_log: &std::path::Path, shell_id: Strin
     // A separately rendered status file lets the next prompt show last-call and
     // session totals without spawning a helper process from every `precmd`.
     let status_file = std::env::temp_dir().join(format!("aishe-status-{}", std::process::id()));
-    crate::usagelog::write_status(
+    crate::usagelog::write_status_for_connection(
         &status_file,
         &usage_file,
         &config.pricing,
         None,
         &config.aishe.status_line_items,
+        config.active_connection_id(),
     );
     cmd.env("AISHE_STATUS_FILE", &status_file);
     cmd.env(

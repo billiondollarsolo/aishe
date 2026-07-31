@@ -338,8 +338,8 @@ pub struct AisheConfig {
     /// Placement of the live shell status: `right`, `below`, or `off`.
     #[serde(default = "default_status_line_position")]
     pub status_line_position: String,
-    /// Ordered fields rendered in the status line. Supported values are model,
-    /// mode, last_tokens, last_cost, session_tokens, session_cost, and requests.
+    /// Ordered fields rendered in the status line, including the active safe
+    /// connection identity plus model, mode, usage, and task metrics.
     #[serde(default = "default_status_line_items")]
     pub status_line_items: Vec<String>,
     /// Stop calling the model once estimated session cost reaches this many USD.
@@ -540,10 +540,8 @@ fn default_hook_timeout_secs() -> u32 {
 }
 fn default_status_line_items() -> Vec<String> {
     vec![
-        "connection".to_string(),
-        "model".to_string(),
+        "identity".to_string(),
         "mode".to_string(),
-        "backend".to_string(),
         "scope".to_string(),
         "session_cost".to_string(),
         "requests".to_string(),
@@ -1025,7 +1023,9 @@ impl Config {
             // Canonical migrated connections retain `auto` and mirror the old
             // provider blocks. Honor a direct legacy-block edit until it is
             // rewritten through the connection-aware settings surface.
-            if matches!(connection.auth, ConnectionAuth::Auto) {
+            if matches!(connection.auth, ConnectionAuth::Auto)
+                && self.active_connection_id() == connection.provider
+            {
                 let legacy = if connection.provider == "anthropic" {
                     Some(&self.providers.anthropic)
                 } else if connection.provider == "openai" || connection.provider == "xai" {
@@ -1176,8 +1176,8 @@ impl Config {
             connection.settings.model = model.clone();
         }
         match self.active_provider_name() {
-            "openai" | "xai" => self.providers.openai.model = model,
-            _ => self.providers.anthropic.model = model,
+            "anthropic" => self.providers.anthropic.model = model,
+            _ => self.providers.openai.model = model,
         }
     }
 
@@ -1401,6 +1401,13 @@ impl Config {
             }
             if connection.provider.trim().is_empty() || connection.label.trim().is_empty() {
                 anyhow::bail!("connection '{id}' requires provider and label");
+            }
+            if connection.provider.len() > 64
+                || connection.provider.chars().any(char::is_control)
+                || connection.label.len() > 128
+                || connection.label.chars().any(char::is_control)
+            {
+                anyhow::bail!("connection '{id}' has an unsafe provider or label");
             }
             if connection.settings.model.trim().is_empty() {
                 anyhow::bail!("connection '{id}' requires a model");
@@ -2031,6 +2038,18 @@ mod tests {
         assert_eq!(cfg.aishe.provider, "openai");
         assert_eq!(cfg.providers.openai.base_url, "https://my.endpoint");
         assert!(cfg.mcp_servers.contains_key("git"));
+    }
+
+    #[test]
+    fn named_auto_connection_is_not_shadowed_by_a_legacy_provider_block() {
+        let mut config = Config::default();
+        let mut named = config.connections["openai"].clone();
+        named.settings.model = "named-model".into();
+        config.connections.insert("openai-work".into(), named);
+        config.select_connection("openai-work").unwrap();
+        config.providers.openai.model = "legacy-model".into();
+
+        assert_eq!(config.active_model(), "named-model");
     }
 
     /// A unique-per-pid temp directory for filesystem tests, removed on drop so

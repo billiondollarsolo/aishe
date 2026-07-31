@@ -189,9 +189,12 @@ runtime installers and package upgrades do not remove it.
 With `pty_prompt = true`, aishe can render its live status in the right prompt,
 on a separate line above the input prompt, or nowhere. Configure it in `aishe
 setup` / `aishe settings`, or set `status_line_position = "right"`, `"below"`,
-or `"off"`. Ordered fields can include `model`, `mode`, `backend`, `scope`,
-`network`, `sandbox`, `task`, `elapsed`, `context`, `last_tokens`, `last_cost`,
-`session_tokens`, `session_cost`, `budget`, and `requests`. The below-prompt
+or `"off"`. The default `identity` field compactly shows the safe connection
+label/ID, provider/endpoint host, authentication label, model/reasoning, and
+whether the choice is shell-local or the durable default. Individual fields
+include `connection`, `provider`, `endpoint`, `auth`, `selection`, `model`,
+`reasoning`, `mode`, `backend`, `scope`, `task`, `elapsed`, `context`,
+`last_tokens`, `last_cost`, `session_tokens`, `session_cost`, and `requests`. The below-prompt
 layout is usually more readable when you select the detailed metrics. Status
 text is passed through zsh's non-recursive `psvar` prompt escape, so even with a
 theme's `PROMPT_SUBST` option enabled, model names and provider text cannot

@@ -6,6 +6,34 @@ breaking changes can land in any release.
 
 ## [Unreleased]
 
+## [0.6.1] - 2026-07-30
+
+### Fixed
+- `aishe settings` now selects and edits the exact named connection instead of
+  assuming canonical `openai`/`anthropic` IDs. Provider, authentication, model,
+  and connection-specific reasoning changes remain one reviewable transaction,
+  while other credentials for the same provider remain untouched.
+- Setup now keeps exact xAI and OpenAI-compatible provider identity, so xAI
+  OAuth passes fail-closed endpoint/provider binding and custom endpoints do not
+  incorrectly inherit official-provider OAuth choices.
+- Named `auto` connections no longer inherit an unrelated legacy provider
+  block. The compatibility bridge is limited to canonical migrated records.
+- Shell selection handoffs now disclose safe label/provider/endpoint/auth data
+  and the real `default` versus `this shell` scope atomically. The compact
+  status identity contains no secret material and still reads v0.6.0 handoffs.
+- Live session tallies now attribute calls to connection IDs. Status follows
+  the active connection after a switch, while `aishe usage --connection ID`
+  filters persisted audit totals and `--by connection` continues to aggregate.
+- The private OpenCode control channel retries one safe pre-provider budget
+  authorization, lease registration, or idempotent stop after a lost/malformed
+  loopback response, preventing long-session transport blips from dropping an
+  admitted turn or leaving a managed runtime alive.
+
+### Security
+- Connection provider/label values are bounded and reject control characters;
+  Settings provenance, status, shell handoffs, usage files, and new regression
+  tests expose only safe credential/profile labels, never key or token values.
+
 ## [0.6.0] - 2026-07-30
 
 ### Added

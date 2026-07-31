@@ -171,9 +171,10 @@ show_usage = true
 # read below the prompt on narrow terminals.
 status_line = true
 status_line_position = "right"
-status_line_items = ["model", "mode", "backend", "scope", "session_cost", "requests"]
-# Other fields: network, sandbox, task, elapsed, context, last_tokens,
-# last_cost, session_tokens.
+status_line_items = ["identity", "mode", "scope", "session_cost", "requests"]
+# Other fields: connection, provider, endpoint, auth, selection, model,
+# reasoning, backend, task, elapsed, context, last_tokens, last_cost,
+# session_tokens.
 
 # Stop calling the model once the estimated session cost reaches this many USD.
 # 0 = unlimited. Only enforced when the model's price is known.

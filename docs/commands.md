@@ -42,7 +42,7 @@ aishe status [--json]               show active session settings and spend
 aishe skills                        list model-invoked skills
 aishe undo [--list]                 revert the most recent AI file change
 aishe log [filters]                 show the audit log of AI calls and actions
-aishe usage [--by model|connection|day|session]  token/cost totals from the audit log
+aishe usage [--by model|connection|day|session] [--connection ID]  audit token/cost totals
 aishe context                       print the context block sent to the model
 aishe runbook [--session ID|-o DIR|--replay]  export a session as a script + runbook
 aishe sessions [--json]             list managed conversations and legacy tasks

@@ -557,9 +557,27 @@ def assert_runtime_contract(binary, runtime_dir):
 
             rows = usage_path.read_text(encoding="utf-8").splitlines()
             parsed = [row.split("\t") for row in rows]
-            totals = tuple(sum(int(row[index]) for row in parsed) for index in range(3))
+            usage_rows = []
+            for row in parsed:
+                if len(row) == 6 and row[0] == "v2":
+                    usage_rows.append(
+                        (int(row[1]), int(row[2]), int(row[3]), row[4], row[5])
+                    )
+                elif len(row) >= 4:
+                    # Keep the contract useful against a pre-attribution binary
+                    # while the Rust reader separately proves old-file support.
+                    usage_rows.append(
+                        (int(row[0]), int(row[1]), int(row[2]), "\t".join(row[3:]), None)
+                    )
+                else:
+                    raise AssertionError(f"malformed usage row: {row}")
+            totals = tuple(sum(row[index] for row in usage_rows) for index in range(3))
             if totals != (35, 10, 3):
                 raise AssertionError(f"usage mapping mismatch: {totals}; rows={rows}")
+            if any(row[4] != "openai" for row in usage_rows):
+                raise AssertionError(
+                    f"usage omitted migrated connection attribution: {usage_rows}"
+                )
 
             with STATE.lock:
                 requests = list(STATE.requests)

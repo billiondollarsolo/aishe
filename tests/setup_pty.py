@@ -231,12 +231,19 @@ def cleanup_isolated_root(root):
     shutil.rmtree(root, ignore_errors=True)
 
 
-def setup_to_provider(shell):
+def setup_to_provider(shell, install_runtime=False):
     shell.expect("Continue setup")
     shell.line()
     reached = shell.expect_any(
-        ["Provider service", "Linux workspace isolation"], timeout=60
+        ["Provider service", "Linux workspace isolation", "OpenCode Agent Runtime"],
+        timeout=30,
     )
+    if reached == "OpenCode Agent Runtime":
+        shell.menu(1 if install_runtime else 4)
+        reached = shell.expect_any(
+            ["Provider service", "Linux workspace isolation"],
+            timeout=180 if install_runtime else 30,
+        )
     if reached == "Linux workspace isolation":
         # GitHub-hosted Linux runners install bwrap but prohibit the user/network
         # namespaces its functional probe needs. Setup must report that honestly;
@@ -355,7 +362,7 @@ def setup_checks_catalog_credential_and_manual_model():
                 rejected.expect("API endpoint")
                 rejected.line(endpoint)
                 rejected.expect("Credential profile 'custom'")
-                rejected.menu(2)
+                rejected.menu(1)
                 rejected.expect("API key for 'custom'")
                 rejected.line("wrong-key")
                 rejected.expect("Could not load /v1/models (InvalidCredential)")
@@ -375,7 +382,7 @@ def setup_checks_catalog_credential_and_manual_model():
                 restarted.expect("API endpoint")
                 restarted.line(endpoint)
                 restarted.expect("Credential profile 'custom'")
-                restarted.menu(2)
+                restarted.menu(1)
                 restarted.expect("API key for 'custom'")
                 restarted.line(good_key)
                 restarted.expect("Credential accepted; /v1/models returned 12 model(s)")
@@ -411,7 +418,7 @@ def setup_checks_catalog_credential_and_manual_model():
 def complete_setup(root, env, endpoint):
     shell = Pty([BINARY, "setup"], env)
     try:
-        setup_to_provider(shell)
+        setup_to_provider(shell, install_runtime=True)
         shell.menu(6)  # Ollama
 
         shell.expect("API endpoint")
@@ -538,12 +545,14 @@ def cancel_preserves_active_config(root, env, config):
     print("  ok   cancel/Ctrl-C/resume/restart preserve active config")
 
 
-def settings_are_transactional(root, env, config):
+def settings_are_transactional(root, env, config, endpoint):
     before = open(config, "rb").read()
     shell = Pty([BINARY, "settings"], env)
     try:
         shell.expect("Choose a section")
         shell.menu(1)  # provider transaction
+        shell.expect("Connection to edit")
+        shell.menu(2)  # active OpenAI connection
         shell.expect("Provider service")
         shell.menu(2)  # OpenAI
         shell.expect("Endpoint")
@@ -592,15 +601,101 @@ def settings_are_transactional(root, env, config):
         raise AssertionError("settings did not apply selected hook timeout")
     if 'output = "detailed"' not in text:
         raise AssertionError("settings did not apply selected transcript density")
-    print("  ok   settings provider cancel is transactional; reviewed apply works")
+
+    # Add a second OpenAI connection, then prove Settings selects and edits the
+    # exact named profile instead of assuming the canonical `openai` ID.
+    subprocess.run(
+        [
+            BINARY,
+            "connection",
+            "add",
+            "openai-personal",
+            "--provider",
+            "openai",
+            "--label",
+            "OpenAI Personal",
+            "--base-url",
+            endpoint,
+            "--model",
+            "personal-old",
+            "--transport",
+            "chat",
+            "--auth",
+            "none",
+        ],
+        cwd=root,
+        env=env,
+        check=True,
+        stdout=subprocess.DEVNULL,
+    )
+    named = Pty([BINARY, "settings"], env)
+    try:
+        named.expect("Choose a section")
+        named.menu(1)
+        named.expect("Connection to edit")
+        named.menu(3)  # OpenAI Personal (BTree order: anthropic, openai, personal)
+        named.expect("Provider service")
+        named.menu(7)  # custom endpoint
+        named.expect("Endpoint")
+        named.line(endpoint)
+        named.expect("Authentication method")
+        named.menu(2)  # no authentication
+        named.expect("Model")
+        named.line("personal-new")
+        named.expect("Transport")
+        named.menu(3)  # chat completions
+        named.expect("Validate this provider transaction now")
+        named.line("n")
+        named.expect("Keep this provider draft")
+        named.line("y")
+        named.expect("Choose a section")
+        named.menu(6)  # advanced
+        named.expect("Advanced")
+        named.menu(1)  # reasoning
+        named.expect("Reasoning effort")
+        named.menu(5)  # high
+        named.expect("Choose a section")
+        named.menu(8)  # review/apply
+        named.expect("Apply these settings")
+        named.line("y")
+        named.expect("saved:")
+        if named.finish() != 0:
+            raise AssertionError("named settings apply returned nonzero")
+    finally:
+        named.close()
+    shown = subprocess.run(
+        [BINARY, "connection", "show", "openai-personal", "--json"],
+        cwd=root,
+        env=env,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    personal = json.loads(shown.stdout)
+    if personal["model"] != "personal-new" or personal["reasoning_effort"] != "high":
+        raise AssertionError("Settings did not edit the selected named connection")
+    canonical = subprocess.run(
+        [BINARY, "connection", "show", "openai", "--json"],
+        cwd=root,
+        env=env,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    if json.loads(canonical.stdout)["model"] == "personal-new":
+        raise AssertionError("Settings leaked the named edit into the canonical connection")
+    print("  ok   settings transactions and exact named-connection edits work")
 
 
-def hidden_auth_and_staged_setup_are_secret_safe():
+def hidden_auth_and_staged_setup_are_secret_safe(runtime_root):
     root = tempfile.mkdtemp(prefix="aishe-credential-pty-")
     secret = "pty-secret-must-never-echo"
     server_context = model_server(["custom-credential-model"], [secret])
     endpoint = server_context.__enter__()
     try:
+        source_runtime = os.path.join(runtime_root, "data", "aishe", "runtime")
+        target_runtime = os.path.join(root, "data", "aishe", "runtime")
+        shutil.copytree(source_runtime, target_runtime, symlinks=True)
         env = isolated_env(root)
         shell = Pty([BINARY, "setup"], env)
         try:
@@ -609,7 +704,7 @@ def hidden_auth_and_staged_setup_are_secret_safe():
             shell.expect("API endpoint")
             shell.line(endpoint)
             shell.expect("Credential profile 'custom'")
-            shell.menu(2)  # enter and save locally (after OAuth)
+            shell.menu(1)  # custom endpoints do not offer provider OAuth
             shell.expect("API key for 'custom'")
             shell.line(secret)
             shell.expect("Credential accepted; /v1/models returned 1 model(s)")
@@ -785,8 +880,8 @@ def main():
         with model_server(["setup-local-model"]) as endpoint:
             config = complete_setup(root, env, endpoint)
             cancel_preserves_active_config(root, env, config)
-            settings_are_transactional(root, env, config)
-        hidden_auth_and_staged_setup_are_secret_safe()
+            settings_are_transactional(root, env, config, endpoint)
+        hidden_auth_and_staged_setup_are_secret_safe(root)
         tour_pause_resume_skip_restart_and_complete(root, env)
         print("PASS: interactive setup/settings/tour PTY")
     finally:

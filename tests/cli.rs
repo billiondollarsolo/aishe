@@ -224,6 +224,18 @@ redact = true
         .success()
         .stdout(contains("work-secret-never-log").not())
         .stdout(contains(r#""connection_id": "openai-work""#));
+    run(&["settings", "--json"]).assert().success().stdout(
+        contains(r#""path": "aishe.connection""#)
+            .and(contains(r#""value": "openai-work""#))
+            .and(contains(r#""path": "connections.openai-work.auth.type""#))
+            .and(contains("work-secret-never-log").not()),
+    );
+    run(&["status", "--json"]).assert().success().stdout(
+        contains(r#""id": "openai-work""#)
+            .and(contains(r#""auth": "API key · work-key""#))
+            .and(contains(r#""selection_scope": "default""#))
+            .and(contains("work-secret-never-log").not()),
+    );
 
     run(&[
         "connection",
@@ -1537,7 +1549,8 @@ fn log_and_usage_read_the_audit_log() {
     let log = dir.join("audit.jsonl");
     std::fs::write(
         &log,
-        "{\"ts_ms\":1781304002000,\"session\":\"s1\",\"kind\":\"ai_response\",\"model\":\"gpt-4o\",\"tokens_in\":1000,\"tokens_out\":200,\"summary\":\"ok\"}\n\
+        "{\"ts_ms\":1781304002000,\"session\":\"s1\",\"kind\":\"ai_response\",\"connection_id\":\"openai-work\",\"model\":\"gpt-4o\",\"tokens_in\":1000,\"tokens_out\":200,\"summary\":\"ok\"}\n\
+         {\"ts_ms\":1781304002500,\"session\":\"s1\",\"kind\":\"ai_response\",\"connection_id\":\"openai-personal\",\"model\":\"gpt-4o\",\"tokens_in\":50,\"tokens_out\":10,\"summary\":\"ok\"}\n\
          {\"ts_ms\":1781304003000,\"session\":\"s1\",\"kind\":\"action\",\"source\":\"yolo\",\"command\":\"apt-get install nginx\",\"exit\":0}\n\
          {\"ts_ms\":1781304004000,\"session\":\"s1\",\"kind\":\"tool_call\",\"backend_session\":\"ses_backend\",\"message_id\":\"msg_1\",\"call_id\":\"call_1\",\"tool\":\"write_file\",\"path\":\"README.md\"}\n\
          {\"ts_ms\":1781304005000,\"session\":\"s1\",\"kind\":\"tool_result\",\"backend_session\":\"ses_backend\",\"message_id\":\"msg_1\",\"call_id\":\"call_1\",\"tool\":\"write_file\",\"success\":true,\"duration_ms\":12,\"output\":\"Wrote README.md\"}\n",
@@ -1606,10 +1619,35 @@ fn log_and_usage_read_the_audit_log() {
         .assert()
         .success()
         .stdout(
-            contains("1000 in")
+            contains("1050 in")
                 .and(contains("~$"))
                 .and(contains("TOTAL")),
         );
+
+    // Connection grouping preserves attribution even when the model is the same.
+    Command::cargo_bin("aishe")
+        .unwrap()
+        .env("AISHE_CONFIG_DIR", dir.join("config"))
+        .env("AISHE_DATA_DIR", dir.join("data"))
+        .env("AISHE_LOG_FILE", &log)
+        .args(["usage", "--by", "connection"])
+        .assert()
+        .success()
+        .stdout(
+            contains("usage by connection:")
+                .and(contains("openai-work"))
+                .and(contains("openai-personal")),
+        );
+
+    Command::cargo_bin("aishe")
+        .unwrap()
+        .env("AISHE_CONFIG_DIR", dir.join("config"))
+        .env("AISHE_DATA_DIR", dir.join("data"))
+        .env("AISHE_LOG_FILE", &log)
+        .args(["usage", "--connection", "openai-personal"])
+        .assert()
+        .success()
+        .stdout(contains("50 in").and(contains("1050 in").not()));
 
     assert!(!dir
         .join("config")

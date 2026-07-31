@@ -7,9 +7,9 @@
 //! `AISHE_USAGE_FILE`; each child appends its own metered usage, and the parent
 //! aggregates and prints it when zsh exits.
 //!
-//! The format is one tab-separated line per child:
-//! `<input>\t<output>\t<requests>\t<model>`. The reader also accepts the older
-//! three-column format, where one line meant one request.
+//! The current format is one versioned tab-separated line per child:
+//! `v2\t<input>\t<output>\t<requests>\t<model>\t<connection>`. The reader also
+//! accepts the older model-only three- and four-column formats.
 //! Appends are best-effort and tolerant of torn/garbled lines — a missing or
 //! unreadable tally just means no summary, never an error.
 
@@ -23,11 +23,20 @@ use crate::usage::{self, Price, Usage};
 /// disrupt the shell. `O_APPEND` keeps concurrent child appends from interleaving
 /// within a single short line.
 pub fn append(path: &Path, usage: Usage, model: &str) {
+    append_attributed(path, usage, model, None);
+}
+
+/// Append usage with a safe connection ID so live status can filter spend after
+/// a shell switches between multiple credentials for the same model.
+pub fn append_attributed(path: &Path, usage: Usage, model: &str, connection_id: Option<&str>) {
     // Defend the line format against a model name with embedded tabs/newlines.
     let model = model.replace(['\t', '\n', '\r'], " ");
+    let connection_id = connection_id
+        .unwrap_or("legacy/unknown")
+        .replace(['\t', '\n', '\r'], " ");
     let line = format!(
-        "{}\t{}\t{}\t{}\n",
-        usage.input, usage.output, usage.requests, model
+        "v2\t{}\t{}\t{}\t{}\t{}\n",
+        usage.input, usage.output, usage.requests, model, connection_id
     );
     if let Ok(mut f) = std::fs::OpenOptions::new()
         .create(true)
@@ -38,20 +47,35 @@ pub fn append(path: &Path, usage: Usage, model: &str) {
     }
 }
 
-/// Parse the tally into `(usage, model)` entries. Each line contributes one
-/// request. Malformed lines are skipped. Missing file → empty.
-pub fn read(path: &Path) -> Vec<(Usage, String)> {
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Entry {
+    pub usage: Usage,
+    pub model: String,
+    pub connection_id: Option<String>,
+}
+
+pub fn read_entries(path: &Path) -> Vec<Entry> {
     let text = std::fs::read_to_string(path).unwrap_or_default();
     let mut out = Vec::new();
     for line in text.lines() {
         let parts: Vec<&str> = line.split('\t').collect();
-        if parts.len() < 3 {
-            continue;
-        }
-        let (i, o, requests, model) = if parts.len() >= 4 {
-            (parts[0], parts[1], parts[2], parts[3..].join(" "))
+        let (i, o, requests, model, connection_id) = if parts.first() == Some(&"v2") {
+            if parts.len() != 6 {
+                continue;
+            }
+            (
+                parts[1],
+                parts[2],
+                parts[3],
+                parts[4].to_string(),
+                Some(parts[5].to_string()),
+            )
+        } else if parts.len() >= 4 {
+            (parts[0], parts[1], parts[2], parts[3..].join(" "), None)
+        } else if parts.len() == 3 {
+            (parts[0], parts[1], "1", parts[2].to_string(), None)
         } else {
-            (parts[0], parts[1], "1", parts[2].to_string())
+            continue;
         };
         let (Ok(input), Ok(output)) = (i.trim().parse::<u64>(), o.trim().parse::<u64>()) else {
             continue;
@@ -59,16 +83,26 @@ pub fn read(path: &Path) -> Vec<(Usage, String)> {
         let Ok(requests) = requests.trim().parse::<u64>() else {
             continue;
         };
-        out.push((
-            Usage {
+        out.push(Entry {
+            usage: Usage {
                 input,
                 output,
                 requests,
             },
             model,
-        ));
+            connection_id,
+        });
     }
     out
+}
+
+/// Parse the tally into `(usage, model)` entries. Each line contributes one
+/// request. Malformed lines are skipped. Missing file → empty.
+pub fn read(path: &Path) -> Vec<(Usage, String)> {
+    read_entries(path)
+        .into_iter()
+        .map(|entry| (entry.usage, entry.model))
+        .collect()
 }
 
 /// A one-line session summary (`aishe session: X in · Y out · N reqs · ~$Z`),
@@ -79,18 +113,33 @@ pub fn summarize(
     path: &Path,
     pricing: &std::collections::BTreeMap<String, Price>,
 ) -> Option<String> {
-    let entries = read(path);
+    summarize_for_connection(path, pricing, None)
+}
+
+pub fn summarize_for_connection(
+    path: &Path,
+    pricing: &std::collections::BTreeMap<String, Price>,
+    connection_id: Option<&str>,
+) -> Option<String> {
+    let entries: Vec<Entry> = read_entries(path)
+        .into_iter()
+        .filter(|entry| {
+            connection_id.is_none()
+                || entry.connection_id.as_deref() == connection_id
+                || entry.connection_id.is_none()
+        })
+        .collect();
     if entries.is_empty() {
         return None;
     }
     let (mut tin, mut tout, mut reqs, mut unpriced) = (0u64, 0u64, 0u64, 0u64);
     let mut total_cost = 0f64;
-    for (u, model) in &entries {
-        tin += u.input;
-        tout += u.output;
-        reqs += u.requests;
-        match usage::price_for(model, pricing) {
-            Some(p) => total_cost += usage::cost(*u, p),
+    for entry in &entries {
+        tin += entry.usage.input;
+        tout += entry.usage.output;
+        reqs += entry.usage.requests;
+        match usage::price_for(&entry.model, pricing) {
+            Some(p) => total_cost += usage::cost(entry.usage, p),
             None => unpriced += 1,
         }
     }
@@ -134,17 +183,34 @@ fn status_values(
     last: Option<(Usage, &str)>,
     items: &[String],
 ) -> Vec<(String, String)> {
-    let entries = read(path);
+    status_values_for_connection(path, pricing, last, items, None)
+}
+
+fn status_values_for_connection(
+    path: &Path,
+    pricing: &std::collections::BTreeMap<String, Price>,
+    last: Option<(Usage, &str)>,
+    items: &[String],
+    connection_id: Option<&str>,
+) -> Vec<(String, String)> {
+    let entries: Vec<Entry> = read_entries(path)
+        .into_iter()
+        .filter(|entry| {
+            connection_id.is_none()
+                || entry.connection_id.as_deref() == connection_id
+                || entry.connection_id.is_none()
+        })
+        .collect();
     let mut total = Usage::default();
     let mut total_cost = 0.0;
     let mut unpriced = 0u64;
-    for (usage, model) in &entries {
-        total.input += usage.input;
-        total.output += usage.output;
-        total.requests += usage.requests;
-        match usage::price_for(model, pricing) {
-            Some(price) => total_cost += usage::cost(*usage, price),
-            None => unpriced += usage.requests,
+    for entry in &entries {
+        total.input += entry.usage.input;
+        total.output += entry.usage.output;
+        total.requests += entry.usage.requests;
+        match usage::price_for(&entry.model, pricing) {
+            Some(price) => total_cost += usage::cost(entry.usage, price),
+            None => unpriced += entry.usage.requests,
         }
     }
     let mut fields = Vec::new();
@@ -207,6 +273,28 @@ pub fn write_status(
             )
         })
         .collect::<String>();
+    let _ = crate::config::write_atomic(status_path, rendered.as_bytes());
+}
+
+pub fn write_status_for_connection(
+    status_path: &Path,
+    usage_path: &Path,
+    pricing: &std::collections::BTreeMap<String, Price>,
+    last: Option<(Usage, &str)>,
+    items: &[String],
+    connection_id: &str,
+) {
+    let rendered =
+        status_values_for_connection(usage_path, pricing, last, items, Some(connection_id))
+            .into_iter()
+            .map(|(key, value)| {
+                format!(
+                    "{}\t{}\n",
+                    key.replace(['\t', '\n', '\r'], " "),
+                    value.replace(['\t', '\n', '\r'], " ")
+                )
+            })
+            .collect::<String>();
     let _ = crate::config::write_atomic(status_path, rendered.as_bytes());
 }
 
@@ -274,6 +362,55 @@ mod tests {
         assert_eq!(entries[0].1, "claude-sonnet-x");
         assert_eq!(entries[1].0.output, 3);
         std::fs::remove_file(&p).ok();
+    }
+
+    #[test]
+    fn attributed_usage_filters_same_model_connections() {
+        let usage_path = tmp("connections");
+        let status_path = tmp("connections-status");
+        std::fs::remove_file(&usage_path).ok();
+        append_attributed(
+            &usage_path,
+            Usage {
+                input: 10,
+                output: 1,
+                requests: 1,
+            },
+            "same-model",
+            Some("openai-work"),
+        );
+        append_attributed(
+            &usage_path,
+            Usage {
+                input: 20,
+                output: 2,
+                requests: 1,
+            },
+            "same-model",
+            Some("openai-personal"),
+        );
+        let entries = read_entries(&usage_path);
+        assert_eq!(entries[0].connection_id.as_deref(), Some("openai-work"));
+        assert_eq!(entries[1].connection_id.as_deref(), Some("openai-personal"));
+        let pricing = std::collections::BTreeMap::new();
+        let summary = summarize_for_connection(&usage_path, &pricing, Some("openai-work")).unwrap();
+        assert!(summary.contains("session: 10 in"));
+        assert!(!summary.contains("30 in"));
+
+        write_status_for_connection(
+            &status_path,
+            &usage_path,
+            &pricing,
+            None,
+            &["session_tokens".into(), "requests".into()],
+            "openai-personal",
+        );
+        let status = std::fs::read_to_string(&status_path).unwrap();
+        assert!(status.contains("session 20/2 tok"));
+        assert!(status.contains("1 req"));
+        assert!(!status.contains("30/3"));
+        std::fs::remove_file(usage_path).ok();
+        std::fs::remove_file(status_path).ok();
     }
 
     #[test]

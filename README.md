@@ -484,9 +484,10 @@ and [examples/skills/](examples/skills/). Full guide:
 
 aishe meters every model call. The status line can live in the right prompt,
 under the prompt, or be disabled, and its items are configurable. It can show
-the mode/model, last-call tokens and cost, session tokens/cost, request count,
-budget remaining, task state, and sandbox state. `aishe usage` shows persisted
-totals when audit logging is enabled.
+the compact safe connection/provider/auth/model identity, shell-local/default
+state, last-call tokens and cost, connection-scoped session tokens/cost, request
+count, and task state. `aishe usage --by connection` shows persisted totals and
+`--connection ID` filters them when audit logging is enabled.
 
 Costs come from a built-in price table (USD per 1M tokens) or an exact user
 override. Setup asks for input/output prices when it cannot price the selected

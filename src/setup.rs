@@ -1736,6 +1736,14 @@ fn apply_service(config: &mut Config, service: &provider_catalog::Service) {
         provider_catalog::apply(service, &mut config.providers.openai);
     }
     provider_catalog::apply(service, active_provider_mut(config));
+    let provider_name = match service.family {
+        Family::Anthropic => "anthropic",
+        Family::OpenAiCompatible => service.key,
+    };
+    if let Some(connection) = config.active_connection_mut() {
+        connection.provider = provider_name.into();
+    }
+    config.aishe.provider = provider_name.into();
 }
 
 fn apply_overrides(config: &mut Config, options: &Options) -> Result<()> {
@@ -1816,10 +1824,10 @@ fn active_provider_mut(config: &mut Config) -> &mut crate::config::ProviderConfi
     let id = config.active_connection_id().to_string();
     if config.connections.contains_key(&id) {
         &mut config.connections.get_mut(&id).expect("checked").settings
-    } else if config.aishe.provider == "openai" {
-        &mut config.providers.openai
-    } else {
+    } else if config.aishe.provider == "anthropic" {
         &mut config.providers.anthropic
+    } else {
+        &mut config.providers.openai
     }
 }
 
@@ -1830,13 +1838,24 @@ fn set_active_auth(config: &mut Config, auth: crate::config::ConnectionAuth) {
 }
 
 fn fresh_draft(config: Config) -> Draft {
-    let service = if config.aishe.provider == "anthropic" {
-        "anthropic"
-    } else if config.providers.openai.base_url.trim_end_matches('/') == "https://api.openai.com" {
-        "openai"
-    } else {
-        "custom"
-    };
+    let provider = config.active_provider_name();
+    let base_url = config
+        .active_provider_config()
+        .base_url
+        .trim_end_matches('/');
+    let service = provider_catalog::SERVICES
+        .iter()
+        .find(|service| {
+            service.key == provider
+                && !service.base_url.is_empty()
+                && service.base_url.trim_end_matches('/') == base_url
+        })
+        .or_else(|| {
+            provider_catalog::SERVICES.iter().find(|service| {
+                !service.base_url.is_empty() && service.base_url.trim_end_matches('/') == base_url
+            })
+        })
+        .map_or("custom", |service| service.key);
     Draft {
         schema_version: DRAFT_SCHEMA_VERSION,
         step: Step::Discovery,
@@ -1951,9 +1970,9 @@ fn prompt_rate(label: &str) -> Result<PromptResult<f64>> {
 
 fn choose_status_items(draft: &mut Draft) -> Result<bool> {
     let choices = vec![
-        "Compact — model, mode, scope, session cost, requests".into(),
-        "Detailed — model, mode, scope, last/session tokens and costs, requests".into(),
-        "Identity — model, mode, and scope only".into(),
+        "Compact — identity, mode, scope, session cost, requests".into(),
+        "Detailed — identity, mode, scope, last/session tokens and costs, requests".into(),
+        "Identity — connection, auth, model, reasoning, and selection only".into(),
         "Custom ordered fields…".into(),
     ];
     match promptui::menu(
@@ -1961,18 +1980,18 @@ fn choose_status_items(draft: &mut Draft) -> Result<bool> {
         &choices,
         0,
         true,
-        "Fields: model, mode, backend, scope, task, elapsed, context, last_tokens, last_cost, session_tokens, session_cost, requests.",
+        "Fields: identity, connection, provider, endpoint, auth, selection, model, reasoning, mode, backend, scope, task, elapsed, context, last_tokens, last_cost, session_tokens, session_cost, requests.",
     )? {
         MenuResult::Selected(0) => {
             draft.config.aishe.status_line_items =
-                ["model", "mode", "scope", "session_cost", "requests"]
+                ["identity", "mode", "scope", "session_cost", "requests"]
                 .into_iter()
                 .map(str::to_string)
                 .collect();
         }
         MenuResult::Selected(1) => {
             draft.config.aishe.status_line_items = [
-                "model",
+                "identity",
                 "mode",
                 "backend",
                 "scope",
@@ -1988,7 +2007,7 @@ fn choose_status_items(draft: &mut Draft) -> Result<bool> {
         }
         MenuResult::Selected(2) => {
             draft.config.aishe.status_line_items =
-                ["model", "mode", "backend", "scope"]
+                ["identity", "mode", "scope"]
                     .into_iter()
                     .map(str::to_string)
                     .collect();
@@ -2022,7 +2041,12 @@ fn choose_status_items(draft: &mut Draft) -> Result<bool> {
 
 fn validate_status_items(items: &[String]) -> Result<()> {
     const ALLOWED: &[&str] = &[
+        "identity",
         "connection",
+        "provider",
+        "endpoint",
+        "auth",
+        "selection",
         "model",
         "reasoning",
         "mode",
@@ -2047,12 +2071,41 @@ fn validate_status_items(items: &[String]) -> Result<()> {
 }
 
 fn print_status_preview(config: &Config) {
+    let endpoint = url::Url::parse(&config.active_provider_config().base_url)
+        .ok()
+        .and_then(|url| url.host_str().map(ToOwned::to_owned))
+        .unwrap_or_else(|| "unknown".into());
     let sample = config
         .aishe
         .status_line_items
         .iter()
         .map(|item| match item.as_str() {
+            "identity" => format!(
+                "{} ({}) · {}@{} · {} · {}/{} · default",
+                config
+                    .active_connection()
+                    .map(|value| value.label.as_str())
+                    .unwrap_or(config.active_connection_id()),
+                config.active_connection_id(),
+                config.active_provider_name(),
+                endpoint,
+                config
+                    .active_connection()
+                    .map(crate::config::ConnectionConfig::auth_label)
+                    .unwrap_or_else(|| "Auto (legacy)".into()),
+                config.active_model(),
+                config.active_reasoning_effort(),
+            ),
+            "connection" => config.active_connection_id().to_string(),
+            "provider" => config.active_provider_name().to_string(),
+            "endpoint" => endpoint.clone(),
+            "auth" => config
+                .active_connection()
+                .map(crate::config::ConnectionConfig::auth_label)
+                .unwrap_or_else(|| "Auto (legacy)".into()),
+            "selection" => "default".into(),
             "model" => config.active_model().to_string(),
+            "reasoning" => config.active_reasoning_effort().to_string(),
             "mode" => config.aishe.mode.clone(),
             "backend" => config.backend.engine.clone(),
             "scope" => config.backend.default_scope.clone(),
@@ -2066,6 +2119,7 @@ fn print_status_preview(config: &Config) {
             "requests" => "6 reqs".into(),
             _ => String::new(),
         })
+        .map(|value| crate::commands::display_safe(&value))
         .filter(|value| !value.is_empty())
         .collect::<Vec<_>>()
         .join(" · ");
@@ -2130,8 +2184,8 @@ pub(crate) fn validate_config(config: &Config) -> Result<()> {
     if !matches!(config.sandbox.linux_backend.as_str(), "bwrap" | "policy") {
         anyhow::bail!("sandbox.linux_backend must be bwrap or policy");
     }
-    if !matches!(config.aishe.provider.as_str(), "anthropic" | "openai") {
-        anyhow::bail!("provider must be anthropic or openai");
+    if config.active_provider_name().trim().is_empty() {
+        anyhow::bail!("provider cannot be empty");
     }
     let provider = active_provider(config);
     validate_url(&provider.base_url)?;
@@ -2612,7 +2666,9 @@ mod tests {
         let service = provider_catalog::find("ollama").unwrap();
         apply_service(&mut config, service);
         apply_overrides(&mut config, &options).unwrap();
-        assert_eq!(config.aishe.provider, "openai");
+        assert_eq!(config.aishe.provider, "ollama");
+        assert_eq!(config.active_connection_id(), "openai");
+        assert_eq!(config.active_provider_name(), "ollama");
         assert_eq!(config.active_model(), "qwen-test");
         assert!(!config.providers.openai.requires_auth());
         assert_eq!(config.aishe.safety_profile, "balanced");
@@ -2624,15 +2680,34 @@ mod tests {
         let service = provider_catalog::find("xai").unwrap();
         let mut config = Config::default();
         apply_service(&mut config, service);
-        assert_eq!(config.aishe.provider, "openai");
+        assert_eq!(config.aishe.provider, "xai");
+        assert_eq!(config.active_connection_id(), "openai");
+        assert_eq!(config.active_provider_name(), "xai");
         assert_eq!(config.providers.openai.base_url, "https://api.x.ai");
         assert_eq!(config.providers.openai.credential, "xai");
         assert_eq!(config.providers.openai.api_key_env, "XAI_API_KEY");
         assert_eq!(config.providers.openai.transport, "responses");
+        assert_eq!(config.active_connection().unwrap().provider, "xai");
         assert_eq!(
             crate::oauth::OAuthProvider::from_base_url(&config.providers.openai.base_url),
             Some(crate::oauth::OAuthProvider::Xai)
         );
+    }
+
+    #[test]
+    fn noninteractive_setup_can_preserve_legacy_auto_auth_explicitly() {
+        let service = provider_catalog::find("openai").unwrap();
+        let mut config = Config::default();
+        apply_service(&mut config, service);
+        let options = Options {
+            service: Some("openai".into()),
+            ..Options::default()
+        };
+        apply_overrides(&mut config, &options).unwrap();
+        assert!(matches!(
+            config.active_connection().unwrap().auth,
+            crate::config::ConnectionAuth::Auto
+        ));
     }
 
     #[test]
@@ -2672,6 +2747,15 @@ mod tests {
         assert!(encoded.contains("api_key_env"));
         assert!(!encoded.contains("sk-"));
         assert_eq!(draft.config.version, crate::config::CONFIG_SCHEMA_VERSION);
+    }
+
+    #[test]
+    fn fresh_draft_recognizes_the_active_catalog_service() {
+        for key in ["anthropic", "openai", "xai", "ollama"] {
+            let mut config = Config::default();
+            apply_service(&mut config, provider_catalog::find(key).unwrap());
+            assert_eq!(fresh_draft(config).service, key);
+        }
     }
 
     #[test]

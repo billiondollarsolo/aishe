@@ -136,7 +136,22 @@ impl SupervisorClient {
     }
 
     pub fn register(&self, registration: &LeaseRegistration) -> Result<LeaseIdentity> {
-        self.post("/v1/lease/register", registration, Duration::from_secs(5))
+        match self.post("/v1/lease/register", registration, Duration::from_secs(5)) {
+            Ok(identity) => Ok(identity),
+            Err(first_error) => {
+                // Registration happens before a provider turn or tool call can
+                // begin. Replacing the same session lease is therefore safe if
+                // the first response was lost or malformed in transit.
+                std::thread::sleep(Duration::from_millis(25));
+                self.post("/v1/lease/register", registration, Duration::from_secs(5))
+                    .with_context(|| {
+                        format!(
+                            "backend lease registration retry failed after: {}",
+                            crate::redact::redact(&first_error.to_string())
+                        )
+                    })
+            }
+        }
     }
 
     pub fn heartbeat(&self, identity: &LeaseIdentity) -> Result<()> {
@@ -408,14 +423,43 @@ fn request_stop_state(state: Option<SupervisorState>) -> Result<bool> {
         return Ok(false);
     };
     let url = format!("{}/v1/stop", state.control_url.trim_end_matches('/'));
-    let agent = ureq::AgentBuilder::new().redirects(0).build();
-    agent
-        .post(&url)
-        .set("Authorization", &format!("Bearer {}", state.control_token))
-        .set("Content-Type", "application/json")
-        .timeout(Duration::from_secs(3))
-        .send_json(serde_json::json!({}))?;
-    Ok(true)
+    let send = || -> std::result::Result<(), String> {
+        ureq::AgentBuilder::new()
+            .redirects(0)
+            .build()
+            .post(&url)
+            .set("Authorization", &format!("Bearer {}", state.control_token))
+            .set("Content-Type", "application/json")
+            .timeout(Duration::from_secs(3))
+            .send_json(serde_json::json!({}))
+            .map(|_| ())
+            .map_err(|error| crate::redact::redact(&control_error(error)))
+    };
+    match send() {
+        Ok(()) => Ok(true),
+        Err(first_error) => {
+            // Stop is idempotent. A fresh-connection retry prevents a lost or
+            // malformed private control response from leaving an instance alive.
+            std::thread::sleep(Duration::from_millis(25));
+            match send() {
+                Ok(()) => Ok(true),
+                Err(second_error) => {
+                    let started = Instant::now();
+                    while started.elapsed() < Duration::from_secs(3) {
+                        if !process_exists(state.supervisor_pid) {
+                            return Ok(true);
+                        }
+                        std::thread::sleep(Duration::from_millis(25));
+                    }
+                    anyhow::bail!(
+                        "backend stop retry failed: {}; first attempt: {}",
+                        second_error,
+                        first_error
+                    )
+                }
+            }
+        }
+    }
 }
 
 fn validate_supervisor_key(value: &str) -> Result<()> {
@@ -884,6 +928,62 @@ mod tests {
         assert_eq!(response["healthy"], true);
         assert_eq!(response["startup_nonce"], "a".repeat(64));
         assert_eq!(response["protocol_version"], SUPERVISOR_PROTOCOL_VERSION);
+    }
+
+    #[test]
+    fn lease_registration_retries_a_lost_private_control_response() {
+        let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let context = context_for(port);
+        let server = context.clone();
+        let worker = std::thread::spawn(move || {
+            let (lost, _) = listener.accept().unwrap();
+            drop(lost);
+            let (stream, _) = listener.accept().unwrap();
+            serve_connection(stream, &server).unwrap();
+        });
+        let workspace = std::env::temp_dir().join(format!(
+            "aishe-control-register-test-{}-{port}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&workspace).unwrap();
+        let client = SupervisorClient::new(context.state.clone()).unwrap();
+        let identity = client
+            .register(&LeaseRegistration {
+                aishe_shell_id: "control-retry-shell-0123456789".into(),
+                backend_session_id: "ses_control_retry".into(),
+                workspace: workspace.clone(),
+                mode: crate::agent::Mode::Suggest,
+                scope: crate::agent::ExecutionScope::Host,
+                network: crate::agent::NetworkPolicy::Deny,
+                interactive: false,
+                budget_usd: None,
+                price: None,
+                baseline_spent_usd: 0.0,
+            })
+            .unwrap();
+        worker.join().unwrap();
+        assert_eq!(identity.backend_session_id, "ses_control_retry");
+        std::fs::remove_file(bridge_path(port)).unwrap();
+        std::fs::remove_dir_all(workspace).unwrap();
+    }
+
+    #[test]
+    fn stop_retries_a_lost_private_control_response() {
+        let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let context = context_for(port);
+        let server = context.clone();
+        let worker = std::thread::spawn(move || {
+            let (lost, _) = listener.accept().unwrap();
+            drop(lost);
+            let (stream, _) = listener.accept().unwrap();
+            serve_connection(stream, &server).unwrap();
+        });
+        assert!(request_stop_state(Some(context.state.clone())).unwrap());
+        worker.join().unwrap();
+        assert!(context.shutdown.load(Ordering::SeqCst));
+        std::fs::remove_file(bridge_path(port)).unwrap();
     }
 
     #[test]

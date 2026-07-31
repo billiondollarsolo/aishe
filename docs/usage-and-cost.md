@@ -5,8 +5,8 @@ aishe meters every model call so you can see what a session costs and cap it.
 ## What you see
 
 The interactive shell keeps a live status display. By default it appears in the
-right prompt and shows model, mode, backend, scope, session cost, and request
-count. You can
+right prompt and shows the safe connection identity, mode, scope, active
+connection cost, and request count. You can
 place it under the prompt or turn it off, and choose its ordered fields during
 setup or in `aishe settings`.
 
@@ -14,13 +14,16 @@ setup or in `aishe settings`.
   436 in · 119 out · 1 req · ~$0.0001
 ```
 
-Available fields are `model`, `mode`, `backend`, `scope`, `network`, `sandbox`,
-`task`, `elapsed`, `context`, `last_tokens`, `last_cost`, `session_tokens`,
-`session_cost`, `budget`, and `requests`. `context` is the latest provider-turn
+The compact `identity` field combines connection label/ID, provider/endpoint,
+authentication label, model/reasoning, and shell-local/default state. Individual
+fields are `connection`, `provider`, `endpoint`, `auth`, `selection`, `model`,
+`reasoning`, `mode`, `backend`, `scope`, `task`, `elapsed`, `context`,
+`last_tokens`, `last_cost`, `session_tokens`, `session_cost`, and `requests`.
+`context` is the latest provider-turn
 input-token count, not a guessed percentage. A detailed status can render:
 
 ```
-gpt-5.6-luna · auto · opencode · workspace · context 8.4K tok ·
+OpenAI work (openai-work) · openai@api.openai.com · OAuth work · gpt-5.6-luna/high · this shell · workspace · context 8.4K tok ·
 last 1,697/374 tok · session cost ~$0.0112 · 2 reqs
 ```
 
@@ -62,9 +65,10 @@ Both work in the non-interactive `-c` form too:
 aishe -c "/usage"
 ```
 
-When audit logging is enabled, `aishe usage --by model|day|session` reads
-persisted totals. The prompt/statusline aggregation remains scoped to the live
-Aishe shell.
+When audit logging is enabled, `aishe usage --by
+model|connection|day|session` reads persisted totals. Add `--connection ID` to
+filter them. The prompt/statusline totals follow the active connection inside
+the live Aishe shell; the exit summary remains the whole shell session.
 
 ## How cost is estimated
 

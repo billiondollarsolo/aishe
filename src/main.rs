@@ -460,6 +460,9 @@ enum Cmd {
         /// Only entries newer than this, e.g. 30m, 2h, 3d, 1w.
         #[arg(long)]
         since: Option<String>,
+        /// Include only this connection ID or unique label.
+        #[arg(long)]
+        connection: Option<String>,
     },
     /// Turn a natural-language request into a shell command (for scripting).
     /// Prints the command to stdout; exit 0 = safe/answer, 20 = flagged (either
@@ -1340,10 +1343,15 @@ fn run() -> Result<u8> {
                 *limit,
                 *json,
             )),
-            Some(Cmd::Usage { by, since }) => Ok(usage_history_command(
+            Some(Cmd::Usage {
+                by,
+                since,
+                connection,
+            }) => Ok(usage_history_command(
                 &config,
                 by.as_deref(),
                 since.as_deref(),
+                connection.as_deref(),
             )),
             Some(Cmd::Runbook {
                 session,
@@ -2156,15 +2164,21 @@ fn record_managed_usage(outcome: &TurnOutcome, config: &Config) {
     if path.is_empty() {
         return;
     }
-    aishe::usagelog::append(std::path::Path::new(&path), usage, config.active_model());
+    aishe::usagelog::append_attributed(
+        std::path::Path::new(&path),
+        usage,
+        config.active_model(),
+        Some(config.active_connection_id()),
+    );
     if let Ok(status_path) = std::env::var("AISHE_STATUS_FILE") {
         if !status_path.is_empty() {
-            aishe::usagelog::write_status(
+            aishe::usagelog::write_status_for_connection(
                 std::path::Path::new(&status_path),
                 std::path::Path::new(&path),
                 &config.pricing,
                 Some((usage, config.active_model())),
                 &config.aishe.status_line_items,
+                config.active_connection_id(),
             );
             let task = outcome
                 .session_id
@@ -3042,11 +3056,17 @@ fn print_command_listing(commands: &CommandRegistry) {
 }
 
 fn status_command(config: &Config, json: bool) -> u8 {
+    let connection_id = session_value("AISHE_CONNECTION", config.active_connection_id());
     let session = std::env::var_os("AISHE_USAGE_FILE")
         .filter(|value| !value.is_empty())
-        .and_then(|path| aishe::usagelog::summarize(std::path::Path::new(&path), &config.pricing));
+        .and_then(|path| {
+            aishe::usagelog::summarize_for_connection(
+                std::path::Path::new(&path),
+                &config.pricing,
+                Some(&connection_id),
+            )
+        });
     let metrics = live_status_metrics();
-    let connection_id = session_value("AISHE_CONNECTION", config.active_connection_id());
     let model = session_value("AISHE_MODEL", config.active_model());
     let mode = session_value("AISHE_MODE", &config.aishe.mode);
     let scope = session_value("AISHE_SCOPE", &config.backend.default_scope);
@@ -3071,7 +3091,7 @@ fn status_command(config: &Config, json: bool) -> u8 {
         .and_then(|url| url.host_str().map(ToOwned::to_owned))
         .unwrap_or_else(|| "unknown".into());
     let backend_readiness = backend_readiness(config);
-    let selection_scope = if aishe::connection::selection_path().is_some() {
+    let selection_scope = if aishe::connection::selection_is_shell_local() {
         "this shell"
     } else {
         "default"
@@ -3270,15 +3290,21 @@ fn record_session_usage(provider: Option<&dyn Provider>, config: &Config) {
     if snap.is_empty() {
         return;
     }
-    aishe::usagelog::append(std::path::Path::new(&path), snap, config.active_model());
+    aishe::usagelog::append_attributed(
+        std::path::Path::new(&path),
+        snap,
+        config.active_model(),
+        Some(config.active_connection_id()),
+    );
     if let Ok(status_path) = std::env::var("AISHE_STATUS_FILE") {
         if !status_path.is_empty() {
-            aishe::usagelog::write_status(
+            aishe::usagelog::write_status_for_connection(
                 std::path::Path::new(&status_path),
                 std::path::Path::new(&path),
                 &config.pricing,
                 Some((snap, config.active_model())),
                 &config.aishe.status_line_items,
+                config.active_connection_id(),
             );
         }
     }
@@ -3287,7 +3313,13 @@ fn record_session_usage(provider: Option<&dyn Provider>, config: &Config) {
 fn print_usage_summary(provider: Option<&dyn Provider>, config: &Config) {
     if let Some(summary) = std::env::var_os("AISHE_USAGE_FILE")
         .filter(|value| !value.is_empty())
-        .and_then(|path| aishe::usagelog::summarize(std::path::Path::new(&path), &config.pricing))
+        .and_then(|path| {
+            aishe::usagelog::summarize_for_connection(
+                std::path::Path::new(&path),
+                &config.pricing,
+                Some(config.active_connection_id()),
+            )
+        })
     {
         println!("{summary}");
         if config.aishe.budget_usd > 0.0 {
@@ -3338,7 +3370,7 @@ fn reasoning_command(effective: &Config, value: Option<&str>, save_default: bool
         println!(
             "reasoning: {} ({})",
             effective.active_reasoning_effort(),
-            if aishe::connection::selection_path().is_some() {
+            if aishe::connection::selection_is_shell_local() {
                 "this shell"
             } else {
                 "saved default"
@@ -3354,7 +3386,7 @@ fn reasoning_command(effective: &Config, value: Option<&str>, save_default: bool
     selected.set_active_reasoning_effort(value.to_string());
     let shell_local = aishe::connection::selection_path().is_some() && !save_default;
     let result = if shell_local {
-        aishe::connection::write_shell_selection(&selected).map(|_| ())
+        aishe::connection::write_shell_selection(&selected, "shell").map(|_| ())
     } else {
         (|| -> Result<()> {
             let mut durable = Config::load_or_init()?;
@@ -3362,7 +3394,7 @@ fn reasoning_command(effective: &Config, value: Option<&str>, save_default: bool
             durable.set_active_model(selected.active_model().to_string());
             durable.set_active_reasoning_effort(value.to_string());
             durable.save()?;
-            let _ = aishe::connection::write_shell_selection(&selected);
+            let _ = aishe::connection::write_shell_selection(&selected, "default");
             Ok(())
         })()
     };
@@ -3398,7 +3430,7 @@ fn model_command(
                 return 1;
             }
         };
-        if let Err(error) = aishe::connection::write_shell_selection(&durable) {
+        if let Err(error) = aishe::connection::write_shell_selection(&durable, "default") {
             eprintln!("aishe: {error}");
             return 1;
         }
@@ -3416,7 +3448,7 @@ fn model_command(
                 aishe::commands::display_safe(selected.active_connection_id()),
                 aishe::commands::display_safe(selected.active_model()),
                 aishe::commands::display_safe(selected.active_reasoning_effort()),
-                if aishe::connection::selection_path().is_some() {
+                if aishe::connection::selection_is_shell_local() {
                     "this shell"
                 } else {
                     "default"
@@ -3542,7 +3574,7 @@ fn model_command(
 
     let shell_local = aishe::connection::selection_path().is_some() && !save_default;
     let result = if shell_local {
-        aishe::connection::write_shell_selection(&selected).map(|_| ())
+        aishe::connection::write_shell_selection(&selected, "shell").map(|_| ())
     } else {
         (|| -> Result<()> {
             let mut durable = Config::load_or_init()?;
@@ -3551,7 +3583,7 @@ fn model_command(
             durable.set_active_model(selected.active_model().to_string());
             durable.set_active_reasoning_effort(selected.active_reasoning_effort().to_string());
             durable.save()?;
-            let _ = aishe::connection::write_shell_selection(&selected);
+            let _ = aishe::connection::write_shell_selection(&selected, "default");
             Ok(())
         })()
     };
@@ -5267,7 +5299,12 @@ fn log_command(
 }
 
 /// `aishe usage`: aggregate token counts and estimated cost from the audit log.
-fn usage_history_command(config: &Config, by: Option<&str>, since: Option<&str>) -> u8 {
+fn usage_history_command(
+    config: &Config,
+    by: Option<&str>,
+    since: Option<&str>,
+    connection: Option<&str>,
+) -> u8 {
     use aishe::usage::{self, Usage};
     let path = audit_log_path(config);
     let entries = aishe::audit::read_entries(&path);
@@ -5280,6 +5317,11 @@ fn usage_history_command(config: &Config, by: Option<&str>, since: Option<&str>)
     }
     let cutoff = since.and_then(parse_since);
     let by = by.unwrap_or("model");
+    let connection = connection.map(|value| {
+        config
+            .resolve_connection_id(value)
+            .unwrap_or_else(|_| value.to_string())
+    });
 
     #[derive(Default)]
     struct Agg {
@@ -5293,6 +5335,12 @@ fn usage_history_command(config: &Config, by: Option<&str>, since: Option<&str>)
     let mut total = Agg::default();
     for e in &entries {
         if e.kind != "ai_response" {
+            continue;
+        }
+        if connection
+            .as_deref()
+            .is_some_and(|id| e.connection_id.as_deref() != Some(id))
+        {
             continue;
         }
         if let Some(c) = cutoff {
@@ -5341,7 +5389,11 @@ fn usage_history_command(config: &Config, by: Option<&str>, since: Option<&str>)
         println!("no model calls recorded in the audit log");
         return 0;
     }
-    println!("usage by {by}:");
+    if let Some(connection) = &connection {
+        println!("usage for connection {connection} by {by}:");
+    } else {
+        println!("usage by {by}:");
+    }
     let fmt_cost = |a: &Agg| {
         if a.unknown == 0 {
             format!("~${:.4}", a.cost)

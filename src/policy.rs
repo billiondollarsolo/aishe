@@ -435,6 +435,23 @@ mod tests {
     }
 
     #[test]
+    fn connection_allowlist_distinguishes_profiles_for_the_same_provider() {
+        let mut config = Config::default();
+        let duplicate = config.connections["openai"].clone();
+        config.connections.insert("openai-work".into(), duplicate);
+        config.select_connection("openai-work").unwrap();
+        let policy = OrganizationPolicy {
+            version: 1,
+            allowed_connections: vec!["openai-work".into()],
+            ..OrganizationPolicy::default()
+        };
+        assert!(policy.validate_request(&config).is_ok());
+
+        config.select_connection("openai").unwrap();
+        assert!(policy.validate_request(&config).is_err());
+    }
+
+    #[test]
     fn subdomain_host_pattern_does_not_match_apex_or_suffix_trick() {
         assert!(host_matches("api.example.com", "*.example.com"));
         assert!(!host_matches("example.com", "*.example.com"));

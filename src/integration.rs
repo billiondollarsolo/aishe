@@ -151,10 +151,16 @@ aishe_precmd() {
   if [[ -n "${AISHE_SELECTION_FILE:-}" && -r "${AISHE_SELECTION_FILE}" ]]; then
     {
       IFS= read -r AISHE_CONNECTION
+      IFS= read -r AISHE_CONNECTION_LABEL
+      IFS= read -r AISHE_PROVIDER
+      IFS= read -r AISHE_ENDPOINT_HOST
+      IFS= read -r AISHE_AUTH_LABEL
       IFS= read -r AISHE_MODEL
       IFS= read -r AISHE_REASONING
+      IFS= read -r AISHE_SELECTION_SCOPE
     } < "${AISHE_SELECTION_FILE}"
-    export AISHE_CONNECTION AISHE_MODEL AISHE_REASONING
+    export AISHE_CONNECTION AISHE_CONNECTION_LABEL AISHE_PROVIDER AISHE_ENDPOINT_HOST
+    export AISHE_AUTH_LABEL AISHE_MODEL AISHE_REASONING AISHE_SELECTION_SCOPE
   fi
   # A persistent `aishe output ...` runs in a child process under the PTY.
   # Consume its one-shot handoff without overriding a later Ctrl-O session
@@ -717,7 +723,7 @@ const PTY_PROMPT: &str = r#"# --- aishe branded prompt (PTY front-end; pty_promp
 if [[ -o interactive && "${AISHE_PTY_PROMPT:-1}" == 1 ]]; then
   autoload -Uz add-zsh-hook
   aishe_set_prompt() {
-    local glyph connection model mode backend scope status_text status_prompt base_prompt key value item
+    local glyph connection connection_label provider endpoint auth selection identity model reasoning mode backend scope status_text status_prompt base_prompt key value item
     local -A metrics
     local -a status_items
     if [[ -n "${AISHE_MODEL_FILE:-}" && -r "${AISHE_MODEL_FILE}" ]]; then
@@ -726,10 +732,16 @@ if [[ -o interactive && "${AISHE_PTY_PROMPT:-1}" == 1 ]]; then
     if [[ -n "${AISHE_SELECTION_FILE:-}" && -r "${AISHE_SELECTION_FILE}" ]]; then
       {
         IFS= read -r AISHE_CONNECTION
+        IFS= read -r AISHE_CONNECTION_LABEL
+        IFS= read -r AISHE_PROVIDER
+        IFS= read -r AISHE_ENDPOINT_HOST
+        IFS= read -r AISHE_AUTH_LABEL
         IFS= read -r AISHE_MODEL
         IFS= read -r AISHE_REASONING
+        IFS= read -r AISHE_SELECTION_SCOPE
       } < "${AISHE_SELECTION_FILE}"
-      export AISHE_CONNECTION AISHE_MODEL AISHE_REASONING
+      export AISHE_CONNECTION AISHE_CONNECTION_LABEL AISHE_PROVIDER AISHE_ENDPOINT_HOST
+      export AISHE_AUTH_LABEL AISHE_MODEL AISHE_REASONING AISHE_SELECTION_SCOPE
     fi
     case "${AISHE_MODE:-suggest}" in
       yolo) glyph='*' ;;
@@ -738,6 +750,14 @@ if [[ -o interactive && "${AISHE_PTY_PROMPT:-1}" == 1 ]]; then
     esac
     model="${AISHE_MODEL}"
     connection="${AISHE_CONNECTION}"
+    connection_label="${AISHE_CONNECTION_LABEL:-$connection}"
+    provider="${AISHE_PROVIDER:-unknown}"
+    endpoint="${AISHE_ENDPOINT_HOST:-unknown}"
+    auth="${AISHE_AUTH_LABEL:-Auto (legacy)}"
+    selection="${AISHE_SELECTION_SCOPE:-default}"
+    [[ "$selection" == shell ]] && selection="this shell"
+    reasoning="${AISHE_REASONING:-auto}"
+    identity="${connection_label} (${connection}) · ${provider}@${endpoint} · ${auth} · ${model}/${reasoning} · ${selection}"
     mode="${AISHE_MODE:-suggest}"
     backend="${AISHE_BACKEND:-opencode}"
     if [[ -n "${AISHE_SCOPE_FILE:-}" && -r "${AISHE_SCOPE_FILE}" ]]; then
@@ -752,13 +772,18 @@ if [[ -o interactive && "${AISHE_PTY_PROMPT:-1}" == 1 ]]; then
       done < "${AISHE_STATUS_FILE}"
     fi
     status_text=""
-    status_items=("${(@s:,:)${AISHE_STATUS_ITEMS:-connection,model,mode,scope,session_cost,requests}}")
+    status_items=("${(@s:,:)${AISHE_STATUS_ITEMS:-identity,mode,scope,session_cost,requests}}")
     for item in "${status_items[@]}"; do
       value=""
       case "$item" in
-        connection) value="$connection" ;;
+        identity) value="$identity" ;;
+        connection) value="${connection_label} (${connection})" ;;
+        provider) value="$provider" ;;
+        endpoint) value="$endpoint" ;;
+        auth) value="$auth" ;;
+        selection) value="$selection" ;;
         model) value="$model" ;;
-        reasoning) value="${AISHE_REASONING:-auto}" ;;
+        reasoning) value="$reasoning" ;;
         mode) value="$mode" ;;
         backend) value="$backend" ;;
         scope) value="$scope" ;;
@@ -905,10 +930,16 @@ __aishe_prompt() {
   if [[ -n "${AISHE_SELECTION_FILE:-}" && -r "${AISHE_SELECTION_FILE}" ]]; then
     {
       IFS= read -r AISHE_CONNECTION
+      IFS= read -r AISHE_CONNECTION_LABEL
+      IFS= read -r AISHE_PROVIDER
+      IFS= read -r AISHE_ENDPOINT_HOST
+      IFS= read -r AISHE_AUTH_LABEL
       IFS= read -r AISHE_MODEL
       IFS= read -r AISHE_REASONING
+      IFS= read -r AISHE_SELECTION_SCOPE
     } < "${AISHE_SELECTION_FILE}"
-    export AISHE_CONNECTION AISHE_MODEL AISHE_REASONING
+    export AISHE_CONNECTION AISHE_CONNECTION_LABEL AISHE_PROVIDER AISHE_ENDPOINT_HOST
+    export AISHE_AUTH_LABEL AISHE_MODEL AISHE_REASONING AISHE_SELECTION_SCOPE
   fi
   # Capture the last command's exit status and text first (this hook is prepended
   # to PROMPT_COMMAND, so it runs before anything resets $?), for the fix-it key.

@@ -294,19 +294,24 @@ export const AisheBridge = async () => ({
       Number.isSafeInteger(output.maxOutputTokens) && output.maxOutputTokens > 0
         ? output.maxOutputTokens
         : null
-    const response = await fetch(`${bridgeUrl}/v1/plugin/provider-turn`, {
-      method: "POST",
-      redirect: "error",
-      headers: {
-        "authorization": `Bearer ${bridgeToken}`,
-        "content-type": "application/json",
-      },
-      body: JSON.stringify({
-        session_id: input.sessionID,
-        requested_max_output_tokens: requestedMaxOutputTokens,
-      }),
-    })
-    if (!response.ok) {
+    let decision
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      const response = await fetch(`${bridgeUrl}/v1/plugin/provider-turn`, {
+        method: "POST",
+        redirect: "error",
+        headers: {
+          "authorization": `Bearer ${bridgeToken}`,
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({
+          session_id: input.sessionID,
+          requested_max_output_tokens: requestedMaxOutputTokens,
+        }),
+      })
+      if (response.ok) {
+        decision = await response.json()
+        break
+      }
       let code = "unknown"
       try {
         const body = await response.json()
@@ -314,10 +319,14 @@ export const AisheBridge = async () => ({
           code = body.error.code
         }
       } catch {}
+      // No provider call has begun when the private control listener rejects a
+      // malformed transport request. A single fresh-connection retry is safe
+      // and avoids losing an admitted foreground turn to an intermittent HTTP
+      // framing failure under long-running OpenCode sessions.
+      if (attempt === 0 && response.status === 400 && code === "invalid_request") continue
       throw new Error(`Aishe budget gate rejected provider turn: ${response.status} (${code})`)
     }
-    const decision = await response.json()
-    if (typeof decision.max_output_tokens === "number") {
+    if (typeof decision?.max_output_tokens === "number") {
       output.maxOutputTokens = decision.max_output_tokens
     }
   },

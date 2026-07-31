@@ -35,7 +35,9 @@ def environment():
             'provider = "openai"\n'
             'connection = "openai-work"\n'
             'connection_fallback = "openai-work"\n'
-            'pty_prompt = false\n\n'
+            'pty_prompt = true\n'
+            'status_line_position = "below"\n'
+            'status_line_items = ["identity"]\n\n'
             '[connections.openai-work]\n'
             'provider = "openai"\n'
             'label = "OpenAI work"\n'
@@ -169,9 +171,21 @@ def main():
     try:
         first.ready()
         second.ready()
+        first.drain(0.3)
+        initial_identity = [
+            "OpenAI work (openai-work)",
+            "openai@127.0.0.1",
+            "No auth",
+            "work-model/auto",
+            "default",
+        ]
+        if not all(value in first.transcript for value in initial_identity):
+            raise AssertionError("compact identity disclosure is incomplete")
 
         select_picker(first, "personal")
         first.expect("connection = openai-personal")
+        first.expect("OpenAI personal (openai-personal)")
+        first.expect("this shell")
         first.identity("FIRST")
         first.expect("FIRST:openai-personal:personal-model")
 
@@ -199,6 +213,8 @@ def main():
 
         select_picker(first, "work", save=True)
         first.expect("connection = openai-work")
+        first.line("print -r -- SAVED_SCOPE:$AISHE_SELECTION_SCOPE")
+        first.expect("SAVED_SCOPE:default")
         first.identity("SAVED")
         first.expect("SAVED:openai-work:work-model")
 
@@ -219,7 +235,7 @@ def main():
         if EMOJI.search(combined):
             raise AssertionError("picker output contains emoji")
         print("  ok   filter/select/save/cancel/rollback/default are connection-safe")
-        print("  ok   concurrent shells keep independent selections and plain output")
+        print("  ok   compact identity/scope, concurrent shells, and plain output work")
     finally:
         first.close()
         second.close()

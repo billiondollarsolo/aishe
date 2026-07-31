@@ -85,7 +85,7 @@ brevity. Read `~/.config/aishe/...` as `<config>/...` and
 | `show_usage` | bool | `true` | Record and display model-call usage in the interactive session. |
 | `status_line` | bool | `true` | Enable the branded prompt's live status display. |
 | `status_line_position` | string | `right` | Status placement: `right`, `below`, or `off`. |
-| `status_line_items` | array | `["model","mode","backend","scope","session_cost","requests"]` | Ordered fields. Also supports `network`, `sandbox`, `task`, `elapsed`, `context`, `last_tokens`, `last_cost`, and `session_tokens`. |
+| `status_line_items` | array | `["identity","mode","scope","session_cost","requests"]` | Ordered fields. `identity` is the compact safe connection/provider/endpoint/auth/model/reasoning/default disclosure. Individual identity fields and `backend`, `task`, `elapsed`, `context`, `last_tokens`, `last_cost`, and `session_tokens` are also available. |
 | `budget_usd` | float | `0.0` | Stop calling the model past this session cost. `0` = unlimited. |
 | `memory` | bool | `true` | Remember recent natural-language turns so follow-ups have context. Clear at the aishe prompt with `reset`. |
 | `cache` | bool | `true` | Cache identical suggest-mode responses briefly so repeats are instant and free. Toggle at the aishe prompt with `cache on`/`off`. |

@@ -65,33 +65,41 @@ pub fn provenance() -> Result<(Config, Provenance)> {
             base_source.clone()
         }
     };
+    let connection_id = config.active_connection_id().to_string();
+    let connection = config.active_connection();
     let provider = active_provider(&config);
-    let provider_prefix = format!("providers.{}", config.aishe.provider);
-    let fields = vec![
+    let connection_prefix = format!("connections.{connection_id}");
+    let mut fields = vec![
+        field("aishe.connection", json!(connection_id), &source),
         field("aishe.provider", json!(config.aishe.provider), &source),
         field(
-            &format!("{provider_prefix}.base_url"),
+            &format!("{connection_prefix}.label"),
+            json!(connection.map(|value| value.label.as_str()).unwrap_or("")),
+            &source,
+        ),
+        field(
+            &format!("{connection_prefix}.provider"),
+            json!(config.active_provider_name()),
+            &source,
+        ),
+        field(
+            &format!("{connection_prefix}.base_url"),
             json!(provider.base_url),
             &source,
         ),
         field(
-            &format!("{provider_prefix}.api_key_env"),
-            json!(provider.api_key_env),
-            &source,
-        ),
-        field(
-            &format!("{provider_prefix}.credential"),
-            json!(provider.credential_profile()),
-            &source,
-        ),
-        field(
-            &format!("{provider_prefix}.model"),
+            &format!("{connection_prefix}.model"),
             json!(provider.model),
             &source,
         ),
         field(
-            &format!("{provider_prefix}.transport"),
+            &format!("{connection_prefix}.transport"),
             json!(provider.transport),
+            &source,
+        ),
+        field(
+            &format!("{connection_prefix}.reasoning_effort"),
+            json!(config.active_reasoning_effort()),
             &source,
         ),
         field(
@@ -147,6 +155,44 @@ pub fn provenance() -> Result<(Config, Provenance)> {
         ),
         field("aishe.structured", json!(config.aishe.structured), &source),
     ];
+    if let Some(connection) = connection {
+        let (auth_type, auth_profile, auth_env) = match &connection.auth {
+            crate::config::ConnectionAuth::ApiKey {
+                credential,
+                api_key_env,
+            } => (
+                "api_key",
+                credential
+                    .as_deref()
+                    .unwrap_or(&connection.settings.credential),
+                api_key_env
+                    .as_deref()
+                    .unwrap_or(&connection.settings.api_key_env),
+            ),
+            crate::config::ConnectionAuth::OAuth { profile } => ("oauth", profile.as_str(), ""),
+            crate::config::ConnectionAuth::None => ("none", "", ""),
+            crate::config::ConnectionAuth::Auto => ("auto", "", ""),
+        };
+        fields.push(field(
+            &format!("{connection_prefix}.auth.type"),
+            json!(auth_type),
+            &source,
+        ));
+        if !auth_profile.is_empty() {
+            fields.push(field(
+                &format!("{connection_prefix}.auth.profile"),
+                json!(auth_profile),
+                &source,
+            ));
+        }
+        if !auth_env.is_empty() {
+            fields.push(field(
+                &format!("{connection_prefix}.auth.api_key_env"),
+                json!(auth_env),
+                &source,
+            ));
+        }
+    }
     Ok((
         config,
         Provenance {
@@ -202,11 +248,22 @@ pub fn run() -> Result<bool> {
             "Edit configuration in reviewable, transactional sections.",
             "Nothing is saved until you choose Review and apply.",
         );
+        let connection = draft.active_connection();
+        let label = connection
+            .map(|value| value.label.as_str())
+            .unwrap_or(draft.active_connection_id());
+        let auth = connection
+            .map(crate::config::ConnectionConfig::auth_label)
+            .unwrap_or_else(|| "legacy auto".into());
         println!(
-            "  {} · {} · {} · status {}",
-            draft.aishe.provider,
-            draft.active_model(),
-            draft.aishe.safety_profile,
+            "  {} ({}) · {} · {} · {} · reasoning {} · safety {} · status {}",
+            crate::commands::display_safe(label),
+            crate::commands::display_safe(draft.active_connection_id()),
+            crate::commands::display_safe(draft.active_provider_name()),
+            crate::commands::display_safe(draft.active_model()),
+            crate::commands::display_safe(&auth),
+            crate::commands::display_safe(draft.active_reasoning_effort()),
+            crate::commands::display_safe(&draft.aishe.safety_profile),
             if draft.aishe.status_line {
                 draft.aishe.status_line_position.as_str()
             } else {
@@ -272,6 +329,9 @@ pub fn run() -> Result<bool> {
 
 fn provider_section(config: &mut Config) -> Result<()> {
     let before = config.clone();
+    if !choose_connection(config)? {
+        return Ok(());
+    }
     let labels: Vec<String> = provider_catalog::SERVICES
         .iter()
         .map(|service| format!("{} — {}", service.label, service.help))
@@ -291,16 +351,7 @@ fn provider_section(config: &mut Config) -> Result<()> {
         return Ok(());
     }
     let service = &provider_catalog::SERVICES[index];
-    match service.family {
-        Family::Anthropic => {
-            config.select_connection("anthropic")?;
-            provider_catalog::apply(service, active_provider_mut(config));
-        }
-        Family::OpenAiCompatible => {
-            config.select_connection("openai")?;
-            provider_catalog::apply(service, active_provider_mut(config));
-        }
-    }
+    apply_service_to_active_connection(config, service);
     let provider = active_provider_mut(config);
     let Some(endpoint) = promptui::text("Endpoint", &provider.base_url, |value| {
         if value.starts_with("http://") || value.starts_with("https://") {
@@ -439,7 +490,7 @@ fn provider_section(config: &mut Config) -> Result<()> {
         return Ok(());
     }
     active_provider_mut(config).model = model;
-    if config.aishe.provider == "openai" {
+    if config.active_provider_name() != "anthropic" {
         let transports = vec![
             "Auto — Responses for official OpenAI, Chat for compatible endpoints".into(),
             "Responses API".into(),
@@ -594,7 +645,12 @@ fn choose_status_position(config: &mut Config) -> Result<()> {
 
 fn choose_status_items(config: &mut Config) -> Result<()> {
     let supported = [
+        "identity",
         "connection",
+        "provider",
+        "endpoint",
+        "auth",
+        "selection",
         "model",
         "reasoning",
         "mode",
@@ -642,27 +698,55 @@ fn choose_status_items(config: &mut Config) -> Result<()> {
 }
 
 fn print_status_preview(config: &Config) {
-    let values: Vec<&str> = config
+    let endpoint = url::Url::parse(&config.active_provider_config().base_url)
+        .ok()
+        .and_then(|url| url.host_str().map(ToOwned::to_owned))
+        .unwrap_or_else(|| "unknown".into());
+    let label = config
+        .active_connection()
+        .map(|connection| connection.label.as_str())
+        .unwrap_or(config.active_connection_id());
+    let auth = config
+        .active_connection()
+        .map(crate::config::ConnectionConfig::auth_label)
+        .unwrap_or_else(|| "Auto (legacy)".into());
+    let identity = format!(
+        "{} ({}) · {}@{} · {} · {}/{} · default",
+        label,
+        config.active_connection_id(),
+        config.active_provider_name(),
+        endpoint,
+        auth,
+        config.active_model(),
+        config.active_reasoning_effort(),
+    );
+    let values: Vec<String> = config
         .aishe
         .status_line_items
         .iter()
         .filter_map(|item| match item.as_str() {
-            "connection" => Some(config.active_connection_id()),
-            "model" => Some(config.active_model()),
-            "reasoning" => Some(config.active_reasoning_effort()),
-            "mode" => Some(config.aishe.mode.as_str()),
-            "backend" => Some(config.backend.engine.as_str()),
-            "scope" => Some(config.backend.default_scope.as_str()),
-            "task" => Some("task repo-audit"),
-            "elapsed" => Some("last 4.2s"),
-            "context" => Some("context 8.4K tok"),
-            "last_tokens" => Some("last 1,697/374 tok"),
-            "last_cost" => Some("last cost n/a"),
-            "session_tokens" => Some("session 1,697/374 tok"),
-            "session_cost" => Some("session cost n/a"),
-            "requests" => Some("2 reqs"),
+            "identity" => Some(identity.clone()),
+            "connection" => Some(config.active_connection_id().to_string()),
+            "provider" => Some(config.active_provider_name().to_string()),
+            "endpoint" => Some(endpoint.clone()),
+            "auth" => Some(auth.clone()),
+            "selection" => Some("default".into()),
+            "model" => Some(config.active_model().to_string()),
+            "reasoning" => Some(config.active_reasoning_effort().to_string()),
+            "mode" => Some(config.aishe.mode.clone()),
+            "backend" => Some(config.backend.engine.clone()),
+            "scope" => Some(config.backend.default_scope.clone()),
+            "task" => Some("task repo-audit".into()),
+            "elapsed" => Some("last 4.2s".into()),
+            "context" => Some("context 8.4K tok".into()),
+            "last_tokens" => Some("last 1,697/374 tok".into()),
+            "last_cost" => Some("last cost n/a".into()),
+            "session_tokens" => Some("session 1,697/374 tok".into()),
+            "session_cost" => Some("session cost n/a".into()),
+            "requests" => Some("2 reqs".into()),
             _ => None,
         })
+        .map(|value| crate::commands::display_safe(&value))
         .collect();
     println!(
         "  preview ({}): {}",
@@ -819,7 +903,7 @@ fn cost_section(config: &mut Config) -> Result<()> {
 
 fn advanced_section(config: &mut Config) -> Result<()> {
     let choices = vec![
-        format!("Reasoning effort: {}", config.aishe.reasoning_effort),
+        format!("Reasoning effort: {}", config.active_reasoning_effort()),
         format!("Structured output: {}", config.aishe.structured),
         format!("Streaming: {}", on_off(config.aishe.stream)),
         format!("Response cache: {}", on_off(config.aishe.cache)),
@@ -843,12 +927,12 @@ fn advanced_section(config: &mut Config) -> Result<()> {
                 &options,
                 options
                     .iter()
-                    .position(|value| value == &config.aishe.reasoning_effort)
+                    .position(|value| value == config.active_reasoning_effort())
                     .unwrap_or(0),
                 true,
                 "Auto omits an explicit effort unless compatibility requires none.",
             )? {
-                config.aishe.reasoning_effort = options[index].clone();
+                config.set_active_reasoning_effort(options[index].clone());
             }
         }
         MenuResult::Selected(1) => {
@@ -898,6 +982,9 @@ fn reset_context_section(config: &mut Config) {
 
 fn reset_advanced_section(config: &mut Config) {
     let defaults = Config::default();
+    if let Some(connection) = config.active_connection_mut() {
+        connection.reasoning_effort = None;
+    }
     config.aishe.reasoning_effort = defaults.aishe.reasoning_effort;
     config.aishe.structured = defaults.aishe.structured;
     config.aishe.stream = defaults.aishe.stream;
@@ -912,11 +999,67 @@ fn active_provider_mut(config: &mut Config) -> &mut crate::config::ProviderConfi
     let id = config.active_connection_id().to_string();
     if config.connections.contains_key(&id) {
         &mut config.connections.get_mut(&id).expect("checked").settings
-    } else if config.aishe.provider == "openai" {
-        &mut config.providers.openai
-    } else {
+    } else if config.aishe.provider == "anthropic" {
         &mut config.providers.anthropic
+    } else {
+        &mut config.providers.openai
     }
+}
+
+fn choose_connection(config: &mut Config) -> Result<bool> {
+    let ids: Vec<String> = config.connections.keys().cloned().collect();
+    let mut labels: Vec<String> = ids
+        .iter()
+        .map(|id| {
+            let connection = &config.connections[id];
+            format!(
+                "{} ({}) — {} · {} · {}",
+                crate::commands::display_safe(&connection.label),
+                crate::commands::display_safe(id),
+                crate::commands::display_safe(&connection.provider),
+                crate::commands::display_safe(&connection.settings.model),
+                crate::commands::display_safe(&connection.auth_label())
+            )
+        })
+        .collect();
+    labels.push("Back".into());
+    let default = ids
+        .iter()
+        .position(|id| id == config.active_connection_id())
+        .unwrap_or(0);
+    match promptui::menu(
+        "Connection to edit",
+        &labels,
+        default,
+        true,
+        "Choose the exact named credential and model profile; duplicate providers stay separate.",
+    )? {
+        MenuResult::Selected(index) if index < ids.len() => {
+            config.select_connection(&ids[index])?;
+            Ok(true)
+        }
+        _ => Ok(false),
+    }
+}
+
+fn apply_service_to_active_connection(config: &mut Config, service: &provider_catalog::Service) {
+    let provider_name = match service.family {
+        Family::Anthropic => "anthropic",
+        Family::OpenAiCompatible => service.key,
+    };
+    if let Some(connection) = config.active_connection_mut() {
+        connection.provider = provider_name.into();
+        provider_catalog::apply(service, &mut connection.settings);
+    } else {
+        provider_catalog::apply(service, active_provider_mut(config));
+    }
+    config.aishe.provider = provider_name.into();
+    let legacy = if provider_name == "anthropic" {
+        &mut config.providers.anthropic
+    } else {
+        &mut config.providers.openai
+    };
+    provider_catalog::apply(service, legacy);
 }
 
 fn service_index(config: &Config) -> usize {
@@ -924,7 +1067,7 @@ fn service_index(config: &Config) -> usize {
         .iter()
         .position(|service| {
             service.family
-                == if config.aishe.provider == "anthropic" {
+                == if config.active_provider_name() == "anthropic" {
                     Family::Anthropic
                 } else {
                     Family::OpenAiCompatible
@@ -1051,6 +1194,36 @@ mod tests {
             config.aishe.status_line_items,
             ["requests", "model", "last_cost"]
         );
+    }
+
+    #[test]
+    fn service_edits_preserve_the_exact_named_connection() {
+        let mut config = Config::default();
+        let template = config.connections["openai"].clone();
+        config.connections.clear();
+        config
+            .connections
+            .insert("openai-personal".into(), template.clone());
+        config.connections.insert("openai-work".into(), template);
+        config.aishe.connection = "openai-personal".into();
+        config.aishe.connection_fallback = "openai-work".into();
+        config.aishe.provider = "openai".into();
+
+        let untouched = config.connections["openai-work"].clone();
+        apply_service_to_active_connection(&mut config, provider_catalog::find("xai").unwrap());
+
+        assert_eq!(config.active_connection_id(), "openai-personal");
+        assert_eq!(config.active_provider_name(), "xai");
+        assert_eq!(config.active_provider_config().base_url, "https://api.x.ai");
+        assert_eq!(config.connections["openai-work"], untouched);
+        config.set_active_reasoning_effort("high".into());
+        assert_eq!(
+            config.connections["openai-personal"]
+                .reasoning_effort
+                .as_deref(),
+            Some("high")
+        );
+        assert_eq!(config.connections["openai-work"].reasoning_effort, None);
     }
 
     #[test]
