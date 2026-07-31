@@ -438,9 +438,9 @@ config, history, tasks, trust store, or other user data.
 
 Administrators can install a read-only constraint file at
 `/etc/aishe/policy.toml` on Linux or `/Library/Application
-Support/Aishe/policy.toml` on macOS (the on-disk directory name is the
-historical install path and is **not** renamed with the AIShe product
-wordmark). `AISHE_POLICY_FILE` is the explicit deployment/test override. Policy
+Support/aishe/policy.toml` on macOS. OS paths always use lowercase **`aishe`**
+(same as user config/data); the product name in docs and UI is **AIShe**.
+`AISHE_POLICY_FILE` is the explicit deployment/test override. Policy
 schema 1 may require/disable OpenCode, specify
 a runtime mirror and approved hashes, require functional bubblewrap, disable
 host yolo or network, restrict provider hosts/models, require audit/redaction,

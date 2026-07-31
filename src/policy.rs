@@ -275,14 +275,15 @@ impl OrganizationPolicy {
     }
 }
 
-/// On-disk macOS organization policy directory uses the historical install name
-/// `Aishe` (a filesystem path identifier, not the product wordmark). Do **not**
-/// rename this — existing fleet installs load `/Library/Application Support/Aishe/policy.toml`.
-pub const MACOS_ORG_POLICY_PATH: &str = "/Library/Application Support/Aishe/policy.toml";
+/// Canonical macOS organization policy path. OS paths use lowercase `aishe`
+/// (same as user config/data dirs); product marketing remains **AIShe**.
+pub const MACOS_ORG_POLICY_PATH: &str = "/Library/Application Support/aishe/policy.toml";
 
-/// Transient path briefly introduced by a brand-sweep typo; still loaded as a
-/// fallback so any install created during that window keeps working.
-const MACOS_ORG_POLICY_PATH_LEGACY_TYPO: &str = "/Library/Application Support/AIShe/policy.toml";
+/// Older mixed-case path segments (pre-lowercase standardization); still loaded.
+const MACOS_ORG_POLICY_PATH_LEGACY: &[&str] = &[
+    "/Library/Application Support/Aishe/policy.toml",
+    "/Library/Application Support/AIShe/policy.toml",
+];
 
 pub const LINUX_ORG_POLICY_PATH: &str = "/etc/aishe/policy.toml";
 
@@ -303,10 +304,11 @@ pub fn candidate_paths() -> Vec<PathBuf> {
         return vec![PathBuf::from(value)];
     }
     if cfg!(target_os = "macos") {
-        vec![
-            PathBuf::from(MACOS_ORG_POLICY_PATH),
-            PathBuf::from(MACOS_ORG_POLICY_PATH_LEGACY_TYPO),
-        ]
+        let mut paths = vec![PathBuf::from(MACOS_ORG_POLICY_PATH)];
+        for legacy in MACOS_ORG_POLICY_PATH_LEGACY {
+            paths.push(PathBuf::from(*legacy));
+        }
+        paths
     } else {
         vec![PathBuf::from(LINUX_ORG_POLICY_PATH)]
     }
@@ -420,29 +422,32 @@ mod tests {
     use super::*;
 
     #[test]
-    fn macos_org_policy_path_stays_on_historical_aishe_directory() {
-        // Product wordmark is AIShe; on-disk macOS org policy path remains Aishe
-        // so fleet installs at /Library/Application Support/Aishe/policy.toml load.
+    fn org_policy_paths_use_lowercase_aishe() {
+        // Product wordmark is AIShe; OS paths are always lowercase aishe.
         assert_eq!(
             MACOS_ORG_POLICY_PATH,
-            "/Library/Application Support/Aishe/policy.toml"
+            "/Library/Application Support/aishe/policy.toml"
         );
         assert!(
-            MACOS_ORG_POLICY_PATH.contains("/Aishe/"),
-            "stable path segment must be historical Aishe, not product AIShe"
+            MACOS_ORG_POLICY_PATH.contains("/aishe/"),
+            "canonical path segment must be lowercase aishe"
         );
         assert!(
-            !MACOS_ORG_POLICY_PATH.contains("/AIShe/"),
-            "product spelling must not rename the org policy directory"
+            !MACOS_ORG_POLICY_PATH.contains("/AIShe/")
+                && !MACOS_ORG_POLICY_PATH.contains("/Aishe/"),
+            "product/title-case spellings must not be the canonical path"
         );
+        assert_eq!(LINUX_ORG_POLICY_PATH, "/etc/aishe/policy.toml");
         let candidates = candidate_paths();
-        // Without AISHE_POLICY_FILE, Linux CI sees /etc/aishe; macos sees Aishe first.
         if cfg!(target_os = "macos") {
             assert_eq!(
                 candidates.first().map(|p| p.as_path()),
                 Some(std::path::Path::new(MACOS_ORG_POLICY_PATH))
             );
-            assert!(candidates.iter().any(|p| p.ends_with("Aishe/policy.toml")));
+            // Legacy mixed-case paths still dual-loaded for existing fleets.
+            assert!(candidates
+                .iter()
+                .any(|p| p.as_os_str() == "/Library/Application Support/Aishe/policy.toml"));
         } else {
             assert_eq!(
                 candidates,

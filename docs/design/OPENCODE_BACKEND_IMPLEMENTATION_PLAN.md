@@ -1518,7 +1518,7 @@ During migration:
 Add an optional root/admin-managed policy file:
 
 - Linux: `/etc/aishe/policy.toml`
-- macOS: `/Library/Application Support/Aishe/policy.toml`
+- macOS: `/Library/Application Support/aishe/policy.toml`
 - Override for tests/managed deployment: `AISHE_POLICY_FILE`
 
 Policy may:
