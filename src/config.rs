@@ -603,12 +603,11 @@ pub fn branded_connection_label(
     base_url: &str,
     auth: &ConnectionAuth,
 ) -> Option<String> {
-    let oauth =
-        crate::oauth::OAuthProvider::from_base_url(base_url).or(match provider_key {
-            "openai" => Some(crate::oauth::OAuthProvider::Openai),
-            "xai" => Some(crate::oauth::OAuthProvider::Xai),
-            _ => None,
-        })?;
+    let oauth = crate::oauth::OAuthProvider::from_base_url(base_url).or(match provider_key {
+        "openai" => Some(crate::oauth::OAuthProvider::Openai),
+        "xai" => Some(crate::oauth::OAuthProvider::Xai),
+        _ => None,
+    })?;
     match auth {
         ConnectionAuth::OAuth { profile } => Some(oauth_connection_label(oauth, profile)),
         ConnectionAuth::ApiKey { .. } | ConnectionAuth::Auto => Some(api_connection_label(oauth)),
