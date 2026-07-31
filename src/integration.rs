@@ -158,7 +158,7 @@ _aishe_force_nl() { printf '%s' "$1" > "$AISHE_FORCE_FILE"; }
 # sigil or key), then act on a staged command.
 aishe_precmd() {
   # Apply the connection/model handoff in the main shell. This is independent
-  # of Aishe's optional branded prompt so `/model` still changes the runtime
+  # of AIShe's optional branded prompt so `/model` still changes the runtime
   # identity when the operator keeps their own prompt theme.
   if [[ -n "${AISHE_SELECTION_FILE:-}" && -r "${AISHE_SELECTION_FILE}" ]]; then
     {
@@ -326,14 +326,14 @@ aishe-recall() {
 }
 
 # Route-aware highlighting. A recognized command is green on minimal accounts;
-# input Aishe will treat as natural language is magenta. The natural-language
+# input AIShe will treat as natural language is magenta. The natural-language
 # overlay also corrects the common zsh-syntax-highlighting ambiguity where a
 # question such as `what is ...` stays green merely because macOS ships a real
 # `what` binary. Full shell grammar highlighting remains the external plugin's
 # job. Exact prior regions are removed on every redraw so edits never leave
 # stale color behind, while regions owned by other widgets are preserved.
 # zsh 5.9 added `memo=token`, which is the collision-free way for plugins to
-# remove only their own regions. On 5.8, use an Aishe-specific bold color
+# remove only their own regions. On 5.8, use an AIShe-specific bold color
 # combination as a compatibility marker.
 autoload -Uz is-at-least
 typeset -g _AISHE_HIGHLIGHT_MEMO=""
@@ -341,7 +341,7 @@ is-at-least 5.9 && _AISHE_HIGHLIGHT_MEMO="memo=aishe"
 # Conservative question grammar for command-name collisions. It deliberately
 # requires a recognizable question phrase instead of treating every valid
 # command with arguments as prose. Prefix `!` always forces the shell; `?` or
-# `#` always forces Aishe.
+# `#` always forces AIShe.
 _aishe_looks_like_question() {
   emulate -L zsh
   setopt extendedglob
@@ -427,7 +427,7 @@ _aishe_highlight_command() {
   [[ "$head" == [[:alnum:]_./+-]## ]] || return
 
   if ! whence -w -- "$head" >/dev/null 2>&1; then
-    # Unknown command heads route through Aishe's command-not-found handler.
+    # Unknown command heads route through AIShe's command-not-found handler.
     local owned_spec
     if [[ -n "$_AISHE_HIGHLIGHT_MEMO" ]]; then
       owned_spec="${#leading} ${#BUFFER} fg=magenta memo=aishe"
@@ -438,7 +438,7 @@ _aishe_highlight_command() {
     return
   fi
 
-  # A real syntax plugin owns valid shell grammar and command colors. Aishe only
+  # A real syntax plugin owns valid shell grammar and command colors. AIShe only
   # overlays the natural-language route above.
   if (( $+functions[_zsh_highlight] || $+functions[_zsh_highlight_main] ||
         $+functions[_fast_highlight] || $+functions[_fast_main] )); then
@@ -839,7 +839,7 @@ if [[ -o interactive && "${AISHE_PTY_PROMPT:-1}" == 1 ]]; then
     # Themes commonly enable PROMPT_SUBST, which would otherwise evaluate a
     # model name containing `$()` or backticks. zsh's `%v` prompt escape reads
     # psvar without recursively expanding its contents. Slot 99 is reserved for
-    # Aishe's rendered status text.
+    # AIShe's rendered status text.
     psvar[99]="$status_text"
     if [[ -n "$status_text" && -z "${NO_COLOR:-}" ]]; then
       status_prompt="%F{244}%99v%f"
@@ -1111,8 +1111,8 @@ __aishe_cycle_mode() {
 }
 bind -x '"\e[Z": __aishe_cycle_mode' 2>/dev/null
 
-# Focus/detailed transcript toggle. Ctrl-O mirrors the native Aishe zsh hook;
-# AISHE_AGENT_OUTPUT is inherited by each per-prompt Aishe process.
+# Focus/detailed transcript toggle. Ctrl-O mirrors the native AIShe zsh hook;
+# AISHE_AGENT_OUTPUT is inherited by each per-prompt AIShe process.
 __aishe_toggle_details() {
   case "${AISHE_AGENT_OUTPUT:-focus}" in
     detailed) export AISHE_AGENT_OUTPUT=focus ;;
@@ -1151,7 +1151,8 @@ mod tests {
         assert!(s.contains("aishe: /help · /connection · /model"));
         assert!(s.contains("AIShe"));
         assert!(s.contains("AI Shell"));
-        assert!(s.contains("| o   o |"));
+        // Half-block glasses mark (Unicode, not the old ASCII face).
+        assert!(s.contains('█'));
         assert!(s.contains("AISHE_COMMAND_HINT_SHOWN"));
     }
 

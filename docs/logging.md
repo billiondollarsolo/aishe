@@ -43,7 +43,7 @@ Native and managed calls share the same event stream. It records:
 
 - `session_start`: a marker with the aishe version,
 - `ai_request`: each model call, including the complete bounded user prompt,
-  model, provider, mode, scope, Aishe turn ID, and durable managed-session
+  model, provider, mode, scope, AIShe turn ID, and durable managed-session
   identity,
 - `ai_response`: the complete bounded visible response, any reasoning text the
   provider exposes, token/cache usage, cost, and duration,
@@ -63,7 +63,7 @@ Connection attribution never contains a key, token, OAuth payload, local
 control password, or launch secret. Profile labels are identifiers, not secret
 values. The final JSON write boundary recursively redacts every string field.
 
-The log records what Aishe receives and does. It cannot record private model
+The log records what AIShe receives and does. It cannot record private model
 chain-of-thought that a provider does not expose.
 
 It is off by default because it writes prompts, responses, and commands to disk.
@@ -87,7 +87,7 @@ AISHE_LOG=1 AISHE_LOG_FILE=/tmp/aishe.jsonl aishe
 ```
 
 `aishe doctor` and `aishe status` show whether redaction and logging are on and
-where the log goes. `/log` shows the latest 20 records inside an Aishe shell.
+where the log goes. `/log` shows the latest 20 records inside an AIShe shell.
 
 ### Example entries
 

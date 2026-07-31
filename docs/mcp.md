@@ -4,9 +4,9 @@ In yolo mode, aishe can connect to [Model Context
 Protocol](https://modelcontextprotocol.io) servers and offer their tools to the
 managed agent. This plugs the whole MCP ecosystem (filesystem, git, databases,
 web search, your own servers) into the agentic loop without handing execution
-to OpenCode: the managed engine sees only Aishe proxy-tool schemas, and each MCP
+to OpenCode: the managed engine sees only AIShe proxy-tool schemas, and each MCP
 call returns through the authenticated foreground lease owned by the requesting
-Aishe shell.
+AIShe shell.
 
 ## Configuring servers
 
@@ -59,8 +59,8 @@ headers = { Authorization = "Bearer ${TOKEN}" }   # extra request headers
 For a server named `filesystem` advertising a `read_file` tool, the model sees a
 tool named `mcp__<server>__<tool>`, e.g. `mcp__filesystem__read_file`. The name is
 sanitized to the character set the model APIs accept. When the model calls it,
-the trusted plugin sends the stable tool-call ID to the Aishe supervisor. The
-owning foreground Aishe process applies mode, scope, organization policy,
+the trusted plugin sends the stable tool-call ID to the AIShe supervisor. The
+owning foreground AIShe process applies mode, scope, organization policy,
 output bounds, cancellation, and idempotency before it proxies `tools/call` to
 that server and feeds the bounded result back into the managed conversation.
 Each call is recorded in the [audit log](logging.md) as
@@ -134,8 +134,8 @@ MCP prompts (run as /<server>:<prompt>):
 MCP tools run with the privileges of the server process you launch, and the
 model decides when to call them. Only configure servers you trust, and scope
 them (for example point a filesystem server at a single project directory).
-Aishe authenticates and audits the call boundary, but it cannot inspect or
+AIShe authenticates and audits the call boundary, but it cannot inspect or
 kernel-confine the internal actions of an arbitrary MCP server. Provider
-credentials and Aishe control tokens are removed from stdio MCP environments;
+credentials and AIShe control tokens are removed from stdio MCP environments;
 explicit values you put in an MCP `env` or HTTP `headers` entry remain your
 responsibility.

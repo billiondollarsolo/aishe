@@ -26,7 +26,7 @@ you actually rely on for isolation is the
   prompt (see [Three outcomes](#three-outcomes) — nothing unverified auto-runs).
 - **managed yolo**: you accept workspace or host authority once in each new
   shell; there are no per-action prompts afterward. Scope, bubblewrap, network
-  policy, path checks, and the Aishe tool bridge are the boundary. The
+  policy, path checks, and the AIShe tool bridge are the boundary. The
   `yolo_confirm` fields remain only for native compatibility/legacy tasks. See
   [Modes: yolo](modes.md#yolo).
 
@@ -207,7 +207,7 @@ calls). It is one more guardrail for an autonomous loop, not a security boundary
 
 Managed agent turns express the equivalent constraint through
 `backend.default_scope`, `backend.workspace_network`, and the `[sandbox]`
-section; Aishe enforces it at the foreground tool bridge.
+section; AIShe enforces it at the foreground tool bridge.
 
 ### A real sandbox: `[sandbox].linux_backend = "bwrap"`
 
@@ -220,7 +220,7 @@ of the home directory, or a symlink escape merely by changing its spelling.
 
 Setup and Doctor run a functional namespace/writable/read-only/network
 self-test; finding the executable is not enough. If bwrap is missing or unusable,
-Aishe says so and either fails (when `require_functional = true` or organization
+AIShe says so and either fails (when `require_functional = true` or organization
 policy requires it) or labels the selected alternative policy-only. It never
 silently claims OS isolation. The backend is Linux-only; macOS is policy-only.
 

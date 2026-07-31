@@ -746,7 +746,7 @@ fn run_command(
         if !work.interactive || !std::io::stdin().is_terminal() || !std::io::stdout().is_terminal()
         {
             return failure(
-                "This command requires a foreground terminal. Resume the session from an interactive Aishe shell and try again.",
+                "This command requires a foreground terminal. Resume the session from an interactive AIShe shell and try again.",
             );
         }
         if stream_output {

@@ -41,7 +41,7 @@ cargo fmt --all -- --check
   - `tests/opencode_host_scope.py`: runs a real pinned-runtime yolo tool loop
     with a synthetic per-shell host acceptance, writes to a disposable path
     outside the workspace, and proves the effect crossed one authenticated
-    Aishe lease without a second per-action approval.
+    AIShe lease without a second per-action approval.
   - `tests/opencode_connection_isolation.py`: launches two same-provider,
     same-model API-key connections concurrently and proves distinct provider
     credentials, runtimes, sessions, audit identities, and secret-free state.
@@ -74,7 +74,7 @@ cargo fmt --all -- --check
     greenlit). Same `AISHE_REALTEST_KEY` gate; scale with a multiplier arg
     (`real_fuzz.py <bin> 2`). Real API calls cost money and hit rate limits —
     keep the scale modest. `AISHE_REALTEST_TIMEOUT` controls the outer
-    per-process deadline (300 seconds by default, outside Aishe's internal retry
+    per-process deadline (300 seconds by default, outside AIShe's internal retry
     envelope).
   - `tests/live_release.py`: paid, isolated release-candidate matrix combining
     live provider/Doctor capability checks, answer/command contracts, a real

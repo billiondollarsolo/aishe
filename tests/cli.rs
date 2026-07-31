@@ -50,6 +50,18 @@ fn temp_root(label: &str) -> std::path::PathBuf {
 }
 
 #[test]
+fn long_help_mentions_connection_vs_model_and_aishe_brand() {
+    Command::cargo_bin("aishe")
+        .unwrap()
+        .arg("--help")
+        .assert()
+        .success()
+        .stdout(contains("AIShe"))
+        .stdout(contains("/connection"))
+        .stdout(contains("/model"));
+}
+
+#[test]
 fn oauth_commands_are_discoverable_and_status_never_exposes_tokens() {
     Command::cargo_bin("aishe")
         .unwrap()

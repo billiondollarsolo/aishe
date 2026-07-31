@@ -71,7 +71,7 @@ pub struct TodoItem {
     pub status: String,
 }
 
-/// Stable Aishe event schema consumed by every renderer and scripting surface.
+/// Stable AIShe event schema consumed by every renderer and scripting surface.
 /// Unknown backend events are intentionally not represented here; adapters log
 /// and ignore them instead of leaking raw backend payloads to the terminal.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

@@ -27,7 +27,7 @@ aishe backend logs --tail 200
 If the runtime is missing, use `aishe backend install`; if its metadata,
 checksum, executable version, or plugin health is invalid, use `aishe backend
 repair`. `aishe backend rollback` selects the immediately previous compatible
-verified install. Aishe may use native suggest/chat/auto compatibility only when
+verified install. AIShe may use native suggest/chat/auto compatibility only when
 the failure occurs before OpenCode admits the prompt. It never retries a turn
 through another engine after partial output or a tool effect.
 
@@ -43,12 +43,12 @@ This avoids blindly repeating a command whose outcome may be unknown.
 
 ## Bubblewrap is installed but Doctor says unusable
 
-Aishe tests namespace creation, a read-only host, writable workspace/private
+AIShe tests namespace creation, a read-only host, writable workspace/private
 `/tmp`, and the network profile. Finding `bwrap` on `PATH` is not enough. A
 container, kernel, or security profile can disable the required user
 namespaces. Run `aishe doctor --json` for the exact state, then either enable
 the host capability, choose explicit policy-only behavior where allowed, or ask
-the administrator to change organization policy. Aishe never labels an
+the administrator to change organization policy. AIShe never labels an
 unusable bubblewrap install as sandboxed.
 
 Setup can install bubblewrap on supported Linux package managers, but only after
@@ -84,7 +84,7 @@ The full table is in [File locations](configuration.md#file-locations).
 
 ## "API key not found"
 
-Aishe could not find the saved credential profile named in your provider config.
+AIShe could not find the saved credential profile named in your provider config.
 Enter it with the hidden prompt:
 
 ```sh
@@ -97,7 +97,7 @@ reports insecure permissions, run `aishe doctor --fix` or `chmod 600` on the
 exact credentials path it prints. For a local server such as Ollama, use
 `auth_required = false`; no dummy key is needed.
 
-The managed-backend error names the missing Aishe credential profile and
+The managed-backend error names the missing AIShe credential profile and
 configured environment override. The secret is passed only to the provider
 server process; it is removed from model-controlled command/tool environments
 and never written to backend config, session mappings, or tool journals.
@@ -182,7 +182,7 @@ the guided flow. An interrupted setup resumes with `aishe setup --resume`;
 `aishe setup --restart` discards only its draft and leaves the active config
 untouched.
 
-A malformed config is never silently replaced with defaults. Aishe reports the
+A malformed config is never silently replaced with defaults. AIShe reports the
 parse error so you can fix the file or restore one of its private `.bak` files.
 Schema migrations also create a backup before an atomic rewrite.
 

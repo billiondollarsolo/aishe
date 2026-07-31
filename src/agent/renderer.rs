@@ -1,7 +1,7 @@
 //! Inline rendering for backend-neutral agent events.
 //!
 //! The renderer deliberately owns no policy or backend state. It prints only
-//! normalized Aishe events, bounds every model-controlled field, and leaves
+//! normalized AIShe events, bounds every model-controlled field, and leaves
 //! the user's submitted shell line untouched.
 
 use std::collections::HashMap;

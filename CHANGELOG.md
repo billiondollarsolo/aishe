@@ -6,6 +6,18 @@ breaking changes can land in any release.
 
 ## [Unreleased]
 
+### Changed
+- Suggest product how-to injects the compact **product brief** only (not the full
+  `aishe-product` skill body); yolo still uses progressive skill disclosure.
+- Post-login OAuth ensure lists **all** matching connections (no silent first-only
+  drop) and always syncs labels to the canonical Codex/Grok OAuth brand.
+- Terminal mark is Unicode half-block glasses + **AIShe** + **AI Shell**.
+- Shared promote-to-default policy is default **No** (`[y/N]`) for `/connection`
+  and `/model` Enter.
+- `aishe --help` epilog documents AIShe branding and `/connection` vs `/model`.
+- User-facing copy brand-swept to **AIShe** (CLI remains `aishe`).
+- Design PRD for unified `/model` marked superseded.
+
 ## [0.6.3] - 2026-07-31
 
 ### Fixed

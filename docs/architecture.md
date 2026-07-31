@@ -17,11 +17,11 @@ behavior see [front-ends.md](front-ends.md), [modes.md](modes.md), and
    (`src/safety.rs`). Model output is untrusted input, not authorization.
 3. **Shell path stays direct and service-free.** A valid shell line never starts
    the agent backend or performs network work. AI turns lazy-start a private,
-   exact-version-pinned OpenCode process behind an Aishe-owned supervisor and
+   exact-version-pinned OpenCode process behind an AIShe-owned supervisor and
    authenticated foreground tool bridge.
-4. **OpenCode orchestrates; Aishe authorizes.** OpenCode owns conversation and
+4. **OpenCode orchestrates; AIShe authorizes.** OpenCode owns conversation and
    provider orchestration. It never receives direct host-effecting tools.
-   Aishe owns scope, policy, tools, sandbox, credentials, budget, audit, and UI.
+   AIShe owns scope, policy, tools, sandbox, credentials, budget, audit, and UI.
 5. **Best-effort, never blocking.** Anything that hits the network or a slow
    subprocess (git status, `--help` parsing, the command cache) runs
    off the hot path or under a timeout. The prompt never hangs.
@@ -180,7 +180,7 @@ runtime is keyed by a non-secret hash of the named connection, endpoint,
 transport, model, and authentication profile:
 
 ```text
-foreground Aishe
+foreground AIShe
   -> connection-specific authenticated control server (random 127.0.0.1 port)
      -> isolated OpenCode server (separate random 127.0.0.1 port + Basic Auth)
      -> shared durable bridge journal + connection-aware session mappings
@@ -229,7 +229,7 @@ native task records appear in one `aishe sessions` view.
 
 Rust generates provider configuration from the central resolved named
 connection (provider/model/endpoint/transport/auth identity). The dependency-free plugin in
-`assets/backend/opencode/aishe-plugin.mjs` requires Aishe authorization before
+`assets/backend/opencode/aishe-plugin.mjs` requires AIShe authorization before
 each provider turn, reports authoritative usage, hides/denies OpenCode built-in
 host tools, and exposes only proxy tools. It has no third-party imports; the
 pinned loader's otherwise-unconditional SDK bootstrap is satisfied by a
@@ -247,7 +247,7 @@ replay the prior result, while an interrupted started call becomes
 reservations expire if a provider never reports a failed turn, preventing
 permanent budget lockout without permitting unbounded spend.
 
-The foreground `ToolWorker` adapts Aishe's command/file/web/MCP/skill tools.
+The foreground `ToolWorker` adapts AIShe's command/file/web/MCP/skill tools.
 Model-controlled child processes receive an explicit sanitized environment:
 provider variables, all `AISHE_*`/`OPENCODE_*`, and likely secret names are
 removed. Tool output is redacted and bounded before it crosses the bridge.
@@ -256,9 +256,9 @@ removed. Tool output is redacted and bounded before it crosses the bridge.
 
 - **Suggest** provides no tools and normalizes the final answer/command for
   review.
-- **Auto** exposes Aishe proxy tools but keeps Aishe's action approval policy.
+- **Auto** exposes AIShe proxy tools but keeps AIShe's action approval policy.
 - **Yolo** requires a one-time workspace/host acceptance for each shell, then
-  has no per-action Aishe or OpenCode approvals. Acceptance is in-memory and
+  has no per-action AIShe or OpenCode approvals. Acceptance is in-memory and
   cannot leak into a new shell.
 
 On Linux, `sandbox.linux_backend = "bwrap"` applies a read-only host, writable
@@ -282,7 +282,7 @@ embedding support, the deterministic fake provider, and the temporary native
 compatibility engine. Its Anthropic/OpenAI wire implementations and structured
 output step-down remain tested for legacy resume and pre-admission fallback.
 Once OpenCode has admitted a prompt, emitted output, or requested an effect,
-Aishe never falls through to native or starts a second provider request.
+AIShe never falls through to native or starts a second provider request.
 
 ## Cross-cutting concerns
 
@@ -340,7 +340,7 @@ See [development.md](development.md) for commands. The shape:
 - **Pinned OpenCode runtime contract:** `tests/opencode_runtime_contract.py`
   launches the exact v1.18.9 runtime with a deterministic local provider and the
   real trusted plugin/bridge. It proves two-turn session continuity,
-  suggest-tool absence, Aishe-only auto tools, foreground command execution,
+  suggest-tool absence, AIShe-only auto tools, foreground command execution,
   provider credential isolation, exact usage, durable journals, secret
   non-persistence, dependency-free plugin startup, and zero install/catalog
   egress.

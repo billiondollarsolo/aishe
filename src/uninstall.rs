@@ -72,10 +72,10 @@ impl Plan {
         let selection = selection.with_default();
         let config_dir = crate::config::Config::path()
             .parent()
-            .context("Aishe config path has no parent")?
+            .context("AIShe config path has no parent")?
             .to_path_buf();
         let data_dir = crate::config::data_root()
-            .context("cannot resolve Aishe data directory")?
+            .context("cannot resolve AIShe data directory")?
             .join("aishe");
         let mut targets = Vec::new();
 
@@ -205,7 +205,7 @@ impl Plan {
 }
 
 fn add_program_artifacts(targets: &mut Vec<Target>) -> Result<()> {
-    let executable = std::env::current_exe().context("locating the running Aishe binary")?;
+    let executable = std::env::current_exe().context("locating the running AIShe binary")?;
     if executable.file_name().and_then(|value| value.to_str()) == Some("aishe") {
         targets.push(file("binary/completions/man", executable, true));
     }
@@ -278,7 +278,7 @@ fn validate_target(target: &Target, config_dir: &Path, data_dir: &Path) -> Resul
         let allowed = target.path.starts_with(config_dir) || target.path.starts_with(data_dir);
         if !allowed {
             anyhow::bail!(
-                "refusing uninstall directory outside Aishe roots: {}",
+                "refusing uninstall directory outside AIShe roots: {}",
                 target.path.display()
             );
         }

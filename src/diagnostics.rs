@@ -693,7 +693,7 @@ fn append_backend_checks(
             Severity::Warning
         },
         format!("managed runtime version: {runtime_version}"),
-        format!("this Aishe build requires exactly {}", manifest.version),
+        format!("this AIShe build requires exactly {}", manifest.version),
     ));
     checks.push(Check::new(
         "backend.runtime.hash",
@@ -845,7 +845,7 @@ fn append_backend_checks(
         ("backend.config.isolated", "backend config isolation"),
         ("backend.plugin.hash", "trusted plugin hash"),
         ("backend.tools.restricted", "model tool restriction"),
-        ("backend.tool_bridge", "Aishe tool bridge"),
+        ("backend.tool_bridge", "AIShe tool bridge"),
     ] {
         checks.push(Check::new(
             id,

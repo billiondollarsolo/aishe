@@ -1,4 +1,4 @@
-//! Deterministic OpenCode configuration generated only from trusted Aishe
+//! Deterministic OpenCode configuration generated only from trusted AIShe
 //! configuration. Project/user OpenCode configuration is never merged.
 
 use std::path::Path;
@@ -23,7 +23,7 @@ pub struct ProviderSpec {
     pub base_url: String,
     pub requires_auth: bool,
     /// Exact built-in OpenCode OAuth hook required for this launch. `None`
-    /// means the provider uses an Aishe API key or needs no authentication.
+    /// means the provider uses an AIShe API key or needs no authentication.
     pub oauth_provider: Option<String>,
     /// User-labeled isolated OAuth runtime profile. Never contains tokens.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -156,7 +156,7 @@ pub fn generated_config(plugin_path: &Path, provider: Option<&ProviderSpec>) -> 
     agent_config.insert(
         "aishe-suggest".into(),
         serde_json::json!({
-            "description":"Aishe one-turn answer and shell-command suggestion agent.",
+            "description":"AIShe one-turn answer and shell-command suggestion agent.",
             "mode":"primary",
             "prompt":SUGGEST_PROMPT,
             "permission":{"*":"deny"},
@@ -167,7 +167,7 @@ pub fn generated_config(plugin_path: &Path, provider: Option<&ProviderSpec>) -> 
     agent_config.insert(
         "aishe-auto".into(),
         serde_json::json!({
-            "description":"Aishe approval-gated command-line agent.",
+            "description":"AIShe approval-gated command-line agent.",
             "mode":"primary",
             "prompt":AUTO_PROMPT,
             "permission":bridge_permissions(true),
@@ -178,7 +178,7 @@ pub fn generated_config(plugin_path: &Path, provider: Option<&ProviderSpec>) -> 
     agent_config.insert(
         "aishe-yolo".into(),
         serde_json::json!({
-            "description":"Aishe scope-authorized autonomous command-line agent.",
+            "description":"AIShe scope-authorized autonomous command-line agent.",
             "mode":"primary",
             "prompt":YOLO_PROMPT,
             "permission":bridge_permissions(true),
@@ -190,7 +190,7 @@ pub fn generated_config(plugin_path: &Path, provider: Option<&ProviderSpec>) -> 
         agent_config.insert(
             name.into(),
             serde_json::json!({
-                "description":"Aishe child agent. All host effects remain behind the foreground Aishe bridge.",
+                "description":"AIShe child agent. All host effects remain behind the foreground AIShe bridge.",
                 "mode":"subagent",
                 "prompt":CHILD_PROMPT,
                 "permission":bridge_permissions(false),
@@ -209,7 +209,7 @@ pub fn generated_config(plugin_path: &Path, provider: Option<&ProviderSpec>) -> 
         config["provider"] = serde_json::json!({
             provider.provider_id.clone(): {
                 "id": provider.provider_id,
-                "name": "Aishe managed provider",
+                "name": "AIShe managed provider",
                 "npm": provider.npm,
                 "options": options,
                 "models": {
@@ -277,28 +277,28 @@ fn bridge_permissions(subagents: bool) -> Value {
     permissions
 }
 
-const SUGGEST_PROMPT: &str = r#"You are Aishe's concise command-line assistant.
+const SUGGEST_PROMPT: &str = r#"You are AIShe's concise command-line assistant.
 Answer the user's full request. If the best response is one runnable shell command,
 return type=command and put only that command in command. Otherwise return
 type=answer, leave command empty, and put the answer in explanation. Never invent
 a command for a factual or conversational question. The required JSON schema is
 the authoritative output contract."#;
 
-const AUTO_PROMPT: &str = r#"You are Aishe's approval-gated command-line agent.
+const AUTO_PROMPT: &str = r#"You are AIShe's approval-gated command-line agent.
 Work to completion using only aishe_* proxy tools. Safe read-only actions may run
-immediately; Aishe decides whether any other action needs approval. Never request
+immediately; AIShe decides whether any other action needs approval. Never request
 OpenCode built-in host tools or claim an action happened without a successful tool
 result. Keep terminal-facing explanations concise."#;
 
-const YOLO_PROMPT: &str = r#"You are Aishe's autonomous command-line agent.
+const YOLO_PROMPT: &str = r#"You are AIShe's autonomous command-line agent.
 Work to completion using only aishe_* proxy tools and optional child agents.
-Aishe has already obtained the user's session-scoped authorization and enforces
+AIShe has already obtained the user's session-scoped authorization and enforces
 workspace/host/network boundaries outside the model. Never ask for per-action
 approval, never attempt to widen scope, and never claim an action happened without
 a successful tool result. Inspect, edit, test, and verify your work."#;
 
-const CHILD_PROMPT: &str = r#"You are an Aishe child agent. Complete the delegated
-subtask using only aishe_* proxy tools. You inherit the parent Aishe lease and may
+const CHILD_PROMPT: &str = r#"You are an AIShe child agent. Complete the delegated
+subtask using only aishe_* proxy tools. You inherit the parent AIShe lease and may
 not widen its workspace, host, or network authority. Report concise evidence."#;
 
 fn disabled_builtin_tools() -> Value {

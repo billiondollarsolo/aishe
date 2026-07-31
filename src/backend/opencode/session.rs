@@ -1,8 +1,8 @@
-//! Durable mapping between an Aishe shell/workspace and OpenCode sessions.
+//! Durable mapping between an AIShe shell/workspace and OpenCode sessions.
 //!
 //! The mapping deliberately contains no credentials or local-control tokens.
 //! One advisory lock protects the atomically replaced index so independent
-//! Aishe hook processes from the same shell cannot create parallel sessions.
+//! AIShe hook processes from the same shell cannot create parallel sessions.
 
 use std::fs::{self, OpenOptions};
 use std::path::{Path, PathBuf};
@@ -241,7 +241,7 @@ impl SessionStore {
         })
     }
 
-    /// Serialize the narrow find/create/bind window across Aishe processes.
+    /// Serialize the narrow find/create/bind window across AIShe processes.
     ///
     /// OpenCode 1.18.9 can reject a large cold burst of simultaneous
     /// `POST /session` requests. This separate advisory lock also prevents two
@@ -337,7 +337,7 @@ fn validate_shell_id(value: &str) -> Result<()> {
             .bytes()
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
     {
-        anyhow::bail!("invalid Aishe shell identity");
+        anyhow::bail!("invalid AIShe shell identity");
     }
     Ok(())
 }

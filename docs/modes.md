@@ -37,9 +37,9 @@ instead of proposing a command.
 
 ## auto
 
-The managed agent can inspect and work iteratively, but Aishe retains per-action
+The managed agent can inspect and work iteratively, but AIShe retains per-action
 approval control. Actions that are read-only or clearly safe can run immediately;
-writes, destructive commands, broader paths, network use, or anything Aishe
+writes, destructive commands, broader paths, network use, or anything AIShe
 cannot resolve stop and ask. The deterministic gate still has three outcomes:
 
 - **safe** — nothing matched and every segment resolved: runs straight away.
@@ -54,10 +54,10 @@ around consequential actions. See [Safety gate](safety.md#three-outcomes).
 
 ## yolo
 
-Yolo uses Aishe's managed OpenCode engine to plan, call tools, inspect results,
+Yolo uses AIShe's managed OpenCode engine to plan, call tools, inspect results,
 compact context, create subagents where appropriate, and continue until the task
 is done. OpenCode never executes a host tool directly: its built-ins are
-hidden/denied and every effect crosses Aishe's authenticated foreground bridge.
+hidden/denied and every effect crosses AIShe's authenticated foreground bridge.
 
 ### One acceptance, not approval spam
 
@@ -80,17 +80,17 @@ per-action approval into an accepted managed yolo session.
 
 ### Tools and ownership
 
-- `run_command` executes through Aishe with bounded output, timeout/process-group
+- `run_command` executes through AIShe with bounded output, timeout/process-group
   cancellation, scope checks, sandbox policy, redaction, and audit.
 - `read_file`, `write_file`, `edit_file`, and `list_dir` stay path-confined;
   writes produce diffs and undo records.
 - `fetch_url` obeys the workspace network capability and bounded response rules.
 - Configured [MCP servers](mcp.md) remain namespaced
-  `mcp__<server>__<tool>` and are invoked by Aishe.
-- [Skills](custom-commands-and-skills.md) are progressively disclosed by Aishe;
+  `mcp__<server>__<tool>` and are invoked by AIShe.
+- [Skills](custom-commands-and-skills.md) are progressively disclosed by AIShe;
   project trust and organization policy still apply.
 
-Tool activity uses plain text labels. Aishe does not add pictographic emoji to
+Tool activity uses plain text labels. AIShe does not add pictographic emoji to
 file, web, skill, or MCP actions; managed turns leave activity rendering to the
 selected focus, compact, or detailed output mode.
 
@@ -107,7 +107,7 @@ Doctor run a functional namespace test; merely finding the executable is not
 enough. macOS is clearly labeled policy-only. `aishe dry-run` and legacy
 `yolo_dry_run` remain available for throwaway-copy previews.
 
-Every provider turn is authorized against Aishe's exact price/budget before the
+Every provider turn is authorized against AIShe's exact price/budget before the
 request. Usage is accepted once per provider message, including child sessions,
 and updates the statusline. An exhausted budget denies the next turn without
 destroying the conversation.
@@ -218,13 +218,13 @@ runs. The model's output is never trusted to be safe.
 ## Conversation memory
 
 Managed suggest, auto, and yolo turns use one durable OpenCode conversation per
-Aishe shell/canonical workspace. A follow-up from the hook's next short-lived
+AIShe shell/canonical workspace. A follow-up from the hook's next short-lived
 process therefore retains the same request, response, tool, and compaction
-context. It also survives an idle supervisor exit and an Aishe binary/runtime
+context. It also survives an idle supervisor exit and an AIShe binary/runtime
 upgrade.
 
 - `aishe sessions` lists managed mappings and legacy native task records.
-- `aishe resume ses_...` rebinds the current Aishe shell; from a normal TTY it
+- `aishe resume ses_...` rebinds the current AIShe shell; from a normal TTY it
   opens the real zsh in the recorded workspace already bound to that session.
 - A changed workspace gets a different conversation by default.
 - `reset`/`/reset` at the prompt, or `aishe reset`, detaches the current

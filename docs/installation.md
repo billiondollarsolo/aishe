@@ -3,9 +3,9 @@
 aishe ships as a native Rust binary plus a private, compatibility-pinned
 OpenCode agent runtime. The runtime is lazy: ordinary zsh commands never start
 it, and its per-user supervisor exits when idle. The install script or first
-setup downloads the exact version supported by the Aishe build, verifies its
+setup downloads the exact version supported by the AIShe build, verifies its
 size, SHA-256, executable version, license, and trusted integration, and keeps it
-inside Aishe's data directory. You never install or configure OpenCode
+inside AIShe's data directory. You never install or configure OpenCode
 separately.
 
 ## Requirements
@@ -32,7 +32,7 @@ separately.
 ## Quick install (Linux and macOS)
 
 The fastest path is the install script. It detects your OS and CPU, downloads
-the right Aishe binary and exact managed runtime, verifies both, performs a live
+the right AIShe binary and exact managed runtime, verifies both, performs a live
 authenticated backend health check, and only then atomically activates the
 binary. Linux uses the fully-static musl build, so there are no glibc
 requirements:
@@ -42,7 +42,7 @@ curl -fsSL https://raw.githubusercontent.com/billiondollarsolo/aishe/main/instal
 ```
 
 Checksum verification is mandatory for both artifacts. If the runtime cannot be
-downloaded, extracted, version-checked, or live-verified, an existing Aishe
+downloaded, extracted, version-checked, or live-verified, an existing AIShe
 binary is not replaced. Runtime versions live side by side, so a failed new
 binary activation does not invalidate the runtime expected by the old binary.
 
@@ -247,7 +247,7 @@ aishe uninstall --all --dry-run
 
 State removal requires explicit targeted confirmation (`--yes` for
 non-interactive automation) and is reported as permanently unrecoverable by
-Aishe. Package-manager ownership still applies: if a `.deb`, `.rpm`, Homebrew,
+AIShe. Package-manager ownership still applies: if a `.deb`, `.rpm`, Homebrew,
 or Cargo installed the binary, remove that package through the same manager
 after using `aishe uninstall --runtime --yes` as appropriate.
 

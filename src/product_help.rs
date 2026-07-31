@@ -115,6 +115,21 @@ AIShe product rules (authoritative — prefer these over guessing):\n\
 - Full skill: use_skill name=aishe-product when available (yolo)."
 }
 
+/// Build the product-reference block injected into **suggest** user messages.
+///
+/// Uses the compact [`product_brief`] only — never the full skill body — so
+/// product how-to turns stay token-cheap. Yolo keeps progressive disclosure via
+/// `use_skill name=aishe-product` ([`product_skill_body`]).
+pub fn suggest_product_reference(answer_hint: &str) -> String {
+    format!(
+        "\n\n--- AIShe product reference (authoritative) ---\n\
+         {}\n\
+         --- end product reference ---\n\
+         {answer_hint}",
+        product_brief()
+    )
+}
+
 /// Full skill body for progressive disclosure (yolo `use_skill`).
 pub fn product_skill_body() -> &'static str {
     r#"# AIShe product help (authoritative)
@@ -267,5 +282,35 @@ mod tests {
         assert!(!looks_like_product_question(
             "what is the capital of france"
         ));
+    }
+
+    #[test]
+    fn suggest_reference_uses_brief_not_full_skill() {
+        let block = suggest_product_reference("Answer in prose with exact commands (no CMD:).");
+        assert!(block.contains("AIShe product reference"));
+        assert!(block.contains("/connection"));
+        assert!(block.contains("aishe auth login openai"));
+        assert!(
+            !block.contains("# AIShe product help"),
+            "suggest must not inject the full skill markdown heading"
+        );
+        assert!(
+            !block.contains("## Mental model"),
+            "suggest must not inject full skill sections"
+        );
+        // Brief is much smaller than the yolo skill body.
+        assert!(product_brief().len() < product_skill_body().len() / 2);
+        // The real skill still carries the long recipes for yolo.
+        assert!(product_skill_body().contains("# AIShe product help"));
+        assert!(product_skill_body().contains("## Mental model"));
+    }
+
+    #[test]
+    fn terminal_mark_is_half_block_glasses() {
+        let mark = crate::promptui::ASCII_LOGO;
+        assert!(mark.contains('█') || mark.contains('▄') || mark.contains('▀'));
+        assert!(mark.contains("AIShe"));
+        assert!(mark.contains("AI Shell"));
+        assert!(!mark.contains("| o   o |"), "old face logo must be gone");
     }
 }

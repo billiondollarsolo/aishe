@@ -133,7 +133,7 @@ impl EventMapper {
                     })
                     .collect(),
             }],
-            // Aishe owns every approval. OpenCode is configured default-deny
+            // AIShe owns every approval. OpenCode is configured default-deny
             // with only trusted proxy tools allowed, so this event is a policy
             // escape or configuration defect, never a user-facing approval.
             "permission.asked" => vec![AgentEvent::Failed {

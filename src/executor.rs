@@ -256,7 +256,7 @@ impl Executor {
         self.history_log = Some(path);
     }
 
-    /// Newest command context across this process and the persistent Aishe log.
+    /// Newest command context across this process and the persistent AIShe log.
     ///
     /// PTY natural-language turns run in short-lived child processes, so their
     /// in-memory queue is normally empty. Reading the same bounded history file
@@ -530,7 +530,7 @@ impl Executor {
 
     /// Run a model-requested command in a nested foreground PTY.
     ///
-    /// The outer Aishe process remains the terminal owner, but the child receives
+    /// The outer AIShe process remains the terminal owner, but the child receives
     /// its own controlling terminal so OS-level prompts and terminal programs
     /// behave normally. Input, output, and resize events are proxied in-place;
     /// output is simultaneously retained in a bounded, sanitized transcript for

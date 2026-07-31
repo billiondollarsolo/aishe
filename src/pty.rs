@@ -57,7 +57,7 @@ pub fn run_zsh_with_shell_id(
             .bytes()
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
     {
-        anyhow::bail!("invalid resumed Aishe shell identity");
+        anyhow::bail!("invalid resumed AIShe shell identity");
     }
     run_zsh_inner(config, history_log, shell_id.to_string())
 }

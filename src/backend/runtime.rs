@@ -63,7 +63,7 @@ impl RuntimeManager {
         {
             return Self::with_root(PathBuf::from(root));
         }
-        let data = crate::config::data_root().context("cannot resolve Aishe data directory")?;
+        let data = crate::config::data_root().context("cannot resolve AIShe data directory")?;
         Self::with_root(data.join("aishe").join("runtime"))
     }
 

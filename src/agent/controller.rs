@@ -1,4 +1,4 @@
-//! Aishe-owned prompt lifecycle.
+//! AIShe-owned prompt lifecycle.
 //!
 //! This is the only normal path from shell-routed natural language to the
 //! managed OpenCode backend. It establishes the foreground authority lease

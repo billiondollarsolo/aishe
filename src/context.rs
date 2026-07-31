@@ -184,7 +184,7 @@ pub fn sections(executor: &Executor, config: &crate::config::Config) -> Vec<Sect
         "Recent command history",
         false,
         !excluded(config, "history"),
-        "current process and persistent Aishe history",
+        "current process and persistent AIShe history",
         history,
     ));
 

@@ -1,13 +1,13 @@
 # Providers
 
-Aishe configures three provider shapes:
+AIShe configures three provider shapes:
 
 - the **Anthropic Messages API**,
 - the official OpenAI and xAI **Responses APIs**, and
 - any custom **OpenAI-compatible Chat Completions API**.
 
-For normal AI turns, Aishe generates a private provider definition for its
-managed OpenCode engine. Aishe remains authoritative for the named connection,
+For normal AI turns, AIShe generates a private provider definition for its
+managed OpenCode engine. AIShe remains authoritative for the named connection,
 endpoint, model, authentication binding, prices, budget, and organization restrictions. API keys
 enter only the provider process environment; OAuth tokens remain in the
 managed runtime's private store. Model-controlled tools inherit neither.
@@ -19,14 +19,14 @@ OpenRouter, Together, and other custom URLs use Chat Completions for broad
 compatibility. Set `transport = "responses"` or `"chat"` only when a gateway
 needs an explicit choice.
 
-API-key connections resolve the profile named by `credential` in Aishe's private
+API-key connections resolve the profile named by `credential` in AIShe's private
 `credentials.toml`. The variable named by `api_key_env` is an optional
 higher-precedence override for CI, containers, and temporary testing. Keys are
 never written to ordinary `config.toml`, generated backend config, session
 mappings, tool journals, or support bundles.
 
 OpenAI and xAI also support any number of labeled subscription OAuth profiles
-through Aishe's pinned private OpenCode runtime:
+through AIShe's pinned private OpenCode runtime:
 
 ```sh
 aishe auth login openai --profile work
@@ -37,7 +37,7 @@ aishe auth logout openai --profile personal
 
 OAuth is accepted only when the normalized endpoint is exactly
 `https://api.openai.com` or `https://api.x.ai`; it cannot be redirected to a compatible gateway.
-The local callback flow is the default on a workstation, while Aishe
+The local callback flow is the default on a workstation, while AIShe
 automatically selects device authorization when SSH or a non-terminal output is
 detected. `--browser` and `--headless` explicitly select either flow. Each
 profile gets a complete private OpenCode HOME/XDG tree. An explicit `oauth`
@@ -124,7 +124,7 @@ for an API-key connection).
 The managed engine uses OpenAI Responses for reasoning and tools, avoiding the
 Chat Completions incompatibility between reasoning effort and function tools on
 models such as GPT-5.6. OpenCode owns provider-native reasoning continuation and
-conversation compaction; Aishe owns the durable session mapping, tool effects,
+conversation compaction; AIShe owns the durable session mapping, tool effects,
 usage authorization, and budget.
 
 With an API key, the native compatibility backend also uses `/v1/responses` with
@@ -132,7 +132,7 @@ Responses-native `max_output_tokens`, reasoning items, and stateless
 continuation. It remains available for legacy task resume and failures that
 occur before the managed engine admits a prompt.
 
-`base_url` is the service root. Aishe also accepts the commonly copied
+`base_url` is the service root. AIShe also accepts the commonly copied
 `https://api.openai.com/v1` form and canonicalizes the trailing `/v1` before
 appending `/v1/responses`; compatible and Anthropic endpoints receive the same
 protection against accidental `/v1/v1/...` URLs.
@@ -295,10 +295,10 @@ Navigation is ↑/↓ or j/k. Brands on status and `/status`:
 For **Codex - OAuth** and **Grok - OAuth**, `/model` lists models from the
 managed OpenCode runtime (`GET /config/providers` on the private loopback
 server) — the same subscription-filtered catalog OpenCode uses. When the
-runtime cannot enumerate the account, Aishe falls back to configured, cached,
+runtime cannot enumerate the account, AIShe falls back to configured, cached,
 recently audited, and typed model IDs. API-key connections use endpoint
-`GET /v1/models`. Aishe never queries `models.dev`. After `aishe auth login
-openai|xai [--profile …]` without an existing connection, Aishe creates one
+`GET /v1/models`. AIShe never queries `models.dev`. After `aishe auth login
+openai|xai [--profile …]` without an existing connection, AIShe creates one
 (e.g. `xai-work`) so `/connection` lists it immediately.
 The native compatibility/provider-probe layer supports both `max_tokens` and
 `max_completion_tokens` for custom Chat Completions endpoints and caches the
@@ -328,7 +328,7 @@ local blocks with `auth_required = false` need none. The setting is sensitive,
 so a project overlay needs `aishe trust` to apply it.
 
 Managed-turn safety takes precedence over transparent provider fallback. Once
-OpenCode admits a prompt, emits partial output, or requests a tool, Aishe never
+OpenCode admits a prompt, emits partial output, or requests a tool, AIShe never
 starts the turn again against another provider or backend. An outage marks the
 durable conversation interrupted and offers resume. This prevents duplicated
 commands and spend. To work fully offline, select the local Ollama endpoint as

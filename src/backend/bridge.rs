@@ -1,6 +1,6 @@
 //! Foreground tool leases and durable call idempotency.
 //!
-//! OpenCode can request work, but only a live foreground Aishe process holding
+//! OpenCode can request work, but only a live foreground AIShe process holding
 //! the matching lease can execute it. The journal never stores credentials and
 //! redacts model/tool content before every atomic write.
 
@@ -33,7 +33,7 @@ pub struct LeaseRegistration {
     pub scope: ExecutionScope,
     pub network: NetworkPolicy,
     pub interactive: bool,
-    /// Hard session budget only when Aishe has an exact trusted price.
+    /// Hard session budget only when AIShe has an exact trusted price.
     pub budget_usd: Option<f64>,
     pub price: Option<crate::usage::Price>,
     /// Authoritative cost already present in the resumed backend session.
@@ -443,7 +443,7 @@ impl Bridge {
             return Err(failure(
                 402,
                 "budget_exhausted",
-                "The configured Aishe session budget is exhausted",
+                "The configured AIShe session budget is exhausted",
             ));
         }
         let affordable = if price.output > 0.0 {
@@ -456,7 +456,7 @@ impl Bridge {
             return Err(failure(
                 402,
                 "budget_exhausted",
-                "The remaining Aishe budget cannot authorize another output token",
+                "The remaining AIShe budget cannot authorize another output token",
             ));
         }
         let reservation = cap as f64 / 1_000_000.0 * price.output;
@@ -561,7 +561,7 @@ impl Bridge {
 
     /// Attach an OpenCode child session to the same authority as its parent.
     /// The ancestry is durable, but the foreground lease itself is not: after
-    /// restart a live Aishe client must still re-register the root session.
+    /// restart a live AIShe client must still re-register the root session.
     pub fn register_child(&self, child: ChildRegistration) -> Result<(), BridgeFailure> {
         validate_id(&child.parent_session_id, "ses_").map_err(invalid_failure)?;
         validate_id(&child.child_session_id, "ses_").map_err(invalid_failure)?;
@@ -1110,7 +1110,7 @@ fn validate_request_workspace(
         )
     })?;
     // OpenCode deliberately reports `/` as `worktree` for a directory that is
-    // not backed by version control. That sentinel must never become Aishe
+    // not backed by version control. That sentinel must never become AIShe
     // authority: the exact request directory still has to match the canonical
     // foreground lease, and ToolWork always carries the lease workspace.
     let global_non_vcs_worktree = worktree == Path::new("/");
@@ -1139,7 +1139,7 @@ fn validate_tool_args(tool: &str, args: &Value) -> Result<(), BridgeFailure> {
         "use_skill" => &["name"],
         "mcp_call" => &["server", "tool", "arguments"],
         "ask_user" => &["prompt"],
-        _ => return Err(failure(400, "unknown_tool", "Unknown Aishe proxy tool")),
+        _ => return Err(failure(400, "unknown_tool", "Unknown AIShe proxy tool")),
     };
     if object.keys().any(|key| !allowed.contains(&key.as_str())) {
         return Err(failure(
@@ -1254,7 +1254,7 @@ fn validate_shell_id(value: &str) -> Result<()> {
             .bytes()
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
     {
-        anyhow::bail!("invalid Aishe shell identity");
+        anyhow::bail!("invalid AIShe shell identity");
     }
     Ok(())
 }
@@ -1667,7 +1667,7 @@ mod tests {
             "foreground_unavailable"
         );
         // OpenCode publishes the completed message before its plugin callback
-        // necessarily reaches Aishe. Accounting is accepted during a short
+        // necessarily reaches AIShe. Accounting is accepted during a short
         // post-lease grace without restoring provider/tool authority.
         bridge
             .record_provider_usage(ProviderUsageReport {

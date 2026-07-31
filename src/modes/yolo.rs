@@ -224,7 +224,7 @@ fn run_loop(
     if !skills.is_empty() {
         system.push_str(&format!(
             "\n\nAvailable skills (call use_skill to load one's instructions when \
-             relevant; use aishe-product for how-to questions about Aishe itself):\n{}",
+             relevant; use aishe-product for how-to questions about AIShe itself):\n{}",
             skills.catalog()
         ));
     }

@@ -75,7 +75,7 @@ brevity. Read `~/.config/aishe/...` as `<config>/...` and
 | `web_tool` | bool | `true` | Offer the built-in `fetch_url` tool to yolo (read web pages/docs; HTML stripped to text, size-capped). |
 | `auto_pushd` | bool | `false` | zsh `AUTO_PUSHD`: every `cd` pushes the previous dir (`cd -N`/`cd +N`, `dirs -v`). |
 | `cdpath` | array | `[]` | Extra base dirs searched by `cd <name>` (`CDPATH`); falls back to `$CDPATH`. |
-| `share_history` | bool | `true` | Share Aishe's timestamped history across concurrent and future sessions (zsh `SHARE_HISTORY` when Aishe supplies the native-history fallback); off makes Aishe history per-session. |
+| `share_history` | bool | `true` | Share AIShe's timestamped history across concurrent and future sessions (zsh `SHARE_HISTORY` when AIShe supplies the native-history fallback); off makes AIShe history per-session. |
 | `structured` | string | `schema` | Suggest output format: `schema`, `json`, or `prompt`. |
 | `stream` | bool | `false` | Stream answers token-by-token (suggest and auto). |
 | `hook_timeout_secs` | integer | `60` | Maximum wait (1–600 seconds) for a prompt-blocking native shell hook. Explicit `aishe suggest` calls wait through the provider's retry policy and are not signal-truncated; exhausted provider failures return exit 1. |
@@ -102,14 +102,14 @@ from a terminal fails with `error: unrecognized subcommand`. See
 ## `[backend]` section
 
 The agent orchestrator is separately configured from shell behavior. Runtime
-version/hash are deliberately absent: the Aishe build's embedded compatibility
+version/hash are deliberately absent: the AIShe build's embedded compatibility
 manifest owns them.
 
 | Field | Type | Default | Meaning |
 |-------|------|---------|---------|
 | `engine` | string | `opencode` | Managed agent engine. `native` is a temporary repair/legacy compatibility override. |
 | `fallback` | string | `native` | Compatibility engine allowed only when OpenCode fails before prompt admission. |
-| `managed` | bool | `true` | Install and launch Aishe's private compatibility-pinned runtime. |
+| `managed` | bool | `true` | Install and launch AIShe's private compatibility-pinned runtime. |
 | `idle_timeout_secs` | integer | `1800` | Stop the private per-user supervisor after this idle period (30–86400). |
 | `default_scope` | string | `workspace` | Default `workspace` or `host` selection. Yolo acceptance itself is never persisted. |
 | `workspace_network` | string | `deny` | `allow` or `deny` network capability for workspace agent tools. |
@@ -130,7 +130,7 @@ max_output_tokens = 0
 max_instances = 8
 ```
 
-Fallback is one-way and pre-admission only. Aishe never duplicates a prompt
+Fallback is one-way and pre-admission only. AIShe never duplicates a prompt
 after OpenCode has accepted it, emitted partial output, or requested a tool.
 
 ## `[sandbox]` section
@@ -246,7 +246,7 @@ connection's safe launch identity. See
 
 These blocks remain for schema-5 migration and unambiguous v0.5 workflows.
 Schema 5 is upgraded automatically to deterministic `anthropic` and `openai`
-`auto` connections. Before atomic replacement, Aishe writes the existing
+`auto` connections. Before atomic replacement, AIShe writes the existing
 byte-for-byte versioned backup. New configuration should use `[connections]`.
 
 | Field | Type | Meaning |
@@ -282,7 +282,7 @@ See [Providers](providers.md) for Groq, Ollama, and others.
 
 ## Shared credentials
 
-Aishe follows the AWS CLI pattern: ordinary settings and secrets are separate,
+AIShe follows the AWS CLI pattern: ordinary settings and secrets are separate,
 and the matching profile names are combined at runtime. Save a key without
 putting it in shell history:
 
@@ -306,7 +306,7 @@ api_key = "..."
 Resolution order is the configured non-empty environment variable, an
 in-memory setup value, then the saved profile. Environment overrides never
 overwrite the file. New files and atomic temporary files are mode `0600`, and
-the containing config directory is mode `0700`. Aishe rejects symlinked,
+the containing config directory is mode `0700`. AIShe rejects symlinked,
 non-regular, oversized, malformed, or group/world-readable credential files;
 `aishe doctor --fix` can repair permissions without printing or changing a key.
 
@@ -438,7 +438,7 @@ config, history, tasks, trust store, or other user data.
 
 Administrators can install a read-only constraint file at
 `/etc/aishe/policy.toml` on Linux or `/Library/Application
-Support/Aishe/policy.toml` on macOS. `AISHE_POLICY_FILE` is the explicit
+Support/AIShe/policy.toml` on macOS. `AISHE_POLICY_FILE` is the explicit
 deployment/test override. Policy schema 1 may require/disable OpenCode, specify
 a runtime mirror and approved hashes, require functional bubblewrap, disable
 host yolo or network, restrict provider hosts/models, require audit/redaction,

@@ -234,7 +234,7 @@ impl CommandCache {
 /// `None` means "use the normal path", not "this is natural language".
 pub fn fast_shell_line(line: &str) -> Option<String> {
     let trimmed = line.trim();
-    // `/name` is also Aishe's custom-command namespace. Loading the command
+    // `/name` is also AIShe's custom-command namespace. Loading the command
     // registry is intentionally outside this admission path, so only bypass
     // configuration for a leading slash when it names a real executable
     // absolute path. Unknown `/name` input must reach `one_shot`, which resolves

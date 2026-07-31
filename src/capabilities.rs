@@ -475,7 +475,7 @@ fn run_managed_live_checks(config: &Config) -> Result<(Check, Check, Check, Chec
         NetworkPolicy::parse(&config.backend.workspace_network)
             .context("backend.workspace_network must be allow or deny")?
     };
-    let session = client.create_session(&workspace, "Aishe setup validation", scope, network)?;
+    let session = client.create_session(&workspace, "AIShe setup validation", scope, network)?;
     let price = crate::usage::budget_price_for(config.active_model(), &config.pricing);
     let shell_id = format!("setup_{:032x}", rand::random::<u128>());
     let run = |mode: Mode, prompt: &str| -> Result<Vec<AgentEvent>> {
@@ -546,7 +546,7 @@ fn run_managed_live_checks(config: &Config) -> Result<(Check, Check, Check, Chec
             Check::pass("managed suggest contract returned valid structured output")
         }
         _ => Check::fail(
-            "managed suggest response did not satisfy Aishe's structured contract",
+            "managed suggest response did not satisfy AIShe's structured contract",
             Some(ErrorKind::UnsupportedFormat),
         ),
     };
@@ -588,11 +588,11 @@ fn run_managed_live_checks(config: &Config) -> Result<(Check, Check, Check, Chec
         )
     } else if completed_tools.is_empty() {
         Check::fail(
-            "managed agent did not complete the requested Aishe proxy-tool round trip",
+            "managed agent did not complete the requested AIShe proxy-tool round trip",
             Some(ErrorKind::UnsupportedTools),
         )
     } else {
-        Check::pass("managed Aishe proxy tool completed with credential isolation")
+        Check::pass("managed AIShe proxy tool completed with credential isolation")
     };
 
     Ok((text, structured, tools, streaming))

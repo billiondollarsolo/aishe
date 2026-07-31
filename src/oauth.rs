@@ -1,7 +1,7 @@
-//! Aishe-owned access to the private OAuth credential store used by the pinned
+//! AIShe-owned access to the private OAuth credential store used by the pinned
 //! OpenCode runtime.
 //!
-//! OAuth tokens are deliberately never copied into Aishe configuration,
+//! OAuth tokens are deliberately never copied into AIShe configuration,
 //! command arguments, audit records, or provider subprocess environments. The
 //! managed runtime reads and refreshes this private file directly.
 
@@ -104,7 +104,7 @@ impl OAuthStatus {
     }
 }
 
-/// Exact OpenCode store path inside Aishe's private backend layout.
+/// Exact OpenCode store path inside AIShe's private backend layout.
 pub fn path() -> Result<PathBuf> {
     Ok(crate::backend::supervisor::backend_root()?
         .join("opencode")
@@ -303,7 +303,7 @@ fn login_inner(
         profile.map(|(normalized, _)| normalized),
     );
     println!(
-        "Aishe OAuth credential for {provider} profile '{}' is ready",
+        "AIShe OAuth credential for {provider} profile '{}' is ready",
         profile.map(|(_, label)| label).unwrap_or("default")
     );
     Ok(0)
@@ -328,7 +328,7 @@ pub fn logout_profile(provider: OAuthProvider, profile: &str) -> Result<bool> {
 /// Optional plan-quota summary for subscription OAuth accounts.
 ///
 /// ChatGPT/Codex and SuperGrok do not currently expose a stable, documented
-/// remaining 5-hour / weekly window through the managed OpenCode path Aishe
+/// remaining 5-hour / weekly window through the managed OpenCode path AIShe
 /// uses. When a reliable signal appears, implement it here and surface it via
 /// the statusline `plan` item. Until then returns `None` so the UI shows a
 /// plain `plan` marker instead of inventing percentages.

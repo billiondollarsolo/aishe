@@ -148,11 +148,9 @@ fn run_stream(
     let mut messages = session.history();
     let mut user = format!("{ctx}\nUser request: {input}");
     if crate::product_help::looks_like_product_question(input) {
-        user.push_str("\n\n--- Aishe product reference (authoritative) ---\n");
-        user.push_str(crate::product_help::product_skill_body());
-        user.push_str(
-            "\n--- end product reference ---\nAnswer in prose with exact commands (no CMD:).",
-        );
+        user.push_str(&crate::product_help::suggest_product_reference(
+            "Answer in prose with exact commands (no CMD:).",
+        ));
     }
     messages.push(Msg::User(user));
 
@@ -379,11 +377,9 @@ pub fn request_strict(
     let mut messages = history;
     let mut user = format!("{ctx}\nUser request: {input}");
     if crate::product_help::looks_like_product_question(input) {
-        user.push_str("\n\n--- Aishe product reference (authoritative) ---\n");
-        user.push_str(crate::product_help::product_skill_body());
-        user.push_str(
-            "\n--- end product reference ---\nAnswer as type \"answer\" with exact commands.",
-        );
+        user.push_str(&crate::product_help::suggest_product_reference(
+            "Answer as type \"answer\" with exact commands.",
+        ));
     }
     messages.push(Msg::User(user));
 

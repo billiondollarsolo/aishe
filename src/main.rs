@@ -85,7 +85,14 @@ fn cancel_hook_budget() {
 }
 
 #[derive(Parser, Debug)]
-#[command(name = "aishe", version = VERSION, about = "A natural-language-aware shell")]
+#[command(
+    name = "aishe",
+    version = VERSION,
+    about = "AIShe (AI Shell): natural-language-aware shell",
+    after_help = "AIShe is AI Shell; the CLI package is aishe.\n\
+In the interactive shell: /connection switches account; /model lists models for the *active* account only.\n\
+See also: aishe help · in-shell /help accounts|models|session|config"
+)]
 struct Args {
     /// Override the interaction mode for this session.
     #[arg(long, value_parser = ["suggest", "auto", "yolo"])]
@@ -206,7 +213,7 @@ enum Cmd {
     /// Internal managed backend supervisor.
     #[command(name = "__backend-supervisor", hide = true)]
     BackendSupervisor,
-    /// Configure and verify Aishe interactively, or provision it with flags.
+    /// Configure and verify AIShe interactively, or provision it with flags.
     Setup(Box<SetupArgs>),
     /// Edit the current configuration through an interactive section hub.
     Settings {
@@ -214,7 +221,7 @@ enum Cmd {
         #[arg(long)]
         json: bool,
     },
-    /// Manage provider API keys and OAuth subscriptions in Aishe's private stores.
+    /// Manage provider API keys and OAuth subscriptions in AIShe's private stores.
     Auth {
         #[command(subcommand)]
         cmd: aishe::auth::AuthCommand,
@@ -254,7 +261,7 @@ enum Cmd {
         #[arg(long, value_name = "PATH")]
         bundle: Option<std::path::PathBuf>,
     },
-    /// Manage Aishe's private, compatibility-pinned agent runtime.
+    /// Manage AIShe's private, compatibility-pinned agent runtime.
     Backend {
         #[command(subcommand)]
         cmd: BackendCmd,
@@ -266,9 +273,9 @@ enum Cmd {
     },
     /// Print a roff man page for `aishe` (e.g. `aishe man > /usr/share/man/man1/aishe.1`).
     Man,
-    /// Remove Aishe components by category; user state is preserved by default.
+    /// Remove AIShe components by category; user state is preserved by default.
     Uninstall {
-        /// Remove the running Aishe binary plus known completion/man artifacts.
+        /// Remove the running AIShe binary plus known completion/man artifacts.
         #[arg(long)]
         binary: bool,
         /// Remove managed OpenCode runtimes and disposable runtime caches.
@@ -490,7 +497,7 @@ enum Cmd {
         #[arg(long)]
         json: bool,
     },
-    /// Start a fresh conversation in this Aishe shell without deleting the
+    /// Start a fresh conversation in this AIShe shell without deleting the
     /// previous managed session.
     Reset,
     /// Inspect or manage one durable AI task session.
@@ -660,7 +667,7 @@ enum BackendCmd {
         #[arg(long)]
         json: bool,
     },
-    /// Install the exact OpenCode runtime supported by this Aishe build.
+    /// Install the exact OpenCode runtime supported by this AIShe build.
     Install {
         /// Use a previously downloaded archive instead of the configured mirror.
         #[arg(long, value_name = "PATH")]
@@ -1014,9 +1021,9 @@ fn uninstall_command(
     println!(
         "{}",
         if dry_run {
-            "Aishe uninstall preview"
+            "AIShe uninstall preview"
         } else {
-            "Aishe uninstall plan"
+            "AIShe uninstall plan"
         }
     );
     println!("User state is preserved unless its category was explicitly selected.");
@@ -1066,7 +1073,7 @@ fn uninstall_command(
         use std::io::Write;
         if plan.selection.includes_user_state() {
             print!(
-                "\nSelected user state cannot be recovered by Aishe. Type `delete` to continue: "
+                "\nSelected user state cannot be recovered by AIShe. Type `delete` to continue: "
             );
         } else {
             print!("\nRemove the selected replaceable components? [y/N] ");
@@ -1088,7 +1095,7 @@ fn uninstall_command(
     let removed = plan.apply()?;
     println!("\nRemoved {} selected path(s).", removed.len());
     if plan.selection.includes_user_state() {
-        println!("Selected user state was permanently removed and is not recoverable by Aishe.");
+        println!("Selected user state was permanently removed and is not recoverable by AIShe.");
     } else {
         println!("Config, credentials, history, sessions, audit, and undo data were preserved.");
     }
@@ -1926,7 +1933,7 @@ fn ensure_yolo_acceptance(config: &Config) -> Result<()> {
     }
     if !std::io::stdin().is_terminal() || !std::io::stdout().is_terminal() {
         anyhow::bail!(
-            "yolo {:?} requires one interactive acceptance in each Aishe shell",
+            "yolo {:?} requires one interactive acceptance in each AIShe shell",
             scope
         );
     }
@@ -3028,6 +3035,15 @@ fn print_mcp_listing(mcp: &aishe::mcp::McpRegistry) {
     }
 }
 
+/// Shared policy for /connection and /model after Enter: only an explicit `y`
+/// promotes a shell-local pick to the durable default (`[y/N]`).
+fn confirm_promote_to_default(prompt: &str) -> bool {
+    matches!(
+        aishe::promptui::confirm(prompt, aishe::promptui::PROMOTE_DEFAULT_CONFIRM_DEFAULT),
+        Ok(Some(true))
+    )
+}
+
 fn print_help_command(topic: Option<&str>) {
     // Task-first product help is the single index; topics expand under
     // /help accounts|models|session|config. Only append custom commands once.
@@ -3500,16 +3516,16 @@ fn model_command(
                     .get(selected.active_connection_id())
                     .map(|c| c.settings.model.as_str())
                     .unwrap_or(durable.active_model());
-                if durable_model != selected.active_model() {
+                if aishe::promptui::should_offer_promote_to_default(
+                    save_default,
+                    durable_model != selected.active_model(),
+                ) {
                     // Default to No so Enter (shell-local) stays shell-local;
                     // only an explicit y promotes to durable default (d still skips this).
-                    if let Ok(Some(true)) = aishe::promptui::confirm(
-                        &format!(
-                            "Make model '{}' the default for this connection?",
-                            aishe::commands::display_safe(selected.active_model())
-                        ),
-                        false,
-                    ) {
+                    if confirm_promote_to_default(&format!(
+                        "Make model '{}' the default for this connection?",
+                        aishe::commands::display_safe(selected.active_model())
+                    )) {
                         save_default = true;
                     }
                 }
@@ -3709,20 +3725,20 @@ fn connection_pick_command(effective: &Config, value: Option<&str>, save_default
         // the choice differs from the saved default connection.
         if !save_default {
             if let Ok(Some(durable)) = Config::load_quiet() {
-                if durable.active_connection_id() != selected.active_connection_id() {
+                if aishe::promptui::should_offer_promote_to_default(
+                    save_default,
+                    durable.active_connection_id() != selected.active_connection_id(),
+                ) {
                     // Default to No: Enter is shell-local; y (or picker `d`) saves default.
-                    if let Ok(Some(true)) = aishe::promptui::confirm(
-                        &format!(
-                            "Make '{}' the default connection?",
-                            aishe::commands::display_safe(
-                                selected
-                                    .active_connection()
-                                    .map(|c| c.label.as_str())
-                                    .unwrap_or(selected.active_connection_id())
-                            )
-                        ),
-                        false,
-                    ) {
+                    if confirm_promote_to_default(&format!(
+                        "Make '{}' the default connection?",
+                        aishe::commands::display_safe(
+                            selected
+                                .active_connection()
+                                .map(|c| c.label.as_str())
+                                .unwrap_or(selected.active_connection_id())
+                        )
+                    )) {
                         save_default = true;
                     }
                 }
@@ -4440,7 +4456,7 @@ fn tasks_list_command(json_output: bool) -> u8 {
 
 fn reset_conversation(config: &Config) -> Result<u8> {
     if std::env::var_os("AISHE_SHELL_ID").is_none() {
-        anyhow::bail!("`aishe reset` must run inside an active Aishe shell");
+        anyhow::bail!("`aishe reset` must run inside an active AIShe shell");
     }
     let shell_id = aishe::agent::controller::current_shell_id()?;
     let workspace = std::env::current_dir().context("resolving the current workspace")?;
@@ -4624,7 +4640,7 @@ fn resume_managed_session(
         && (!std::io::stdin().is_terminal() || !std::io::stdout().is_terminal())
     {
         anyhow::bail!(
-            "`aishe resume {id}` needs an interactive terminal when run outside an active Aishe shell"
+            "`aishe resume {id}` needs an interactive terminal when run outside an active AIShe shell"
         );
     }
     let state = aishe::backend::supervisor::ensure_running(config)?;
@@ -4680,7 +4696,7 @@ fn resume_managed_session(
         println!("The next natural-language turn in this shell continues that conversation.");
         return Ok(0);
     }
-    println!("Opening Aishe; natural-language turns continue that conversation.");
+    println!("Opening AIShe; natural-language turns continue that conversation.");
     std::env::set_current_dir(&session.workspace).with_context(|| {
         format!(
             "entering managed session workspace {}",
@@ -4837,7 +4853,7 @@ fn history_paths(config: &Config) -> (std::path::PathBuf, std::path::PathBuf) {
     }
 }
 
-/// History destination for the direct `-c` fast path. A parent Aishe PTY
+/// History destination for the direct `-c` fast path. A parent AIShe PTY
 /// exports the exact active file; standalone invocations preserve the existing
 /// first-run, migration, malformed-config, and `share_history=false` contracts.
 /// No provider, plugin, MCP registry, or managed backend is constructed.

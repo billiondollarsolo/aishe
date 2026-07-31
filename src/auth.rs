@@ -10,7 +10,7 @@ use crate::credentials::{self, Source, Store};
 
 #[derive(Subcommand, Debug)]
 pub enum AuthCommand {
-    /// Sign in with a provider subscription through Aishe's private runtime.
+    /// Sign in with a provider subscription through AIShe's private runtime.
     Login {
         /// OAuth provider: openai or xai.
         #[arg(value_enum)]
@@ -28,7 +28,7 @@ pub enum AuthCommand {
         #[arg(long, conflicts_with = "headless")]
         browser: bool,
     },
-    /// Remove one provider OAuth credential from Aishe's private runtime.
+    /// Remove one provider OAuth credential from AIShe's private runtime.
     Logout {
         /// OAuth provider: openai or xai.
         #[arg(value_enum)]
@@ -273,7 +273,7 @@ pub fn run(command: &AuthCommand) -> Result<u8> {
                 }
                 let confirmed = crate::promptui::confirm(
                     &format!(
-                        "Remove Aishe OAuth credential for '{}/{}'?",
+                        "Remove AIShe OAuth credential for '{}/{}'?",
                         provider,
                         profile.as_deref().unwrap_or("default")
                     ),
@@ -291,7 +291,7 @@ pub fn run(command: &AuthCommand) -> Result<u8> {
             };
             if removed {
                 println!(
-                    "Aishe OAuth credential for '{}/{}' removed",
+                    "AIShe OAuth credential for '{}/{}' removed",
                     provider,
                     profile.as_deref().unwrap_or("default")
                 );
@@ -577,6 +577,67 @@ pub fn run(command: &AuthCommand) -> Result<u8> {
     }
 }
 
+/// Stable list of connection ids that already bind this OAuth provider+profile.
+/// Sorted for deterministic UX (no silent first-only drop when many match).
+pub(crate) fn matching_oauth_connection_ids(
+    config: &Config,
+    provider: crate::oauth::OAuthProvider,
+    profile: &str,
+) -> Vec<String> {
+    let mut ids: Vec<String> = config
+        .connections
+        .iter()
+        .filter(|(_, connection)| {
+            matches!(
+                &connection.auth,
+                crate::config::ConnectionAuth::OAuth { profile: p } if p == profile
+            ) && crate::oauth::OAuthProvider::from_base_url(&connection.settings.base_url)
+                == Some(provider)
+        })
+        .map(|(id, _)| id.clone())
+        .collect();
+    ids.sort();
+    ids
+}
+
+/// Force the connection label to the canonical OAuth brand (plan default:
+/// always sync on login so Codex/Grok brands stay authoritative).
+pub(crate) fn apply_canonical_oauth_label(
+    connection: &mut crate::config::ConnectionConfig,
+    provider: crate::oauth::OAuthProvider,
+    profile: &str,
+) -> bool {
+    let label = crate::config::oauth_connection_label(provider, profile);
+    if connection.label == label {
+        return false;
+    }
+    connection.label = label;
+    true
+}
+
+/// Pure decision: after login, either create a new connection id, or list
+/// existing matches (never create a duplicate when any match exists).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum OAuthEnsurePlan {
+    Create { id: String },
+    Existing { ids: Vec<String> },
+}
+
+pub(crate) fn plan_oauth_ensure(
+    config: &Config,
+    provider: crate::oauth::OAuthProvider,
+    profile: &str,
+) -> Result<OAuthEnsurePlan> {
+    let existing = matching_oauth_connection_ids(config, provider, profile);
+    if existing.is_empty() {
+        Ok(OAuthEnsurePlan::Create {
+            id: unique_oauth_connection_id(config, provider, profile)?,
+        })
+    } else {
+        Ok(OAuthEnsurePlan::Existing { ids: existing })
+    }
+}
+
 /// After a successful bare `auth login`, ensure a selectable connection binds
 /// that OAuth provider/profile so `/connection` and the statusline can use it.
 fn ensure_oauth_connection_after_login(
@@ -590,80 +651,91 @@ fn ensure_oauth_connection_after_login(
         None => Config::load_or_init()?,
     };
 
-    // Already bound: any connection with this OAuth endpoint + profile.
-    let existing: Vec<String> = config
-        .connections
-        .iter()
-        .filter(|(_, connection)| {
-            matches!(
-                &connection.auth,
-                crate::config::ConnectionAuth::OAuth { profile: p } if p == &profile
-            ) && crate::oauth::OAuthProvider::from_base_url(&connection.settings.base_url)
-                == Some(provider)
-        })
-        .map(|(id, _)| id.clone())
-        .collect();
-    if let Some(id) = existing.first() {
-        println!(
-            "connection '{}' already uses {} — select it with `/connection` or `aishe connection use {}`",
-            crate::commands::display_safe(id),
-            crate::commands::display_safe(&label),
-            crate::commands::display_safe(id)
-        );
-        // Refresh brand label if still a generic OpenAI/xAI name.
-        if let Some(connection) = config.connections.get_mut(id) {
-            if connection.label == "OpenAI"
-                || connection.label == "xAI"
-                || connection.label == id.as_str()
-            {
-                connection.label = label.clone();
+    match plan_oauth_ensure(&config, provider, &profile)? {
+        OAuthEnsurePlan::Existing { ids } => {
+            if ids.len() == 1 {
+                let id = &ids[0];
+                println!(
+                    "connection '{}' already uses {} — select it with `/connection` or `aishe connection use {}`",
+                    crate::commands::display_safe(id),
+                    crate::commands::display_safe(&label),
+                    crate::commands::display_safe(id)
+                );
+            } else {
+                println!(
+                    "{} connections already use {} OAuth · {}:",
+                    ids.len(),
+                    provider,
+                    crate::commands::display_safe(&profile)
+                );
+                for id in &ids {
+                    let shown = config
+                        .connections
+                        .get(id)
+                        .map(|c| c.label.as_str())
+                        .unwrap_or(id.as_str());
+                    println!(
+                        "  {} ({})",
+                        crate::commands::display_safe(id),
+                        crate::commands::display_safe(shown)
+                    );
+                }
+                println!(
+                    "pick one with `/connection` or `aishe connection use ID` (no new connection created)"
+                );
+            }
+            let mut labels_changed = false;
+            for id in &ids {
+                if let Some(connection) = config.connections.get_mut(id) {
+                    if apply_canonical_oauth_label(connection, provider, &profile) {
+                        labels_changed = true;
+                    }
+                }
+            }
+            if labels_changed {
                 config.validate_connections()?;
                 config.save()?;
             }
+            // Offer the first sorted match; operator can still switch via /connection.
+            offer_use_connection(&mut config, &ids[0])?;
+            Ok(())
         }
-        offer_use_connection(&mut config, id)?;
-        return Ok(());
+        OAuthEnsurePlan::Create { id } => {
+            let service_key = provider.id(); // openai | xai
+            let mut settings = config.providers.openai.clone();
+            if let Some(service) = crate::provider_catalog::find(service_key) {
+                crate::provider_catalog::apply(service, &mut settings);
+            }
+            let auth = crate::config::ConnectionAuth::OAuth {
+                profile: profile.clone(),
+            };
+            config.connections.insert(
+                id.clone(),
+                crate::config::ConnectionConfig {
+                    provider: service_key.into(),
+                    label: label.clone(),
+                    settings,
+                    auth,
+                    reasoning_effort: None,
+                },
+            );
+            config.validate_connections()?;
+            config.save()?;
+            println!(
+                "created connection '{}' ({}) bound to {} OAuth · {}",
+                crate::commands::display_safe(&id),
+                crate::commands::display_safe(&label),
+                provider,
+                crate::commands::display_safe(&profile)
+            );
+            println!(
+                "select it: /connection  or  aishe connection use {}",
+                crate::commands::display_safe(&id)
+            );
+            offer_use_connection(&mut config, &id)?;
+            Ok(())
+        }
     }
-
-    let id = unique_oauth_connection_id(&config, provider, &profile)?;
-    let service_key = provider.id(); // openai | xai
-    let mut settings = if service_key == "xai" {
-        // xAI lives in the openai-compatible settings block until applied.
-        config.providers.openai.clone()
-    } else {
-        config.providers.openai.clone()
-    };
-    if let Some(service) = crate::provider_catalog::find(service_key) {
-        crate::provider_catalog::apply(service, &mut settings);
-    }
-    let auth = crate::config::ConnectionAuth::OAuth {
-        profile: profile.clone(),
-    };
-    config.connections.insert(
-        id.clone(),
-        crate::config::ConnectionConfig {
-            provider: service_key.into(),
-            label: label.clone(),
-            settings,
-            auth,
-            reasoning_effort: None,
-        },
-    );
-    config.validate_connections()?;
-    config.save()?;
-    println!(
-        "created connection '{}' ({}) bound to {} OAuth · {}",
-        crate::commands::display_safe(&id),
-        crate::commands::display_safe(&label),
-        provider,
-        crate::commands::display_safe(&profile)
-    );
-    println!(
-        "select it: /connection  or  aishe connection use {}",
-        crate::commands::display_safe(&id)
-    );
-    offer_use_connection(&mut config, &id)?;
-    Ok(())
 }
 
 fn unique_oauth_connection_id(
@@ -715,4 +787,123 @@ fn offer_use_connection(config: &mut Config, id: &str) -> Result<()> {
         crate::commands::display_safe(config.active_model())
     );
     Ok(())
+}
+
+#[cfg(test)]
+mod oauth_ensure_tests {
+    use super::*;
+    use crate::config::{ConnectionAuth, ConnectionConfig, ProviderConfig};
+    use crate::oauth::OAuthProvider;
+
+    fn oauth_conn(label: &str, profile: &str, base_url: &str) -> ConnectionConfig {
+        ConnectionConfig {
+            provider: "openai".into(),
+            label: label.into(),
+            settings: ProviderConfig {
+                base_url: base_url.into(),
+                model: "gpt-test".into(),
+                api_key_env: "OPENAI_API_KEY".into(),
+                credential: "default".into(),
+                transport: "responses".into(),
+                auth_required: Some(true),
+            },
+            auth: ConnectionAuth::OAuth {
+                profile: profile.into(),
+            },
+            reasoning_effort: None,
+        }
+    }
+
+    #[test]
+    fn plan_zero_matches_creates_id() {
+        let config = Config::default();
+        // default config may already have openai api connection — clear oauth matches
+        let mut config = config;
+        config.connections.clear();
+        let plan = plan_oauth_ensure(&config, OAuthProvider::Openai, "work").unwrap();
+        match plan {
+            OAuthEnsurePlan::Create { id } => {
+                assert_eq!(id, "openai-work");
+            }
+            OAuthEnsurePlan::Existing { ids } => panic!("expected create, got {ids:?}"),
+        }
+    }
+
+    #[test]
+    fn plan_one_match_does_not_create() {
+        let mut config = Config::default();
+        config.connections.clear();
+        config.connections.insert(
+            "openai-work".into(),
+            oauth_conn("OpenAI", "work", "https://api.openai.com"),
+        );
+        let plan = plan_oauth_ensure(&config, OAuthProvider::Openai, "work").unwrap();
+        assert_eq!(
+            plan,
+            OAuthEnsurePlan::Existing {
+                ids: vec!["openai-work".into()]
+            }
+        );
+    }
+
+    #[test]
+    fn plan_many_matches_lists_all_sorted_no_create() {
+        let mut config = Config::default();
+        config.connections.clear();
+        config.connections.insert(
+            "z-work".into(),
+            oauth_conn("legacy-z", "work", "https://api.openai.com"),
+        );
+        config.connections.insert(
+            "a-work".into(),
+            oauth_conn("legacy-a", "work", "https://api.openai.com"),
+        );
+        let plan = plan_oauth_ensure(&config, OAuthProvider::Openai, "work").unwrap();
+        assert_eq!(
+            plan,
+            OAuthEnsurePlan::Existing {
+                ids: vec!["a-work".into(), "z-work".into()]
+            }
+        );
+    }
+
+    #[test]
+    fn apply_canonical_label_overwrites_stale() {
+        let mut conn = oauth_conn("OpenAI", "work", "https://api.openai.com");
+        assert!(apply_canonical_oauth_label(
+            &mut conn,
+            OAuthProvider::Openai,
+            "work"
+        ));
+        assert_eq!(
+            conn.label,
+            crate::config::oauth_connection_label(OAuthProvider::Openai, "work")
+        );
+        // second apply is a no-op
+        assert!(!apply_canonical_oauth_label(
+            &mut conn,
+            OAuthProvider::Openai,
+            "work"
+        ));
+    }
+
+    #[test]
+    fn matching_ignores_different_profile_or_provider() {
+        let mut config = Config::default();
+        config.connections.clear();
+        config.connections.insert(
+            "openai-work".into(),
+            oauth_conn("x", "work", "https://api.openai.com"),
+        );
+        config.connections.insert(
+            "openai-home".into(),
+            oauth_conn("y", "home", "https://api.openai.com"),
+        );
+        config.connections.insert(
+            "xai-work".into(),
+            oauth_conn("z", "work", "https://api.x.ai"),
+        );
+        let ids = matching_oauth_connection_ids(&config, OAuthProvider::Openai, "work");
+        assert_eq!(ids, vec!["openai-work".to_string()]);
+    }
 }

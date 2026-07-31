@@ -17,16 +17,20 @@ const WARNING: &str = "1;33";
 const SUCCESS: &str = "1;32";
 const ERROR: &str = "1;31";
 
-/// Monochrome terminal approximation of the AIShe glasses mark + wordmark.
-/// ASCII only: terminals never need an emoji font or colored pictograph.
-/// Branding: **AIShe** = **AI Shell** (CLI package name remains `aishe`).
-pub const ASCII_LOGO: &str = r#"   \     /
-    \___/
-   /     \
-  | o   o |
-   \__v__/
-     AIShe
-    AI Shell"#;
+/// Monochrome terminal mark: glasses silhouette + wordmark.
+/// Uses Unicode half-blocks (`█▀▄`) so the silhouette tracks the real logo;
+/// still plain text (no images/emoji fonts). Branding: **AIShe** = **AI Shell**
+/// (CLI package name remains `aishe`).
+pub const ASCII_LOGO: &str = r#"   ▄▄▄        ▄▄▄
+  ████        ████
+   ▀██        ▄█▀
+    ██▄      ▄██
+ ▄████████████████▄
+ ██      ██      ██
+ ██      ██      ██
+  ▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
+        AIShe
+       AI Shell"#;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum MenuResult {
@@ -809,9 +813,32 @@ pub fn confirm(label: &str, default: bool) -> Result<Option<bool>> {
     }
 }
 
+/// Policy for post-picker “make this the default?”: default answer is **No**.
+pub const PROMOTE_DEFAULT_CONFIRM_DEFAULT: bool = false;
+
+/// Offer the promote-to-default prompt only when the pick is still shell-local
+/// and differs from durable configuration.
+pub fn should_offer_promote_to_default(
+    already_save_default: bool,
+    differs_from_durable: bool,
+) -> bool {
+    !already_save_default && differs_from_durable
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn promote_default_policy_is_no_and_gate_works() {
+        // Policy constant must stay default-No ([y/N]) for shell-local Enter.
+        const {
+            assert!(!PROMOTE_DEFAULT_CONFIRM_DEFAULT);
+        }
+        assert!(!should_offer_promote_to_default(true, true));
+        assert!(!should_offer_promote_to_default(false, false));
+        assert!(should_offer_promote_to_default(false, true));
+    }
 
     #[test]
     fn menu_result_is_stable_for_state_machines() {

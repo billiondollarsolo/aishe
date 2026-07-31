@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-/// Aishe-owned interaction modes. Backends may request work but never elevate
+/// AIShe-owned interaction modes. Backends may request work but never elevate
 /// this value.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -21,7 +21,7 @@ impl Mode {
     }
 }
 
-/// Authority accepted by the user for this live Aishe shell. Acceptance is
+/// Authority accepted by the user for this live AIShe shell. Acceptance is
 /// intentionally not serializable as a durable grant.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

@@ -145,7 +145,7 @@ impl AgentBackend for OpenCodeBackend {
             }
             let session = self.client.create_session(
                 &workspace,
-                "Aishe session",
+                "AIShe session",
                 request.scope,
                 request.network,
             )?;

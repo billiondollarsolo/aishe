@@ -280,7 +280,7 @@ pub fn path() -> PathBuf {
         return PathBuf::from(value);
     }
     if cfg!(target_os = "macos") {
-        PathBuf::from("/Library/Application Support/Aishe/policy.toml")
+        PathBuf::from("/Library/Application Support/AIShe/policy.toml")
     } else {
         PathBuf::from("/etc/aishe/policy.toml")
     }

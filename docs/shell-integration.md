@@ -51,7 +51,7 @@ fast-syntax-highlighting, and either plugin automatically takes precedence. Set
 
 ### Primary slash commands
 
-Inside an Aishe zsh session, `/help` is task-first (`/help accounts`,
+Inside an AIShe zsh session, `/help` is task-first (`/help accounts`,
 `/help models`, `/help session`, `/help config`). Account and model are
 **separate**:
 
@@ -68,7 +68,7 @@ Inside an Aishe zsh session, `/help` is task-first (`/help accounts`,
 Picker navigation: ↑/↓ or j/k, type to filter, Esc cancels. Full reference:
 [Commands](commands.md#primary-slash-commands). The shell handoff writes
 connection, model, and reasoning together; a main-shell prompt hook applies it
-even when the branded Aishe prompt is disabled.
+even when the branded AIShe prompt is disabled.
 ### force-NL keybinding
 
 Sometimes your input is a valid command but you mean it as natural language.
@@ -174,9 +174,9 @@ anything you want available there in `.aishrc`.
 In the zsh-PTY shell and the native hook, history, `Ctrl-R` search, history
 expansion (`!!`, `!$`, ...), and tab completion use your real shell and remain
 compatible with its plugins. If your zsh/Oh My Zsh configuration sets
-`HISTFILE`, Aishe preserves it unchanged.
+`HISTFILE`, AIShe preserves it unchanged.
 
-Separately, Aishe keeps its own timestamped history log at
+Separately, AIShe keeps its own timestamped history log at
 `~/.local/share/aishe/history.ext` (zsh `EXTENDED_HISTORY` format). The
 interactive zsh front-end records each command there via a `preexec` hook, and
 the `-c`/hook paths record through aishe's executor, so `aishe history` and
@@ -186,11 +186,11 @@ exit so it can't grow without bound. `share_history` (default on) shares it
 across sessions; turn it off for per-session (pid-suffixed) files.
 
 On a minimal account where zsh starts with `HISTFILE` unset (and typically
-`SAVEHIST=0`), the PTY wrapper adopts this same Aishe log as zsh's native history
+`SAVEHIST=0`), the PTY wrapper adopts this same AIShe log as zsh's native history
 file and enables `EXTENDED_HISTORY`, `APPEND_HISTORY`, and—when
 `share_history=true`—`SHARE_HISTORY`. Native Up-arrow, `Ctrl-R`, and history
 expansion therefore survive shell restarts and exchange entries with concurrent
-Aishe sessions. The log lives in Aishe's user data directory; binary/managed
+AIShe sessions. The log lives in AIShe's user data directory; binary/managed
 runtime installers and package upgrades do not remove it.
 
 ## Branded prompt status line

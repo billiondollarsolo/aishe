@@ -487,7 +487,7 @@ fn run_interactive(options: Options) -> Result<Outcome> {
     promptui::brand();
     promptui::header(
         "aishe setup",
-        "Configure, verify, and safely apply your Aishe environment.",
+        "Configure, verify, and safely apply your AIShe environment.",
         "Active config is not changed until the final Apply step.",
     );
 
@@ -565,7 +565,7 @@ fn run_interactive(options: Options) -> Result<Outcome> {
                     "Pause and resume later".to_string(),
                 ];
                 match promptui::menu(
-                    "Aishe is ready to verify this environment",
+                    "AIShe is ready to verify this environment",
                     &choices,
                     0,
                     true,
@@ -586,7 +586,7 @@ fn run_interactive(options: Options) -> Result<Outcome> {
                     continue;
                 }
                 promptui::warning(
-                    "zsh is missing. Aishe can still provide non-interactive commands and a bash hook, but `aishe` cannot launch its native interactive front-end.",
+                    "zsh is missing. AIShe can still provide non-interactive commands and a bash hook, but `aishe` cannot launch its native interactive front-end.",
                 );
                 let mut choices = vec!["Continue in shell-only mode".to_string()];
                 if cfg!(target_os = "linux") {
@@ -599,7 +599,7 @@ fn run_interactive(options: Options) -> Result<Outcome> {
                     &choices,
                     0,
                     true,
-                    "System package installation is an immediate side effect. Aishe shows and executes an argv plan without `sh -c`.",
+                    "System package installation is an immediate side effect. AIShe shows and executes an argv plan without `sh -c`.",
                 )? {
                     MenuResult::Selected(0) if choices.len() == 2 => {
                         let plan = crate::dependencies::zsh_install_plan()?;
@@ -654,7 +654,7 @@ fn run_interactive(options: Options) -> Result<Outcome> {
                             &choices,
                             0,
                             true,
-                            "Runtime installation writes only Aishe's private versioned runtime directory. It never changes config, credentials, or history.",
+                            "Runtime installation writes only AIShe's private versioned runtime directory. It never changes config, credentials, or history.",
                         )? {
                             MenuResult::Selected(index @ 0..=2) => {
                                 let source = match index {
@@ -916,7 +916,7 @@ fn run_interactive(options: Options) -> Result<Outcome> {
                 {
                     if let Some(oauth_provider) = crate::oauth::active_provider(&draft.config)? {
                         promptui::success(&format!(
-                            "Using existing {oauth_provider} OAuth credential from Aishe's private runtime store"
+                            "Using existing {oauth_provider} OAuth credential from AIShe's private runtime store"
                         ));
                         pending_credential = None;
                         advance(&mut draft)?;
@@ -968,7 +968,7 @@ fn run_interactive(options: Options) -> Result<Outcome> {
                     &choices,
                     default_credential,
                     true,
-                    "Saved keys live in a private credentials file; subscription OAuth uses Aishe's private runtime store; environment variables remain available for automation and overrides.",
+                    "Saved keys live in a private credentials file; subscription OAuth uses AIShe's private runtime store; environment variables remain available for automation and overrides.",
                 )? {
                     MenuResult::Selected(index) if Some(index) == existing_index => {
                         pending_credential = None;
@@ -1280,7 +1280,7 @@ fn run_interactive(options: Options) -> Result<Outcome> {
                     &choices,
                     0,
                     true,
-                    "Aishe will never invent a rate; unknown pricing disables cost budgets.",
+                    "AIShe will never invent a rate; unknown pricing disables cost budgets.",
                 )? {
                     MenuResult::Selected(0) => {
                         let input = match prompt_rate("Input price")? {
@@ -1319,7 +1319,7 @@ fn run_interactive(options: Options) -> Result<Outcome> {
                     &output_choices,
                     output_default,
                     true,
-                    "Focus is the clean default. Press Ctrl-O in Aishe to toggle full tool details for the current shell; raw chain-of-thought is never shown.",
+                    "Focus is the clean default. Press Ctrl-O in AIShe to toggle full tool details for the current shell; raw chain-of-thought is never shown.",
                 )? {
                     MenuResult::Selected(0) => draft.config.backend.output = "focus".into(),
                     MenuResult::Selected(1) => draft.config.backend.output = "compact".into(),
@@ -1521,7 +1521,7 @@ fn run_interactive(options: Options) -> Result<Outcome> {
                 } else {
                     println!();
                     println!("  Run: aishe");
-                    println!("  Inside Aishe:");
+                    println!("  Inside AIShe:");
                     println!("    git status                 runs in zsh");
                     println!("    explain this repository    asks the agent");
                     println!();

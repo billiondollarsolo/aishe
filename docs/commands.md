@@ -72,7 +72,7 @@ aishe backend logs --tail 200
 aishe backend gc --dry-run
 ```
 
-They always operate on the exact OpenCode version embedded in this Aishe build.
+They always operate on the exact OpenCode version embedded in this AIShe build.
 `--from` supports offline installation but does not bypass checksum, archive
 size, executable-version, or license/notices verification.
 `backend status --json` is schema-versioned and separates runtime state from a
@@ -108,7 +108,7 @@ aishe auth path
 When the profile is omitted, the active provider's user-config profile is used.
 Project overlays never choose a credential-writing target.
 
-OpenAI and xAI subscription OAuth uses Aishe's isolated, pinned OpenCode
+OpenAI and xAI subscription OAuth uses AIShe's isolated, pinned OpenCode
 runtime and complete profile-specific private HOME/XDG roots:
 
 ```sh
@@ -141,7 +141,7 @@ same-provider connections may remain active concurrently up to
 
 ## Primary slash commands
 
-The standalone Aishe shell prints a one-line `/help` hint at startup. `/help`
+The standalone AIShe shell prints a one-line `/help` hint at startup. `/help`
 is **task-first** (not a raw dump of every flag). Topics:
 
 ```text
@@ -177,7 +177,7 @@ is **task-first** (not a raw dump of every flag). Topics:
 | `/model` | **Model** on the current connection only | Login / credential / other accounts |
 
 This split is intentional: picking a model must never quietly switch OAuth
-profiles. After `aishe auth login openai|xai [--profile …]`, Aishe creates a
+profiles. After `aishe auth login openai|xai [--profile …]`, AIShe creates a
 matching connection when none exists (e.g. `xai-work` / **Grok - OAuth · work**)
 so `/connection` lists it immediately.
 
@@ -252,7 +252,7 @@ to its original state. The journal lives at `undo.jsonl` in aishe's
 `aishe provider` show or save durable settings. Account and model selection is
 shell-local by default and is saved only with `d`, `--default`, or
 `aishe connection use ID --default`. Reasoning follows the same rule inside an
-Aishe shell: `/reasoning high` is local and `aishe reasoning high --default`
+AIShe shell: `/reasoning high` is local and `aishe reasoning high --default`
 saves it for the selected connection. The durable file is
 `~/.config/aishe/config.toml` on Linux and `~/Library/Application
 Support/aishe/config.toml` on macOS — `aishe doctor` prints the resolved path;
@@ -289,9 +289,9 @@ prompts; auto remains action-gated.
 
 Each shell/workspace/connection/model/mode/scope/network tuple maps to one
 OpenCode conversation, so follow-ups keep
-context across prompt processes, supervisor restarts, and Aishe upgrades.
+context across prompt processes, supervisor restarts, and AIShe upgrades.
 `aishe sessions` presents those mappings together with legacy native task
-records. `aishe resume ses_...` inside Aishe rebinds the live shell. When run
+records. `aishe resume ses_...` inside AIShe rebinds the live shell. When run
 from a normal TTY, it changes to the recorded workspace and launches the real
 zsh already bound to that conversation. It never blindly repeats an effect with
 an unknown outcome.

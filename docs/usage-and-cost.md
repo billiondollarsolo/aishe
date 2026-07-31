@@ -68,7 +68,7 @@ aishe -c "/usage"
 When audit logging is enabled, `aishe usage --by
 model|connection|day|session` reads persisted totals. Add `--connection ID` to
 filter them. The prompt/statusline totals follow the active connection inside
-the live Aishe shell; the exit summary remains the whole shell session.
+the live AIShe shell; the exit summary remains the whole shell session.
 
 ## How cost is estimated
 
@@ -114,7 +114,7 @@ budget_usd = 0.50      # 0 = unlimited
 
 Behavior:
 
-- The trusted plugin must obtain Aishe authorization before every managed
+- The trusted plugin must obtain AIShe authorization before every managed
   provider turn. The bridge reserves the maximum estimated turn cost, caps
   output tokens to the remaining amount, and denies the request before it is
   sent when no safe allowance remains.

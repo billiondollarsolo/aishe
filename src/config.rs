@@ -101,7 +101,7 @@ pub struct BackendConfig {
     /// Compatibility backend used only before an OpenCode prompt is admitted.
     #[serde(default = "default_backend_fallback")]
     pub fallback: String,
-    /// Install and launch Aishe's compatibility-pinned private runtime.
+    /// Install and launch AIShe's compatibility-pinned private runtime.
     #[serde(default = "default_true")]
     pub managed: bool,
     /// Stop an idle per-user supervisor after this many seconds.
@@ -300,8 +300,8 @@ pub struct AisheConfig {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub cdpath: Vec<String>,
     /// Share one timestamped history across concurrent and future sessions. When
-    /// Aishe supplies the native-zsh history fallback, this also enables zsh
-    /// `SHARE_HISTORY`. When off, Aishe history is per-session (pid-suffixed
+    /// AIShe supplies the native-zsh history fallback, this also enables zsh
+    /// `SHARE_HISTORY`. When off, AIShe history is per-session (pid-suffixed
     /// files). On by default.
     #[serde(default = "default_true")]
     pub share_history: bool,
@@ -376,7 +376,7 @@ impl Default for Providers {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ProviderConfig {
     pub base_url: String,
-    /// Named entry in Aishe's private credentials file. An empty value (as
+    /// Named entry in AIShe's private credentials file. An empty value (as
     /// found in schema-2 configs) is derived from `api_key_env` in memory.
     #[serde(default)]
     pub credential: String,
@@ -997,7 +997,7 @@ impl Config {
         let version = source_schema_version(&text)?;
         if version > CONFIG_SCHEMA_VERSION {
             anyhow::bail!(
-                "config schema {version} is newer than this Aishe supports \
+                "config schema {version} is newer than this AIShe supports \
                  ({CONFIG_SCHEMA_VERSION})"
             );
         }
@@ -1031,8 +1031,8 @@ impl Config {
                 let source_version = source_schema_version(&text)?;
                 if source_version > CONFIG_SCHEMA_VERSION {
                     anyhow::bail!(
-                        "config schema {source_version} is newer than this Aishe supports \
-                         ({CONFIG_SCHEMA_VERSION}); upgrade Aishe before using this file"
+                        "config schema {source_version} is newer than this AIShe supports \
+                         ({CONFIG_SCHEMA_VERSION}); upgrade AIShe before using this file"
                     );
                 }
                 if source_version < CONFIG_SCHEMA_VERSION {

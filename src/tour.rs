@@ -120,9 +120,9 @@ fn print_lesson(index: usize, workspace: &Path) -> Result<()> {
             println!(
                 "     Type `what is using the most disk space` or prefix any request with `?`."
             );
-            println!("     Aishe changes the input color when it recognizes the AI route.");
+            println!("     AIShe changes the input color when it recognizes the AI route.");
             println!(
-                "     AI turns use Aishe's private, pinned agent engine; no separate app or TUI opens."
+                "     AI turns use AIShe's private, pinned agent engine; no separate app or TUI opens."
             );
             println!("     Follow-ups in this shell and workspace share one durable conversation.");
             let verified = Config::load_quiet()
@@ -144,7 +144,7 @@ fn print_lesson(index: usize, workspace: &Path) -> Result<()> {
             println!(
                 "     Suggestions are placed on the command line for review; edit or cancel them."
             );
-            println!("     Alt-Enter forces the current buffer through Aishe.");
+            println!("     Alt-Enter forces the current buffer through AIShe.");
             println!(
                 "     The statusline can show connection/auth/model identity, selection scope, context tokens, call cost, and connection cost."
             );
@@ -155,7 +155,7 @@ fn print_lesson(index: usize, workspace: &Path) -> Result<()> {
         3 => {
             println!("\n  4. Recover from failures");
             println!("     After a failed command, press Ctrl-X Ctrl-F to request a reviewed fix.");
-            println!("     Aishe never reruns a state-changing command merely to diagnose it.");
+            println!("     AIShe never reruns a state-changing command merely to diagnose it.");
             println!(
                 "     `aishe sessions` lists managed conversations; `aishe resume ses_…` reconnects one."
             );
@@ -165,7 +165,7 @@ fn print_lesson(index: usize, workspace: &Path) -> Result<()> {
             prove_undo(workspace)?;
             println!("     Created a tour-only file, journaled it, and proved undo removed it.");
             println!(
-                "     Agent file and command tools stay behind Aishe policy, audit, scope, and undo controls."
+                "     Agent file and command tools stay behind AIShe policy, audit, scope, and undo controls."
             );
         }
         5 => {

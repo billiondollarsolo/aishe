@@ -64,7 +64,7 @@ struct SupervisorBootstrap {
 
 pub fn backend_root() -> Result<PathBuf> {
     Ok(crate::config::data_root()
-        .context("cannot resolve Aishe data directory")?
+        .context("cannot resolve AIShe data directory")?
         .join("aishe")
         .join("backend"))
 }
@@ -106,7 +106,7 @@ pub fn prepare_layout() -> Result<PreparedRuntime> {
     }
 
     // OpenCode 1.18.9 starts a background SDK installation for every config
-    // directory even when a local plugin has no imports. The trusted Aishe
+    // directory even when a local plugin has no imports. The trusted AIShe
     // bridge deliberately uses its pinned JSON-Schema compatibility path and
     // needs no SDK. Seed the exact lock shape inspected by that pinned loader,
     // plus an empty node_modules directory, so cold startup is deterministic
@@ -857,7 +857,7 @@ fn spawn_supervisor(bootstrap: &SupervisorBootstrap) -> Result<()> {
     let log_path = root.join("supervisor.log");
     rotate_log(&log_path, 4 * 1024 * 1024)?;
     let log = private_log(&log_path)?;
-    let executable = std::env::current_exe().context("resolving the Aishe executable")?;
+    let executable = std::env::current_exe().context("resolving the AIShe executable")?;
     let mut command = Command::new(executable);
     command
         .arg("__backend-supervisor")
@@ -867,7 +867,7 @@ fn spawn_supervisor(bootstrap: &SupervisorBootstrap) -> Result<()> {
         .env_clear()
         .env("AISHE_SUPERVISOR_KEY", &bootstrap.provider.launch_identity);
     copy_safe_environment(&mut command);
-    // Preserve only Aishe-owned path overrides needed to find the same private
+    // Preserve only AIShe-owned path overrides needed to find the same private
     // state/runtime after the detached process clears its environment. This is
     // also what makes centrally pre-provisioned runtime directories usable in
     // CI and managed enterprise images.

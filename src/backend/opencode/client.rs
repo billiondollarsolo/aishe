@@ -1158,7 +1158,7 @@ mod tests {
             let request = read_test_request(&mut prompt);
             assert!(request.starts_with("POST /session/ses_submit/prompt_async?directory="));
             // Drop the connection after reading the complete POST. The server
-            // may have admitted it, so Aishe must never classify this as safe
+            // may have admitted it, so AIShe must never classify this as safe
             // for automatic replay through a fallback provider.
         });
         let after_post = match test_client(port).submit(&request) {

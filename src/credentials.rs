@@ -274,7 +274,7 @@ impl Store {
         })?;
         if store.version != CREDENTIALS_SCHEMA_VERSION {
             anyhow::bail!(
-                "credentials schema {} is unsupported (this Aishe supports {})",
+                "credentials schema {} is unsupported (this AIShe supports {})",
                 store.version,
                 CREDENTIALS_SCHEMA_VERSION
             );
@@ -303,7 +303,7 @@ impl Store {
         let parent_existed = parent.exists();
         std::fs::create_dir_all(parent)
             .with_context(|| format!("creating credentials directory {}", parent.display()))?;
-        // Always protect Aishe's own config directory. For an explicit
+        // Always protect AIShe's own config directory. For an explicit
         // AISHE_CREDENTIALS_FILE, protect a directory we created but do not
         // chmod an existing mount/shared parent behind the user's back.
         let explicit_override =
