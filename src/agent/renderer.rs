@@ -451,13 +451,19 @@ fn tool_label(name: &str, arguments: &serde_json::Value) -> String {
     // therefore carry the provider-facing wrapper, while native/fallback tests
     // and completed bridge calls can still contain the direct argument shape.
     let arguments = arguments.get("input").unwrap_or(arguments);
+    let name = tool_name(name);
+    if let Some(command) = arguments.get("command").and_then(serde_json::Value::as_str) {
+        // Multi-line scripts: first line + (+N lines), never \x0a walls.
+        return format!(
+            "{name}  {}",
+            crate::commands::command_status_summary(command, 180)
+        );
+    }
     let detail = arguments
-        .get("command")
-        .or_else(|| arguments.get("path"))
+        .get("path")
         .or_else(|| arguments.get("url"))
         .and_then(serde_json::Value::as_str)
         .unwrap_or("");
-    let name = tool_name(name);
     if detail.is_empty() {
         name
     } else {
@@ -554,7 +560,7 @@ mod tests {
             "aishe_run_command",
             &serde_json::json!({"command":"set -eu\necho ready"}),
         );
-        assert_eq!(multiline, "run command  set -eu echo ready");
+        assert_eq!(multiline, "run command  set -eu  (+1 lines)");
         assert!(!multiline.contains("\\x0a"));
         assert_eq!(todo_mark("completed"), "✓");
     }

@@ -149,6 +149,62 @@ pub fn display_safe_multiline(s: &str) -> String {
     out
 }
 
+/// One-line summary of a shell script for status lines / tool labels.
+///
+/// Keeps the first non-empty line (truncated) and appends `(+N lines)` when the
+/// command is multi-line, so multi-step agent scripts stay scannable.
+pub fn command_status_summary(command: &str, limit: usize) -> String {
+    let safe = display_safe_multiline(command);
+    let lines: Vec<&str> = safe
+        .lines()
+        .map(str::trim_end)
+        .filter(|line| !line.trim().is_empty())
+        .collect();
+    let total = lines.len().max(1);
+    let first = lines
+        .first()
+        .map(|line| line.split_whitespace().collect::<Vec<_>>().join(" "))
+        .unwrap_or_else(|| "run command".into());
+    let mut out = first;
+    if total > 1 {
+        out.push_str(&format!("  (+{} lines)", total - 1));
+    }
+    if out.chars().count() > limit {
+        out = out
+            .chars()
+            .take(limit.saturating_sub(1))
+            .collect::<String>();
+        out.push('…');
+    }
+    out
+}
+
+/// Pretty-print lines for an agent approval / detailed tool preview.
+///
+/// Returns display-safe lines (real newlines already split). Caps body lines and
+/// appends a remaining-count line when truncated.
+pub fn command_preview_lines(command: &str, max_body_lines: usize) -> Vec<String> {
+    let safe = display_safe_multiline(command);
+    let raw: Vec<&str> = safe.lines().collect();
+    let total = raw.len();
+    let max_body = max_body_lines.max(1);
+    let mut out = Vec::new();
+    for (index, line) in raw.iter().take(max_body).enumerate() {
+        if index == 0 {
+            out.push(format!("$ {line}"));
+        } else {
+            out.push(format!("  {line}"));
+        }
+    }
+    if total > max_body {
+        out.push(format!("  … (+{} more lines)", total - max_body));
+    }
+    if out.is_empty() {
+        out.push("$ ".into());
+    }
+    out
+}
+
 /// Registry of custom commands, keyed by name (sorted for stable listing).
 #[derive(Debug, Default, Clone)]
 pub struct CommandRegistry {
@@ -439,6 +495,25 @@ mod tests {
             display_safe_multiline("one\r\u{1b}[2J\ttwo"),
             "one\\x0d\\x1b[2J    two"
         );
+    }
+
+    #[test]
+    fn command_status_summary_shows_first_line_and_extra_count() {
+        assert_eq!(
+            command_status_summary("set -eu\nuser=mj1\nid \"$user\"\n", 180),
+            "set -eu  (+2 lines)"
+        );
+        assert_eq!(command_status_summary("echo hi", 180), "echo hi");
+        assert!(!command_status_summary("a\nb\n", 180).contains("\\x0a"));
+    }
+
+    #[test]
+    fn command_preview_lines_are_readable_scripts() {
+        let lines = command_preview_lines("set -eu\necho ready\ntrue\n", 2);
+        assert_eq!(lines[0], "$ set -eu");
+        assert_eq!(lines[1], "  echo ready");
+        assert!(lines.iter().any(|line| line.contains("+1 more")));
+        assert!(!lines.join("\n").contains("\\x0a"));
     }
 
     // T4.7: a project command must not overwrite a same-named user command.

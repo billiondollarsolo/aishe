@@ -551,20 +551,7 @@ fn approve(
         let detail = approval_detail(work);
         audit_tool_approval(work, audit, "requested", None, Some(&reason));
         println!();
-        println!("  ┌─ agent action ─────────────────────────────────");
-        println!(
-            "  │ {}",
-            crate::commands::display_safe(&format!("{}  {detail}", work.tool))
-        );
-        println!("  │ target   {}", crate::commands::display_safe(&detail));
-        println!("  │ reason   {}", crate::commands::display_safe(&reason));
-        println!(
-            "  │ policy   {:?} scope · {:?} network · {}",
-            work.scope,
-            work.network,
-            approval_capabilities(work)
-        );
-        println!("  └────────────────────────────────────────────────");
+        print_approval_panel(work, &detail, &reason);
         if work.tool == "run_command" {
             print!("  [o] allow once  [s] allow matching this session  [e] edit  [d] deny: ");
         } else {
@@ -612,6 +599,30 @@ fn approve(
             }
         }
     }
+}
+
+/// Render the auto-mode approval card without `\x0a` walls or duplicated
+/// one-line dumps of multi-line shell scripts.
+fn print_approval_panel(work: &ToolWork, detail: &str, reason: &str) {
+    let tool = crate::commands::display_safe(&work.tool.replace('_', " "));
+    println!("  ┌─ agent action · {tool} ─────────────────────────");
+    println!("  │ reason   {}", crate::commands::display_safe(reason));
+    println!(
+        "  │ policy   {:?} scope · {:?} network · {}",
+        work.scope,
+        work.network,
+        approval_capabilities(work)
+    );
+    if work.tool == "run_command" {
+        println!("  │");
+        for line in crate::commands::command_preview_lines(detail, 24) {
+            // Indent body under the box; keep `$` alignment readable.
+            println!("  │ {line}");
+        }
+    } else {
+        println!("  │ target   {}", crate::commands::display_safe(detail));
+    }
+    println!("  └────────────────────────────────────────────────");
 }
 
 fn approval_detail(work: &ToolWork) -> String {
@@ -779,9 +790,8 @@ fn run_command(
         .unwrap_or(false)
         || command_requires_interactive_terminal(command);
     if stream_output {
-        let command = crate::commands::display_safe_multiline(command);
-        for (index, line) in command.lines().take(40).enumerate() {
-            println!("  {} {line}", if index == 0 { "→" } else { " " });
+        for line in crate::commands::command_preview_lines(command, 40) {
+            println!("  → {line}");
         }
     }
     let (code, output) = if interactive {
