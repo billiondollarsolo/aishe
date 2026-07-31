@@ -169,6 +169,9 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ needs.create_release.outputs.tag }}
+          # Every parallel uploader must preserve the draft. Omitting this lets
+          # action-gh-release apply its false default before the matrix ends.
+          draft: true
           files: |
             aishe-${{ matrix.target }}.tar.gz
             aishe-${{ matrix.target }}.tar.gz.sha256
@@ -235,6 +238,7 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ needs.create_release.outputs.tag }}
+          draft: true
           files: |
             dist/*.deb
             dist/*.rpm
@@ -302,6 +306,7 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ needs.create_release.outputs.tag }}
+          draft: true
           files: |
             runtime-assets/*
 
