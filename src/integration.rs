@@ -87,6 +87,14 @@ _aishe_handle_nl() {
   esac
 }
 
+_aishe_show_auth() {
+  if [[ -n "${AISHE_CONNECTION:-}" ]]; then
+    command aishe auth status --connection "$AISHE_CONNECTION" < /dev/tty > /dev/tty 2>&1
+  else
+    command aishe auth status < /dev/tty > /dev/tty 2>&1
+  fi
+}
+
 # Unknown command: zsh forks a SUBSHELL for this, so it stages via the temp file.
 command_not_found_handler() {
   local line="${(j: :)@}"
@@ -99,6 +107,21 @@ command_not_found_handler() {
       ;;
     /reasoning)
       command aishe reasoning < /dev/tty > /dev/tty 2>&1
+      ;;
+    /reasoning\ *)
+      command aishe reasoning "${line#/reasoning }" < /dev/tty > /dev/tty 2>&1
+      ;;
+    /model)
+      command aishe model < /dev/tty > /dev/tty 2>&1
+      ;;
+    /model\ *)
+      command aishe model "${line#/model }" < /dev/tty > /dev/tty 2>&1
+      ;;
+    /provider)
+      command aishe model < /dev/tty > /dev/tty 2>&1
+      ;;
+    /auth)
+      _aishe_show_auth
       ;;
     /log)
       command aishe log -n 20 < /dev/tty > /dev/tty 2>&1
@@ -122,6 +145,17 @@ _aishe_force_nl() { printf '%s' "$1" > "$AISHE_FORCE_FILE"; }
 # Runs in the MAIN shell before each prompt: route a forced-NL line (from the
 # sigil or key), then act on a staged command.
 aishe_precmd() {
+  # Apply the connection/model handoff in the main shell. This is independent
+  # of Aishe's optional branded prompt so `/model` still changes the runtime
+  # identity when the operator keeps their own prompt theme.
+  if [[ -n "${AISHE_SELECTION_FILE:-}" && -r "${AISHE_SELECTION_FILE}" ]]; then
+    {
+      IFS= read -r AISHE_CONNECTION
+      IFS= read -r AISHE_MODEL
+      IFS= read -r AISHE_REASONING
+    } < "${AISHE_SELECTION_FILE}"
+    export AISHE_CONNECTION AISHE_MODEL AISHE_REASONING
+  fi
   # A persistent `aishe output ...` runs in a child process under the PTY.
   # Consume its one-shot handoff without overriding a later Ctrl-O session
   # toggle on every prompt.
@@ -457,11 +491,44 @@ aishe-accept-line() {
     command aishe status < /dev/tty > /dev/tty 2>&1
     BUFFER=""
     POSTDISPLAY="$submitted"
-  elif [[ "$BUFFER" == "/reasoning" ]]; then
+  elif [[ "$BUFFER" == "/reasoning" || "$BUFFER" == "/reasoning "* ]]; then
+    local submitted="$BUFFER"
+    local reasoning_arg="${BUFFER#/reasoning}"
+    reasoning_arg="${reasoning_arg# }"
+    print -s -- "$submitted"
+    zle -I
+    if [[ -n "$reasoning_arg" ]]; then
+      command aishe reasoning "$reasoning_arg" < /dev/tty > /dev/tty 2>&1
+    else
+      command aishe reasoning < /dev/tty > /dev/tty 2>&1
+    fi
+    BUFFER=""
+    POSTDISPLAY="$submitted"
+  elif [[ "$BUFFER" == "/model" || "$BUFFER" == "/model "* ]]; then
+    local submitted="$BUFFER"
+    local model_arg="${BUFFER#/model}"
+    model_arg="${model_arg# }"
+    print -s -- "$submitted"
+    zle -I
+    if [[ -n "$model_arg" ]]; then
+      command aishe model "$model_arg" < /dev/tty > /dev/tty 2>&1
+    else
+      command aishe model < /dev/tty > /dev/tty 2>&1
+    fi
+    BUFFER=""
+    POSTDISPLAY="$submitted"
+  elif [[ "$BUFFER" == "/provider" ]]; then
     local submitted="$BUFFER"
     print -s -- "$submitted"
     zle -I
-    command aishe reasoning < /dev/tty > /dev/tty 2>&1
+    command aishe model < /dev/tty > /dev/tty 2>&1
+    BUFFER=""
+    POSTDISPLAY="$submitted"
+  elif [[ "$BUFFER" == "/auth" ]]; then
+    local submitted="$BUFFER"
+    print -s -- "$submitted"
+    zle -I
+    _aishe_show_auth
     BUFFER=""
     POSTDISPLAY="$submitted"
   elif [[ "$BUFFER" == "/log" ]]; then
@@ -633,7 +700,7 @@ fi
 {PTY_PROMPT}
 if [[ -z "${{AISHE_COMMAND_HINT_SHOWN:-}}" ]]; then
   print -r -- '{ascii_logo}'
-  print -P "%F{{244}}aishe: /help commands · Shift-Tab mode · Ctrl-O details%f"
+  print -P "%F{{244}}aishe: /help commands · Shift-Tab mode · Ctrl-O details · /model switch%f"
   export AISHE_COMMAND_HINT_SHOWN=1
 fi"#,
         ascii_logo = crate::promptui::ASCII_LOGO,
@@ -650,11 +717,19 @@ const PTY_PROMPT: &str = r#"# --- aishe branded prompt (PTY front-end; pty_promp
 if [[ -o interactive && "${AISHE_PTY_PROMPT:-1}" == 1 ]]; then
   autoload -Uz add-zsh-hook
   aishe_set_prompt() {
-    local glyph model mode backend scope status_text status_prompt base_prompt key value item
+    local glyph connection model mode backend scope status_text status_prompt base_prompt key value item
     local -A metrics
     local -a status_items
     if [[ -n "${AISHE_MODEL_FILE:-}" && -r "${AISHE_MODEL_FILE}" ]]; then
       IFS= read -r AISHE_MODEL < "${AISHE_MODEL_FILE}"
+    fi
+    if [[ -n "${AISHE_SELECTION_FILE:-}" && -r "${AISHE_SELECTION_FILE}" ]]; then
+      {
+        IFS= read -r AISHE_CONNECTION
+        IFS= read -r AISHE_MODEL
+        IFS= read -r AISHE_REASONING
+      } < "${AISHE_SELECTION_FILE}"
+      export AISHE_CONNECTION AISHE_MODEL AISHE_REASONING
     fi
     case "${AISHE_MODE:-suggest}" in
       yolo) glyph='*' ;;
@@ -662,6 +737,7 @@ if [[ -o interactive && "${AISHE_PTY_PROMPT:-1}" == 1 ]]; then
       *)    glyph='❯' ;;
     esac
     model="${AISHE_MODEL}"
+    connection="${AISHE_CONNECTION}"
     mode="${AISHE_MODE:-suggest}"
     backend="${AISHE_BACKEND:-opencode}"
     if [[ -n "${AISHE_SCOPE_FILE:-}" && -r "${AISHE_SCOPE_FILE}" ]]; then
@@ -676,11 +752,13 @@ if [[ -o interactive && "${AISHE_PTY_PROMPT:-1}" == 1 ]]; then
       done < "${AISHE_STATUS_FILE}"
     fi
     status_text=""
-    status_items=("${(@s:,:)${AISHE_STATUS_ITEMS:-model,mode,scope,session_cost,requests}}")
+    status_items=("${(@s:,:)${AISHE_STATUS_ITEMS:-connection,model,mode,scope,session_cost,requests}}")
     for item in "${status_items[@]}"; do
       value=""
       case "$item" in
+        connection) value="$connection" ;;
         model) value="$model" ;;
+        reasoning) value="${AISHE_REASONING:-auto}" ;;
         mode) value="$mode" ;;
         backend) value="$backend" ;;
         scope) value="$scope" ;;
@@ -736,6 +814,13 @@ fi
 export AISHE_SHELL_ID
 : ${AISHE_ACCEPTANCE_FILE:=${TMPDIR:-/tmp}/aishe-yolo-accept-${AISHE_SHELL_ID}}
 export AISHE_ACCEPTANCE_FILE
+__aishe_show_auth() {
+  if [[ -n "${AISHE_CONNECTION:-}" ]]; then
+    command aishe auth status --connection "$AISHE_CONNECTION" < /dev/tty > /dev/tty 2>&1
+  else
+    command aishe auth status < /dev/tty > /dev/tty 2>&1
+  fi
+}
 command_not_found_handle() {
   local line="$*"
   case "$line" in
@@ -757,6 +842,26 @@ command_not_found_handle() {
       ;;
     /reasoning)
       command aishe reasoning < /dev/tty > /dev/tty 2>&1
+      return 0
+      ;;
+    /reasoning\ *)
+      command aishe reasoning "${line#/reasoning }" < /dev/tty > /dev/tty 2>&1
+      return 0
+      ;;
+    /model)
+      command aishe model < /dev/tty > /dev/tty 2>&1
+      return 0
+      ;;
+    /model\ *)
+      command aishe model "${line#/model }" < /dev/tty > /dev/tty 2>&1
+      return 0
+      ;;
+    /provider)
+      command aishe model < /dev/tty > /dev/tty 2>&1
+      return 0
+      ;;
+    /auth)
+      __aishe_show_auth
       return 0
       ;;
     /log)
@@ -794,9 +899,19 @@ command_not_found_handle() {
 # suggestion. (readline can't be reliably pre-filled from PROMPT_COMMAND, so a
 # suggestion is printed and stashed; recall it with Ctrl-X Ctrl-R.)
 __aishe_prompt() {
+  # Capture before reading any handoff file so the user's last exit status is
+  # not replaced by the selection refresh.
+  AISHE_LAST_EXIT=$?
+  if [[ -n "${AISHE_SELECTION_FILE:-}" && -r "${AISHE_SELECTION_FILE}" ]]; then
+    {
+      IFS= read -r AISHE_CONNECTION
+      IFS= read -r AISHE_MODEL
+      IFS= read -r AISHE_REASONING
+    } < "${AISHE_SELECTION_FILE}"
+    export AISHE_CONNECTION AISHE_MODEL AISHE_REASONING
+  fi
   # Capture the last command's exit status and text first (this hook is prepended
   # to PROMPT_COMMAND, so it runs before anything resets $?), for the fix-it key.
-  AISHE_LAST_EXIT=$?
   AISHE_LAST_CMD="$(HISTTIMEFORMAT='' builtin history 1 2>/dev/null | sed 's/^ *[0-9][0-9]* *//')"
   # One concise hint after an ordinary failure (never after Ctrl-C).
   local __aishe_hint_sig="${AISHE_LAST_EXIT:-0}:${AISHE_LAST_CMD:-}"

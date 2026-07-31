@@ -27,7 +27,11 @@ use super::{RuntimeManager, RuntimeManifest};
 
 const PLUGIN: &[u8] = include_bytes!("../../assets/backend/opencode/aishe-plugin.mjs");
 const MAX_BOOTSTRAP_BYTES: u64 = 256 * 1024;
-const MAX_CONTROL_CONNECTIONS: usize = 64;
+// A single connection runtime can legitimately receive one authenticated
+// health/lease request from every concurrently starting shell. Keep the bound
+// finite, but above the 100-shell release qualification so a valid local burst
+// is queued instead of being mistaken for a broken supervisor.
+const MAX_CONTROL_CONNECTIONS: usize = 256;
 static SUPERVISOR_TERMINATED: AtomicBool = AtomicBool::new(false);
 
 extern "C" fn handle_supervisor_term(_signal: libc::c_int) {
@@ -157,6 +161,81 @@ pub fn prepare_layout() -> Result<PreparedRuntime> {
     })
 }
 
+/// Prepare a complete isolated OpenCode HOME/XDG/config tree for one labeled
+/// OAuth account. Nothing in this tree is shared with another profile except
+/// the verified runtime executable; even caches and state are profile-local.
+pub fn prepare_profile_layout(provider: &str, profile: &str) -> Result<PreparedRuntime> {
+    let provider = crate::config::normalize_connection_id(provider)?;
+    let profile = crate::oauth::normalize_profile(profile)?;
+    let base = prepare_layout()?;
+    let root = base.root.join("profiles").join(provider).join(profile);
+    let home = root.join("home");
+    let config_dir = root.join("config");
+    let auth_config_dir = root.join("auth-config");
+    let xdg_dir = root.join("xdg");
+    let xdg_config_dir = xdg_dir.join("config");
+    let global_config_dir = xdg_config_dir.join("opencode");
+    let data_dir = xdg_dir.join("data");
+    let cache_dir = xdg_dir.join("cache");
+    let state_dir = xdg_dir.join("state");
+    let mut changed_paths = Vec::new();
+    for directory in [
+        &root,
+        &home,
+        &config_dir,
+        &auth_config_dir,
+        &config_dir.join("plugins"),
+        &xdg_dir,
+        &xdg_config_dir,
+        &global_config_dir,
+        &data_dir,
+        &cache_dir,
+        &state_dir,
+    ] {
+        let missing = !directory.exists();
+        fs::create_dir_all(directory)
+            .with_context(|| format!("creating OAuth profile path {}", directory.display()))?;
+        crate::config::set_private_dir(directory);
+        if missing {
+            changed_paths.push(directory.to_path_buf());
+        }
+    }
+    let runtime_version = RuntimeManifest::embedded()?.version;
+    changed_paths.extend(seed_dependency_free_plugin_loader(
+        &config_dir,
+        &runtime_version,
+    )?);
+    changed_paths.extend(seed_dependency_free_plugin_loader(
+        &auth_config_dir,
+        &runtime_version,
+    )?);
+    changed_paths.extend(seed_dependency_free_plugin_loader(
+        &global_config_dir,
+        &runtime_version,
+    )?);
+    let plugin_path = config_dir.join("plugins").join("aishe-plugin.mjs");
+    if fs::read(&plugin_path).ok().as_deref() != Some(PLUGIN) {
+        crate::config::write_atomic(&plugin_path, PLUGIN)?;
+        changed_paths.push(plugin_path.clone());
+    }
+    if sha256_bytes(&fs::read(&plugin_path)?) != env!("AISHE_OPENCODE_PLUGIN_SHA256") {
+        anyhow::bail!("trusted OpenCode plugin checksum verification failed");
+    }
+    let config = super::opencode::config::generated_config(&plugin_path, None)?;
+    Ok(PreparedRuntime {
+        root,
+        home,
+        config_dir,
+        auth_config_dir,
+        data_dir,
+        cache_dir,
+        state_dir,
+        plugin_path,
+        config_json: serde_json::to_string(&config)?,
+        changed_paths,
+    })
+}
+
 fn seed_dependency_free_plugin_loader(
     directory: &Path,
     runtime_version: &str,
@@ -254,9 +333,11 @@ fn remove_disposable_path(path: &Path) -> Result<bool> {
 pub fn ensure_running(config: &crate::config::Config) -> Result<SupervisorState> {
     let manager = RuntimeManager::new()?;
     let launch = ProviderLaunch::from_aishe(config)?;
-    if let Some(state) = super::control::verified_state()? {
+    let supervisor_key = launch.spec.launch_identity.clone();
+    if let Some(state) = super::control::verified_state_for(&supervisor_key)? {
         if state.runtime_version == manager.manifest().version
             && state.plugin_sha256 == env!("AISHE_OPENCODE_PLUGIN_SHA256")
+            && state.connection_id == launch.spec.connection_id
             && state.provider_id == launch.spec.provider_id
             && state.model_id == launch.spec.model_id
         {
@@ -269,7 +350,7 @@ pub fn ensure_running(config: &crate::config::Config) -> Result<SupervisorState>
     // the child; without this parent-side election, a burst of clients can
     // spawn lock-losing children that exit before reading their bootstrap pipe.
     // Healthy warm calls returned above and never touch this lock.
-    let root = backend_root()?;
+    let root = backend_root()?.join("instances").join(&supervisor_key);
     fs::create_dir_all(&root)?;
     crate::config::set_private_dir(&root);
     let startup_lock = private_lock(&root.join("startup.lock"))?;
@@ -278,24 +359,25 @@ pub fn ensure_running(config: &crate::config::Config) -> Result<SupervisorState>
         .context("locking managed backend startup")?;
 
     // A different client may have completed startup while this process waited.
-    if let Some(state) = super::control::verified_state()? {
+    if let Some(state) = super::control::verified_state_for(&supervisor_key)? {
         if state.runtime_version == manager.manifest().version
             && state.plugin_sha256 == env!("AISHE_OPENCODE_PLUGIN_SHA256")
+            && state.connection_id == launch.spec.connection_id
             && state.provider_id == launch.spec.provider_id
             && state.model_id == launch.spec.model_id
         {
             return Ok(state);
         }
-        let _ = super::control::request_stop();
-        wait_for_state_removal(Duration::from_secs(5));
-    } else if let Some(state) = super::control::load_state()? {
+        let _ = super::control::request_stop_for(&supervisor_key);
+        wait_for_state_removal(&supervisor_key, Duration::from_secs(5));
+    } else if let Some(state) = super::control::load_state_for(&supervisor_key)? {
         if super::control::state_processes_exist(&state) {
             anyhow::bail!(
                 "backend processes exist but failed authenticated health verification; \
                  inspect `aishe backend logs` and retry (the private supervisor exits at its idle timeout)"
             );
         }
-        remove_stale_state()?;
+        remove_stale_state(&supervisor_key)?;
     }
 
     manager.verify_startup_attestation()?;
@@ -305,12 +387,14 @@ pub fn ensure_running(config: &crate::config::Config) -> Result<SupervisorState>
         api_key: launch.api_key,
         idle_timeout_secs: config.backend.idle_timeout_secs.clamp(30, 86_400),
     };
+    enforce_instance_limit(config.backend.max_instances, &supervisor_key)?;
     spawn_supervisor(&bootstrap)?;
     let started = Instant::now();
     loop {
-        if let Some(state) = super::control::verified_state()? {
+        if let Some(state) = super::control::verified_state_for(&supervisor_key)? {
             if state.runtime_version != manager.manifest().version
                 || state.plugin_sha256 != env!("AISHE_OPENCODE_PLUGIN_SHA256")
+                || state.connection_id != bootstrap.provider.connection_id
                 || state.provider_id != bootstrap.provider.provider_id
                 || state.model_id != bootstrap.provider.model_id
             {
@@ -345,7 +429,9 @@ pub fn run_supervisor() -> Result<u8> {
         );
     }
 
-    let root = backend_root()?;
+    let bootstrap = read_bootstrap()?;
+    let supervisor_key = bootstrap.provider.launch_identity.clone();
+    let root = backend_root()?.join("instances").join(&supervisor_key);
     fs::create_dir_all(&root)?;
     crate::config::set_private_dir(&root);
     let lock = private_lock(&root.join("supervisor.lock"))?;
@@ -355,10 +441,16 @@ pub fn run_supervisor() -> Result<u8> {
         Err(error) => return Err(error).context("locking backend supervisor"),
     }
 
-    let bootstrap = read_bootstrap()?;
     let manager = RuntimeManager::new()?;
     manager.verify_startup_attestation()?;
-    let mut prepared = prepare_layout()?;
+    let mut prepared = if let (Some(provider), Some(profile)) = (
+        bootstrap.provider.oauth_provider.as_deref(),
+        bootstrap.provider.oauth_profile.as_deref(),
+    ) {
+        prepare_profile_layout(provider, profile)?
+    } else {
+        prepare_profile_layout("connections", &supervisor_key)?
+    };
     prepared.config_json = serde_json::to_string(&super::opencode::config::generated_config(
         &prepared.plugin_path,
         Some(&bootstrap.provider),
@@ -400,6 +492,7 @@ pub fn run_supervisor() -> Result<u8> {
         opencode_url,
         manager.manifest().version.clone(),
         env!("AISHE_OPENCODE_PLUGIN_SHA256").into(),
+        bootstrap.provider.connection_id,
         bootstrap.provider.provider_id,
         bootstrap.provider.model_id,
         startup_nonce,
@@ -473,12 +566,15 @@ pub fn smoke_test(manager: &RuntimeManager) -> Result<()> {
     manager.verify()?;
     let mut prepared = prepare_layout()?;
     let smoke_provider = ProviderSpec {
+        connection_id: "smoke".into(),
+        launch_identity: "smoke".into(),
         provider_id: "aishe-local".into(),
         model_id: "smoke-model".into(),
         npm: "@ai-sdk/openai-compatible".into(),
         base_url: "http://127.0.0.1:9/v1".into(),
         requires_auth: false,
         oauth_provider: None,
+        oauth_profile: None,
         price: None,
         reasoning_effort: None,
     };
@@ -753,7 +849,9 @@ fn start_opencode_with_retries(
 }
 
 fn spawn_supervisor(bootstrap: &SupervisorBootstrap) -> Result<()> {
-    let root = backend_root()?;
+    let root = backend_root()?
+        .join("instances")
+        .join(&bootstrap.provider.launch_identity);
     fs::create_dir_all(&root)?;
     crate::config::set_private_dir(&root);
     let log_path = root.join("supervisor.log");
@@ -766,7 +864,8 @@ fn spawn_supervisor(bootstrap: &SupervisorBootstrap) -> Result<()> {
         .stdin(Stdio::piped())
         .stdout(Stdio::from(log.try_clone()?))
         .stderr(Stdio::from(log))
-        .env_clear();
+        .env_clear()
+        .env("AISHE_SUPERVISOR_KEY", &bootstrap.provider.launch_identity);
     copy_safe_environment(&mut command);
     // Preserve only Aishe-owned path overrides needed to find the same private
     // state/runtime after the detached process clears its environment. This is
@@ -882,8 +981,64 @@ fn rotate_log(path: &Path, limit: u64) -> Result<()> {
     Ok(())
 }
 
-fn remove_stale_state() -> Result<()> {
-    let path = super::control::state_path()?;
+pub fn instance_keys() -> Result<Vec<String>> {
+    let root = backend_root()?.join("instances");
+    let mut keys = Vec::new();
+    let entries = match fs::read_dir(&root) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(keys),
+        Err(error) => return Err(error.into()),
+    };
+    for entry in entries {
+        let entry = entry?;
+        if !entry.file_type()?.is_dir() {
+            continue;
+        }
+        let key = entry.file_name().to_string_lossy().into_owned();
+        if super::control::state_path_for(&key).is_ok() {
+            keys.push(key);
+        }
+    }
+    keys.sort();
+    Ok(keys)
+}
+
+fn enforce_instance_limit(limit: usize, requested: &str) -> Result<()> {
+    let limit = limit.clamp(1, 32);
+    let mut running = 0usize;
+    let mut idle_candidates = Vec::new();
+    for key in instance_keys()? {
+        if key == requested {
+            continue;
+        }
+        if let Some(activity) = super::control::verified_activity_for(&key)? {
+            running += 1;
+            if activity.active_leases == 0 {
+                idle_candidates.push((key, activity.idle_ms));
+            }
+        }
+    }
+    let needed = running.saturating_add(1).saturating_sub(limit);
+    let evictions = select_evictions(idle_candidates, needed);
+    if evictions.len() < needed {
+        anyhow::bail!(
+            "backend instance limit ({limit}) is occupied by active turns; retry after one completes or increase backend.max_instances"
+        );
+    }
+    for key in evictions {
+        let _ = super::control::request_stop_for(&key);
+        wait_for_state_removal(&key, Duration::from_secs(5));
+    }
+    Ok(())
+}
+
+fn select_evictions(mut states: Vec<(String, u64)>, count: usize) -> Vec<String> {
+    states.sort_by(|left, right| right.1.cmp(&left.1).then_with(|| left.0.cmp(&right.0)));
+    states.into_iter().take(count).map(|(key, _)| key).collect()
+}
+
+fn remove_stale_state(key: &str) -> Result<()> {
+    let path = super::control::state_path_for(key)?;
     match fs::remove_file(path) {
         Ok(()) => Ok(()),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
@@ -891,10 +1046,10 @@ fn remove_stale_state() -> Result<()> {
     }
 }
 
-fn wait_for_state_removal(timeout: Duration) {
+fn wait_for_state_removal(key: &str, timeout: Duration) {
     let started = Instant::now();
     while started.elapsed() < timeout {
-        if super::control::load_state().ok().flatten().is_none() {
+        if super::control::load_state_for(key).ok().flatten().is_none() {
             return;
         }
         std::thread::sleep(Duration::from_millis(50));
@@ -902,21 +1057,77 @@ fn wait_for_state_removal(timeout: Duration) {
 }
 
 pub fn request_stop() -> Result<u8> {
-    if !super::control::request_stop()? {
+    let mut stopped = 0usize;
+    for key in instance_keys()? {
+        if super::control::request_stop_for(&key)? {
+            stopped += 1;
+        }
+    }
+    if super::control::request_stop()? {
+        stopped += 1;
+    }
+    if stopped == 0 {
         println!("agent backend is not running");
         return Ok(0);
     }
-    println!("agent backend stop requested");
+    println!("agent backend stop requested for {stopped} instance(s)");
     Ok(0)
 }
 
 pub fn print_logs(tail: usize) -> Result<()> {
-    let path = backend_root()?.join("opencode").join("server.log");
-    if !path.exists() {
-        println!("no backend log at {}", path.display());
+    let root = backend_root()?;
+    let mut paths = Vec::new();
+    for key in instance_keys()? {
+        let path = root.join("instances").join(key).join("supervisor.log");
+        if path.is_file() {
+            paths.push(path);
+        }
+    }
+    collect_profile_logs(&root.join("opencode").join("profiles"), 0, &mut paths)?;
+    let legacy = root.join("opencode").join("server.log");
+    if legacy.is_file() {
+        paths.push(legacy);
+    }
+    paths.sort();
+    paths.dedup();
+    if paths.is_empty() {
+        println!("no backend logs");
         return Ok(());
     }
-    let mut file = File::open(&path)?;
+    for path in paths {
+        println!("== {} ==", path.display());
+        print_log_tail(&path, tail)?;
+    }
+    Ok(())
+}
+
+fn collect_profile_logs(root: &Path, depth: usize, paths: &mut Vec<PathBuf>) -> Result<()> {
+    if depth > 4 {
+        return Ok(());
+    }
+    let entries = match fs::read_dir(root) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error.into()),
+    };
+    for entry in entries {
+        let entry = entry?;
+        let file_type = entry.file_type()?;
+        if file_type.is_symlink() {
+            continue;
+        }
+        let path = entry.path();
+        if file_type.is_dir() {
+            collect_profile_logs(&path, depth + 1, paths)?;
+        } else if file_type.is_file() && entry.file_name() == "server.log" {
+            paths.push(path);
+        }
+    }
+    Ok(())
+}
+
+fn print_log_tail(path: &Path, tail: usize) -> Result<()> {
+    let mut file = File::open(path)?;
     // Cap reads to the last 1 MiB even if an external failure defeated rotation.
     let length = file.metadata()?.len();
     if length > 1024 * 1024 {
@@ -975,6 +1186,21 @@ fn sha256_bytes(bytes: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn supervisor_bound_evicts_oldest_with_a_stable_tie_break() {
+        let states = vec![
+            ("c-new".into(), 10),
+            ("c-old-b".into(), 30),
+            ("c-old-a".into(), 30),
+            ("c-middle".into(), 20),
+        ];
+        assert_eq!(
+            select_evictions(states.clone(), 2),
+            vec!["c-old-a".to_string(), "c-old-b".to_string()]
+        );
+        assert!(select_evictions(states, 0).is_empty());
+    }
 
     #[test]
     fn generated_config_denies_builtins_and_allows_only_bridge_control() {

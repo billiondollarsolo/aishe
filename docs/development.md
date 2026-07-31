@@ -25,9 +25,11 @@ cargo fmt --all -- --check
     Ctrl-C / Ctrl-Z / window resize / multi-line continuation; the fuzz and
     feature suites write Markdown reports under `test-results/`.
   - `tests/setup_pty.py`, `tests/statusline_pty.py`, and
-    `tests/durable_task_resume.py`: real-PTY setup/settings transactions,
+    `tests/model_picker_pty.py`, and `tests/durable_task_resume.py`: real-PTY setup/settings transactions,
     right/below/off live status, and kill/resume without duplicate tool
-    execution.
+    execution. The model picker suite covers two concurrent shells, filtering,
+    shell-local selection, save-default, cancellation, rollback, and plain
+    no-emoji output.
   - `tests/installer_upgrade.sh`: hermetic replacement install that hashes
     config, shared history, tasks, and unrelated state before/after.
   - `tests/opencode_runtime_contract.py`: launches the exact pinned OpenCode
@@ -40,6 +42,9 @@ cargo fmt --all -- --check
     with a synthetic per-shell host acceptance, writes to a disposable path
     outside the workspace, and proves the effect crossed one authenticated
     Aishe lease without a second per-action approval.
+  - `tests/opencode_connection_isolation.py`: launches two same-provider,
+    same-model API-key connections concurrently and proves distinct provider
+    credentials, runtimes, sessions, audit identities, and secret-free state.
   - `tests/opencode_soak.py` and `tests/opencode_concurrency.py`: measure cold
     and warm lifecycle latency/RSS, repeated reconnect continuity, optional
     24-hour stop/start behavior, exact provider-request counts, and concurrent
@@ -114,6 +119,9 @@ AISHE_RUNTIME_DIR=/path/to/test-runtime \
   python3 tests/opencode_runtime_contract.py target/release/aishe
 AISHE_RUNTIME_DIR=/path/to/test-runtime \
   python3 tests/opencode_host_scope.py target/release/aishe
+AISHE_RUNTIME_DIR=/path/to/test-runtime \
+  python3 tests/opencode_connection_isolation.py target/release/aishe
+python3 tests/model_picker_pty.py target/release/aishe
 python3 tests/direct_shell_benchmark.py target/release/aishe
 
 # Full fake-provider release qualifications:

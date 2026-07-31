@@ -287,6 +287,13 @@ export const AisheBridge = async () => ({
   },
   "chat.params": async (input, output) => {
     if (!bridgeUrl || !bridgeToken) throw new Error("Aishe budget bridge is unavailable")
+    if (typeof input?.sessionID !== "string" || input.sessionID.length === 0) {
+      throw new Error("OpenCode provider turn is missing its session identity")
+    }
+    const requestedMaxOutputTokens =
+      Number.isSafeInteger(output.maxOutputTokens) && output.maxOutputTokens > 0
+        ? output.maxOutputTokens
+        : null
     const response = await fetch(`${bridgeUrl}/v1/plugin/provider-turn`, {
       method: "POST",
       redirect: "error",
@@ -296,10 +303,19 @@ export const AisheBridge = async () => ({
       },
       body: JSON.stringify({
         session_id: input.sessionID,
-        requested_max_output_tokens: output.maxOutputTokens,
+        requested_max_output_tokens: requestedMaxOutputTokens,
       }),
     })
-    if (!response.ok) throw new Error(`Aishe budget gate rejected provider turn: ${response.status}`)
+    if (!response.ok) {
+      let code = "unknown"
+      try {
+        const body = await response.json()
+        if (typeof body?.error?.code === "string" && /^[a-z0-9_]{1,64}$/.test(body.error.code)) {
+          code = body.error.code
+        }
+      } catch {}
+      throw new Error(`Aishe budget gate rejected provider turn: ${response.status} (${code})`)
+    }
     const decision = await response.json()
     if (typeof decision.max_output_tokens === "number") {
       output.maxOutputTokens = decision.max_output_tokens

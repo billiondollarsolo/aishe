@@ -1,13 +1,14 @@
 //! Configuration: TOML at `~/.config/aishe/config.toml`, with an interactive
 //! first-run wizard when missing and graceful recovery when malformed.
 
+use std::collections::BTreeMap;
 use std::io::{IsTerminal, Write};
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
-pub const CONFIG_SCHEMA_VERSION: u32 = 5;
+pub const CONFIG_SCHEMA_VERSION: u32 = 6;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
@@ -20,6 +21,11 @@ pub struct Config {
     pub aishe: AisheConfig,
     #[serde(default)]
     pub providers: Providers,
+    /// Named provider/authentication identities. The legacy `[providers]`
+    /// blocks remain readable so schema-5 files and project overlays can be
+    /// migrated without losing information.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub connections: BTreeMap<String, ConnectionConfig>,
     #[serde(default)]
     pub logging: LoggingConfig,
     /// Agent-engine lifecycle and rendering policy. Schema-v4 keeps this
@@ -113,6 +119,9 @@ pub struct BackendConfig {
     /// Hard provider output cap. `0` delegates to the backend/model default.
     #[serde(default)]
     pub max_output_tokens: u64,
+    /// Maximum number of isolated managed-provider runtimes that may coexist.
+    #[serde(default = "default_backend_max_instances")]
+    pub max_instances: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -154,6 +163,13 @@ pub struct AisheConfig {
     /// "anthropic" | "openai"
     #[serde(default = "default_provider")]
     pub provider: String,
+    /// Durable default named connection. Empty is accepted only while loading a
+    /// legacy file and is filled during schema migration.
+    #[serde(default)]
+    pub connection: String,
+    /// Connection to use if a shell-local selection becomes unavailable.
+    #[serde(default)]
+    pub connection_fallback: String,
     /// Ordered fallback providers tried (in turn) when `provider` fails after its
     /// own retries — e.g. `["openai"]` to fall back to a local Ollama configured
     /// in `[providers.openai]`. Names refer to the configured provider blocks;
@@ -357,13 +373,17 @@ impl Default for Providers {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ProviderConfig {
     pub base_url: String,
     /// Named entry in Aishe's private credentials file. An empty value (as
     /// found in schema-2 configs) is derived from `api_key_env` in memory.
     #[serde(default)]
     pub credential: String,
+    /// Optional in a named connection when the nested explicit API-key auth
+    /// block supplies the environment variable. Legacy provider blocks still
+    /// serialize this field explicitly.
+    #[serde(default)]
     pub api_key_env: String,
     pub model: String,
     /// `auto`, `responses`, or `chat`. Auto selects Responses for official
@@ -374,6 +394,109 @@ pub struct ProviderConfig {
     /// treated as unauthenticated and non-loopback endpoints require a key.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub auth_required: Option<bool>,
+}
+
+/// A stable, named provider identity. Provider settings are flattened so the
+/// on-disk shape remains easy to read and can reuse the established transport
+/// implementation without copying secret material.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ConnectionConfig {
+    /// Provider family (`anthropic`, `openai`, `xai`, or an
+    /// OpenAI-compatible service key).
+    pub provider: String,
+    /// Human-readable label shown by `/model`, status, and audit views.
+    pub label: String,
+    #[serde(flatten)]
+    pub settings: ProviderConfig,
+    #[serde(default)]
+    pub auth: ConnectionAuth,
+    /// Optional connection/model-specific reasoning selection. When absent the
+    /// global compatibility default in `[aishe]` applies.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning_effort: Option<String>,
+}
+
+/// Authentication is explicit for new connections. `auto` exists only for
+/// migrated configurations and retains the v0.5 key-first compatibility rule.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
+pub enum ConnectionAuth {
+    ApiKey {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        credential: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        api_key_env: Option<String>,
+    },
+    #[serde(rename = "oauth", alias = "o_auth")]
+    OAuth {
+        profile: String,
+    },
+    None,
+    #[default]
+    Auto,
+}
+
+impl ConnectionConfig {
+    pub fn api_key(provider: String, label: String, settings: ProviderConfig) -> Self {
+        let auth = ConnectionAuth::ApiKey {
+            credential: Some(settings.credential_profile()),
+            api_key_env: Some(settings.api_key_env.clone()),
+        };
+        Self {
+            provider,
+            label,
+            settings,
+            auth,
+            reasoning_effort: None,
+        }
+    }
+
+    /// Provider view used by the existing native transports. Explicit API-key
+    /// overrides are projected into the view; OAuth and `none` deliberately
+    /// disable ambient API-key environment lookup.
+    pub fn provider_view(&self) -> ProviderConfig {
+        let mut provider = self.settings.clone();
+        match &self.auth {
+            ConnectionAuth::ApiKey {
+                credential,
+                api_key_env,
+            } => {
+                if let Some(value) = credential {
+                    provider.credential.clone_from(value);
+                }
+                if let Some(value) = api_key_env {
+                    provider.api_key_env.clone_from(value);
+                }
+                provider.auth_required = Some(true);
+            }
+            ConnectionAuth::OAuth { .. } => {
+                provider.credential.clear();
+                provider.api_key_env = "AISHE_OAUTH_CONNECTION_NO_API_KEY".into();
+                provider.auth_required = Some(true);
+            }
+            ConnectionAuth::None => {
+                provider.credential.clear();
+                provider.api_key_env = "AISHE_NO_AUTH_CONNECTION".into();
+                provider.auth_required = Some(false);
+            }
+            ConnectionAuth::Auto => {}
+        }
+        provider
+    }
+
+    pub fn auth_label(&self) -> String {
+        match &self.auth {
+            ConnectionAuth::ApiKey { credential, .. } => format!(
+                "API key · {}",
+                credential
+                    .as_deref()
+                    .unwrap_or(self.settings.credential.as_str())
+            ),
+            ConnectionAuth::OAuth { profile } => format!("OAuth · {profile}"),
+            ConnectionAuth::None => "No auth".into(),
+            ConnectionAuth::Auto => "Auto (legacy)".into(),
+        }
+    }
 }
 
 fn default_config_schema_version() -> u32 {
@@ -417,6 +540,7 @@ fn default_hook_timeout_secs() -> u32 {
 }
 fn default_status_line_items() -> Vec<String> {
     vec![
+        "connection".to_string(),
         "model".to_string(),
         "mode".to_string(),
         "backend".to_string(),
@@ -439,6 +563,9 @@ fn default_backend_fallback() -> String {
 }
 fn default_backend_idle_timeout() -> u64 {
     1800
+}
+fn default_backend_max_instances() -> usize {
+    8
 }
 fn default_execution_scope() -> String {
     "workspace".to_string()
@@ -481,6 +608,8 @@ impl Default for AisheConfig {
             safety_profile: default_safety_profile(),
             mode: default_mode(),
             provider: default_provider(),
+            connection: default_provider(),
+            connection_fallback: default_provider(),
             provider_fallback: Vec::new(),
             yolo_confirm_dangerous: true,
             yolo_confirm: default_yolo_confirm(),
@@ -535,6 +664,7 @@ impl Default for BackendConfig {
             workspace_network: default_workspace_network(),
             output: default_backend_output(),
             max_output_tokens: 0,
+            max_instances: default_backend_max_instances(),
         }
     }
 }
@@ -558,10 +688,13 @@ impl Default for ProviderConfig {
 
 impl Default for Config {
     fn default() -> Self {
+        let providers = Providers::default();
+        let connections = default_connections(&providers);
         Self {
             version: CONFIG_SCHEMA_VERSION,
             aishe: AisheConfig::default(),
-            providers: Providers::default(),
+            providers,
+            connections,
             logging: LoggingConfig::default(),
             backend: BackendConfig::default(),
             sandbox: SandboxConfig::default(),
@@ -570,6 +703,31 @@ impl Default for Config {
             mcp_servers: std::collections::BTreeMap::new(),
         }
     }
+}
+
+fn default_connections(providers: &Providers) -> BTreeMap<String, ConnectionConfig> {
+    BTreeMap::from([
+        (
+            "anthropic".into(),
+            ConnectionConfig {
+                provider: "anthropic".into(),
+                label: "Anthropic".into(),
+                settings: providers.anthropic.clone(),
+                auth: ConnectionAuth::Auto,
+                reasoning_effort: None,
+            },
+        ),
+        (
+            "openai".into(),
+            ConnectionConfig {
+                provider: "openai".into(),
+                label: "OpenAI".into(),
+                settings: providers.openai.clone(),
+                auth: ConnectionAuth::Auto,
+                reasoning_effort: None,
+            },
+        ),
+    ])
 }
 
 impl ProviderConfig {
@@ -732,6 +890,7 @@ impl Config {
         let mut config = toml::from_str::<Config>(&text)?;
         config.apply_schema_migrations(version);
         config.fill_credential_profiles();
+        config.validate_connections()?;
         Ok(Some(config))
     }
 
@@ -781,6 +940,7 @@ impl Config {
                     );
                 }
                 cfg.fill_credential_profiles();
+                cfg.validate_connections()?;
                 Ok(cfg)
             }
             Err(e) => {
@@ -816,6 +976,7 @@ impl Config {
         }
         let mut persisted = self.clone();
         persisted.fill_credential_profiles();
+        persisted.validate_connections()?;
         persisted.version = CONFIG_SCHEMA_VERSION;
         let text = toml::to_string_pretty(&persisted).context("serializing config")?;
         write_atomic(&path, text.as_bytes())
@@ -824,12 +985,122 @@ impl Config {
         Ok(())
     }
 
+    /// Effective active connection ID, honoring a legacy direct provider field
+    /// assignment when it disagrees with an untouched default connection.
+    pub fn active_connection_id(&self) -> &str {
+        if let Some(connection) = self.connections.get(&self.aishe.connection) {
+            if connection.provider == self.aishe.provider {
+                return &self.aishe.connection;
+            }
+        }
+        if self.connections.contains_key(&self.aishe.provider) {
+            &self.aishe.provider
+        } else if self.connections.contains_key(&self.aishe.connection) {
+            &self.aishe.connection
+        } else {
+            &self.aishe.provider
+        }
+    }
+
+    pub fn active_connection(&self) -> Option<&ConnectionConfig> {
+        self.connections.get(self.active_connection_id())
+    }
+
+    pub fn active_connection_mut(&mut self) -> Option<&mut ConnectionConfig> {
+        let id = self.active_connection_id().to_string();
+        self.connections.get_mut(&id)
+    }
+
+    /// The selected provider family, derived from the connection when present.
+    pub fn active_provider_name(&self) -> &str {
+        self.active_connection()
+            .map(|connection| connection.provider.as_str())
+            .unwrap_or(&self.aishe.provider)
+    }
+
+    /// The active provider settings. Every new runtime path should use this
+    /// accessor instead of indexing the legacy provider blocks.
+    pub fn active_provider_config(&self) -> &ProviderConfig {
+        if let Some(connection) = self.active_connection() {
+            // Canonical migrated connections retain `auto` and mirror the old
+            // provider blocks. Honor a direct legacy-block edit until it is
+            // rewritten through the connection-aware settings surface.
+            if matches!(connection.auth, ConnectionAuth::Auto) {
+                let legacy = if connection.provider == "anthropic" {
+                    Some(&self.providers.anthropic)
+                } else if connection.provider == "openai" || connection.provider == "xai" {
+                    Some(&self.providers.openai)
+                } else {
+                    None
+                };
+                if let Some(legacy) = legacy.filter(|legacy| *legacy != &connection.settings) {
+                    return legacy;
+                }
+            }
+            &connection.settings
+        } else if self.aishe.provider == "openai" {
+            &self.providers.openai
+        } else {
+            &self.providers.anthropic
+        }
+    }
+
+    pub fn active_reasoning_effort(&self) -> &str {
+        self.active_connection()
+            .and_then(|connection| connection.reasoning_effort.as_deref())
+            .unwrap_or(&self.aishe.reasoning_effort)
+    }
+
+    pub fn set_active_reasoning_effort(&mut self, effort: String) {
+        if let Some(connection) = self.active_connection_mut() {
+            connection.reasoning_effort = Some(effort.clone());
+        }
+        self.aishe.reasoning_effort = effort;
+    }
+
+    pub fn select_connection(&mut self, id: &str) -> Result<()> {
+        let normalized = normalize_connection_id(id)?;
+        let connection = self
+            .connections
+            .get(&normalized)
+            .with_context(|| format!("unknown connection '{normalized}'"))?;
+        self.aishe.provider.clone_from(&connection.provider);
+        self.aishe.connection = normalized;
+        Ok(())
+    }
+
+    /// Resolve an exact connection ID, unique label, or unique provider family.
+    pub fn resolve_connection_id(&self, value: &str) -> Result<String> {
+        let value = value.trim();
+        if self.connections.contains_key(value) {
+            return Ok(value.to_string());
+        }
+        let matches: Vec<&String> = self
+            .connections
+            .iter()
+            .filter(|(_, connection)| {
+                connection.label.eq_ignore_ascii_case(value)
+                    || connection.provider.eq_ignore_ascii_case(value)
+            })
+            .map(|(id, _)| id)
+            .collect();
+        match matches.as_slice() {
+            [id] => Ok((*id).clone()),
+            [] => anyhow::bail!("unknown connection or provider '{value}'"),
+            _ => anyhow::bail!(
+                "'{value}' matches multiple connections: {}",
+                matches
+                    .iter()
+                    .map(|id| id.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+        }
+    }
+
     /// The active provider's model name.
     pub fn active_model(&self) -> &str {
-        match self.aishe.provider.as_str() {
-            "openai" => &self.providers.openai.model,
-            _ => &self.providers.anthropic.model,
-        }
+        &self.active_provider_config().model
     }
 
     /// Populate credential profile names introduced by schema 3. This is
@@ -844,6 +1115,38 @@ impl Config {
             self.providers.openai.credential =
                 crate::credentials::profile_from_env(&self.providers.openai.api_key_env);
         }
+        if self.connections.is_empty() {
+            self.connections = default_connections(&self.providers);
+        }
+        if self.aishe.connection.trim().is_empty()
+            || !self.connections.contains_key(&self.aishe.connection)
+        {
+            self.aishe.connection = if self.connections.contains_key(&self.aishe.provider) {
+                self.aishe.provider.clone()
+            } else {
+                self.connections.keys().next().cloned().unwrap_or_default()
+            };
+        }
+        if self
+            .connections
+            .get(&self.aishe.connection)
+            .is_some_and(|connection| connection.provider != self.aishe.provider)
+            && self.connections.contains_key(&self.aishe.provider)
+        {
+            self.aishe.connection.clone_from(&self.aishe.provider);
+        }
+        if self.aishe.connection_fallback.trim().is_empty()
+            || !self
+                .connections
+                .contains_key(&self.aishe.connection_fallback)
+        {
+            self.aishe
+                .connection_fallback
+                .clone_from(&self.aishe.connection);
+        }
+        if let Some(connection) = self.connections.get(&self.aishe.connection) {
+            self.aishe.provider.clone_from(&connection.provider);
+        }
     }
 
     fn apply_schema_migrations(&mut self, source_version: u32) {
@@ -854,12 +1157,26 @@ impl Config {
         if source_version < 5 && self.backend.output == "compact" {
             self.backend.output = "focus".into();
         }
+        if source_version < 6 {
+            self.connections = default_connections(&self.providers);
+            self.aishe.connection = if self.connections.contains_key(&self.aishe.provider) {
+                self.aishe.provider.clone()
+            } else {
+                "anthropic".into()
+            };
+            self.aishe
+                .connection_fallback
+                .clone_from(&self.aishe.connection);
+        }
     }
 
     /// Set the active provider's model name.
     pub fn set_active_model(&mut self, model: String) {
-        match self.aishe.provider.as_str() {
-            "openai" => self.providers.openai.model = model,
+        if let Some(connection) = self.active_connection_mut() {
+            connection.settings.model = model.clone();
+        }
+        match self.active_provider_name() {
+            "openai" | "xai" => self.providers.openai.model = model,
             _ => self.providers.anthropic.model = model,
         }
     }
@@ -875,16 +1192,19 @@ impl Config {
         mode: Option<&str>,
         provider: Option<&str>,
         model: Option<&str>,
-    ) {
+    ) -> Result<()> {
+        self.fill_credential_profiles();
         if let Some(m) = mode {
             self.aishe.mode = m.to_string();
         }
         if let Some(p) = provider {
-            self.aishe.provider = p.to_string();
+            let id = self.resolve_connection_id(p)?;
+            self.select_connection(&id)?;
         }
         if let Some(m) = model {
             self.set_active_model(m.to_string());
         }
+        Ok(())
     }
 
     /// Find the nearest project config (`.aishe/config.toml`) at `start` or any
@@ -996,6 +1316,39 @@ impl Config {
             }
         }
 
+        // A project may select an existing named connection through trusted
+        // `[aishe] connection = ...` and may safely narrow its model/reasoning
+        // choice. Endpoint and authentication fields are never imported from a
+        // repository, even after trust, so project files cannot carry secrets.
+        if let Some(connections) = proj.get("connections").and_then(toml::Value::as_table) {
+            let mut connection_overlay = toml::Table::new();
+            for (id, value) in connections {
+                let Some(fields) = value.as_table() else {
+                    deferred.push(format!("connections.{id}"));
+                    continue;
+                };
+                if !self.connections.contains_key(id) {
+                    deferred.push(format!("connections.{id}"));
+                    continue;
+                }
+                let mut safe = toml::Table::new();
+                for (key, value) in fields {
+                    if matches!(key.as_str(), "model" | "reasoning_effort") {
+                        safe.insert(key.clone(), value.clone());
+                        applied.push(format!("connections.{id}.{key}"));
+                    } else {
+                        deferred.push(format!("connections.{id}.{key}"));
+                    }
+                }
+                if !safe.is_empty() {
+                    connection_overlay.insert(id.clone(), safe.into());
+                }
+            }
+            if !connection_overlay.is_empty() {
+                overlay.insert("connections".into(), connection_overlay.into());
+            }
+        }
+
         // Whole tables: theme/named_dirs/pricing are safe; mcp_servers/logging
         // are sensitive.
         for name in ["named_dirs", "pricing"] {
@@ -1022,12 +1375,146 @@ impl Config {
                 deep_merge(&mut base, &overlay);
                 if let Ok(merged) = toml::Value::Table(base).try_into::<Config>() {
                     *self = merged;
+                    if let Some(connection) = overlay
+                        .get("aishe")
+                        .and_then(toml::Value::as_table)
+                        .and_then(|table| table.get("connection"))
+                        .and_then(toml::Value::as_str)
+                    {
+                        let _ = self.select_connection(connection);
+                    }
                 }
             }
         }
 
         (applied, deferred)
     }
+
+    pub fn validate_connections(&self) -> Result<()> {
+        if self.connections.is_empty() {
+            anyhow::bail!("at least one named connection is required");
+        }
+        let mut oauth_paths = BTreeMap::<String, String>::new();
+        for (id, connection) in &self.connections {
+            if normalize_connection_id(id)? != *id {
+                anyhow::bail!("connection ID '{id}' must already be normalized");
+            }
+            if connection.provider.trim().is_empty() || connection.label.trim().is_empty() {
+                anyhow::bail!("connection '{id}' requires provider and label");
+            }
+            if connection.settings.model.trim().is_empty() {
+                anyhow::bail!("connection '{id}' requires a model");
+            }
+            let parsed = url::Url::parse(&connection.settings.base_url)
+                .with_context(|| format!("connection '{id}' has an invalid base URL"))?;
+            if !matches!(parsed.scheme(), "http" | "https") {
+                anyhow::bail!("connection '{id}' base URL must use HTTP or HTTPS");
+            }
+            match &connection.auth {
+                ConnectionAuth::ApiKey {
+                    credential,
+                    api_key_env,
+                } => {
+                    crate::credentials::normalize_profile(
+                        credential
+                            .as_deref()
+                            .unwrap_or(&connection.settings.credential),
+                    )
+                    .with_context(|| {
+                        format!("connection '{id}' has an invalid credential profile")
+                    })?;
+                    validate_environment_name(
+                        api_key_env
+                            .as_deref()
+                            .unwrap_or(&connection.settings.api_key_env),
+                    )
+                    .with_context(|| {
+                        format!("connection '{id}' has an invalid API-key environment name")
+                    })?;
+                }
+                ConnectionAuth::OAuth { profile } => {
+                    let oauth_provider = crate::oauth::OAuthProvider::from_base_url(
+                        &connection.settings.base_url,
+                    )
+                    .with_context(|| {
+                        format!(
+                            "connection '{id}' OAuth endpoint must be exactly https://api.openai.com or https://api.x.ai"
+                        )
+                    })?;
+                    if connection.provider != oauth_provider.id() {
+                        anyhow::bail!(
+                            "connection '{id}' provider '{}' does not match OAuth endpoint provider '{}'",
+                            connection.provider,
+                            oauth_provider.id()
+                        );
+                    }
+                    let normalized = crate::oauth::normalize_profile(profile)?;
+                    let key = format!("{}:{normalized}", connection.provider);
+                    if let Some(previous) = oauth_paths.insert(key, id.clone()) {
+                        anyhow::bail!(
+                            "connections '{previous}' and '{id}' normalize to the same OAuth profile path"
+                        );
+                    }
+                }
+                ConnectionAuth::None => {}
+                ConnectionAuth::Auto => {}
+            }
+            if let Some(effort) = connection.reasoning_effort.as_deref() {
+                crate::connection::validate_reasoning(effort).with_context(|| {
+                    format!("connection '{id}' has an invalid reasoning effort")
+                })?;
+            }
+        }
+        if !self.connections.contains_key(self.active_connection_id()) {
+            anyhow::bail!(
+                "active connection '{}' does not exist",
+                self.aishe.connection
+            );
+        }
+        if !self.aishe.connection_fallback.is_empty()
+            && !self
+                .connections
+                .contains_key(&self.aishe.connection_fallback)
+        {
+            anyhow::bail!(
+                "fallback connection '{}' does not exist",
+                self.aishe.connection_fallback
+            );
+        }
+        if !(1..=32).contains(&self.backend.max_instances) {
+            anyhow::bail!("backend.max_instances must be between 1 and 32");
+        }
+        Ok(())
+    }
+}
+
+pub fn normalize_connection_id(value: &str) -> Result<String> {
+    let normalized = value.trim().to_ascii_lowercase().replace([' ', '_'], "-");
+    if normalized.is_empty()
+        || normalized.len() > 64
+        || !normalized
+            .bytes()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
+        || normalized.starts_with('-')
+        || normalized.ends_with('-')
+        || normalized.contains("--")
+    {
+        anyhow::bail!("connection ID must be 1–64 lowercase letters, digits, or single hyphens");
+    }
+    Ok(normalized)
+}
+
+fn validate_environment_name(value: &str) -> Result<()> {
+    let mut bytes = value.bytes();
+    let Some(first) = bytes.next() else {
+        anyhow::bail!("environment variable name cannot be empty");
+    };
+    if !(first.is_ascii_alphabetic() || first == b'_')
+        || !bytes.all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
+    {
+        anyhow::bail!("invalid environment variable name '{value}'");
+    }
+    Ok(())
 }
 
 /// The result of applying a project config overlay.
@@ -1054,6 +1541,8 @@ fn aishe_key_is_sensitive(key: &str, value: &toml::Value) -> bool {
     match key {
         "provider"
         | "provider_fallback"
+        | "connection"
+        | "connection_fallback"
         | "redact_secrets"
         | "yolo_confirm"
         | "yolo_confirm_dangerous"
@@ -1231,6 +1720,99 @@ mod tests {
     }
 
     #[test]
+    fn schema_five_migration_creates_deterministic_auto_connections_idempotently() {
+        let text = r#"
+            version = 5
+
+            [aishe]
+            provider = "openai"
+            reasoning_effort = "high"
+
+            [providers.openai]
+            base_url = "https://api.example.test/v1"
+            api_key_env = "TEAM_OPENAI_KEY"
+            credential = "team-openai"
+            model = "team-model"
+            transport = "responses"
+            auth_required = true
+        "#;
+        let mut config: Config = toml::from_str(text).unwrap();
+        assert!(config.connections.is_empty());
+        config.apply_schema_migrations(5);
+        config.fill_credential_profiles();
+        assert_eq!(config.active_connection_id(), "openai");
+        let migrated = &config.connections["openai"];
+        assert_eq!(migrated.settings.base_url, "https://api.example.test/v1");
+        assert_eq!(migrated.settings.api_key_env, "TEAM_OPENAI_KEY");
+        assert_eq!(migrated.settings.credential, "team-openai");
+        assert_eq!(migrated.settings.model, "team-model");
+        assert_eq!(migrated.settings.transport, "responses");
+        assert!(matches!(migrated.auth, ConnectionAuth::Auto));
+        let once = toml::to_string(&config).unwrap();
+        config.apply_schema_migrations(6);
+        config.fill_credential_profiles();
+        assert_eq!(toml::to_string(&config).unwrap(), once);
+    }
+
+    #[test]
+    fn connection_validation_rejects_oauth_path_collisions_and_endpoint_mismatch() {
+        let mut config = Config::default();
+        let mut first = config.connections["openai"].clone();
+        first.auth = ConnectionAuth::OAuth {
+            profile: "Work Account".into(),
+        };
+        let mut second = first.clone();
+        second.auth = ConnectionAuth::OAuth {
+            profile: "work_account".into(),
+        };
+        config.connections.clear();
+        config.connections.insert("work-one".into(), first);
+        config.connections.insert("work-two".into(), second);
+        config.aishe.connection = "work-one".into();
+        config.aishe.connection_fallback = "work-one".into();
+        config.aishe.provider = "openai".into();
+        assert!(config
+            .validate_connections()
+            .unwrap_err()
+            .to_string()
+            .contains("same OAuth profile path"));
+
+        config.connections.get_mut("work-two").unwrap().auth = ConnectionAuth::OAuth {
+            profile: "personal".into(),
+        };
+        config
+            .connections
+            .get_mut("work-two")
+            .unwrap()
+            .settings
+            .base_url = "https://proxy.example.test".into();
+        assert!(config
+            .validate_connections()
+            .unwrap_err()
+            .to_string()
+            .contains("OAuth endpoint must be exactly"));
+    }
+
+    #[test]
+    fn connection_auth_rejects_fields_from_an_incompatible_variant() {
+        let text = r#"
+            version = 6
+            [connections.work]
+            provider = "openai"
+            label = "Work"
+            base_url = "https://api.openai.com"
+            model = "gpt-test"
+            transport = "responses"
+            [connections.work.auth]
+            type = "oauth"
+            profile = "work"
+            api_key_env = "OPENAI_API_KEY"
+        "#;
+        let error = toml::from_str::<Config>(text).unwrap_err().to_string();
+        assert!(error.contains("unknown field `api_key_env`"), "{error}");
+    }
+
+    #[test]
     fn pre_profile_config_loads_as_custom_without_changing_behavior() {
         let text = r#"
             [aishe]
@@ -1284,7 +1866,8 @@ mod tests {
         // Flags override the file: switch provider+mode and set the model. The
         // model must land on the provider chosen on this same call (openai),
         // because apply_overrides applies --provider before --model.
-        cfg.apply_overrides(Some("yolo"), Some("openai"), Some("gpt-4o-mini"));
+        cfg.apply_overrides(Some("yolo"), Some("openai"), Some("gpt-4o-mini"))
+            .unwrap();
         assert_eq!(cfg.aishe.mode, "yolo");
         assert_eq!(cfg.aishe.provider, "openai");
         assert_eq!(cfg.active_model(), "gpt-4o-mini");
@@ -1298,11 +1881,11 @@ mod tests {
         cfg.aishe.mode = "auto".into();
         cfg.aishe.provider = "openai".into();
         // All-None overrides are a no-op (file/default values survive).
-        cfg.apply_overrides(None, None, None);
+        cfg.apply_overrides(None, None, None).unwrap();
         assert_eq!(cfg.aishe.mode, "auto");
         assert_eq!(cfg.aishe.provider, "openai");
         // A lone --model targets the file's active provider.
-        cfg.apply_overrides(None, None, Some("o1-mini"));
+        cfg.apply_overrides(None, None, Some("o1-mini")).unwrap();
         assert_eq!(cfg.providers.openai.model, "o1-mini");
         assert_eq!(cfg.aishe.provider, "openai");
     }
@@ -1348,6 +1931,33 @@ mod tests {
         assert!(deferred.is_empty());
         assert!(applied.iter().any(|k| k == "stream"));
         assert!(applied.iter().any(|k| k == "providers.anthropic.model"));
+    }
+
+    #[test]
+    fn project_overlay_can_narrow_named_model_but_never_auth_or_endpoint() {
+        let mut config = Config::default();
+        let table = proj(
+            r#"
+            [connections.openai]
+            model = "project-model"
+            reasoning_effort = "low"
+            base_url = "https://evil.example"
+
+            [connections.openai.auth]
+            type = "none"
+        "#,
+        );
+        let (applied, deferred) = config.merge_project_table(&table, true);
+        let connection = &config.connections["openai"];
+        assert_eq!(connection.settings.model, "project-model");
+        assert_eq!(connection.reasoning_effort.as_deref(), Some("low"));
+        assert_eq!(connection.settings.base_url, "https://api.openai.com");
+        assert!(matches!(connection.auth, ConnectionAuth::Auto));
+        assert!(applied.iter().any(|key| key == "connections.openai.model"));
+        assert!(deferred
+            .iter()
+            .any(|key| key == "connections.openai.base_url"));
+        assert!(deferred.iter().any(|key| key == "connections.openai.auth"));
     }
 
     #[test]

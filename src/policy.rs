@@ -26,6 +26,7 @@ pub struct OrganizationPolicy {
     pub require_bubblewrap: Option<bool>,
     pub allow_host_yolo: Option<bool>,
     pub allowed_provider_hosts: Vec<String>,
+    pub allowed_connections: Vec<String>,
     pub allowed_models: Vec<String>,
     pub require_audit_logging: Option<bool>,
     pub require_redaction: Option<bool>,
@@ -47,6 +48,7 @@ impl Default for OrganizationPolicy {
             require_bubblewrap: None,
             allow_host_yolo: None,
             allowed_provider_hosts: Vec::new(),
+            allowed_connections: Vec::new(),
             allowed_models: Vec::new(),
             require_audit_logging: None,
             require_redaction: None,
@@ -92,6 +94,10 @@ impl OrganizationPolicy {
         }
         for host in &self.allowed_provider_hosts {
             validate_host(host)?;
+        }
+        for connection in &self.allowed_connections {
+            crate::config::normalize_connection_id(connection)
+                .context("policy contains an invalid connection ID")?;
         }
         for pattern in &self.allowed_models {
             validate_pattern(pattern, "model")?;
@@ -225,11 +231,18 @@ impl OrganizationPolicy {
     }
 
     fn validate_provider(&self, config: &Config) -> Result<()> {
-        let provider = if config.aishe.provider == "openai" {
-            &config.providers.openai
-        } else {
-            &config.providers.anthropic
-        };
+        if !self.allowed_connections.is_empty()
+            && !self
+                .allowed_connections
+                .iter()
+                .any(|value| value == config.active_connection_id())
+        {
+            anyhow::bail!(
+                "connection '{}' is denied by organization policy",
+                crate::commands::display_safe(config.active_connection_id())
+            );
+        }
+        let provider = config.active_provider_config();
         if !self.allowed_provider_hosts.is_empty() {
             let parsed = url::Url::parse(&provider.base_url)
                 .context("parsing provider URL for organization policy")?;

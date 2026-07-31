@@ -37,6 +37,8 @@ pub struct SupervisorState {
     pub opencode_url: String,
     pub runtime_version: String,
     pub plugin_sha256: String,
+    #[serde(default)]
+    pub connection_id: String,
     pub provider_id: String,
     pub model_id: String,
     pub startup_nonce: String,
@@ -54,6 +56,7 @@ impl SupervisorState {
         opencode_url: String,
         runtime_version: String,
         plugin_sha256: String,
+        connection_id: String,
         provider_id: String,
         model_id: String,
         startup_nonce: String,
@@ -70,6 +73,7 @@ impl SupervisorState {
             opencode_url,
             runtime_version,
             plugin_sha256,
+            connection_id,
             provider_id,
             model_id,
             startup_nonce,
@@ -204,13 +208,29 @@ struct HealthResponse {
     protocol_version: u32,
     runtime_version: String,
     plugin_sha256: String,
+    connection_id: String,
+    provider_id: String,
+    model_id: String,
+    active_leases: usize,
+    idle_ms: u64,
     startup_nonce: String,
     supervisor_pid: u32,
     opencode_pid: u32,
 }
 
 pub fn state_path() -> Result<PathBuf> {
-    Ok(super::supervisor::backend_root()?.join("supervisor.json"))
+    match std::env::var("AISHE_SUPERVISOR_KEY") {
+        Ok(key) if !key.is_empty() => state_path_for(&key),
+        _ => Ok(super::supervisor::backend_root()?.join("supervisor.json")),
+    }
+}
+
+pub fn state_path_for(key: &str) -> Result<PathBuf> {
+    validate_supervisor_key(key)?;
+    Ok(super::supervisor::backend_root()?
+        .join("instances")
+        .join(key)
+        .join("supervisor.json"))
 }
 
 pub fn write_state(state: &SupervisorState) -> Result<()> {
@@ -226,8 +246,15 @@ pub fn write_state(state: &SupervisorState) -> Result<()> {
 }
 
 pub fn load_state() -> Result<Option<SupervisorState>> {
-    let path = state_path()?;
-    let metadata = match std::fs::symlink_metadata(&path) {
+    load_state_at(&state_path()?)
+}
+
+pub fn load_state_for(key: &str) -> Result<Option<SupervisorState>> {
+    load_state_at(&state_path_for(key)?)
+}
+
+fn load_state_at(path: &Path) -> Result<Option<SupervisorState>> {
+    let metadata = match std::fs::symlink_metadata(path) {
         Ok(metadata) => metadata,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(error) => return Err(error.into()),
@@ -252,7 +279,7 @@ pub fn load_state() -> Result<Option<SupervisorState>> {
         use std::os::unix::fs::OpenOptionsExt;
         options.custom_flags(libc::O_NOFOLLOW);
     }
-    let file = options.open(&path)?;
+    let file = options.open(path)?;
     let mut bytes = Vec::with_capacity(metadata.len() as usize);
     file.take(MAX_BODY_BYTES as u64 + 1)
         .read_to_end(&mut bytes)?;
@@ -280,8 +307,54 @@ pub fn remove_state_if_nonce(nonce: &str) -> Result<()> {
     Ok(())
 }
 
+pub fn remove_state_for_if_nonce(key: &str, nonce: &str) -> Result<()> {
+    let Some(state) = load_state_for(key)? else {
+        return Ok(());
+    };
+    if constant_time_eq(state.startup_nonce.as_bytes(), nonce.as_bytes()) {
+        let path = state_path_for(key)?;
+        match std::fs::remove_file(path) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error.into()),
+        }
+    }
+    Ok(())
+}
+
 pub fn verified_state() -> Result<Option<SupervisorState>> {
-    let Some(state) = load_state()? else {
+    verified_loaded_state(load_state()?)
+}
+
+pub fn verified_state_for(key: &str) -> Result<Option<SupervisorState>> {
+    verified_loaded_state(load_state_for(key)?)
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct RuntimeActivity {
+    pub active_leases: usize,
+    pub idle_ms: u64,
+}
+
+pub fn verified_activity_for(key: &str) -> Result<Option<RuntimeActivity>> {
+    Ok(
+        verified_loaded_state_with_health(load_state_for(key)?)?.map(|(_, health)| {
+            RuntimeActivity {
+                active_leases: health.active_leases,
+                idle_ms: health.idle_ms,
+            }
+        }),
+    )
+}
+
+fn verified_loaded_state(state: Option<SupervisorState>) -> Result<Option<SupervisorState>> {
+    Ok(verified_loaded_state_with_health(state)?.map(|(state, _)| state))
+}
+
+fn verified_loaded_state_with_health(
+    state: Option<SupervisorState>,
+) -> Result<Option<(SupervisorState, HealthResponse)>> {
+    let Some(state) = state else {
         return Ok(None);
     };
     if !process_exists(state.supervisor_pid) || !process_exists(state.opencode_pid) {
@@ -303,6 +376,9 @@ pub fn verified_state() -> Result<Option<SupervisorState>> {
         || health.protocol_version != SUPERVISOR_PROTOCOL_VERSION
         || health.runtime_version != state.runtime_version
         || health.plugin_sha256 != state.plugin_sha256
+        || health.connection_id != state.connection_id
+        || health.provider_id != state.provider_id
+        || health.model_id != state.model_id
         || health.supervisor_pid != state.supervisor_pid
         || health.opencode_pid != state.opencode_pid
         || !constant_time_eq(
@@ -312,7 +388,7 @@ pub fn verified_state() -> Result<Option<SupervisorState>> {
     {
         anyhow::bail!("backend control identity mismatch");
     }
-    Ok(Some(state))
+    Ok(Some((state, health)))
 }
 
 pub fn state_processes_exist(state: &SupervisorState) -> bool {
@@ -320,7 +396,15 @@ pub fn state_processes_exist(state: &SupervisorState) -> bool {
 }
 
 pub fn request_stop() -> Result<bool> {
-    let Some(state) = verified_state()? else {
+    request_stop_state(load_state()?)
+}
+
+pub fn request_stop_for(key: &str) -> Result<bool> {
+    request_stop_state(load_state_for(key)?)
+}
+
+fn request_stop_state(state: Option<SupervisorState>) -> Result<bool> {
+    let Some(state) = state else {
         return Ok(false);
     };
     let url = format!("{}/v1/stop", state.control_url.trim_end_matches('/'));
@@ -332,6 +416,20 @@ pub fn request_stop() -> Result<bool> {
         .timeout(Duration::from_secs(3))
         .send_json(serde_json::json!({}))?;
     Ok(true)
+}
+
+fn validate_supervisor_key(value: &str) -> Result<()> {
+    if value.is_empty()
+        || value.len() > 128
+        || !value
+            .bytes()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
+        || value.starts_with('-')
+        || value.ends_with('-')
+    {
+        anyhow::bail!("invalid backend supervisor identity");
+    }
+    Ok(())
 }
 
 pub fn serve_connection(mut stream: TcpStream, context: &ServerContext) -> Result<()> {
@@ -369,6 +467,11 @@ pub fn serve_connection(mut stream: TcpStream, context: &ServerContext) -> Resul
         std::thread::sleep(Duration::from_millis(25));
         return write_error(&mut stream, 401, "unauthorized", "Authentication failed");
     }
+    let idle_ms = context
+        .last_activity
+        .lock()
+        .map(|activity| activity.elapsed().as_millis().min(u128::from(u64::MAX)) as u64)
+        .unwrap_or(0);
     if let Ok(mut activity) = context.last_activity.lock() {
         *activity = Instant::now();
     }
@@ -381,6 +484,11 @@ pub fn serve_connection(mut stream: TcpStream, context: &ServerContext) -> Resul
                 protocol_version: SUPERVISOR_PROTOCOL_VERSION,
                 runtime_version: context.state.runtime_version.clone(),
                 plugin_sha256: context.state.plugin_sha256.clone(),
+                connection_id: context.state.connection_id.clone(),
+                provider_id: context.state.provider_id.clone(),
+                model_id: context.state.model_id.clone(),
+                active_leases: context.bridge.active_lease_count().unwrap_or(usize::MAX),
+                idle_ms,
                 startup_nonce: context.state.startup_nonce.clone(),
                 supervisor_pid: context.state.supervisor_pid,
                 opencode_pid: context.state.opencode_pid,
@@ -733,6 +841,7 @@ mod tests {
             "http://127.0.0.1:2345".into(),
             "1.18.9".into(),
             "e".repeat(64),
+            "openai-work".into(),
             "aishe-openai".into(),
             "model".into(),
             "a".repeat(64),
@@ -822,6 +931,7 @@ mod tests {
             "http://127.0.0.1:2345".into(),
             "1.18.9".into(),
             "e".repeat(64),
+            "openai-work".into(),
             "aishe-openai".into(),
             "model".into(),
             "a".repeat(64),

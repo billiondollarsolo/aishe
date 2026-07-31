@@ -49,6 +49,17 @@ fast-syntax-highlighting, and either plugin automatically takes precedence. Set
 - **yolo**: the managed agent runs inline. The first yolo turn in each new shell
   asks once for workspace/host scope; accepted yolo does not prompt per action.
 
+### Primary slash commands
+
+Inside an Aishe zsh session, `/help` lists the short command surface. `/model`
+opens the filterable connection/model picker; Enter changes only this shell,
+`d` also saves the durable default, and Esc cancels without changing either.
+`/model MODEL` and `/model CONNECTION/MODEL` are direct forms. `/provider` opens
+the same picker, `/auth` reports the selected connection's exact auth binding,
+and `/status` shows identity, backend readiness, usage, and spend. The shell
+handoff writes connection, model, and reasoning together, and a main-shell
+prompt hook applies it even when the branded Aishe prompt is disabled.
+
 ### force-NL keybinding
 
 Sometimes your input is a valid command but you mean it as natural language.

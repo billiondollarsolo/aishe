@@ -297,6 +297,12 @@ impl Bridge {
         Ok(bridge)
     }
 
+    pub fn active_lease_count(&self) -> Result<usize> {
+        let mut state = self.lock()?;
+        cleanup_expired(&mut state);
+        Ok(state.leases.len())
+    }
+
     pub fn register(&self, registration: LeaseRegistration) -> Result<LeaseIdentity> {
         validate_shell_id(&registration.aishe_shell_id)?;
         validate_id(&registration.backend_session_id, "ses_")?;

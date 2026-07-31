@@ -124,6 +124,12 @@ class Pty:
                 return True
         return False
 
+    def reset_editor(self, timeout=20):
+        """Clear the current ZLE buffer and prove a fresh prompt accepts input."""
+        self.buf = ""
+        self.raw(b"\x03")
+        return self.wait_ready(timeout) and self.expect_prompt(timeout)
+
     def raw(self, data):
         os.write(self.master, data)
 
@@ -300,8 +306,8 @@ def main():
             "recognized command is highlighted green",
             sh.expect("AISHE_RH=0 4 fg=green"),
         )
-        sh.raw(b"\x03")
-        sh.expect_prompt()
+        if not sh.reset_editor():
+            raise RuntimeError("line editor did not recover after highlight probe")
 
         # The first token can be a real command and initially green, then the
         # completed buffer can become a natural-language question. Define the
@@ -322,8 +328,8 @@ def main():
             "ambiguous bare command starts green",
             sh.expect("AISHE_RH=0 4 fg=green"),
         )
-        sh.raw(b"\x03")
-        sh.expect_prompt()
+        if not sh.reset_editor():
+            raise RuntimeError("line editor did not recover after bare-command probe")
 
         for line, name in [
             ("what is the capital of France", "what-question turns AI-colored"),
@@ -339,8 +345,8 @@ def main():
                 name,
                 sh.expect("AISHE_RH=0 %d fg=magenta" % len(line)),
             )
-            sh.raw(b"\x03")
-            sh.expect_prompt()
+            if not sh.reset_editor():
+                raise RuntimeError("line editor did not recover after question probe")
 
         # Bare/ordinary commands remain shell-colored even after the collision
         # grammar is enabled.
@@ -349,15 +355,15 @@ def main():
         sh.settle(0.3)
         sh.raw(b"\x18\x08")
         check(sh, "bare who remains a shell command", sh.expect("AISHE_RH=0 3 fg=green"))
-        sh.raw(b"\x03")
-        sh.expect_prompt()
+        if not sh.reset_editor():
+            raise RuntimeError("line editor did not recover after who probe")
         sh.buf = ""
         sh.raw(b"ls -la")
         sh.settle(0.3)
         sh.raw(b"\x18\x08")
         check(sh, "Linux command with arguments stays green", sh.expect("AISHE_RH=0 2 fg=green"))
-        sh.raw(b"\x03")
-        sh.expect_prompt()
+        if not sh.reset_editor():
+            raise RuntimeError("line editor did not recover after command probe")
 
         # Enter uses the same grammar as highlighting. This is the regression
         # assertion: a valid `what` command must not run once the full line is a
@@ -475,7 +481,8 @@ def main():
         sh.buf = ""
         sh.raw(b"\x1b[A")  # up arrow
         check(sh, "up-arrow recalls previous command", sh.expect("echo HISTMARK_42"))
-        sh.raw(b"\x03")    # Ctrl-C to clear the recalled line
+        if not sh.reset_editor():  # Ctrl-C to clear the recalled line
+            raise RuntimeError("line editor did not recover after history probe")
 
         # 9. Shift-Tab cycles the interaction mode for the session (the config
         #    starts in auto, so one press lands on yolo). Entering yolo requires
@@ -498,11 +505,10 @@ def main():
             sh.expect("yolo-host\r\n"),
         )
         check(sh, "Shift-Tab cycles the mode", sh.expect("aishe mode: yolo"))
-        sh.raw(b"\x03")
         check(
             sh,
             "mode switch returns to a ready prompt",
-            sh.expect_prompt(),
+            sh.reset_editor(),
         )
 
         # Primary slash commands are handled locally and never sent to the model.
@@ -533,8 +539,15 @@ def main():
             "Ctrl-O returns to focus output",
             sh.expect("aishe agent details: focus"),
         )
-        sh.raw(b"\x03")
-        sh.expect_prompt()
+        # The detail toggle repaints ZLE asynchronously. Discard its prior
+        # prompt bytes, interrupt the empty line, then prove a fresh command can
+        # complete before typing the persistent-setting command. This avoids a
+        # slow remote runner matching a stale prompt and losing the first byte.
+        check(
+            sh,
+            "Ctrl-O toggle leaves the line editor ready",
+            sh.reset_editor(),
+        )
         sh.send("aishe output detailed")
         check(
             sh,
@@ -577,7 +590,8 @@ def main():
         sh.buf = ""
         sh.raw(b"\x18\x06")  # Ctrl-X Ctrl-F
         check(sh, "fix key pre-fills a correction", sh.expect("echo FIXED_SCEN9_42"))
-        sh.raw(b"\x03")  # clear the pre-filled line without running it
+        if not sh.reset_editor():  # clear the pre-filled line without running it
+            raise RuntimeError("line editor did not recover after fix probe")
 
         # Success, Ctrl-C, and an explicit opt-out must remain quiet.
         sh.send("export AISHE_FAILURE_HINTS=0")
@@ -607,8 +621,8 @@ def main():
         interrupt_start = len(sh.transcript)
         sh.send("sleep 10")
         sh.settle(0.3)
-        sh.raw(b"\x03")
-        sh.settle(0.3)
+        if not sh.reset_editor():
+            raise RuntimeError("line editor did not recover after Ctrl-C")
         sh.send("print -r -- INTERRUPT_HINT_DONE")
         check(sh, "Ctrl-C returns to the prompt", sh.expect("INTERRUPT_HINT_DONE"))
         sh.settle(0.3)

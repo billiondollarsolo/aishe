@@ -151,6 +151,193 @@ transport = "responses"
     std::fs::remove_dir_all(data).ok();
 }
 
+#[test]
+fn named_connections_are_crud_safe_ambiguous_by_provider_and_audit_attributed() {
+    let root = temp_root("named-connections");
+    let config_dir = root.join("aishe");
+    let data = root.join("data");
+    let audit = data.join("audit.jsonl");
+    std::fs::create_dir_all(&config_dir).unwrap();
+    std::fs::write(
+        config_dir.join("config.toml"),
+        r#"version = 6
+
+[aishe]
+mode = "suggest"
+provider = "openai"
+connection = "openai-work"
+connection_fallback = "openai-work"
+
+[connections.openai-work]
+provider = "openai"
+label = "OpenAI work"
+base_url = "https://api.openai.com"
+model = "gpt-work"
+transport = "responses"
+[connections.openai-work.auth]
+type = "api_key"
+credential = "work-key"
+api_key_env = "AISHE_WORK_KEY"
+
+[connections.openai-personal]
+provider = "openai"
+label = "OpenAI personal"
+base_url = "https://api.openai.com"
+model = "gpt-personal"
+transport = "responses"
+[connections.openai-personal.auth]
+type = "api_key"
+credential = "personal-key"
+api_key_env = "AISHE_PERSONAL_KEY"
+
+[backend]
+engine = "native"
+
+[logging]
+enabled = true
+redact = true
+"#,
+    )
+    .unwrap();
+    let run = |args: &[&str]| {
+        let mut command = Command::cargo_bin("aishe").unwrap();
+        command
+            .env("AISHE_CONFIG_DIR", &root)
+            .env("AISHE_DATA_DIR", &data)
+            .env("AISHE_LOG_FILE", &audit)
+            .env("AISHE_WORK_KEY", "work-secret-never-log")
+            .env("AISHE_PERSONAL_KEY", "personal-secret-never-log")
+            .args(args);
+        command
+    };
+
+    run(&["connection", "list"])
+        .assert()
+        .success()
+        .stdout(contains("openai-work").and(contains("openai-personal")));
+    run(&["provider", "openai"])
+        .assert()
+        .failure()
+        .stderr(contains("matches multiple connections").and(contains("openai-work")));
+    run(&["auth", "status", "--connection", "openai-work", "--json"])
+        .assert()
+        .success()
+        .stdout(contains("work-secret-never-log").not())
+        .stdout(contains(r#""connection_id": "openai-work""#));
+
+    run(&[
+        "connection",
+        "add",
+        "local-test",
+        "--provider",
+        "openai",
+        "--base-url",
+        "http://127.0.0.1:11434",
+        "--model",
+        "local-model",
+        "--transport",
+        "chat",
+        "--auth",
+        "none",
+    ])
+    .assert()
+    .success();
+    run(&[
+        "connection",
+        "edit",
+        "local-test",
+        "--label",
+        "Local test edited",
+        "--model",
+        "local-model-2",
+    ])
+    .assert()
+    .success();
+    run(&["connection", "show", "local-test"])
+        .assert()
+        .success()
+        .stdout(contains("Local test edited").and(contains("local-model-2")));
+    run(&["connection", "remove", "local-test", "--yes"])
+        .assert()
+        .success()
+        .stdout(contains("credentials were preserved"));
+
+    let mut request = run(&["-c", "?answer this audit test"]);
+    request.env(
+        "AISHE_FAKE_LLM",
+        r#"{"type":"answer","text":"audit test complete"}"#,
+    );
+    request.assert().success();
+    let records = std::fs::read_to_string(&audit).unwrap();
+    assert!(records.contains(r#""connection_id":"openai-work""#));
+    assert!(records.contains(r#""connection_label":"OpenAI work""#));
+    assert!(records.contains(r#""auth_type":"api_key""#));
+    assert!(records.contains(r#""auth_profile":"work-key""#));
+    assert!(!records.contains("work-secret-never-log"));
+    assert!(!records.contains("personal-secret-never-log"));
+    std::fs::remove_dir_all(root).ok();
+}
+
+#[test]
+fn isolated_oauth_profiles_report_and_logout_independently() {
+    let root = temp_root("oauth-profiles");
+    let config = temp_config_home();
+    let data = root.join("data");
+    let auth_root = data.join("aishe/backend/opencode/profiles/openai");
+    for profile in ["work", "personal"] {
+        let path = auth_root.join(profile).join("xdg/data/opencode/auth.json");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(
+            &path,
+            format!(
+                r#"{{"openai":{{"type":"oauth","refresh":"{profile}-refresh-secret","access":"{profile}-access-secret","expires":9999999999999}}}}"#
+            ),
+        )
+        .unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        }
+    }
+    let run = |args: &[&str]| {
+        let mut command = Command::cargo_bin("aishe").unwrap();
+        command
+            .env("AISHE_CONFIG_DIR", &config)
+            .env("AISHE_DATA_DIR", &data)
+            .args(args);
+        command
+    };
+    for profile in ["work", "personal"] {
+        run(&["auth", "status", "openai", "--profile", profile, "--json"])
+            .assert()
+            .success()
+            .stdout(contains(r#""available": true"#))
+            .stdout(contains("access-secret").not())
+            .stdout(contains("refresh-secret").not());
+    }
+    run(&["auth", "logout", "openai", "--profile", "work", "--yes"])
+        .assert()
+        .success();
+    run(&["auth", "status", "openai", "--profile", "work", "--json"])
+        .assert()
+        .failure()
+        .stdout(contains(r#""available": false"#));
+    run(&[
+        "auth",
+        "status",
+        "openai",
+        "--profile",
+        "personal",
+        "--json",
+    ])
+    .assert()
+    .success()
+    .stdout(contains(r#""available": true"#));
+    std::fs::remove_dir_all(root).ok();
+    std::fs::remove_dir_all(config).ok();
+}
+
 fn serve_model_catalog(requests: usize) -> (String, std::thread::JoinHandle<()>) {
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let address = listener.local_addr().unwrap();
@@ -638,7 +825,8 @@ transport = "responses"
         .assert()
         .success();
     let migrated = std::fs::read_to_string(config_dir.join("config.toml")).unwrap();
-    assert!(migrated.contains("version = 5"));
+    assert!(migrated.contains("version = 6"));
+    assert!(migrated.contains("[connections.openai]"));
     assert!(migrated.contains("[backend]"));
     assert!(migrated.contains("engine = \"opencode\""));
     assert!(migrated.contains("[sandbox]"));

@@ -230,9 +230,11 @@ upgrade.
 - `reset`/`/reset` at the prompt, or `aishe reset`, detaches the current
   conversation without deleting it. The command prints its resumable session ID.
 - Focus output is the default: a width-bounded live row shows the current
-  command, then one activity summary and the final response remain in
-  scrollback. Ctrl-O or `/details` toggles detailed output for following turns in
-  this shell; `aishe output focus|compact|detailed` persists a preference.
+  command, then a bounded digest of up to three executed commands, one activity
+  summary, and the final response remain in scrollback. Compact keeps one line
+  per completed action. Ctrl-O or `/details` toggles detailed output for
+  following turns in this shell; `aishe output focus|compact|detailed` persists
+  a preference.
 - Private backend/session contents are excluded from support bundles.
 - `memory = false` controls the capped native compatibility transcript during
   the transition; managed conversation durability is part of the backend

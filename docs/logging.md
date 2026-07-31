@@ -38,6 +38,9 @@ that can see your prompts.
 When enabled, aishe appends one JSON object per line (JSONL) to a log file.
 Native and managed calls share the same event stream. It records:
 
+- safe connection ID/label, provider, auth type/profile label, model, and
+  reasoning effort on every new event,
+
 - `session_start`: a marker with the aishe version,
 - `ai_request`: each model call, including the complete bounded user prompt,
   model, provider, mode, scope, Aishe turn ID, and durable managed-session
@@ -55,6 +58,10 @@ Native and managed calls share the same event stream. It records:
   completion, cancellation, and failure lifecycle records,
 - `action`: the compatibility record for actual shell commands, used by
   existing filters and runbook generation.
+
+Connection attribution never contains a key, token, OAuth payload, local
+control password, or launch secret. Profile labels are identifiers, not secret
+values. The final JSON write boundary recursively redacts every string field.
 
 The log records what Aishe receives and does. It cannot record private model
 chain-of-thought that a provider does not expose.
@@ -85,7 +92,7 @@ where the log goes. `/log` shows the latest 20 records inside an Aishe shell.
 ### Example entries
 
 ```json
-{"ts_ms":1781120968535,"session":"4845-1781120968526","kind":"ai_request","turn_id":"turn_f3...","backend_session":"ses_123","mode":"suggest","model":"openai/gpt-oss-120b","prompt":"list files by size"}
+{"ts_ms":1781120968535,"session":"4845-1781120968526","kind":"ai_request","connection_id":"openai-work","connection_label":"OpenAI work","provider":"openai","auth_type":"oauth","auth_profile":"work","reasoning_effort":"high","turn_id":"turn_f3...","backend_session":"ses_123","mode":"suggest","model":"gpt-5.6-luna","prompt":"list files by size"}
 {"ts_ms":1781120974432,"session":"4845-1781120968526","kind":"ai_response","turn_id":"turn_f3...","backend_session":"ses_123","mode":"suggest","model":"openai/gpt-oss-120b","response":"command: ls -lS","tokens_in":438,"tokens_out":159}
 {"ts_ms":1781120974911,"session":"4872-1781120974436","kind":"action","source":"yolo","command":"sh -c 'echo hi > z.txt && cat z.txt'","exit":0}
 {"ts_ms":1781120975000,"session":"4872-1781120974436","kind":"tool_call","backend":"opencode","turn_id":"turn_f3...","backend_session":"ses_123","message_id":"msg_tool","call_id":"call_123","tool":"write_file","path":"README.md","args":{"path":"README.md","content":"hello"},"status":"started"}
@@ -136,6 +143,7 @@ table as the live `/usage` line, overridable in `[pricing]`):
 aishe usage                     # totals per model
 aishe usage --by day            # per calendar day (UTC)
 aishe usage --by session        # per session
+aishe usage --by connection     # safe connection attribution
 aishe usage --since 1w          # only the last week
 ```
 

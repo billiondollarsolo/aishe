@@ -396,6 +396,7 @@ fn probe_config(base_url: &str) -> aishe::config::Config {
     cfg.providers.openai.base_url = base_url.to_string();
     // A var name that is (almost certainly) unset, so the probe sends no auth.
     cfg.providers.openai.api_key_env = "AISHE_PROBE_NO_SUCH_KEY".into();
+    cfg.providers.openai.auth_required = Some(false);
     cfg
 }
 

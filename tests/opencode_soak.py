@@ -92,8 +92,16 @@ def process_exists(pid):
         return True
 
 
+def state_paths(data_home):
+    instances = data_home / "aishe" / "backend" / "instances"
+    return sorted(instances.glob("*/supervisor.json"))
+
+
 def read_state(data_home):
-    path = data_home / "aishe" / "backend" / "supervisor.json"
+    paths = state_paths(data_home)
+    if len(paths) != 1:
+        raise AssertionError(f"expected one managed runtime state, found {paths}")
+    path = paths[0]
     return json.loads(path.read_text(encoding="utf-8"))
 
 
@@ -117,8 +125,7 @@ def control_health_seconds(state):
 
 def observed_cold_prompt(binary, env, workspace, data_home, label, timeout=45):
     """Run one prompt while observing when authenticated supervisor health lands."""
-    state_path = data_home / "aishe" / "backend" / "supervisor.json"
-    if state_path.exists():
+    if state_paths(data_home):
         raise AssertionError("cold-start sample began with stale supervisor state")
     started = time.monotonic()
     process = subprocess.Popen(
@@ -133,9 +140,10 @@ def observed_cold_prompt(binary, env, workspace, data_home, label, timeout=45):
     state = None
     deadline = started + timeout
     while process.poll() is None and time.monotonic() < deadline:
-        if state_path.is_file():
+        paths = state_paths(data_home)
+        if len(paths) == 1:
             try:
-                candidate = json.loads(state_path.read_text(encoding="utf-8"))
+                candidate = json.loads(paths[0].read_text(encoding="utf-8"))
                 control_health_seconds(candidate)
                 state = candidate
                 ready_seconds = time.monotonic() - started
@@ -187,10 +195,9 @@ def stop_and_assert_reaped(binary, env, workspace, state=None, data_home=None):
     if survivors:
         raise AssertionError(f"managed backend did not reap process(es): {survivors}")
     if data_home is not None:
-        state_path = data_home / "aishe" / "backend" / "supervisor.json"
-        while state_path.exists() and time.monotonic() < deadline:
+        while state_paths(data_home) and time.monotonic() < deadline:
             time.sleep(0.05)
-        if state_path.exists():
+        if state_paths(data_home):
             raise AssertionError("managed backend left stale supervisor state")
 
 
@@ -453,10 +460,10 @@ def qualify(binary, runtime_dir, args):
             )
         finally:
             if last_state is None:
-                state_path = data_home / "aishe" / "backend" / "supervisor.json"
-                if state_path.is_file():
+                paths = state_paths(data_home)
+                if len(paths) == 1:
                     try:
-                        last_state = json.loads(state_path.read_text(encoding="utf-8"))
+                        last_state = json.loads(paths[0].read_text(encoding="utf-8"))
                     except (OSError, ValueError):
                         last_state = None
             stop_and_assert_reaped(binary, env, workspace, last_state, data_home)

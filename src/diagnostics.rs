@@ -297,13 +297,21 @@ pub fn inspect(version: &str, options: &Options) -> Report {
     append_policy_checks(&mut checks, &mut config);
     append_backend_checks(&mut checks, &config, config_valid, options);
 
-    let provider = config.aishe.provider.clone();
+    let provider = config.active_provider_name().to_string();
     let provider_config = active_provider(&config);
+    let connection_id = config.active_connection_id().to_string();
+    let connection_label = config
+        .active_connection()
+        .map(|connection| connection.label.as_str())
+        .unwrap_or(&connection_id);
     checks.push(Check::new(
         "provider.active",
         Status::Pass,
         Severity::Info,
-        format!("provider: {provider} · model {}", provider_config.model),
+        format!(
+            "connection: {connection_label} ({connection_id}) · provider: {provider} · model {}",
+            provider_config.model
+        ),
         format!(
             "{} · transport {}",
             provider_config.base_url, provider_config.transport
@@ -323,60 +331,36 @@ pub fn inspect(version: &str, options: &Options) -> Report {
         ));
     }
 
-    let profile = provider_config.credential_profile();
-    let credential_resolution = crate::credentials::resolve(provider_config);
-    let oauth_resolution = match &credential_resolution {
-        Ok(resolved) if resolved.secret().is_none() => crate::oauth::active_provider(&config),
-        _ => Ok(None),
-    };
-    checks.push(match (&credential_resolution, &oauth_resolution) {
-        (Ok(resolved), _) if resolved.secret().is_some() => Check::new(
-            "provider.credential",
-            Status::Pass,
-            Severity::Warning,
-            format!("API key: available ({})", resolved.source.label()),
-            format!("profile '{profile}'; the value is never displayed or written to diagnostics"),
+    let auth = config
+        .active_connection()
+        .map(crate::connection::auth_status)
+        .unwrap_or(crate::connection::ConnectionAuthStatus {
+            kind: "legacy".into(),
+            profile: None,
+            available: false,
+            detail: "connection metadata unavailable".into(),
+        });
+    checks.push(Check::new(
+        "provider.credential",
+        if auth.available { Status::Pass } else { Status::Warn },
+        Severity::Warning,
+        format!(
+            "authentication: {}{} · {}",
+            auth.kind,
+            auth.profile
+                .as_deref()
+                .map(|profile| format!(" profile '{profile}'"))
+                .unwrap_or_default(),
+            auth.detail
         ),
-        (Ok(_), Ok(Some(oauth_provider))) => Check::new(
-            "provider.credential",
-            Status::Pass,
-            Severity::Warning,
-            format!("OAuth: available ({oauth_provider})"),
-            "tokens stay in Aishe's private managed-runtime store and are never written to diagnostics",
-        ),
-        (Ok(_), Ok(None)) if !provider_config.requires_auth() => Check::new(
-            "provider.credential",
-            Status::Pass,
-            Severity::Warning,
-            "API key: not required for this endpoint",
+        if auth.available {
+            "secret values stay in private stores and are never written to diagnostics".into()
+        } else {
             format!(
-                "{} is local or explicitly configured without authentication",
-                provider_config.base_url
-            ),
-        ),
-        (Ok(_), Ok(None)) => Check::new(
-            "provider.credential",
-            Status::Warn,
-            Severity::Warning,
-            format!("API key: credential profile '{profile}' is not saved"),
-            format!(
-                "LLM features are disabled; run `aishe auth set {profile}`, `aishe auth login {}`, \
-                 or set ${} for an environment override",
-                crate::oauth::OAuthProvider::from_base_url(&provider_config.base_url)
-                    .map(|provider| provider.id())
-                    .unwrap_or("openai"),
-                provider_config.api_key_env
-            ),
-        ),
-        (Err(error), _) | (_, Err(error)) => Check::new(
-            "provider.credential",
-            Status::Fail,
-            Severity::Warning,
-            format!("credentials: unreadable at {}", paths.credentials.display()),
-            crate::redact::redact(&error.to_string()),
-        )
-        .fixable(true),
-    });
+                "authentication for connection '{connection_id}' is unavailable; use `aishe connection show {connection_id}`"
+            )
+        },
+    ));
 
     if options.probe && !options.live {
         let probe = providers::probe(&config, &provider);
@@ -746,31 +730,65 @@ fn append_backend_checks(
         },
     ));
 
-    let loaded_state = crate::backend::control::load_state().ok().flatten();
-    let verified_state = crate::backend::control::verified_state().ok().flatten();
+    let instance_keys = crate::backend::supervisor::instance_keys().unwrap_or_default();
+    let mut loaded_count = 0usize;
+    let mut verified_states = Vec::new();
+    for key in &instance_keys {
+        if crate::backend::control::load_state_for(key)
+            .ok()
+            .flatten()
+            .is_some()
+        {
+            loaded_count += 1;
+        }
+        if let Some(state) = crate::backend::control::verified_state_for(key)
+            .ok()
+            .flatten()
+        {
+            verified_states.push(state);
+        }
+    }
+    if instance_keys.is_empty() {
+        if crate::backend::control::load_state()
+            .ok()
+            .flatten()
+            .is_some()
+        {
+            loaded_count += 1;
+        }
+        if let Some(state) = crate::backend::control::verified_state().ok().flatten() {
+            verified_states.push(state);
+        }
+    }
     checks.push(Check::new(
         "backend.supervisor",
-        if verified_state.is_some() {
+        if !verified_states.is_empty() {
             Status::Pass
-        } else if loaded_state.is_some() {
+        } else if loaded_count > 0 {
             Status::Warn
         } else {
             Status::Skipped
         },
         Severity::Warning,
-        if verified_state.is_some() {
-            "backend supervisor: running"
-        } else if loaded_state.is_some() {
-            "backend supervisor: stale or unauthenticated state"
+        if !verified_states.is_empty() {
+            "backend supervisor pool: running"
+        } else if loaded_count > 0 {
+            "backend supervisor pool: stale or unauthenticated state"
         } else {
             "backend supervisor: stopped (idle)"
         },
-        "the per-user supervisor starts on demand and stops after its idle timeout",
+        format!(
+            "{} running of {} recorded instance(s); limit {}",
+            verified_states.len(),
+            loaded_count,
+            config.backend.max_instances
+        ),
     ));
-    let loopback = verified_state.as_ref().is_some_and(|state| {
-        state.control_url.starts_with("http://127.0.0.1:")
-            && state.opencode_url.starts_with("http://127.0.0.1:")
-    });
+    let loopback = !verified_states.is_empty()
+        && verified_states.iter().all(|state| {
+            state.control_url.starts_with("http://127.0.0.1:")
+                && state.opencode_url.starts_with("http://127.0.0.1:")
+        });
     for (id, summary, pass_detail) in [
         (
             "backend.server.loopback",
@@ -790,14 +808,14 @@ fn append_backend_checks(
     ] {
         checks.push(Check::new(
             id,
-            if verified_state.is_some() && (id != "backend.server.loopback" || loopback) {
+            if !verified_states.is_empty() && (id != "backend.server.loopback" || loopback) {
                 Status::Pass
             } else {
                 Status::Skipped
             },
             Severity::Critical,
             summary,
-            if verified_state.is_some() {
+            if !verified_states.is_empty() {
                 pass_detail
             } else {
                 "not running; use `aishe doctor --live` for an active smoke test"
@@ -1007,11 +1025,7 @@ fn capability_checks(report: &capabilities::Report) -> Vec<Check> {
 }
 
 fn active_provider(config: &Config) -> &config::ProviderConfig {
-    if config.aishe.provider == "openai" {
-        &config.providers.openai
-    } else {
-        &config.providers.anthropic
-    }
+    config.active_provider_config()
 }
 
 pub fn resolved_paths() -> Paths {
@@ -1100,6 +1114,28 @@ fn apply_safe_fixes(paths: &Paths, config_valid: bool) -> Check {
             && crate::backend::control::remove_state_if_nonce(&state.startup_nonce).is_ok()
         {
             notes.push("removed verified-stale supervisor state".to_string());
+        }
+    }
+    if let Ok(keys) = crate::backend::supervisor::instance_keys() {
+        for key in keys {
+            if let Ok(Some(state)) = crate::backend::control::load_state_for(&key) {
+                if !crate::backend::control::state_processes_exist(&state)
+                    && crate::backend::control::remove_state_for_if_nonce(
+                        &key,
+                        &state.startup_nonce,
+                    )
+                    .is_ok()
+                {
+                    notes.push(format!(
+                        "removed stale supervisor state for {}",
+                        if state.connection_id.is_empty() {
+                            "legacy connection"
+                        } else {
+                            &state.connection_id
+                        }
+                    ));
+                }
+            }
         }
     }
     changed.sort();

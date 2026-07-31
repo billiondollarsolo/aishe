@@ -39,6 +39,7 @@ pub struct AgentRenderer {
     changed_files: usize,
     subagents: usize,
     reconnects: usize,
+    commands: Vec<String>,
     started_at: Instant,
     tools: HashMap<String, ActiveTool>,
 }
@@ -65,6 +66,7 @@ impl AgentRenderer {
             changed_files: 0,
             subagents: 0,
             reconnects: 0,
+            commands: Vec::new(),
             started_at: Instant::now(),
             tools: HashMap::new(),
         }
@@ -119,6 +121,9 @@ impl AgentRenderer {
             }
             AgentEvent::ToolStarted { call } => {
                 let label = tool_label(&call.name, &call.arguments);
+                if tool_name(&call.name) == "run command" {
+                    self.commands.push(label.clone());
+                }
                 self.tools.insert(
                     call.call_id.clone(),
                     ActiveTool {
@@ -306,6 +311,11 @@ impl AgentRenderer {
             AgentEvent::Aborted => self.line("  interrupted", "33"),
             AgentEvent::Completed { summary } if self.mode != OutputMode::Detailed => {
                 self.clear_status();
+                if self.mode == OutputMode::Focus {
+                    if let Some(commands) = self.command_summary() {
+                        self.line(&format!("  commands: {commands}"), "2");
+                    }
+                }
                 if let Some(activity) = self.activity_summary(true) {
                     self.line(&format!("  ✓ {activity}"), "32");
                     println!();
@@ -409,6 +419,29 @@ impl AgentRenderer {
             parts.push("Ctrl-O details next turn".into());
         }
         Some(parts.join(" · "))
+    }
+
+    fn command_summary(&self) -> Option<String> {
+        if self.commands.is_empty() {
+            return None;
+        }
+        let mut commands = Vec::new();
+        for label in &self.commands {
+            let command = label
+                .strip_prefix("run command  ")
+                .unwrap_or(label.as_str());
+            let command = safe(command, 96);
+            if commands.last() != Some(&command) {
+                commands.push(command);
+            }
+        }
+        let visible = commands.iter().take(3).cloned().collect::<Vec<_>>();
+        let remaining = commands.len().saturating_sub(visible.len());
+        let mut summary = visible.join("  |  ");
+        if remaining > 0 {
+            summary.push_str(&format!("  |  +{remaining} more"));
+        }
+        Some(safe(&summary, 320))
     }
 }
 
@@ -556,6 +589,16 @@ mod tests {
             completion,
             "  ✓ run command  docker ps  0.2s  container is running"
         );
+
+        renderer.commands = vec![
+            "run command  docker ps".into(),
+            "run command  docker inspect web".into(),
+            "run command  curl -fsS http://127.0.0.1:8080".into(),
+            "run command  docker logs web".into(),
+        ];
+        let commands = renderer.command_summary().unwrap();
+        assert!(commands.starts_with("docker ps  |  docker inspect web"));
+        assert!(commands.ends_with("+1 more"));
     }
 
     #[test]

@@ -293,12 +293,12 @@ fn provider_section(config: &mut Config) -> Result<()> {
     let service = &provider_catalog::SERVICES[index];
     match service.family {
         Family::Anthropic => {
-            config.aishe.provider = "anthropic".into();
-            provider_catalog::apply(service, &mut config.providers.anthropic);
+            config.select_connection("anthropic")?;
+            provider_catalog::apply(service, active_provider_mut(config));
         }
         Family::OpenAiCompatible => {
-            config.aishe.provider = "openai".into();
-            provider_catalog::apply(service, &mut config.providers.openai);
+            config.select_connection("openai")?;
+            provider_catalog::apply(service, active_provider_mut(config));
         }
     }
     let provider = active_provider_mut(config);
@@ -356,7 +356,75 @@ fn provider_section(config: &mut Config) -> Result<()> {
             crate::commands::display_safe(&provider.credential_profile())
         );
     }
-    let Some(model) = promptui::text("Model", &provider.model, |value| {
+    let oauth_provider =
+        crate::oauth::OAuthProvider::from_base_url(&active_provider(config).base_url);
+    let mut auth_options = vec!["API key".to_string()];
+    if oauth_provider.is_some() {
+        auth_options.push("OAuth profile".into());
+    }
+    if !active_provider(config).requires_auth() {
+        auth_options.push("No authentication".into());
+    }
+    auth_options.push("Legacy automatic resolution".into());
+    let current_auth = config
+        .active_connection()
+        .map(|connection| match connection.auth {
+            crate::config::ConnectionAuth::ApiKey { .. } => 0,
+            crate::config::ConnectionAuth::OAuth { .. } if oauth_provider.is_some() => 1,
+            crate::config::ConnectionAuth::None => auth_options
+                .iter()
+                .position(|value| value == "No authentication")
+                .unwrap_or(0),
+            crate::config::ConnectionAuth::Auto => auth_options.len() - 1,
+            _ => 0,
+        })
+        .unwrap_or(0);
+    match promptui::menu(
+        "Authentication method",
+        &auth_options,
+        current_auth,
+        true,
+        "Explicit methods never fall through to another credential type.",
+    )? {
+        MenuResult::Selected(index) if auth_options[index] == "OAuth profile" => {
+            let Some(profile) = promptui::text("OAuth profile label", "work", |value| {
+                crate::oauth::normalize_profile(value)?;
+                Ok(())
+            })?
+            else {
+                *config = before;
+                return Ok(());
+            };
+            if let Some(connection) = config.active_connection_mut() {
+                connection.auth = crate::config::ConnectionAuth::OAuth { profile };
+            }
+        }
+        MenuResult::Selected(index) if auth_options[index] == "No authentication" => {
+            if let Some(connection) = config.active_connection_mut() {
+                connection.auth = crate::config::ConnectionAuth::None;
+            }
+        }
+        MenuResult::Selected(index) if auth_options[index] == "Legacy automatic resolution" => {
+            if let Some(connection) = config.active_connection_mut() {
+                connection.auth = crate::config::ConnectionAuth::Auto;
+            }
+        }
+        MenuResult::Selected(_) => {
+            let settings = active_provider(config).clone();
+            if let Some(connection) = config.active_connection_mut() {
+                connection.auth = crate::config::ConnectionAuth::ApiKey {
+                    credential: Some(settings.credential_profile()),
+                    api_key_env: Some(settings.api_key_env),
+                };
+            }
+        }
+        _ => {
+            *config = before;
+            return Ok(());
+        }
+    }
+    let current_model = active_provider(config).model.clone();
+    let Some(model) = promptui::text("Model", &current_model, |value| {
         if value.trim().is_empty() {
             anyhow::bail!("model cannot be empty")
         }
@@ -370,14 +438,14 @@ fn provider_section(config: &mut Config) -> Result<()> {
         *config = before;
         return Ok(());
     }
-    provider.model = model;
+    active_provider_mut(config).model = model;
     if config.aishe.provider == "openai" {
         let transports = vec![
             "Auto — Responses for official OpenAI, Chat for compatible endpoints".into(),
             "Responses API".into(),
             "Chat Completions".into(),
         ];
-        let current = match config.providers.openai.transport.as_str() {
+        let current = match active_provider(config).transport.as_str() {
             "responses" => 1,
             "chat" => 2,
             _ => 0,
@@ -390,7 +458,7 @@ fn provider_section(config: &mut Config) -> Result<()> {
             "GPT-5.6 reasoning plus tools requires the Responses API.",
         )? {
             MenuResult::Selected(index) => {
-                config.providers.openai.transport = ["auto", "responses", "chat"][index].into()
+                active_provider_mut(config).transport = ["auto", "responses", "chat"][index].into()
             }
             _ => {
                 *config = before;
@@ -526,7 +594,9 @@ fn choose_status_position(config: &mut Config) -> Result<()> {
 
 fn choose_status_items(config: &mut Config) -> Result<()> {
     let supported = [
+        "connection",
         "model",
+        "reasoning",
         "mode",
         "backend",
         "scope",
@@ -577,7 +647,9 @@ fn print_status_preview(config: &Config) {
         .status_line_items
         .iter()
         .filter_map(|item| match item.as_str() {
+            "connection" => Some(config.active_connection_id()),
             "model" => Some(config.active_model()),
+            "reasoning" => Some(config.active_reasoning_effort()),
             "mode" => Some(config.aishe.mode.as_str()),
             "backend" => Some(config.backend.engine.as_str()),
             "scope" => Some(config.backend.default_scope.as_str()),
@@ -833,15 +905,14 @@ fn reset_advanced_section(config: &mut Config) {
 }
 
 fn active_provider(config: &Config) -> &crate::config::ProviderConfig {
-    if config.aishe.provider == "openai" {
-        &config.providers.openai
-    } else {
-        &config.providers.anthropic
-    }
+    config.active_provider_config()
 }
 
 fn active_provider_mut(config: &mut Config) -> &mut crate::config::ProviderConfig {
-    if config.aishe.provider == "openai" {
+    let id = config.active_connection_id().to_string();
+    if config.connections.contains_key(&id) {
+        &mut config.connections.get_mut(&id).expect("checked").settings
+    } else if config.aishe.provider == "openai" {
         &mut config.providers.openai
     } else {
         &mut config.providers.anthropic

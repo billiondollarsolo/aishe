@@ -94,8 +94,11 @@ struct Args {
     #[arg(long)]
     model: Option<String>,
     /// Override the provider for this session.
-    #[arg(long, value_parser = ["anthropic", "openai"])]
+    #[arg(long)]
     provider: Option<String>,
+    /// Override the named connection for this process.
+    #[arg(long)]
+    connection: Option<String>,
     /// Run a single input non-interactively and exit.
     #[arg(short = 'c')]
     command: Option<String>,
@@ -336,17 +339,33 @@ enum Cmd {
         #[arg(value_parser = ["focus", "compact", "detailed"])]
         value: Option<String>,
     },
-    /// Show or set provider reasoning effort; `auto` uses the model default.
+    /// Show or set reasoning effort for this shell; `auto` uses the model default.
     Reasoning {
         #[arg(value_parser = ["auto", "none", "low", "medium", "high", "xhigh", "max"])]
         value: Option<String>,
+        /// Persist the effort for this connection instead of this shell only.
+        #[arg(long)]
+        default: bool,
     },
-    /// Show or set the model for the active provider (saves it to your config).
-    Model { value: Option<String> },
+    /// Select a connection/model for this shell, or save it as the default.
+    Model {
+        value: Option<String>,
+        /// Select a named connection together with the model.
+        #[arg(long)]
+        connection: Option<String>,
+        /// Persist the selection instead of limiting it to this shell.
+        #[arg(long)]
+        default: bool,
+    },
+    /// Manage named provider/authentication connections.
+    Connection {
+        #[command(subcommand)]
+        cmd: ConnectionCmd,
+    },
     /// Show or set the provider (with a value, saves it to your config).
     Provider {
         /// Set anthropic/openai, or use `test` to validate the active provider.
-        #[arg(value_parser = ["anthropic", "openai", "test"])]
+        #[arg()]
         value: Option<String>,
         /// With `provider test`, make minimal text/structured/tool/stream requests.
         #[arg(long)]
@@ -357,9 +376,12 @@ enum Cmd {
     },
     /// List models returned by the configured endpoint.
     Models {
-        /// Provider block to query (defaults to the active provider).
-        #[arg(long, value_parser = ["anthropic", "openai"])]
+        /// Unique provider family or connection to query (defaults to active).
+        #[arg(long)]
         provider: Option<String>,
+        /// Named connection to query (supports duplicate provider accounts).
+        #[arg(long, conflicts_with = "provider")]
+        connection: Option<String>,
         /// Ignore a cached capability record and request the endpoint again.
         #[arg(long)]
         refresh: bool,
@@ -432,8 +454,8 @@ enum Cmd {
     },
     /// Summarize token usage and estimated cost from the audit log.
     Usage {
-        /// Group by: model (default), day, or session.
-        #[arg(long, value_parser = ["model", "day", "session"])]
+        /// Group by: model (default), connection, day, or session.
+        #[arg(long, value_parser = ["model", "connection", "day", "session"])]
         by: Option<String>,
         /// Only entries newer than this, e.g. 30m, 2h, 3d, 1w.
         #[arg(long)]
@@ -515,6 +537,81 @@ enum Cmd {
         /// Re-run the recorded commands through the safety gate (not the model).
         #[arg(long)]
         replay: bool,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+enum ConnectionCmd {
+    /// List configured connections without exposing secrets.
+    List {
+        #[arg(long)]
+        json: bool,
+    },
+    /// Show one connection and its authentication state.
+    Show {
+        id: Option<String>,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Add a connection.
+    Add {
+        id: String,
+        #[arg(long)]
+        provider: String,
+        #[arg(long)]
+        label: Option<String>,
+        #[arg(long)]
+        base_url: Option<String>,
+        #[arg(long)]
+        model: Option<String>,
+        #[arg(long, default_value = "auto", value_parser = ["auto", "responses", "chat"])]
+        transport: String,
+        #[arg(long, default_value = "api-key", value_parser = ["api-key", "oauth", "none", "auto"])]
+        auth: String,
+        #[arg(long)]
+        profile: Option<String>,
+        #[arg(long)]
+        credential: Option<String>,
+        #[arg(long)]
+        key_env: Option<String>,
+        #[arg(long, value_parser = ["auto", "none", "low", "medium", "high", "xhigh", "max"])]
+        reasoning: Option<String>,
+    },
+    /// Edit connection metadata, endpoint, model, or authentication binding.
+    Edit {
+        id: String,
+        #[arg(long)]
+        label: Option<String>,
+        #[arg(long)]
+        base_url: Option<String>,
+        #[arg(long)]
+        model: Option<String>,
+        #[arg(long, value_parser = ["auto", "responses", "chat"])]
+        transport: Option<String>,
+        #[arg(long, value_parser = ["api-key", "oauth", "none", "auto"])]
+        auth: Option<String>,
+        #[arg(long)]
+        profile: Option<String>,
+        #[arg(long)]
+        credential: Option<String>,
+        #[arg(long)]
+        key_env: Option<String>,
+        #[arg(long, value_parser = ["auto", "none", "low", "medium", "high", "xhigh", "max"])]
+        reasoning: Option<String>,
+    },
+    /// Remove exactly one connection. Credentials remain in their stores.
+    Remove {
+        id: String,
+        #[arg(long)]
+        yes: bool,
+    },
+    /// Select a connection in this shell or save it as the durable default.
+    Use {
+        id: String,
+        #[arg(long)]
+        model: Option<String>,
+        #[arg(long)]
+        default: bool,
     },
 }
 
@@ -642,58 +739,7 @@ fn backend_command(command: &BackendCmd) -> Result<u8> {
     match command {
         BackendCmd::Status { json } => {
             let status = manager.status();
-            let loaded = aishe::backend::control::load_state();
-            let verified = aishe::backend::control::verified_state();
-            let (supervisor, supervisor_text) = match verified {
-                Ok(Some(state)) => {
-                    let loopback = state.control_url.starts_with("http://127.0.0.1:")
-                        && state.opencode_url.starts_with("http://127.0.0.1:");
-                    (
-                        serde_json::json!({
-                            "state": "running",
-                            "supervisor_pid": state.supervisor_pid,
-                            "opencode_pid": state.opencode_pid,
-                            "runtime_version": state.runtime_version,
-                            "plugin_sha256": state.plugin_sha256,
-                            "provider_id": state.provider_id,
-                            "model_id": state.model_id,
-                            "started_at_ms": state.started_at_ms,
-                            "loopback": loopback
-                        }),
-                        format!(
-                            "supervisor: running · pid {} · OpenCode pid {} · {}/{}",
-                            state.supervisor_pid,
-                            state.opencode_pid,
-                            aishe::commands::display_safe(&state.provider_id),
-                            aishe::commands::display_safe(&state.model_id)
-                        ),
-                    )
-                }
-                Ok(None) => match loaded {
-                    Ok(Some(_)) => (
-                        serde_json::json!({"state":"stale"}),
-                        "supervisor: stale state (Doctor can repair it)".into(),
-                    ),
-                    Ok(None) => (
-                        serde_json::json!({"state":"stopped"}),
-                        "supervisor: stopped (starts on the next AI turn)".into(),
-                    ),
-                    Err(error) => {
-                        let detail = aishe::redact::redact(&error.to_string());
-                        (
-                            serde_json::json!({"state":"invalid","detail":detail}),
-                            format!("supervisor: invalid state · {detail}"),
-                        )
-                    }
-                },
-                Err(error) => {
-                    let detail = aishe::redact::redact(&error.to_string());
-                    (
-                        serde_json::json!({"state":"invalid","detail":detail}),
-                        format!("supervisor: invalid state · {detail}"),
-                    )
-                }
-            };
+            let (supervisor, supervisor_lines) = backend_instance_status()?;
             if *json {
                 println!(
                     "{}",
@@ -727,7 +773,9 @@ fn backend_command(command: &BackendCmd) -> Result<u8> {
                         println!("next: aishe backend repair");
                     }
                 }
-                println!("{supervisor_text}");
+                for line in supervisor_lines {
+                    println!("{line}");
+                }
             }
             Ok(if matches!(status, RuntimeStatus::Ready { .. }) {
                 0
@@ -820,6 +868,126 @@ fn backend_command(command: &BackendCmd) -> Result<u8> {
             Ok(0)
         }
     }
+}
+
+fn backend_instance_status() -> Result<(serde_json::Value, Vec<String>)> {
+    let mut rows = Vec::new();
+    let mut lines = Vec::new();
+    let keys = aishe::backend::supervisor::instance_keys()?;
+    for key in &keys {
+        let loaded = aishe::backend::control::load_state_for(key);
+        match aishe::backend::control::verified_state_for(key) {
+            Ok(Some(state)) => {
+                let loopback = state.control_url.starts_with("http://127.0.0.1:")
+                    && state.opencode_url.starts_with("http://127.0.0.1:");
+                let connection = if state.connection_id.is_empty() {
+                    "legacy"
+                } else {
+                    state.connection_id.as_str()
+                };
+                rows.push(serde_json::json!({
+                    "key": key,
+                    "state": "running",
+                    "connection_id": state.connection_id,
+                    "supervisor_pid": state.supervisor_pid,
+                    "opencode_pid": state.opencode_pid,
+                    "runtime_version": state.runtime_version,
+                    "plugin_sha256": state.plugin_sha256,
+                    "provider_id": state.provider_id,
+                    "model_id": state.model_id,
+                    "started_at_ms": state.started_at_ms,
+                    "loopback": loopback
+                }));
+                lines.push(format!(
+                    "supervisor: running · connection {} · pid {} · OpenCode pid {} · {}/{}",
+                    aishe::commands::display_safe(connection),
+                    state.supervisor_pid,
+                    state.opencode_pid,
+                    aishe::commands::display_safe(&state.provider_id),
+                    aishe::commands::display_safe(&state.model_id)
+                ));
+            }
+            Ok(None) => match loaded {
+                Ok(Some(state)) => {
+                    rows.push(serde_json::json!({
+                        "key": key,
+                        "state": "stale",
+                        "connection_id": state.connection_id,
+                        "provider_id": state.provider_id,
+                        "model_id": state.model_id,
+                    }));
+                    lines.push(format!(
+                        "supervisor: stale · connection {} (Doctor can repair it)",
+                        aishe::commands::display_safe(if state.connection_id.is_empty() {
+                            "legacy"
+                        } else {
+                            &state.connection_id
+                        })
+                    ));
+                }
+                Ok(None) => {}
+                Err(error) => {
+                    let detail = aishe::redact::redact(&error.to_string());
+                    rows.push(serde_json::json!({"key":key,"state":"invalid","detail":detail}));
+                    lines.push(format!("supervisor: invalid · {detail}"));
+                }
+            },
+            Err(error) => {
+                let detail = aishe::redact::redact(&error.to_string());
+                rows.push(serde_json::json!({"key":key,"state":"invalid","detail":detail}));
+                lines.push(format!("supervisor: invalid · {detail}"));
+            }
+        }
+    }
+
+    if keys.is_empty() {
+        match (
+            aishe::backend::control::load_state(),
+            aishe::backend::control::verified_state(),
+        ) {
+            (_, Ok(Some(state))) => {
+                rows.push(serde_json::json!({
+                    "state":"running",
+                    "connection_id":state.connection_id,
+                    "provider_id":state.provider_id,
+                    "model_id":state.model_id,
+                    "supervisor_pid":state.supervisor_pid,
+                    "opencode_pid":state.opencode_pid,
+                    "legacy_layout":true,
+                }));
+                lines.push("supervisor: running in legacy layout".into());
+            }
+            (Ok(Some(_)), Ok(None)) => {
+                rows.push(serde_json::json!({"state":"stale","legacy_layout":true}));
+                lines.push("supervisor: stale legacy state (Doctor can repair it)".into());
+            }
+            (Ok(None), Ok(None)) => {
+                lines.push("supervisor: stopped (starts on the next AI turn)".into());
+            }
+            (Err(error), _) | (_, Err(error)) => {
+                let detail = aishe::redact::redact(&error.to_string());
+                rows.push(
+                    serde_json::json!({"state":"invalid","detail":detail,"legacy_layout":true}),
+                );
+                lines.push(format!("supervisor: invalid state · {detail}"));
+            }
+        }
+    }
+    let running = rows
+        .iter()
+        .filter(|row| row.get("state").and_then(serde_json::Value::as_str) == Some("running"))
+        .count();
+    let overall = if running > 0 {
+        "running"
+    } else if rows.is_empty() {
+        "stopped"
+    } else {
+        "stale"
+    };
+    Ok((
+        serde_json::json!({"state":overall,"active_instances":running,"instances":rows}),
+        lines,
+    ))
 }
 
 fn uninstall_command(
@@ -1144,11 +1312,17 @@ fn run() -> Result<u8> {
         let _project_overlay = std::env::current_dir()
             .ok()
             .and_then(|cwd| config.apply_project_overlay(&cwd));
+        let _ = aishe::connection::apply_shell_selection(&mut config);
         config.apply_overrides(
             args.mode.as_deref(),
             args.provider.as_deref(),
             args.model.as_deref(),
-        );
+        )?;
+        apply_connection_flag(
+            &mut config,
+            args.connection.as_deref(),
+            args.model.as_deref(),
+        )?;
         return match &args.cmd {
             Some(Cmd::Log {
                 session,
@@ -1187,12 +1361,18 @@ fn run() -> Result<u8> {
     let project_overlay = std::env::current_dir()
         .ok()
         .and_then(|cwd| config.apply_project_overlay(&cwd));
+    aishe::connection::apply_shell_selection(&mut config)?;
     // CLI flags win over the config file (which wins over compiled defaults).
     config.apply_overrides(
         args.mode.as_deref(),
         args.provider.as_deref(),
         args.model.as_deref(),
-    );
+    )?;
+    apply_connection_flag(
+        &mut config,
+        args.connection.as_deref(),
+        args.model.as_deref(),
+    )?;
     // Administrator policy is the final, read-only constraint layer. It can
     // reduce authority or reject a provider/model, never inject credentials.
     aishe::policy::constrain(&mut config)?;
@@ -1269,10 +1449,22 @@ fn run() -> Result<u8> {
             return Ok(set_or_show("network", value.as_deref(), &config))
         }
         Some(Cmd::Output { value }) => return Ok(set_or_show("output", value.as_deref(), &config)),
-        Some(Cmd::Reasoning { value }) => {
-            return Ok(set_or_show("reasoning", value.as_deref(), &config))
+        Some(Cmd::Reasoning { value, default }) => {
+            return Ok(reasoning_command(&config, value.as_deref(), *default))
         }
-        Some(Cmd::Model { value }) => return Ok(set_or_show("model", value.as_deref(), &config)),
+        Some(Cmd::Model {
+            value,
+            connection,
+            default,
+        }) => {
+            return Ok(model_command(
+                &config,
+                value.as_deref(),
+                connection.as_deref(),
+                *default,
+            ))
+        }
+        Some(Cmd::Connection { cmd }) => return connection_command(&config, cmd),
         Some(Cmd::Provider { value, live, json }) => {
             if value.as_deref() == Some("test") {
                 let report = aishe::capabilities::validate(&config, *live);
@@ -1297,6 +1489,7 @@ fn run() -> Result<u8> {
         }
         Some(Cmd::Models {
             provider,
+            connection,
             refresh,
             json,
         }) => {
@@ -1305,7 +1498,10 @@ fn run() -> Result<u8> {
             }
             return Ok(models_command(
                 &config,
-                provider.as_deref().unwrap_or(&config.aishe.provider),
+                connection
+                    .as_deref()
+                    .or(provider.as_deref())
+                    .unwrap_or_else(|| config.active_connection_id()),
                 *json,
             ));
         }
@@ -1650,33 +1846,14 @@ fn shell_syntax_ok(executor: &Executor, cmd: &str) -> bool {
 /// shell commands still work; when the active provider's key is absent, name
 /// the exact environment variable at the point an LLM feature is requested.
 fn print_llm_unavailable(config: &Config) {
-    let provider = match config.aishe.provider.as_str() {
-        "anthropic" => Some(&config.providers.anthropic),
-        "openai" => Some(&config.providers.openai),
-        _ => None,
-    };
-    if let Some(provider) = provider {
-        let profile = provider.credential_profile();
-        match aishe::credentials::resolve(provider) {
-            Ok(resolved) if !resolved.source.is_available() => {
-                eprintln!(
-                    "aishe: API key missing for credential profile '{profile}' — \
-                     run `aishe auth set {profile}` (or set ${} for an override)",
-                    provider.api_key_env
-                );
-                return;
-            }
-            Err(error) => {
-                eprintln!(
-                    "aishe: credential store unavailable — {}",
-                    aishe::redact::redact(&error.to_string())
-                );
-                return;
-            }
-            _ => {}
-        }
+    if let Err(error) = aishe::connection::resolve(config) {
+        eprintln!("aishe: {}", aishe::redact::redact(&error.to_string()));
+        return;
     }
-    eprintln!("aishe: LLM not configured — run `aishe doctor` for details");
+    eprintln!(
+        "aishe: connection '{}' is not available through the selected backend — run `aishe doctor` for details",
+        aishe::commands::display_safe(config.active_connection_id())
+    );
 }
 
 static YOLO_WORKSPACE_ACCEPTED: AtomicBool = AtomicBool::new(false);
@@ -2528,7 +2705,7 @@ fn one_shot(
                         status_command(config, false);
                     }
                     Some("reasoning") => {
-                        set_or_show("reasoning", tokens.get(2).map(String::as_str), config);
+                        reasoning_command(config, tokens.get(2).map(String::as_str), false);
                     }
                     Some("log") => {
                         log_command(config, None, None, None, None, Some(20), false);
@@ -2827,6 +3004,9 @@ fn print_mcp_listing(mcp: &aishe::mcp::McpRegistry) {
 
 const PRIMARY_SLASH_COMMANDS: &[(&str, &str)] = &[
     ("/help", "show this command index"),
+    ("/model", "choose a connection and model for this shell"),
+    ("/provider", "open the connection and model picker"),
+    ("/auth", "show authentication for the active connection"),
     ("/status", "model, mode, scope, spend, and audit state"),
     ("/usage", "live token and cost totals for this shell"),
     ("/log", "last 20 audit events and tool actions"),
@@ -2866,11 +3046,36 @@ fn status_command(config: &Config, json: bool) -> u8 {
         .filter(|value| !value.is_empty())
         .and_then(|path| aishe::usagelog::summarize(std::path::Path::new(&path), &config.pricing));
     let metrics = live_status_metrics();
+    let connection_id = session_value("AISHE_CONNECTION", config.active_connection_id());
     let model = session_value("AISHE_MODEL", config.active_model());
     let mode = session_value("AISHE_MODE", &config.aishe.mode);
     let scope = session_value("AISHE_SCOPE", &config.backend.default_scope);
     let output = session_value("AISHE_AGENT_OUTPUT", &config.backend.output);
-    let reasoning = config.aishe.reasoning_effort.clone();
+    let reasoning = session_value("AISHE_REASONING", config.active_reasoning_effort());
+    let connection = config
+        .connections
+        .get(&connection_id)
+        .or_else(|| config.active_connection());
+    let connection_label = connection
+        .map(|value| value.label.clone())
+        .unwrap_or_else(|| connection_id.clone());
+    let provider = connection
+        .map(|value| value.provider.clone())
+        .unwrap_or_else(|| config.active_provider_name().to_string());
+    let auth = connection
+        .map(|value| value.auth_label())
+        .unwrap_or_default();
+    let auth_state = connection.map(connection_auth_state).unwrap_or_default();
+    let endpoint_host = connection
+        .and_then(|value| url::Url::parse(&value.settings.base_url).ok())
+        .and_then(|url| url.host_str().map(ToOwned::to_owned))
+        .unwrap_or_else(|| "unknown".into());
+    let backend_readiness = backend_readiness(config);
+    let selection_scope = if aishe::connection::selection_path().is_some() {
+        "this shell"
+    } else {
+        "default"
+    };
     let status_position = if config.aishe.status_line {
         config.aishe.status_line_position.as_str()
     } else {
@@ -2888,8 +3093,20 @@ fn status_command(config: &Config, json: bool) -> u8 {
             "{}",
             serde_json::to_string_pretty(&serde_json::json!({
                 "model": model,
+                "connection": {
+                    "id": connection_id,
+                    "label": connection_label,
+                    "provider": provider,
+                    "endpoint_host": endpoint_host,
+                    "auth": auth,
+                    "auth_state": auth_state,
+                    "selection_scope": selection_scope,
+                },
                 "mode": mode,
-                "backend": config.backend.engine,
+                "backend": {
+                    "engine": config.backend.engine,
+                    "readiness": backend_readiness,
+                },
                 "scope": scope,
                 "network": config.backend.workspace_network,
                 "output": output,
@@ -2910,11 +3127,25 @@ fn status_command(config: &Config, json: bool) -> u8 {
     }
 
     println!("aishe status");
+    println!(
+        "  connection: {} ({}) · provider: {} · endpoint: {} · {}",
+        aishe::commands::display_safe(&connection_label),
+        aishe::commands::display_safe(&connection_id),
+        aishe::commands::display_safe(&provider),
+        aishe::commands::display_safe(&endpoint_host),
+        selection_scope,
+    );
+    println!(
+        "  auth: {} · {}",
+        aishe::commands::display_safe(&auth),
+        aishe::commands::display_safe(&auth_state),
+    );
     println!("  model: {}", aishe::commands::display_safe(&model));
     println!(
-        "  mode: {} · backend: {} · scope: {} · network: {}",
+        "  mode: {} · backend: {} ({}) · scope: {} · network: {}",
         aishe::commands::display_safe(&mode),
         aishe::commands::display_safe(&config.backend.engine),
+        aishe::commands::display_safe(&backend_readiness),
         aishe::commands::display_safe(&scope),
         aishe::commands::display_safe(&config.backend.workspace_network),
     );
@@ -2953,8 +3184,33 @@ fn status_command(config: &Config, json: bool) -> u8 {
     } else {
         println!("  budget: unlimited");
     }
-    println!("  controls: Ctrl-O details · Shift-Tab mode · /help commands");
+    println!("  controls: /model switch · Ctrl-O details · Shift-Tab mode · /help commands");
     0
+}
+
+fn backend_readiness(config: &Config) -> String {
+    if config.backend.engine != "opencode" {
+        return "native compatibility".into();
+    }
+    let runtime = match aishe::backend::RuntimeManager::new().map(|manager| manager.status()) {
+        Ok(aishe::backend::RuntimeStatus::Ready { .. }) => "runtime ready",
+        Ok(aishe::backend::RuntimeStatus::Missing { .. }) => "runtime missing",
+        Ok(aishe::backend::RuntimeStatus::Invalid { .. }) => "runtime invalid",
+        Err(_) => "runtime unavailable",
+    };
+    let instances = aishe::backend::supervisor::instance_keys()
+        .map(|keys| {
+            keys.into_iter()
+                .filter(|key| {
+                    aishe::backend::control::load_state_for(key)
+                        .ok()
+                        .flatten()
+                        .is_some_and(|state| aishe::backend::control::state_processes_exist(&state))
+                })
+                .count()
+        })
+        .unwrap_or(0);
+    format!("{runtime}, {instances} active")
 }
 
 fn session_value(name: &str, fallback: &str) -> String {
@@ -3061,6 +3317,544 @@ fn print_usage_summary(provider: Option<&dyn Provider>, config: &Config) {
     }
 }
 
+fn apply_connection_flag(
+    config: &mut Config,
+    connection: Option<&str>,
+    model: Option<&str>,
+) -> Result<()> {
+    if let Some(value) = connection {
+        let id = config.resolve_connection_id(value)?;
+        config.select_connection(&id)?;
+        if let Some(model) = model {
+            aishe::connection::validate_model_id(model)?;
+            config.set_active_model(model.to_string());
+        }
+    }
+    Ok(())
+}
+
+fn reasoning_command(effective: &Config, value: Option<&str>, save_default: bool) -> u8 {
+    let Some(value) = value else {
+        println!(
+            "reasoning: {} ({})",
+            effective.active_reasoning_effort(),
+            if aishe::connection::selection_path().is_some() {
+                "this shell"
+            } else {
+                "saved default"
+            }
+        );
+        return 0;
+    };
+    if let Err(error) = aishe::connection::validate_reasoning(value) {
+        eprintln!("aishe: {error}");
+        return 1;
+    }
+    let mut selected = effective.clone();
+    selected.set_active_reasoning_effort(value.to_string());
+    let shell_local = aishe::connection::selection_path().is_some() && !save_default;
+    let result = if shell_local {
+        aishe::connection::write_shell_selection(&selected).map(|_| ())
+    } else {
+        (|| -> Result<()> {
+            let mut durable = Config::load_or_init()?;
+            durable.select_connection(selected.active_connection_id())?;
+            durable.set_active_model(selected.active_model().to_string());
+            durable.set_active_reasoning_effort(value.to_string());
+            durable.save()?;
+            let _ = aishe::connection::write_shell_selection(&selected);
+            Ok(())
+        })()
+    };
+    if let Err(error) = result {
+        eprintln!("aishe: {error}");
+        return 1;
+    }
+    println!(
+        "reasoning = {} ({})",
+        value,
+        if shell_local {
+            "this shell"
+        } else {
+            "saved default"
+        }
+    );
+    0
+}
+
+fn model_command(
+    effective: &Config,
+    value: Option<&str>,
+    requested_connection: Option<&str>,
+    save_default: bool,
+) -> u8 {
+    let mut selected = effective.clone();
+    let mut save_default = save_default;
+    if value == Some("default") && requested_connection.is_none() {
+        let durable = match Config::load_or_init() {
+            Ok(config) => config,
+            Err(error) => {
+                eprintln!("aishe: {error}");
+                return 1;
+            }
+        };
+        if let Err(error) = aishe::connection::write_shell_selection(&durable) {
+            eprintln!("aishe: {error}");
+            return 1;
+        }
+        println!(
+            "connection = {} · model = {} (restored saved default)",
+            aishe::commands::display_safe(durable.active_connection_id()),
+            aishe::commands::display_safe(durable.active_model())
+        );
+        return 0;
+    }
+    if value.is_none() && requested_connection.is_none() {
+        if !std::io::stdin().is_terminal() || !std::io::stdout().is_terminal() {
+            println!(
+                "connection: {} · model: {} · reasoning: {} ({})",
+                aishe::commands::display_safe(selected.active_connection_id()),
+                aishe::commands::display_safe(selected.active_model()),
+                aishe::commands::display_safe(selected.active_reasoning_effort()),
+                if aishe::connection::selection_path().is_some() {
+                    "this shell"
+                } else {
+                    "default"
+                }
+            );
+            println!("use `aishe model MODEL --connection ID` or run in a terminal for the picker");
+            return 0;
+        }
+        let mut choices = Vec::new();
+        for (id, connection) in &selected.connections {
+            let models = aishe::capabilities::known_models(&selected, id)
+                .unwrap_or_else(|_| vec![connection.settings.model.clone()]);
+            for model in models {
+                choices.push((id.clone(), model));
+            }
+        }
+        let rows: Vec<String> = choices
+            .iter()
+            .map(|(id, model)| {
+                let connection = &selected.connections[id];
+                format!(
+                    "{:<20} {:<24} {}",
+                    connection.label,
+                    connection.auth_label(),
+                    model
+                )
+            })
+            .collect();
+        let default = choices
+            .iter()
+            .position(|(id, model)| {
+                id == selected.active_connection_id() && model == selected.active_model()
+            })
+            .unwrap_or(0);
+        let result =
+            match aishe::promptui::filter_picker("Select a connection and model", &rows, default) {
+                Ok(result) => result,
+                Err(error) => {
+                    eprintln!("aishe: {error:#}");
+                    return 1;
+                }
+            };
+        let index = match result {
+            aishe::promptui::PickerResult::Use(index) => index,
+            aishe::promptui::PickerResult::SaveDefault(index) => {
+                save_default = true;
+                index
+            }
+            aishe::promptui::PickerResult::Cancel => {
+                println!("model selection cancelled");
+                return 0;
+            }
+        };
+        if let Err(error) = selected.select_connection(&choices[index].0) {
+            eprintln!("aishe: {error}");
+            return 1;
+        }
+        selected.set_active_model(choices[index].1.clone());
+    } else {
+        if let Some(connection) = requested_connection {
+            let id = match selected.resolve_connection_id(connection) {
+                Ok(id) => id,
+                Err(error) => {
+                    eprintln!("aishe: {error}");
+                    return 1;
+                }
+            };
+            if let Err(error) = selected.select_connection(&id) {
+                eprintln!("aishe: {error}");
+                return 1;
+            }
+        }
+        if let Some(value) = value {
+            if requested_connection.is_none() {
+                if let Some((candidate, model)) = value.split_once('/') {
+                    let connection_prefix = selected.connections.contains_key(candidate)
+                        || selected.connections.values().any(|connection| {
+                            connection.label.eq_ignore_ascii_case(candidate)
+                                || connection.provider.eq_ignore_ascii_case(candidate)
+                        });
+                    if connection_prefix {
+                        let id = match selected.resolve_connection_id(candidate) {
+                            Ok(id) => id,
+                            Err(error) => {
+                                eprintln!("aishe: {error}");
+                                return 1;
+                            }
+                        };
+                        if let Err(error) = selected.select_connection(&id) {
+                            eprintln!("aishe: {error}");
+                            return 1;
+                        }
+                        if let Err(error) = aishe::connection::validate_model_id(model) {
+                            eprintln!("aishe: {error}");
+                            return 1;
+                        }
+                        selected.set_active_model(model.to_string());
+                    } else if let Err(error) = aishe::connection::validate_model_id(value) {
+                        eprintln!("aishe: {error}");
+                        return 1;
+                    } else {
+                        selected.set_active_model(value.to_string());
+                    }
+                } else if selected.connections.contains_key(value) {
+                    if let Err(error) = selected.select_connection(value) {
+                        eprintln!("aishe: {error}");
+                        return 1;
+                    }
+                } else if let Err(error) = aishe::connection::validate_model_id(value) {
+                    eprintln!("aishe: {error}");
+                    return 1;
+                } else {
+                    selected.set_active_model(value.to_string());
+                }
+            } else if let Err(error) = aishe::connection::validate_model_id(value) {
+                eprintln!("aishe: {error}");
+                return 1;
+            } else {
+                selected.set_active_model(value.to_string());
+            }
+        }
+    }
+
+    let shell_local = aishe::connection::selection_path().is_some() && !save_default;
+    let result = if shell_local {
+        aishe::connection::write_shell_selection(&selected).map(|_| ())
+    } else {
+        (|| -> Result<()> {
+            let mut durable = Config::load_or_init()?;
+            let id = selected.active_connection_id();
+            durable.select_connection(id)?;
+            durable.set_active_model(selected.active_model().to_string());
+            durable.set_active_reasoning_effort(selected.active_reasoning_effort().to_string());
+            durable.save()?;
+            let _ = aishe::connection::write_shell_selection(&selected);
+            Ok(())
+        })()
+    };
+    if let Err(error) = result {
+        eprintln!("aishe: {error}");
+        return 1;
+    }
+    println!(
+        "connection = {} · model = {} ({})",
+        aishe::commands::display_safe(selected.active_connection_id()),
+        aishe::commands::display_safe(selected.active_model()),
+        if shell_local {
+            "this shell"
+        } else {
+            "saved default"
+        }
+    );
+    0
+}
+
+fn connection_command(effective: &Config, command: &ConnectionCmd) -> Result<u8> {
+    match command {
+        ConnectionCmd::List { json } => {
+            if *json {
+                let rows: Vec<_> = effective
+                    .connections
+                    .iter()
+                    .map(|(id, connection)| {
+                        serde_json::json!({
+                            "id": id,
+                            "label": connection.label,
+                            "provider": connection.provider,
+                            "model": connection.settings.model,
+                            "auth": connection.auth_label(),
+                            "active": id == effective.active_connection_id(),
+                        })
+                    })
+                    .collect();
+                println!("{}", serde_json::to_string_pretty(&rows)?);
+            } else {
+                println!("connections:");
+                for (id, connection) in &effective.connections {
+                    println!(
+                        "  {} {:<20} {:<12} {:<24} {}",
+                        if id == effective.active_connection_id() {
+                            ">"
+                        } else {
+                            " "
+                        },
+                        aishe::commands::display_safe(id),
+                        aishe::commands::display_safe(&connection.provider),
+                        aishe::commands::display_safe(&connection.settings.model),
+                        aishe::commands::display_safe(&connection.auth_label()),
+                    );
+                }
+            }
+            Ok(0)
+        }
+        ConnectionCmd::Show { id, json } => {
+            let id = id
+                .as_deref()
+                .map(|id| effective.resolve_connection_id(id))
+                .transpose()?
+                .unwrap_or_else(|| effective.active_connection_id().to_string());
+            let connection = &effective.connections[&id];
+            let auth_state = connection_auth_state(connection);
+            if *json {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&serde_json::json!({
+                        "id": id,
+                        "label": connection.label,
+                        "provider": connection.provider,
+                        "base_url": connection.settings.base_url,
+                        "model": connection.settings.model,
+                        "transport": connection.settings.transport,
+                        "reasoning_effort": connection.reasoning_effort,
+                        "auth": connection.auth,
+                        "auth_state": auth_state,
+                        "active": id == effective.active_connection_id(),
+                    }))?
+                );
+            } else {
+                println!("connection: {id} ({})", connection.label);
+                println!(
+                    "  provider: {} · model: {} · reasoning: {}",
+                    connection.provider,
+                    connection.settings.model,
+                    connection
+                        .reasoning_effort
+                        .as_deref()
+                        .unwrap_or(&effective.aishe.reasoning_effort)
+                );
+                println!(
+                    "  endpoint: {} · transport: {}",
+                    connection.settings.base_url, connection.settings.transport
+                );
+                println!("  auth: {} · state: {auth_state}", connection.auth_label());
+            }
+            Ok(0)
+        }
+        ConnectionCmd::Add {
+            id,
+            provider,
+            label,
+            base_url,
+            model,
+            transport,
+            auth,
+            profile,
+            credential,
+            key_env,
+            reasoning,
+        } => {
+            let id = aishe::config::normalize_connection_id(id)?;
+            let mut config = Config::load_or_init()?;
+            if config.connections.contains_key(&id) {
+                anyhow::bail!("connection '{id}' already exists");
+            }
+            let mut settings = if provider.eq_ignore_ascii_case("anthropic") {
+                config.providers.anthropic.clone()
+            } else {
+                config.providers.openai.clone()
+            };
+            if let Some(service) = aishe::provider_catalog::find(provider) {
+                aishe::provider_catalog::apply(service, &mut settings);
+            }
+            if let Some(value) = base_url {
+                settings.base_url = aishe::provider_catalog::normalize_base_url(value);
+            }
+            if let Some(value) = model {
+                aishe::connection::validate_model_id(value)?;
+                settings.model.clone_from(value);
+            }
+            settings.transport.clone_from(transport);
+            let connection_auth = build_connection_auth(
+                auth,
+                profile.as_deref(),
+                credential.as_deref(),
+                key_env.as_deref(),
+                &settings,
+            )?;
+            config.connections.insert(
+                id.clone(),
+                aishe::config::ConnectionConfig {
+                    provider: provider.to_ascii_lowercase(),
+                    label: label.clone().unwrap_or_else(|| id.clone()),
+                    settings,
+                    auth: connection_auth,
+                    reasoning_effort: reasoning.clone(),
+                },
+            );
+            config.validate_connections()?;
+            config.save()?;
+            println!("connection '{id}' added");
+            Ok(0)
+        }
+        ConnectionCmd::Edit {
+            id,
+            label,
+            base_url,
+            model,
+            transport,
+            auth,
+            profile,
+            credential,
+            key_env,
+            reasoning,
+        } => {
+            let mut config = Config::load_or_init()?;
+            let id = config.resolve_connection_id(id)?;
+            let old_connection = config.connections[&id].clone();
+            let connection = config
+                .connections
+                .get_mut(&id)
+                .context("connection disappeared")?;
+            if let Some(value) = label {
+                if value.trim().is_empty() {
+                    anyhow::bail!("connection label cannot be empty");
+                }
+                connection.label.clone_from(value);
+            }
+            if let Some(value) = base_url {
+                connection.settings.base_url = aishe::provider_catalog::normalize_base_url(value);
+            }
+            if let Some(value) = model {
+                aishe::connection::validate_model_id(value)?;
+                connection.settings.model.clone_from(value);
+            }
+            if let Some(value) = transport {
+                connection.settings.transport.clone_from(value);
+            }
+            if let Some(value) = reasoning {
+                aishe::connection::validate_reasoning(value)?;
+                connection.reasoning_effort = Some(value.clone());
+            }
+            if let Some(kind) = auth {
+                connection.auth = build_connection_auth(
+                    kind,
+                    profile.as_deref(),
+                    credential.as_deref(),
+                    key_env.as_deref(),
+                    &connection.settings,
+                )?;
+            } else {
+                match &mut connection.auth {
+                    aishe::config::ConnectionAuth::OAuth { profile: current } => {
+                        if let Some(value) = profile {
+                            current.clone_from(value);
+                        }
+                    }
+                    aishe::config::ConnectionAuth::ApiKey {
+                        credential: current,
+                        api_key_env: current_env,
+                    } => {
+                        if let Some(value) = credential {
+                            *current = Some(value.clone());
+                        }
+                        if let Some(value) = key_env {
+                            *current_env = Some(value.clone());
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            config.validate_connections()?;
+            config.save()?;
+            let _ = aishe::connection::invalidate_connection(&id, &old_connection);
+            println!("connection '{id}' updated");
+            Ok(0)
+        }
+        ConnectionCmd::Remove { id, yes } => {
+            let mut config = Config::load_or_init()?;
+            let id = config.resolve_connection_id(id)?;
+            if id == config.active_connection_id() {
+                anyhow::bail!("cannot remove the active connection; select another one first");
+            }
+            if config.connections.len() == 1 {
+                anyhow::bail!("cannot remove the only connection");
+            }
+            if !*yes {
+                if !std::io::stdin().is_terminal() {
+                    anyhow::bail!("refusing non-interactive removal without --yes");
+                }
+                if aishe::promptui::confirm(&format!("Remove connection '{id}'?"), false)?
+                    != Some(true)
+                {
+                    println!("connection removal cancelled");
+                    return Ok(0);
+                }
+            }
+            let removed_connection = config
+                .connections
+                .get(&id)
+                .context("connection disappeared")?
+                .clone();
+            config.connections.remove(&id);
+            if config.aishe.connection_fallback == id {
+                config.aishe.connection_fallback = config.active_connection_id().to_string();
+            }
+            config.save()?;
+            let _ = aishe::connection::invalidate_connection(&id, &removed_connection);
+            println!("connection '{id}' removed; credentials were preserved");
+            Ok(0)
+        }
+        ConnectionCmd::Use { id, model, default } => Ok(model_command(
+            effective,
+            model.as_deref(),
+            Some(id),
+            *default,
+        )),
+    }
+}
+
+fn build_connection_auth(
+    kind: &str,
+    profile: Option<&str>,
+    credential: Option<&str>,
+    key_env: Option<&str>,
+    settings: &aishe::config::ProviderConfig,
+) -> Result<aishe::config::ConnectionAuth> {
+    Ok(match kind {
+        "api-key" => aishe::config::ConnectionAuth::ApiKey {
+            credential: Some(aishe::credentials::normalize_profile(
+                credential.unwrap_or(settings.credential.as_str()),
+            )?),
+            api_key_env: Some(key_env.unwrap_or(&settings.api_key_env).to_string()),
+        },
+        "oauth" => aishe::config::ConnectionAuth::OAuth {
+            profile: profile
+                .context("--profile is required for OAuth connections")?
+                .to_string(),
+        },
+        "none" => aishe::config::ConnectionAuth::None,
+        "auto" => aishe::config::ConnectionAuth::Auto,
+        _ => anyhow::bail!("auth must be api-key, oauth, none, or auto"),
+    })
+}
+
+fn connection_auth_state(connection: &aishe::config::ConnectionConfig) -> String {
+    aishe::connection::auth_status(connection).detail
+}
+
 /// Back the small show/set subcommands. With no `value`, print the effective
 /// current value. With a value, persist it to the *user* config file:
 /// we reload a fresh `Config` (no project overlay, no this-invocation flags) so a
@@ -3071,11 +3865,11 @@ fn set_or_show(field: &str, value: Option<&str>, effective: &Config) -> u8 {
     let Some(value) = value else {
         let current = match field {
             "mode" => effective.aishe.mode.clone(),
-            "provider" => effective.aishe.provider.clone(),
+            "provider" => effective.active_connection_id().to_string(),
             "scope" => effective.backend.default_scope.clone(),
             "network" => effective.backend.workspace_network.clone(),
             "output" => effective.backend.output.clone(),
-            "reasoning" => effective.aishe.reasoning_effort.clone(),
+            "reasoning" => effective.active_reasoning_effort().to_string(),
             _ => effective.active_model().to_string(),
         };
         println!("{field}: {current}");
@@ -3093,7 +3887,19 @@ fn set_or_show(field: &str, value: Option<&str>, effective: &Config) -> u8 {
             cfg.aishe.mode = value.to_string();
             cfg.aishe.safety_profile = "custom".to_string();
         }
-        "provider" => cfg.aishe.provider = value.to_string(),
+        "provider" => {
+            let id = match cfg.resolve_connection_id(value) {
+                Ok(id) => id,
+                Err(error) => {
+                    eprintln!("aishe: {error}");
+                    return 1;
+                }
+            };
+            if let Err(error) = cfg.select_connection(&id) {
+                eprintln!("aishe: {error}");
+                return 1;
+            }
+        }
         "scope" => {
             cfg.backend.default_scope = value.to_string();
             cfg.aishe.safety_profile = "custom".to_string();
@@ -3103,7 +3909,7 @@ fn set_or_show(field: &str, value: Option<&str>, effective: &Config) -> u8 {
             cfg.aishe.safety_profile = "custom".to_string();
         }
         "output" => cfg.backend.output = value.to_string(),
-        "reasoning" => cfg.aishe.reasoning_effort = value.to_string(),
+        "reasoning" => cfg.set_active_reasoning_effort(value.to_string()),
         _ => cfg.set_active_model(value.to_string()),
     }
     if let Err(e) = cfg.save() {
@@ -3187,12 +3993,14 @@ fn models_command(config: &Config, provider: &str, json: bool) -> u8 {
             } else {
                 println!("{provider}: {} model(s):", models.len());
                 for model in models {
-                    let active =
-                        if provider == config.aishe.provider && model == config.active_model() {
-                            " (active)"
-                        } else {
-                            ""
-                        };
+                    let active = if config.resolve_connection_id(provider).ok().as_deref()
+                        == Some(config.active_connection_id())
+                        && model == config.active_model()
+                    {
+                        " (active)"
+                    } else {
+                        ""
+                    };
                     println!("  {}{active}", aishe::commands::display_safe(&model));
                 }
             }
@@ -3427,8 +4235,12 @@ fn reset_conversation(config: &Config) -> Result<u8> {
     }
     let shell_id = aishe::agent::controller::current_shell_id()?;
     let workspace = std::env::current_dir().context("resolving the current workspace")?;
-    let detached = aishe::backend::opencode::session::SessionStore::from_default_root()?
-        .reset(&shell_id, &workspace)?;
+    let detached = aishe::backend::opencode::session::SessionStore::from_default_root()?.reset(
+        &shell_id,
+        &workspace,
+        config.active_connection_id(),
+        config.active_model(),
+    )?;
 
     // Keep the temporary native-fallback transcript aligned with the managed
     // reset. Saving an empty transcript uses the same atomic bounded path as
@@ -3642,8 +4454,17 @@ fn resume_managed_session(
             .context("active backend network policy is invalid")?
     };
     let shell_id = aishe::agent::controller::current_shell_id()?;
-    aishe::backend::opencode::session::SessionStore::from_default_root()?
-        .bind(&shell_id, &session, mode, scope, network)?;
+    aishe::backend::opencode::session::SessionStore::from_default_root()?.bind(
+        &shell_id,
+        &session,
+        aishe::backend::opencode::session::SessionBinding::new(
+            config.active_connection_id(),
+            config.active_model(),
+            mode,
+            scope,
+            network,
+        ),
+    )?;
     println!("resumed managed session {id}");
     println!("workspace: {}", session.workspace.display());
     if already_in_aishe_shell {
@@ -4497,6 +5318,10 @@ fn usage_history_command(config: &Config, by: Option<&str>, since: Option<&str>)
             None => (0.0, false),
         };
         let key = match by {
+            "connection" => e
+                .connection_id
+                .clone()
+                .unwrap_or_else(|| "legacy/unknown".into()),
             "day" => aishe::audit::fmt_date(e.ts_ms),
             "session" => e.session.clone(),
             _ => model.to_string(),
@@ -4733,7 +5558,7 @@ fn init_audit(config: &Config) {
     let env_log = std::env::var("AISHE_LOG").ok();
     let env_file = std::env::var("AISHE_LOG_FILE").ok();
     let (enabled, path) = resolve_audit(config, env_log.as_deref(), env_file.as_deref());
-    aishe::audit::init(enabled, path, config.logging.redact);
+    aishe::audit::init_for_config(enabled, path, config.logging.redact, config);
 }
 
 #[cfg(test)]

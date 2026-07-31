@@ -265,7 +265,9 @@ table and the `AISHE_CONFIG_DIR` / `AISHE_DATA_DIR` overrides.
 - `history.ext` in the data directory is the timestamped shared shell history.
 - `runtime/opencode/<version>/` contains the exact verified OpenCode executable,
   install metadata, license, and third-party notices.
-- `backend/opencode/` contains the private isolated HOME/XDG/plugin/server state;
+- `backend/opencode/profiles/` contains private connection- and OAuth-profile-
+  isolated HOME/XDG/plugin/server state; `backend/instances/` contains only
+  private safe-hash-keyed supervisor state;
   `backend/sessions/` and `backend/journal/` contain session mappings and
   idempotency/usage records.
 - `tasks/` contains private, redacted durable agentic-task checkpoints. A

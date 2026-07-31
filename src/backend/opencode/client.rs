@@ -501,27 +501,38 @@ impl OpenCodeClient {
     }
 
     fn subscribe(&self) -> Result<Box<dyn BufRead + Send>> {
-        let response = self
-            .request(ureq::get(&format!(
-                "{}/global/event",
-                self.connection.base_url.trim_end_matches('/')
-            )))
-            .set("Accept", "text/event-stream")
-            .timeout(Duration::from_secs(24 * 60 * 60))
-            .call()
-            .context("subscribing to OpenCode events")?;
-        let content_type = response.header("content-type").unwrap_or("");
+        let response = ureq3::get(format!(
+            "{}/global/event",
+            self.connection.base_url.trim_end_matches('/')
+        ))
+        .header("Authorization", self.authorization())
+        .header("User-Agent", concat!("aishe/", env!("CARGO_PKG_VERSION")))
+        .header("Accept", "text/event-stream")
+        .config()
+        .timeout_global(Some(Duration::from_secs(24 * 60 * 60)))
+        .build()
+        .call()
+        .context("subscribing to OpenCode events")?;
+        let content_type = response
+            .headers()
+            .get("content-type")
+            .and_then(|value| value.to_str().ok())
+            .unwrap_or("");
         if !content_type.starts_with("text/event-stream") {
             anyhow::bail!("OpenCode event endpoint returned {content_type}, not SSE");
         }
-        Ok(Box::new(BufReader::new(response.into_reader())))
+        let (_, body) = response.into_parts();
+        Ok(Box::new(BufReader::new(body.into_reader())))
     }
 
     fn get_json(&self, path: &str, workspace: Option<&Path>) -> Result<Value> {
         let url = self.url(path, workspace)?;
-        let response = self
-            .request(ureq::get(&url))
-            .timeout(Duration::from_secs(30))
+        let response = ureq3::get(&url)
+            .header("Authorization", self.authorization())
+            .header("User-Agent", concat!("aishe/", env!("CARGO_PKG_VERSION")))
+            .config()
+            .timeout_global(Some(Duration::from_secs(30)))
+            .build()
             .call()
             .with_context(|| format!("OpenCode GET {path} failed"))?;
         read_json_bounded(response)
@@ -529,22 +540,28 @@ impl OpenCodeClient {
 
     fn get_json_optional(&self, path: &str, workspace: Option<&Path>) -> Result<Option<Value>> {
         let url = self.url(path, workspace)?;
-        match self
-            .request(ureq::get(&url))
-            .timeout(Duration::from_secs(30))
+        match ureq3::get(&url)
+            .header("Authorization", self.authorization())
+            .header("User-Agent", concat!("aishe/", env!("CARGO_PKG_VERSION")))
+            .config()
+            .timeout_global(Some(Duration::from_secs(30)))
+            .build()
             .call()
         {
             Ok(response) => read_json_bounded(response).map(Some),
-            Err(ureq::Error::Status(404, _)) => Ok(None),
+            Err(ureq3::Error::StatusCode(404)) => Ok(None),
             Err(error) => Err(error).with_context(|| format!("OpenCode GET {path} failed")),
         }
     }
 
     fn post_json(&self, path: &str, workspace: Option<&Path>, body: &Value) -> Result<Value> {
         let url = self.url(path, workspace)?;
-        let response = self
-            .request(ureq::post(&url))
-            .timeout(Duration::from_secs(30))
+        let response = ureq3::post(&url)
+            .header("Authorization", self.authorization())
+            .header("User-Agent", concat!("aishe/", env!("CARGO_PKG_VERSION")))
+            .config()
+            .timeout_global(Some(Duration::from_secs(30)))
+            .build()
             .send_json(body.clone())
             .with_context(|| format!("OpenCode POST {path} failed"))?;
         read_json_bounded(response)
@@ -552,24 +569,25 @@ impl OpenCodeClient {
 
     fn post_no_content(&self, path: &str, workspace: Option<&Path>, body: &Value) -> Result<()> {
         let url = self.url(path, workspace)?;
-        self.request(ureq::post(&url))
-            .timeout(Duration::from_secs(30))
+        ureq3::post(&url)
+            .header("Authorization", self.authorization())
+            .header("User-Agent", concat!("aishe/", env!("CARGO_PKG_VERSION")))
+            .config()
+            .timeout_global(Some(Duration::from_secs(30)))
+            .build()
             .send_json(body.clone())
             .with_context(|| format!("OpenCode POST {path} failed"))?;
         Ok(())
     }
 
-    fn request(&self, request: ureq::Request) -> ureq::Request {
-        let authorization = format!(
+    fn authorization(&self) -> String {
+        format!(
             "Basic {}",
             base64::engine::general_purpose::STANDARD.encode(format!(
                 "{}:{}",
                 self.connection.username, self.connection.password
             ))
-        );
-        request
-            .set("Authorization", &authorization)
-            .set("User-Agent", concat!("aishe/", env!("CARGO_PKG_VERSION")))
+        )
     }
 
     fn url(&self, path: &str, workspace: Option<&Path>) -> Result<String> {
@@ -609,10 +627,10 @@ fn agent_for_mode(mode: Mode) -> &'static str {
     }
 }
 
-fn read_json_bounded(response: ureq::Response) -> Result<Value> {
+fn read_json_bounded(response: ureq3::http::Response<ureq3::Body>) -> Result<Value> {
     let mut bytes = Vec::new();
-    response
-        .into_reader()
+    let (_, body) = response.into_parts();
+    body.into_reader()
         .take(MAX_JSON_BYTES + 1)
         .read_to_end(&mut bytes)?;
     if bytes.len() as u64 > MAX_JSON_BYTES {
@@ -762,7 +780,9 @@ mod tests {
             let (mut events, _) = listener.accept().unwrap();
             let event_request = read_test_request(&mut events);
             assert!(event_request.starts_with("GET /global/event HTTP/1.1\r\n"));
-            assert!(event_request.contains("Accept: text/event-stream"));
+            assert!(event_request
+                .to_ascii_lowercase()
+                .contains("accept: text/event-stream"));
             write!(
                 events,
                 "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\n"
@@ -900,7 +920,9 @@ mod tests {
             let (mut stream, _) = listener.accept().unwrap();
             let request = read_test_request(&mut stream);
             assert!(request.starts_with("GET /global/event HTTP/1.1\r\n"));
-            assert!(request.contains("Authorization: Basic "));
+            assert!(request
+                .to_ascii_lowercase()
+                .contains("authorization: basic "));
             write!(
                 stream,
                 "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\n"
@@ -1075,7 +1097,9 @@ mod tests {
             let (mut connection, _) = listener.accept().unwrap();
             let request = read_test_request(&mut connection);
             assert!(request.starts_with("POST /session/ses_abort/abort?directory="));
-            assert!(request.contains("Authorization: Basic "));
+            assert!(request
+                .to_ascii_lowercase()
+                .contains("authorization: basic "));
             write!(
                 connection,
                 "HTTP/1.1 204 No Content\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"

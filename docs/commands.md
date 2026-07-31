@@ -12,6 +12,7 @@ aishe -c '<line>'      run one line non-interactively and exit
 aishe setup            guided/resumable configuration and verification
 aishe settings         interactive settings hub with value provenance
 aishe auth ...         manage private named credential profiles
+aishe connection ...   manage named provider/authentication connections
 aishe tour             resumable guided first-session tour
 aishe init zsh|bash    print the shell-hook snippet (for ~/.zshrc / ~/.bashrc)
 aishe doctor           diagnostics; --probe/--live/--json/--fix/--bundle
@@ -26,11 +27,11 @@ aishe mode [suggest|auto|yolo]      show or set the interaction mode
 aishe scope [workspace|host]        show or set the next agent execution scope
 aishe network [allow|deny]          show or set workspace-agent network access
 aishe output [focus|compact|detailed]  show or set agent transcript density
-aishe reasoning [auto|none|low|medium|high|xhigh|max]  reasoning effort
-aishe model [NAME]                  show or set the model (for the active provider)
-aishe provider [anthropic|openai]   show or set the provider
+aishe reasoning [LEVEL] [--default]   shell-local or saved reasoning effort
+aishe model [NAME] [--connection ID] [--default]  unified connection/model selection
+aishe provider [NAME]               select a unique provider connection (legacy form)
 aishe provider test [--live] [--json]  validate the active provider
-aishe models [--provider NAME]      list models returned by an endpoint
+aishe models [--connection ID]      list models returned for one connection
 aishe profile [VALUE]               show/apply a transparent safety profile
 aishe readiness [--json]            check autonomous-mode readiness
 aishe price list|set|remove         manage exact model price overrides
@@ -41,7 +42,7 @@ aishe status [--json]               show active session settings and spend
 aishe skills                        list model-invoked skills
 aishe undo [--list]                 revert the most recent AI file change
 aishe log [filters]                 show the audit log of AI calls and actions
-aishe usage [--by model|day|session]  token/cost totals from the audit log
+aishe usage [--by model|connection|day|session]  token/cost totals from the audit log
 aishe context                       print the context block sent to the model
 aishe runbook [--session ID|-o DIR|--replay]  export a session as a script + runbook
 aishe sessions [--json]             list managed conversations and legacy tasks
@@ -70,7 +71,7 @@ They always operate on the exact OpenCode version embedded in this Aishe build.
 `--from` supports offline installation but does not bypass checksum, archive
 size, executable-version, or license/notices verification.
 `backend status --json` is schema-versioned and separates runtime state from a
-sanitized running/stopped/stale supervisor summary; it never exposes local
+sanitized running/stopped/stale supervisor-pool summary; it never exposes local
 authentication tokens, passwords, nonces, or listener URLs.
 
 Uninstall is previewable and category-based:
@@ -103,18 +104,35 @@ When the profile is omitted, the active provider's user-config profile is used.
 Project overlays never choose a credential-writing target.
 
 OpenAI and xAI subscription OAuth uses Aishe's isolated, pinned OpenCode
-runtime and a separate private token store:
+runtime and complete profile-specific private HOME/XDG roots:
 
 ```sh
-aishe auth login openai              # browser locally; device flow over SSH
-aishe auth login openai --headless   # force device authorization
-aishe auth login xai --browser       # force the local loopback flow
-aishe auth status xai --json         # no access/refresh token material
-aishe auth logout xai [--yes]
+aishe auth login openai --profile work
+aishe auth login openai --profile personal --headless
+aishe auth login --connection openai-work
+aishe auth status openai --profile work --json
+aishe auth status --connection openai-work
+aishe auth logout openai --profile personal [--yes]
 ```
 
-API keys have precedence over OAuth. OAuth is accepted only for the exact
-official `api.openai.com` and `api.x.ai` endpoints.
+Explicit API-key and OAuth connections never fall through to one another.
+Migrated `auto` connections retain the legacy key-first behavior. OAuth is
+accepted only for the exact official `api.openai.com` and `api.x.ai` endpoints.
+
+Named connection management is non-secret and exact-targeted:
+
+```sh
+aishe connection list [--json]
+aishe connection show [ID] [--json]
+aishe connection add ID --provider openai --auth oauth --profile work
+aishe connection edit ID --model MODEL --auth api-key --credential PROFILE
+aishe connection use ID [--model MODEL] [--default]
+aishe connection remove ID [--yes]   # credentials are preserved
+```
+
+Removing or editing one connection invalidates only its managed runtime. Two
+same-provider connections may remain active concurrently up to
+`backend.max_instances`.
 
 ## Primary slash commands
 
@@ -123,10 +141,13 @@ and `aishe commands` show the same compact index:
 
 ```text
 /help       command index
+/model      filter/select connection and model; Enter shell-only, d save
+/provider   open the same connection/model picker
+/auth       active connection authentication state and remediation
 /status     model, mode, scope, spend, and audit state/path
 /usage      live token and cost totals for this shell
 /log        last 20 audit events and tool actions
-/reasoning  current provider reasoning effort
+/reasoning [LEVEL]  show or set shell-local reasoning effort
 /details    expand/shrink agent work for following turns
 /settings   interactive settings editor
 /reset      fresh conversation; old session is retained
@@ -179,20 +200,25 @@ to its original state. The journal lives at `undo.jsonl` in aishe's
 
 ## Changing settings
 
-`aishe mode`, `aishe scope`, `aishe network`, `aishe output`, `aishe model`,
-and `aishe provider` show the current value with no argument, or save a new one
-to your user config with an argument
-(`~/.config/aishe/config.toml` on Linux, `~/Library/Application
+`aishe mode`, `aishe scope`, `aishe network`, `aishe output`, and legacy
+`aishe provider` show or save durable settings. Model/connection selection is
+shell-local by default and is saved only with `d`, `--default`, or
+`aishe connection use ID --default`. Reasoning follows the same rule inside an
+Aishe shell: `/reasoning high` is local and `aishe reasoning high --default`
+saves it for the selected connection. The durable file is
+`~/.config/aishe/config.toml` on Linux and `~/Library/Application
 Support/aishe/config.toml` on macOS — `aishe doctor` prints the resolved path;
-see [File locations](configuration.md#file-locations)):
+see [File locations](configuration.md#file-locations):
 
 ```sh
 aishe mode auto         # persist the default mode
 aishe scope workspace   # confine the next managed agent turn
 aishe network deny      # no workspace-agent network capability
 aishe output focus      # final responses; transient agent activity
-aishe provider openai   # switch provider...
-aishe model gpt-4o      # ...then set that provider's model
+aishe model             # unified filterable picker
+aishe model gpt-5.6-terra --connection openai-work
+aishe reasoning high --default
+aishe connection use openai-work --default
 ```
 
 Use `aishe settings` for the interactive editor. It shows whether each effective
@@ -213,7 +239,8 @@ prompts; auto remains action-gated.
 
 ## Durable managed sessions
 
-Each shell/workspace pair maps to one OpenCode conversation, so follow-ups keep
+Each shell/workspace/connection/model/mode/scope/network tuple maps to one
+OpenCode conversation, so follow-ups keep
 context across prompt processes, supervisor restarts, and Aishe upgrades.
 `aishe sessions` presents those mappings together with legacy native task
 records. `aishe resume ses_...` inside Aishe rebinds the live shell. When run

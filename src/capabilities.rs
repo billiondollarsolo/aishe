@@ -11,7 +11,7 @@ use serde_json::{json, Value};
 use crate::config::Config;
 use crate::providers::{self, ErrorKind, Msg, ProviderError, Reach, ResponseFormat, ToolDef};
 
-pub const CACHE_SCHEMA_VERSION: u32 = 1;
+pub const CACHE_SCHEMA_VERSION: u32 = 2;
 pub const CACHE_TTL_SECS: u64 = 7 * 24 * 60 * 60;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -69,9 +69,15 @@ impl Check {
 pub struct Report {
     pub schema_version: u32,
     pub checked_at_ms: u128,
+    #[serde(default)]
+    pub connection_id: String,
+    #[serde(default)]
+    pub connection_identity: String,
     pub provider: String,
     pub endpoint: String,
     pub model: String,
+    #[serde(default)]
+    pub models: Vec<String>,
     pub transport: String,
     pub credential_env: String,
     #[serde(default)]
@@ -112,38 +118,27 @@ impl Report {
 }
 
 pub fn list_models(config: &Config, provider_name: &str) -> Result<Vec<String>, ProviderError> {
-    let (provider, anthropic) = match provider_name {
-        "openai" => {
-            let provider = &config.providers.openai;
-            (provider, false)
-        }
-        "anthropic" => {
-            let provider = &config.providers.anthropic;
-            (provider, true)
-        }
-        other => {
-            return Err(ProviderError::Api {
-                status: 0,
-                message: format!("unknown provider '{other}'"),
-            })
-        }
-    };
-    let resolved = crate::credentials::resolve(provider).map_err(|error| ProviderError::Api {
-        status: 0,
-        message: crate::redact::redact(&error.to_string()),
-    })?;
-    let key = resolved.into_secret();
-    if provider.requires_auth() && key.is_none() {
-        let profile = provider.credential_profile();
-        return Err(ProviderError::Api {
+    let connection_id = config
+        .resolve_connection_id(provider_name)
+        .map_err(|error| ProviderError::Api {
             status: 0,
-            message: format!(
-                "API key missing for credential profile '{profile}' — run \
-                 `aishe auth set {profile}` or set ${}",
-                provider.api_key_env
-            ),
-        });
+            message: error.to_string(),
+        })?;
+    let resolved = crate::connection::resolve_id(config, &connection_id).map_err(|error| {
+        ProviderError::Api {
+            status: 0,
+            message: crate::redact::redact(&error.to_string()),
+        }
+    })?;
+    // The pinned OpenCode OAuth runtime does not expose a stable account-scoped
+    // model enumeration API. Present the configured model and allow `/model ID`
+    // typed selection rather than making an anonymous or wrong-account request.
+    if matches!(resolved.auth, crate::connection::ResolvedAuth::OAuth { .. }) {
+        return Ok(vec![resolved.settings.model]);
     }
+    let anthropic = resolved.provider == "anthropic";
+    let provider = resolved.settings;
+    let key = resolved.api_key;
 
     let base = crate::provider_catalog::normalize_base_url(&provider.base_url);
     let endpoint = format!("{base}/v1/models");
@@ -211,52 +206,54 @@ fn model_ids(value: &Value) -> Vec<String> {
 }
 
 pub fn validate(config: &Config, live: bool) -> Report {
-    let provider_name = config.aishe.provider.clone();
-    let (provider, transport) = if provider_name == "openai" {
-        (
-            &config.providers.openai,
-            config.providers.openai.transport.clone(),
-        )
+    let connection_id = config.active_connection_id().to_string();
+    let connection = config.active_connection();
+    let provider_name = config.active_provider_name().to_string();
+    let provider = config.active_provider_config();
+    let transport = if provider_name == "anthropic" {
+        "messages".to_string()
     } else {
-        (&config.providers.anthropic, "messages".to_string())
+        provider.transport.clone()
     };
-    let profile = provider.credential_profile();
-    let resolution = crate::credentials::resolve(provider);
-    let oauth = match &resolution {
-        Ok(resolved) if resolved.secret().is_none() => crate::oauth::active_provider(config),
-        _ => Ok(None),
+    let profile = connection.map_or_else(
+        || provider.credential_profile(),
+        |connection| match &connection.auth {
+            crate::config::ConnectionAuth::OAuth { profile } => profile.clone(),
+            crate::config::ConnectionAuth::ApiKey { credential, .. } => credential
+                .clone()
+                .unwrap_or_else(|| connection.settings.credential_profile()),
+            crate::config::ConnectionAuth::None => String::new(),
+            crate::config::ConnectionAuth::Auto => provider.credential_profile(),
+        },
+    );
+    let resolution = crate::connection::resolve(config);
+    let using_oauth = resolution.as_ref().is_ok_and(|resolved| {
+        matches!(resolved.auth, crate::connection::ResolvedAuth::OAuth { .. })
+    });
+    let credential_source = match &resolution {
+        Ok(resolved) => match &resolved.auth {
+            crate::connection::ResolvedAuth::ApiKey { source } => source.clone(),
+            crate::connection::ResolvedAuth::OAuth { provider, profile } => {
+                format!("OAuth {provider}/{profile}")
+            }
+            crate::connection::ResolvedAuth::None => "not required".into(),
+        },
+        Err(_) => "unavailable".into(),
     };
-    let credential_source = match (&resolution, &oauth) {
-        (Ok(resolved), _) if resolved.secret().is_some() => resolved.source.label(),
-        (_, Ok(Some(provider))) => format!("Aishe {provider} OAuth store"),
-        (Ok(resolved), _) => resolved.source.label(),
-        _ => "error".to_string(),
-    };
-    let credential = match (&resolution, &oauth) {
-        (Ok(resolved), _) if resolved.secret().is_some() => Check::pass(format!(
-            "credential available from {}",
-            resolved.source.label()
-        )),
-        (Ok(_), Ok(Some(oauth_provider))) => {
-            Check::pass(format!("OAuth credential available for {oauth_provider}"))
-        }
-        (Ok(_), Ok(None)) if provider.requires_auth() => Check::fail(
-            format!(
-                "credential profile '{profile}' is missing; run `aishe auth set {profile}` \
-                 or `aishe auth login {}` or set ${}",
-                crate::oauth::OAuthProvider::from_base_url(&provider.base_url)
-                    .map(|provider| provider.id())
-                    .unwrap_or("openai"),
-                provider.api_key_env
-            ),
-            Some(ErrorKind::MissingCredential),
-        ),
-        (Ok(_), Ok(None)) => Check::pass("credential not required for this endpoint"),
-        (Err(error), _) | (_, Err(error)) => Check::fail(
-            format!(
-                "credential store unavailable: {}",
-                crate::redact::redact(&error.to_string())
-            ),
+    let credential = match &resolution {
+        Ok(resolved) => match &resolved.auth {
+            crate::connection::ResolvedAuth::ApiKey { source } => {
+                Check::pass(format!("credential available from {source}"))
+            }
+            crate::connection::ResolvedAuth::OAuth { provider, profile } => Check::pass(format!(
+                "OAuth credential available for {provider}/{profile}"
+            )),
+            crate::connection::ResolvedAuth::None => {
+                Check::pass("credential not required for this connection")
+            }
+        },
+        Err(error) => Check::fail(
+            crate::redact::redact(&error.to_string()),
             Some(ErrorKind::MissingCredential),
         ),
     };
@@ -265,15 +262,16 @@ pub fn validate(config: &Config, live: bool) -> Report {
     // Do not make anonymous network requests that can only add a confusing 401
     // beside the actionable missing-variable diagnosis.
     let credential_missing = credential.state == State::Fail;
-    let using_oauth = matches!(oauth, Ok(Some(_)));
     let (reachability, models, model_list) = if credential_missing {
-        let detail = format!("blocked because credential profile '{profile}' is unavailable");
+        let detail = format!(
+            "blocked because credential profile '{profile}' is unavailable for connection '{connection_id}'"
+        );
         (Check::skipped(detail.clone()), None, Check::skipped(detail))
     } else if using_oauth {
         let detail = "OAuth transport is provided by managed OpenCode; use --live to validate it";
         (Check::skipped(detail), None, Check::skipped(detail))
     } else {
-        let probe = providers::probe(config, &provider_name);
+        let probe = providers::probe(config, &connection_id);
         let reachability = match probe.reach {
             Reach::Up(status) => Check::pass(format!("endpoint answered HTTP {status}")),
             Reach::Unauthorized(status) => Check::fail(
@@ -285,7 +283,7 @@ pub fn validate(config: &Config, live: bool) -> Report {
             )),
             Reach::Down(error) => Check::fail(error, Some(ErrorKind::Network)),
         };
-        let (models, model_list) = match list_models(config, &provider_name) {
+        let (models, model_list) = match list_models(config, &connection_id) {
             Ok(models) => {
                 let count = models.len();
                 (
@@ -331,9 +329,16 @@ pub fn validate(config: &Config, live: bool) -> Report {
     let report = Report {
         schema_version: CACHE_SCHEMA_VERSION,
         checked_at_ms: now_ms(),
+        connection_id: connection_id.clone(),
+        connection_identity: connection
+            .map(|connection| {
+                crate::connection::configured_launch_identity(&connection_id, connection)
+            })
+            .unwrap_or_default(),
         provider: provider_name,
         endpoint: provider.base_url.clone(),
         model: provider.model.clone(),
+        models: models.unwrap_or_default(),
         transport,
         credential_env: provider.api_key_env.clone(),
         credential_profile: profile,
@@ -430,11 +435,14 @@ fn run_managed_live_checks(config: &Config) -> Result<(Check, Check, Check, Chec
     use crate::backend::control::SupervisorClient;
     use crate::backend::opencode::OpenCodeClient;
 
-    struct ValidationGuard(PathBuf);
+    struct ValidationGuard {
+        workspace: PathBuf,
+        supervisor_key: String,
+    }
     impl Drop for ValidationGuard {
         fn drop(&mut self) {
-            let _ = crate::backend::control::request_stop();
-            let _ = std::fs::remove_dir_all(&self.0);
+            let _ = crate::backend::control::request_stop_for(&self.supervisor_key);
+            let _ = std::fs::remove_dir_all(&self.workspace);
         }
     }
 
@@ -445,7 +453,12 @@ fn run_managed_live_checks(config: &Config) -> Result<(Check, Check, Check, Chec
     ));
     std::fs::create_dir_all(&workspace)?;
     crate::config::set_private_dir(&workspace);
-    let _guard = ValidationGuard(workspace.clone());
+    let resolved = crate::connection::resolve(config)?;
+    let secret = resolved.api_key;
+    let _guard = ValidationGuard {
+        workspace: workspace.clone(),
+        supervisor_key: resolved.launch_identity,
+    };
 
     let state = crate::backend::supervisor::ensure_running(config)?;
     let control = SupervisorClient::new(state)?;
@@ -466,9 +479,6 @@ fn run_managed_live_checks(config: &Config) -> Result<(Check, Check, Check, Chec
     let session = client.create_session(&workspace, "Aishe setup validation", scope, network)?;
     let price = crate::usage::budget_price_for(config.active_model(), &config.pricing);
     let shell_id = format!("setup_{:032x}", rand::random::<u128>());
-    let resolved = crate::credentials::resolve(active_provider(config))?;
-    let secret = resolved.into_secret();
-
     let run = |mode: Mode, prompt: &str| -> Result<Vec<AgentEvent>> {
         let cancelled = Arc::new(AtomicBool::new(false));
         let worker = ToolWorker::start_silent(
@@ -589,14 +599,6 @@ fn run_managed_live_checks(config: &Config) -> Result<(Check, Check, Check, Chec
     Ok((text, structured, tools, streaming))
 }
 
-fn active_provider(config: &Config) -> &crate::config::ProviderConfig {
-    if config.aishe.provider == "openai" {
-        &config.providers.openai
-    } else {
-        &config.providers.anthropic
-    }
-}
-
 fn completed_text(events: &[crate::agent::AgentEvent]) -> String {
     events
         .iter()
@@ -662,7 +664,12 @@ fn map_ureq_error(error: ureq::Error) -> ProviderError {
 }
 
 pub fn cache_path(report: &Report) -> Option<PathBuf> {
-    let key = cache_key(&report.endpoint, &report.model, &report.transport);
+    let key = cache_key(
+        &report.connection_identity,
+        &report.endpoint,
+        &report.model,
+        &report.transport,
+    );
     crate::config::data_root().map(|root| {
         root.join("aishe")
             .join("capabilities")
@@ -683,24 +690,74 @@ pub fn save(report: &Report) -> Result<()> {
 }
 
 pub fn load(config: &Config) -> Option<Report> {
-    let provider = if config.aishe.provider == "openai" {
-        &config.providers.openai
-    } else {
-        &config.providers.anthropic
-    };
-    let transport = if config.aishe.provider == "openai" {
-        provider.transport.as_str()
-    } else {
+    let connection_id = config.active_connection_id();
+    let connection = config.active_connection()?;
+    let provider = config.active_provider_config();
+    let transport = if config.active_provider_name() == "anthropic" {
         "messages"
+    } else {
+        provider.transport.as_str()
     };
-    let key = cache_key(&provider.base_url, &provider.model, transport);
+    let identity = crate::connection::configured_launch_identity(connection_id, connection);
+    let key = cache_key(&identity, &provider.base_url, &provider.model, transport);
     let path = crate::config::data_root()?
         .join("aishe")
         .join("capabilities")
         .join(format!("{key}.json"));
     let report: Report = serde_json::from_slice(&std::fs::read(path).ok()?).ok()?;
     let fresh = now_ms().saturating_sub(report.checked_at_ms) <= u128::from(CACHE_TTL_SECS) * 1000;
-    (report.schema_version == CACHE_SCHEMA_VERSION && fresh).then_some(report)
+    (report.schema_version == CACHE_SCHEMA_VERSION
+        && report.connection_id == connection_id
+        && report.connection_identity == identity
+        && fresh)
+        .then_some(report)
+}
+
+/// Configured, cached, static-catalog, and recently audited models for a single
+/// connection. This is deliberately offline so opening `/model` never makes a
+/// surprise network request or crosses an account boundary.
+pub fn known_models(config: &Config, connection_id: &str) -> Result<Vec<String>> {
+    let id = config.resolve_connection_id(connection_id)?;
+    let mut selected = config.clone();
+    selected.select_connection(&id)?;
+    let connection = selected
+        .connections
+        .get(&id)
+        .context("selected connection disappeared")?;
+    let mut models = vec![connection.settings.model.clone()];
+    if let Some(report) = load(&selected) {
+        models.extend(report.models);
+        models.push(report.model);
+    }
+    let endpoint = crate::provider_catalog::normalize_base_url(&connection.settings.base_url);
+    models.extend(
+        crate::provider_catalog::SERVICES
+            .iter()
+            .filter(|service| {
+                !service.model.is_empty()
+                    && crate::provider_catalog::normalize_base_url(service.base_url) == endpoint
+            })
+            .map(|service| service.model.to_string()),
+    );
+    let mut recent = crate::audit::read_entries(&crate::audit::default_path());
+    recent.reverse();
+    models.extend(
+        recent
+            .into_iter()
+            .filter(|entry| entry.connection_id.as_deref() == Some(id.as_str()))
+            .filter_map(|entry| entry.model)
+            .take(20),
+    );
+    models.retain(|model| crate::connection::validate_model_id(model).is_ok());
+    models.sort();
+    models.dedup();
+    if let Some(position) = models
+        .iter()
+        .position(|model| model == &connection.settings.model)
+    {
+        models.swap(0, position);
+    }
+    Ok(models)
 }
 
 pub fn clear() -> Result<usize> {
@@ -758,13 +815,14 @@ pub fn clear_stale() -> Result<usize> {
     Ok(removed)
 }
 
-fn cache_key(endpoint: &str, model: &str, transport: &str) -> String {
+fn cache_key(identity: &str, endpoint: &str, model: &str, transport: &str) -> String {
     let mut hash = 0xcbf2_9ce4_8422_2325u64;
-    for byte in endpoint
-        .trim_end_matches('/')
+    for byte in identity
         .as_bytes()
         .iter()
         .copied()
+        .chain(std::iter::once(0xfd))
+        .chain(endpoint.trim_end_matches('/').as_bytes().iter().copied())
         .chain(std::iter::once(0xff))
         .chain(model.as_bytes().iter().copied())
         .chain(std::iter::once(0xfe))
@@ -798,11 +856,13 @@ mod tests {
 
     #[test]
     fn cache_key_is_scoped_and_secret_free() {
-        let a = cache_key("https://one.test", "m", "chat");
-        let b = cache_key("https://two.test", "m", "chat");
-        let c = cache_key("https://one.test", "m", "responses");
+        let a = cache_key("connection-a", "https://one.test", "m", "chat");
+        let b = cache_key("connection-a", "https://two.test", "m", "chat");
+        let c = cache_key("connection-a", "https://one.test", "m", "responses");
+        let d = cache_key("connection-b", "https://one.test", "m", "chat");
         assert_ne!(a, b);
         assert_ne!(a, c);
+        assert_ne!(a, d);
         assert!(!a.contains("one"));
     }
 
@@ -810,11 +870,14 @@ mod tests {
     fn verified_requires_every_live_check() {
         let check = Check::pass("ok");
         let mut report = Report {
-            schema_version: 1,
+            schema_version: CACHE_SCHEMA_VERSION,
             checked_at_ms: 0,
+            connection_id: "local".into(),
+            connection_identity: "c-test".into(),
             provider: "openai".into(),
             endpoint: "http://localhost".into(),
             model: "m".into(),
+            models: vec!["m".into()],
             transport: "chat".into(),
             credential_env: "KEY".into(),
             credential_profile: "local".into(),

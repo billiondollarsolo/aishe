@@ -53,10 +53,9 @@ impl OAuthProvider {
 
     pub fn from_base_url(base_url: &str) -> Option<Self> {
         let normalized = crate::provider_catalog::normalize_base_url(base_url);
-        let parsed = url::Url::parse(&normalized).ok()?;
-        match parsed.host_str()? {
-            "api.openai.com" => Some(Self::Openai),
-            "api.x.ai" => Some(Self::Xai),
+        match normalized.as_str() {
+            "https://api.openai.com" => Some(Self::Openai),
+            "https://api.x.ai" => Some(Self::Xai),
             _ => None,
         }
     }
@@ -68,9 +67,22 @@ impl fmt::Display for OAuthProvider {
     }
 }
 
+impl std::str::FromStr for OAuthProvider {
+    type Err = anyhow::Error;
+
+    fn from_str(value: &str) -> Result<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "openai" => Ok(Self::Openai),
+            "xai" | "grok" => Ok(Self::Xai),
+            _ => anyhow::bail!("OAuth provider must be openai or xai"),
+        }
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub struct OAuthStatus {
     pub provider: OAuthProvider,
+    pub profile: String,
     pub available: bool,
     pub credential_type: Option<String>,
     pub access_expires_at_ms: Option<u64>,
@@ -79,9 +91,10 @@ pub struct OAuthStatus {
 }
 
 impl OAuthStatus {
-    fn missing(provider: OAuthProvider, path: PathBuf) -> Self {
+    fn missing(provider: OAuthProvider, profile: &str, path: PathBuf) -> Self {
         Self {
             provider,
+            profile: profile.to_string(),
             available: false,
             credential_type: None,
             access_expires_at_ms: None,
@@ -101,21 +114,84 @@ pub fn path() -> Result<PathBuf> {
         .join("auth.json"))
 }
 
+/// Normalize a user-facing OAuth profile label for its private filesystem root.
+/// Display always uses the configured original label; this value is only a safe
+/// stable path component.
+pub fn normalize_profile(value: &str) -> Result<String> {
+    crate::config::normalize_connection_id(value)
+        .context("OAuth profile must be a safe non-empty label")
+}
+
+pub fn path_for(provider: OAuthProvider, profile: &str) -> Result<PathBuf> {
+    let profile = normalize_profile(profile)?;
+    Ok(crate::backend::supervisor::backend_root()?
+        .join("opencode")
+        .join("profiles")
+        .join(provider.id())
+        .join(profile)
+        .join("xdg")
+        .join("data")
+        .join("opencode")
+        .join("auth.json"))
+}
+
 pub fn status(provider: OAuthProvider) -> Result<OAuthStatus> {
-    status_from(&path()?, provider)
+    status_from(&path()?, provider, "default")
+}
+
+pub fn status_profile(provider: OAuthProvider, profile: &str) -> Result<OAuthStatus> {
+    status_from(&path_for(provider, profile)?, provider, profile)
 }
 
 pub fn active_provider(config: &Config) -> Result<Option<OAuthProvider>> {
-    if config.aishe.provider != "openai" || !config.providers.openai.requires_auth() {
+    let provider_config = config.active_provider_config();
+    if !provider_config.requires_auth() {
         return Ok(None);
     }
-    let Some(provider) = OAuthProvider::from_base_url(&config.providers.openai.base_url) else {
+    let Some(provider) = OAuthProvider::from_base_url(&provider_config.base_url) else {
         return Ok(None);
     };
+    if let Some(connection) = config.active_connection() {
+        match &connection.auth {
+            crate::config::ConnectionAuth::OAuth { profile } => {
+                return Ok(status_profile(provider, profile)?
+                    .available
+                    .then_some(provider));
+            }
+            crate::config::ConnectionAuth::ApiKey { .. } | crate::config::ConnectionAuth::None => {
+                return Ok(None)
+            }
+            crate::config::ConnectionAuth::Auto => {}
+        }
+    }
     Ok(status(provider)?.available.then_some(provider))
 }
 
 pub fn login(provider: OAuthProvider, headless: bool, browser: bool) -> Result<u8> {
+    login_inner(provider, None, headless, browser)
+}
+
+pub fn login_profile(
+    provider: OAuthProvider,
+    profile: &str,
+    headless: bool,
+    browser: bool,
+) -> Result<u8> {
+    let normalized_profile = normalize_profile(profile)?;
+    login_inner(
+        provider,
+        Some((&normalized_profile, profile)),
+        headless,
+        browser,
+    )
+}
+
+fn login_inner(
+    provider: OAuthProvider,
+    profile: Option<(&str, &str)>,
+    headless: bool,
+    browser: bool,
+) -> Result<u8> {
     let manager = RuntimeManager::new()?;
     if !matches!(manager.status(), RuntimeStatus::Ready { .. }) {
         println!(
@@ -128,7 +204,11 @@ pub fn login(provider: OAuthProvider, headless: bool, browser: bool) -> Result<u
     }
     manager.verify()?;
 
-    let prepared = crate::backend::supervisor::prepare_layout()?;
+    let prepared = if let Some((normalized, _)) = profile {
+        crate::backend::supervisor::prepare_profile_layout(provider.id(), normalized)?
+    } else {
+        crate::backend::supervisor::prepare_layout()?
+    };
     let remote = std::env::var_os("SSH_CONNECTION").is_some()
         || std::env::var_os("SSH_TTY").is_some()
         || !std::io::stdout().is_terminal();
@@ -139,6 +219,10 @@ pub fn login(provider: OAuthProvider, headless: bool, browser: bool) -> Result<u
         provider.browser_method()
     };
     println!("OAuth provider: {provider}");
+    println!(
+        "profile: {}",
+        profile.map(|(_, label)| label).unwrap_or("default")
+    );
     println!(
         "flow: {}",
         if use_headless {
@@ -200,7 +284,11 @@ pub fn login(provider: OAuthProvider, headless: bool, browser: bool) -> Result<u
     if !result.success() {
         return Ok(result.code().unwrap_or(1).clamp(1, 255) as u8);
     }
-    let credential = status(provider)?;
+    let credential = if let Some((normalized, _)) = profile {
+        status_profile(provider, normalized)?
+    } else {
+        status(provider)?
+    };
     if !credential.available {
         anyhow::bail!(
             "OAuth flow exited successfully but did not save a valid {provider} OAuth credential"
@@ -210,25 +298,39 @@ pub fn login(provider: OAuthProvider, headless: bool, browser: bool) -> Result<u
         crate::config::set_private_dir(parent);
     }
     crate::config::set_private_file(&credential.path);
-    let _ = crate::backend::supervisor::request_stop();
-    println!("Aishe OAuth credential for {provider} is ready");
+    let _ = crate::connection::invalidate_oauth_profile(
+        provider,
+        profile.map(|(normalized, _)| normalized),
+    );
+    println!(
+        "Aishe OAuth credential for {provider} profile '{}' is ready",
+        profile.map(|(_, label)| label).unwrap_or("default")
+    );
     Ok(0)
 }
 
 pub fn logout(provider: OAuthProvider) -> Result<bool> {
     let removed = remove_from(&path()?, provider)?;
     if removed {
-        let _ = crate::backend::supervisor::request_stop();
+        let _ = crate::connection::invalidate_oauth_profile(provider, None);
     }
     Ok(removed)
 }
 
-fn status_from(file: &Path, provider: OAuthProvider) -> Result<OAuthStatus> {
+pub fn logout_profile(provider: OAuthProvider, profile: &str) -> Result<bool> {
+    let removed = remove_from(&path_for(provider, profile)?, provider)?;
+    if removed {
+        let _ = crate::connection::invalidate_oauth_profile(provider, Some(profile));
+    }
+    Ok(removed)
+}
+
+fn status_from(file: &Path, provider: OAuthProvider, profile: &str) -> Result<OAuthStatus> {
     let Some(values) = load_from(file)? else {
-        return Ok(OAuthStatus::missing(provider, file.to_path_buf()));
+        return Ok(OAuthStatus::missing(provider, profile, file.to_path_buf()));
     };
     let Some(entry) = values.get(provider.id()).and_then(Value::as_object) else {
-        return Ok(OAuthStatus::missing(provider, file.to_path_buf()));
+        return Ok(OAuthStatus::missing(provider, profile, file.to_path_buf()));
     };
     let credential_type = entry
         .get("type")
@@ -247,6 +349,7 @@ fn status_from(file: &Path, provider: OAuthProvider) -> Result<OAuthStatus> {
         && expires.is_some();
     Ok(OAuthStatus {
         provider,
+        profile: profile.to_string(),
         available: valid_oauth,
         credential_type,
         access_expires_at_ms: expires,
@@ -382,13 +485,13 @@ mod tests {
                 "xai": {"type":"api","key":"api-secret"}
             }),
         );
-        let openai = status_from(&file, OAuthProvider::Openai).unwrap();
+        let openai = status_from(&file, OAuthProvider::Openai, "default").unwrap();
         assert!(openai.available);
         assert!(openai.access_expired);
         assert_eq!(openai.credential_type.as_deref(), Some("oauth"));
         let serialized = serde_json::to_string(&openai).unwrap();
         assert!(!serialized.contains("secret"));
-        let xai = status_from(&file, OAuthProvider::Xai).unwrap();
+        let xai = status_from(&file, OAuthProvider::Xai, "default").unwrap();
         assert!(!xai.available);
         assert_eq!(xai.credential_type.as_deref(), Some("api"));
         let _ = fs::remove_file(file);
@@ -405,8 +508,16 @@ mod tests {
             }),
         );
         assert!(remove_from(&file, OAuthProvider::Openai).unwrap());
-        assert!(!status_from(&file, OAuthProvider::Openai).unwrap().available);
-        assert!(status_from(&file, OAuthProvider::Xai).unwrap().available);
+        assert!(
+            !status_from(&file, OAuthProvider::Openai, "default")
+                .unwrap()
+                .available
+        );
+        assert!(
+            status_from(&file, OAuthProvider::Xai, "default")
+                .unwrap()
+                .available
+        );
         let _ = fs::remove_file(file);
     }
 
@@ -419,14 +530,14 @@ mod tests {
         let link = file.with_extension("link");
         write(&file, serde_json::json!({}));
         fs::set_permissions(&file, fs::Permissions::from_mode(0o644)).unwrap();
-        assert!(status_from(&file, OAuthProvider::Openai)
+        assert!(status_from(&file, OAuthProvider::Openai, "default")
             .unwrap_err()
             .to_string()
             .contains("insecure mode"));
         fs::set_permissions(&file, fs::Permissions::from_mode(0o600)).unwrap();
         let _ = fs::remove_file(&link);
         symlink(&file, &link).unwrap();
-        assert!(status_from(&link, OAuthProvider::Openai)
+        assert!(status_from(&link, OAuthProvider::Openai, "default")
             .unwrap_err()
             .to_string()
             .contains("symlinked"));
@@ -445,5 +556,21 @@ mod tests {
             Some(OAuthProvider::Xai)
         );
         assert_eq!(OAuthProvider::from_base_url("https://openai.example"), None);
+        assert_eq!(OAuthProvider::from_base_url("http://api.openai.com"), None);
+        assert_eq!(
+            OAuthProvider::from_base_url("https://api.openai.com/tenant"),
+            None
+        );
+    }
+
+    #[test]
+    fn labeled_profiles_have_distinct_private_store_paths() {
+        let work = path_for(OAuthProvider::Openai, "work").unwrap();
+        let personal = path_for(OAuthProvider::Openai, "personal").unwrap();
+        let xai = path_for(OAuthProvider::Xai, "work").unwrap();
+        assert_ne!(work, personal);
+        assert_ne!(work, xai);
+        assert!(work.ends_with("work/xdg/data/opencode/auth.json"));
+        assert!(personal.ends_with("personal/xdg/data/opencode/auth.json"));
     }
 }

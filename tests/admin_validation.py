@@ -440,7 +440,9 @@ SMOKE_CASES = [
 # independent of whether the command's output is deterministic.
 LLM_UNAVAILABLE_NOTES = (
     "LLM not configured",
+    "API key missing for connection",
     "API key missing for credential profile",
+    "authentication missing for legacy connection",
     "credential store unavailable",
 )
 
@@ -658,10 +660,17 @@ def make_config():
     os.makedirs(cdir)
     with open(os.path.join(cdir, "config.toml"), "w") as f:
         f.write(
-            '[aishe]\nmode = "suggest"\nprovider = "openai"\n'
+            'version = 6\n\n[aishe]\nmode = "suggest"\nprovider = "openai"\n'
+            'connection = "groq-test"\nconnection_fallback = "groq-test"\n'
             'structured = "schema"\n\n[providers.openai]\n'
             'base_url = "https://api.groq.com/openai"\napi_key_env = "GROQ_API_KEY"\n'
-            'model = "openai/gpt-oss-120b"\n'
+            'model = "openai/gpt-oss-120b"\n\n'
+            '[connections.groq-test]\nprovider = "openai"\nlabel = "Groq test"\n'
+            'base_url = "https://api.groq.com/openai"\ncredential = "groq"\n'
+            'api_key_env = "GROQ_API_KEY"\nmodel = "openai/gpt-oss-120b"\n'
+            'transport = "chat"\nauth_required = true\n\n'
+            '[connections.groq-test.auth]\ntype = "api_key"\n'
+            'credential = "groq"\napi_key_env = "GROQ_API_KEY"\n'
         )
     return cfgroot
 

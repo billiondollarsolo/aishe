@@ -13,6 +13,10 @@ pub const PROVIDER_KEY_ENV: &str = "AISHE_PROVIDER_API_KEY";
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ProviderSpec {
+    #[serde(default)]
+    pub connection_id: String,
+    #[serde(default)]
+    pub launch_identity: String,
     pub provider_id: String,
     pub model_id: String,
     pub npm: String,
@@ -21,6 +25,9 @@ pub struct ProviderSpec {
     /// Exact built-in OpenCode OAuth hook required for this launch. `None`
     /// means the provider uses an Aishe API key or needs no authentication.
     pub oauth_provider: Option<String>,
+    /// User-labeled isolated OAuth runtime profile. Never contains tokens.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub oauth_profile: Option<String>,
     pub price: Option<crate::usage::Price>,
     /// OpenCode model option. `None` lets the provider/model choose its default.
     pub reasoning_effort: Option<String>,
@@ -36,27 +43,21 @@ pub struct ProviderLaunch {
 
 impl ProviderLaunch {
     pub fn from_aishe(config: &Config) -> Result<Self> {
-        let provider = active_provider(config);
-        let resolved = crate::credentials::resolve(provider)?;
-        let api_key = resolved.into_secret();
-        let oauth_provider = if provider.requires_auth() && api_key.is_none() {
-            crate::oauth::active_provider(config)?
-        } else {
-            None
+        let resolved = crate::connection::resolve(config)?;
+        let (oauth_provider, oauth_profile) = match &resolved.auth {
+            crate::connection::ResolvedAuth::OAuth { provider, profile } => {
+                (Some(*provider), Some(profile.clone()))
+            }
+            crate::connection::ResolvedAuth::ApiKey { .. }
+            | crate::connection::ResolvedAuth::None => (None, None),
         };
-        if provider.requires_auth() && api_key.is_none() && oauth_provider.is_none() {
-            let profile = provider.credential_profile();
-            let oauth_hint = crate::oauth::OAuthProvider::from_base_url(&provider.base_url)
-                .map(|provider| format!(" or `aishe auth login {provider}`"))
-                .unwrap_or_default();
-            anyhow::bail!(
-                "authentication missing for credential profile '{profile}' — run \
-                 `aishe auth set {profile}`{oauth_hint}"
-            );
-        }
+        let mut spec = ProviderSpec::from_aishe_with_oauth(config, oauth_provider)?;
+        spec.connection_id = resolved.id;
+        spec.launch_identity = resolved.launch_identity;
+        spec.oauth_profile = oauth_profile;
         Ok(Self {
-            spec: ProviderSpec::from_aishe_with_oauth(config, oauth_provider)?,
-            api_key,
+            spec,
+            api_key: resolved.api_key,
         })
     }
 }
@@ -80,7 +81,7 @@ impl ProviderSpec {
         let official_openai = parsed.host_str() == Some("api.openai.com");
         let official_xai = parsed.host_str() == Some("api.x.ai");
         let local = crate::config::is_loopback_url(&base);
-        let anthropic = config.aishe.provider == "anthropic";
+        let anthropic = config.active_provider_name() == "anthropic";
         if matches!(oauth_provider, Some(crate::oauth::OAuthProvider::Openai)) && !official_openai {
             anyhow::bail!("OpenAI OAuth can only be bound to api.openai.com");
         }
@@ -106,19 +107,22 @@ impl ProviderSpec {
             ("aishe-compatible", "@ai-sdk/openai-compatible")
         };
         Ok(Self {
+            connection_id: config.active_connection_id().to_string(),
+            launch_identity: String::new(),
             provider_id: provider_id.into(),
             model_id: provider.model.clone(),
             npm: npm.into(),
             base_url: append_v1(&base),
             requires_auth: provider.requires_auth() && oauth_provider.is_none(),
             oauth_provider: oauth_provider.map(|provider| provider.id().to_string()),
+            oauth_profile: oauth_provider.map(|_| "default".to_string()),
             price: if oauth_provider.is_some() {
                 None
             } else {
                 crate::usage::price_for(&provider.model, &config.pricing)
             },
             reasoning_effort: (!anthropic)
-                .then(|| explicit_reasoning_effort(&config.aishe.reasoning_effort))
+                .then(|| explicit_reasoning_effort(config.active_reasoning_effort()))
                 .flatten(),
         })
     }
@@ -244,11 +248,7 @@ pub fn generated_config(plugin_path: &Path, provider: Option<&ProviderSpec>) -> 
 }
 
 fn active_provider(config: &Config) -> &ProviderConfig {
-    if config.aishe.provider == "openai" {
-        &config.providers.openai
-    } else {
-        &config.providers.anthropic
-    }
+    config.active_provider_config()
 }
 
 fn append_v1(base: &str) -> String {

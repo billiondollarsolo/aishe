@@ -162,8 +162,9 @@ With `<data>` meaning Aishe's platform data directory:
 
 ```text
 <data>/runtime/opencode/<version>/      verified managed executable/notices
-<data>/backend/opencode/                isolated HOME/XDG/plugin/server data
-<data>/backend/sessions/index.json      Aishe shell/workspace/session mapping
+<data>/backend/opencode/profiles/       connection- and OAuth-profile-isolated HOME/XDG trees
+<data>/backend/instances/<safe-id>/     private supervisor state for one launch identity
+<data>/backend/sessions/mappings.json   connection/model-aware session mapping
 <data>/backend/journal/tool-calls.json  idempotency and usage journal
 ```
 

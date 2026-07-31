@@ -31,9 +31,9 @@ beside a terminal.
 # 1. Install (Linux/macOS; downloads the right prebuilt binary + verifies it)
 curl -fsSL https://raw.githubusercontent.com/billiondollarsolo/aishe/main/install.sh | sh
 
-# 2. Authenticate with an API key or provider subscription
+# 2. Authenticate with an API key or a named provider subscription profile
 aishe auth set anthropic                   # hidden API-key prompt
-aishe auth login openai                    # ChatGPT Plus/Pro OAuth alternative
+aishe auth login openai --profile work     # isolated ChatGPT Plus/Pro OAuth
 
 # 3. Configure, validate, and take the optional guided tour
 aishe setup
@@ -100,6 +100,10 @@ of a shell. Prefix it with `?` to force the natural-language route
   OpenAI, xAI/Grok, Groq, Ollama (local), OpenRouter, Together — with live model discovery
   and capability checks. A managed turn is never duplicated after admission or
   a side effect; interruption is durable and resumable.
+- **Named accounts, one switcher.** Keep multiple API keys or OAuth accounts for
+  the same provider as distinct named connections. `/model` filters across
+  connection, authentication label, and known models; Enter changes only this
+  shell, while `d` explicitly saves the highlighted choice as the default.
 - **Agentic tools.** In yolo, the model edits files precisely, fetches web pages,
   and calls your [MCP servers](docs/mcp.md) and [skills](docs/custom-commands-and-skills.md).
 - **Cost-aware.** Per-call and whole-session token/cost metering with an optional
@@ -117,7 +121,7 @@ of a shell. Prefix it with `?` to force the natural-language route
   `--fix`, `--bundle`, and `--live` make problems actionable.
 - **Private by default.** API keys live in a separate mode-`0600` shared
   credentials file (or a higher-precedence environment override). OpenAI and
-  xAI OAuth tokens use the managed runtime's separate mode-`0600` store.
+  xAI OAuth tokens use complete, profile-isolated OpenCode HOME/XDG roots.
   Neither appears in ordinary config, tool environments, status, or audit output.
 - **Works anywhere.** `aishe -c '<line>'`, piped stdin, and a bash hook
   (`aishe init bash`) all work without launching the interactive shell.
@@ -175,9 +179,9 @@ arm64) — no Rust toolchain or separate OpenCode installation is needed.
 ## Quickstart
 
 ```sh
-aishe auth set anthropic              # API key; hidden and saved privately
-# or: aishe auth login openai         # ChatGPT Plus/Pro subscription
-# or: aishe auth login xai            # SuperGrok subscription
+aishe auth set anthropic                    # API key; hidden and saved privately
+# or: aishe auth login openai --profile work
+# or: aishe auth login xai --profile prod
 aishe setup                           # guided, resumable configuration
 aishe                                 # launch your real zsh with aishe active
 ```
@@ -282,19 +286,37 @@ There are three ways to use aishe. Details in
 
 ## Providers
 
-Aishe remains the source of truth for provider, model, credential profile,
-prices, and budgets, then generates an isolated provider configuration for its
+Aishe remains the source of truth for named connection, provider, model,
+credential/OAuth profile, prices, and budgets, then generates an isolated provider configuration for its
 managed agent engine. It supports the **Anthropic Messages API**, OpenAI and
 xAI **Responses APIs**, and **OpenAI-compatible Chat Completions APIs**. The
 official OpenAI and xAI URLs use Responses; Groq, Ollama, OpenRouter, Together,
 and other custom `base_url` values use Chat Completions.
 
 ```toml
-[providers.openai]
-base_url = "https://api.groq.com/openai"   # or http://localhost:11434 for Ollama
-credential = "groq"
-api_key_env = "GROQ_API_KEY"
-model = "openai/gpt-oss-120b"
+[aishe]
+connection = "openai-work"
+
+[connections.openai-work]
+provider = "openai"
+label = "OpenAI work"
+base_url = "https://api.openai.com"
+model = "gpt-5.6-luna"
+transport = "responses"
+[connections.openai-work.auth]
+type = "oauth"
+profile = "work"
+
+[connections.openai-api]
+provider = "openai"
+label = "OpenAI API key"
+base_url = "https://api.openai.com"
+model = "gpt-5.6-luna"
+transport = "responses"
+[connections.openai-api.auth]
+type = "api_key"
+credential = "openai-team"
+api_key_env = "OPENAI_API_KEY"
 ```
 
 API keys are read from the named private credential profile; the environment
@@ -303,15 +325,17 @@ variable remains a higher-precedence override. They are never stored in
 tool environments. OpenAI and xAI can instead use provider subscription OAuth:
 
 ```sh
-aishe auth login openai             # local browser; device flow is automatic over SSH
-aishe auth login xai --headless     # explicit VPS/container device flow
-aishe auth status openai            # reports provenance, never token values
-aishe auth logout xai
+aishe auth login openai --profile work
+aishe auth login openai --profile personal --headless
+aishe auth status openai --profile work
+aishe auth logout openai --profile personal
 ```
 
 OAuth is endpoint-bound (`api.openai.com` or `api.x.ai`) and available only to
-the managed OpenCode transport. An API key environment override or saved key
-takes precedence when both exist. See [docs/providers.md](docs/providers.md) for per-provider
+the managed OpenCode transport. Authentication is explicit per connection:
+`api_key` never consumes OAuth, `oauth` never consumes an ambient API key,
+`none` performs no lookup, and migrated `auto` connections retain the old
+key-first compatibility order. See [docs/providers.md](docs/providers.md) for per-provider
 setup and [managed agent backend](docs/managed-agent-backend.md) for the process
 boundary.
 
@@ -328,12 +352,14 @@ aishe reasoning low             # favor latency and lower reasoning use
 aishe reasoning medium          # balanced
 aishe reasoning max             # deepest supported effort
 aishe reasoning auto            # return control to the model/provider
+aishe reasoning high --default  # save it for the selected connection
 ```
 
 Accepted values are `auto`, `none`, `low`, `medium`, `high`, `xhigh`, and
 `max`. Support is model-dependent. OpenAI's Luna, Terra, and Sol GPT-5.6 models
 support this range; other providers may ignore or reject levels they do not
-implement. `/reasoning` shows the active value, and `/status` includes it with
+implement. Inside an Aishe shell, `/reasoning LEVEL` changes only that shell;
+`--default` persists it for the connection. `/status` includes the active value with
 the model, mode, scope, output density, spend, and audit state.
 
 ## Commands and settings
@@ -347,6 +373,7 @@ aishe -c '<line>'      run one line non-interactively and exit
 aishe setup            guided/resumable configuration; --verify checks only
 aishe settings         interactive settings hub with source/provenance
 aishe auth ...         API-key and OpenAI/xAI OAuth login/status/logout
+aishe connection ...   list/add/edit/remove/use/show named provider accounts
 aishe tour             resumable first-session walkthrough
 aishe init zsh|bash    print the shell-hook snippet (for ~/.zshrc / ~/.bashrc)
 aishe doctor           diagnostics; --probe/--live/--json/--fix/--bundle
@@ -366,32 +393,36 @@ aishe sessions | session ...        list/inspect/rename/delete durable AI tasks
 aishe resume [ID]                    safely resume an interrupted task
 aishe price list|set|remove          manage exact per-model price overrides
 aishe profile [VALUE] | readiness    inspect safety profile/autonomy readiness
-aishe models [--provider NAME]       list endpoint models
+aishe models [--connection ID]       list models for exactly one connection
 aishe scope [workspace|host]         set the next agent execution scope
 aishe network [allow|deny]           set workspace-agent network capability
 aishe output [focus|compact|detailed] set persistent agent transcript density
-aishe reasoning [auto|none|low|medium|high|xhigh|max] set reasoning effort
+aishe reasoning [LEVEL] [--default] set shell-local or saved reasoning effort
 aishe status [--json]                show active session settings and spend
 
-aishe mode|model|provider [VALUE]   show or set (and persist) a setting
+aishe model [MODEL] [--connection ID] [--default]  shell-local or saved selection
+aishe mode|provider [VALUE]         show or set a persistent setting
 aishe config|mcp|commands|skills    print the active config / registries
 ```
 
-`aishe mode`, `model`, `provider`, and `reasoning` show the current value with no
-argument or save a new one to your config with one (`aishe reasoning high`). You can also override
+`aishe mode` and legacy `provider` show or save durable values. `aishe reasoning`
+uses the same shell-local/default distinction as model selection. `aishe model` opens the unified
+connection/model picker in a terminal; Enter is shell-local, `d` saves the
+default, and `aishe model default` restores that default. You can also override
 per session with the `--mode`/`--model`/`--provider` flags or `$AISHE_MODE`, and
 in the interactive shell **Shift-Tab** cycles the mode. Full reference in
 [docs/commands.md](docs/commands.md).
 
 Aishe advertises `/help` when its standalone shell starts. The primary set is
-`/status`, `/usage`, `/log`, `/reasoning`, `/details`, `/settings`, `/reset`, and
+`/model`, `/provider`, `/auth`, `/status`, `/usage`, `/log`, `/reasoning`, `/details`, `/settings`, `/reset`, and
 `/commands`; the last one also lists installed custom commands. See
 [docs/commands.md](docs/commands.md#primary-slash-commands).
 
 Agent output defaults to `focus`: one transient, width-bounded row shows the
-current command, then one activity summary and the final answer remain in
-scrollback. Press Ctrl-O or type `/details` to reveal detailed tool activity for
-following turns in the current shell. Persist a preference with `aishe output
+current command; a bounded digest preserves up to three executed commands, then
+one activity summary and the final answer remain in scrollback. `compact` keeps
+one line per completed action. Press Ctrl-O or type `/details` for full tool
+activity on following turns. Persist a preference with `aishe output
 focus|compact|detailed`.
 
 Environment variables worth knowing: `$AISHE_MODE` sets the mode for the shell
@@ -523,6 +554,11 @@ durable identities, timing, usage, and cost. It is off by default; enable it wit
 `aishe log --json` for the raw records, and `/status` to confirm the resolved
 path and redaction state. See [docs/logging.md](docs/logging.md).
 
+Every new event is also attributed to the safe connection ID/label, provider,
+auth type/profile label, model, and reasoning level. Raw keys, access tokens,
+refresh tokens, local control credentials, and OAuth payloads are never identity
+fields.
+
 ## Startup file (.aishrc)
 
 aishe sources `~/.aishrc` and an `aishrc` in its config directory (in that order)
@@ -551,7 +587,7 @@ The config file is `config.toml` in aishe's config directory
 ```toml
 [aishe]
 mode = "suggest"               # suggest | auto | yolo
-provider = "anthropic"         # anthropic | openai
+connection = "openai-work"     # durable default named connection
 pty_prompt = true              # branded prompt in the zsh-PTY shell
 structured = "schema"          # schema | json | prompt
 reasoning_effort = "auto"      # auto | none | low | medium | high | xhigh | max
@@ -563,23 +599,22 @@ redact_secrets = true          # scrub secrets from the model context
 auto_pushd = false             # zsh AUTO_PUSHD for in-process cd
 # many more fields: see examples/config.toml and docs/configuration.md
 
-[providers.anthropic]
-base_url = "https://api.anthropic.com"
-credential = "anthropic"
-api_key_env = "ANTHROPIC_API_KEY"
-model = "claude-sonnet-4-20250514"
-
-[providers.openai]
+[connections.openai-work]
+provider = "openai"
+label = "OpenAI work"
 base_url = "https://api.openai.com"
-credential = "openai"
-api_key_env = "OPENAI_API_KEY"
-model = "gpt-4o"
+model = "gpt-5.6-luna"
+transport = "responses"
+[connections.openai-work.auth]
+type = "oauth"
+profile = "work"
 
 [backend]
 engine = "opencode"
 fallback = "native"             # only before prompt admission
 default_scope = "workspace"
 workspace_network = "deny"
+max_instances = 8               # bounded isolated connection runtimes
 
 [sandbox]
 linux_backend = "bwrap"

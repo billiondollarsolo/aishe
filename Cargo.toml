@@ -1,6 +1,6 @@
 [package]
 name = "aishe"
-version = "0.5.3"
+version = "0.6.0"
 edition = "2021"
 rust-version = "1.88"
 description = "A natural-language-aware shell that behaves like zsh for commands and delegates everything else to an LLM"
@@ -33,6 +33,10 @@ highlight = ["dep:syntect"]
 
 [dependencies]
 ureq = { version = "2", features = ["json", "tls", "native-certs"] }
+# The managed OpenCode loopback transport uses ureq 3's panic-free response
+# body handling. TLS is intentionally omitted because this client accepts only
+# private HTTP endpoints on the local host.
+ureq3 = { package = "ureq", version = "3.3.0", default-features = false, features = ["json"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 toml = "0.8"

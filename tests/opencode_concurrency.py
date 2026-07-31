@@ -20,7 +20,7 @@ from opencode_runtime_contract import (
     contains_text,
     write_config,
 )
-from opencode_soak import stop_and_assert_reaped
+from opencode_soak import read_state, stop_and_assert_reaped
 
 
 def invoke(binary, base_env, workspace, index):
@@ -173,11 +173,7 @@ def qualify(binary, runtime_dir, session_count):
             if workspace_ids != expected_ids:
                 raise AssertionError("durable session workspaces were cross-contaminated")
 
-            state = json.loads(
-                (
-                    data_home / "aishe" / "backend" / "supervisor.json"
-                ).read_text(encoding="utf-8")
-            )
+            state = read_state(data_home)
             write_report(
                 session_count,
                 elapsed,

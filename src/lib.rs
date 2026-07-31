@@ -10,6 +10,7 @@ pub mod cache;
 pub mod capabilities;
 pub mod commands;
 pub mod config;
+pub mod connection;
 pub mod context;
 pub mod credentials;
 pub mod dependencies;

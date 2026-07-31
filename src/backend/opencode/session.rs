@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::agent::{BackendSession, ExecutionScope, Mode, NetworkPolicy};
 
-const STORE_SCHEMA_VERSION: u32 = 1;
+const STORE_SCHEMA_VERSION: u32 = 2;
 const AUTHORITY_CONTEXT_REVISION: u32 = 1;
 const MAX_RECORDS: usize = 10_000;
 
@@ -30,6 +30,10 @@ pub struct SessionMapping {
     pub workspace: PathBuf,
     pub backend: String,
     pub backend_session_id: String,
+    #[serde(default)]
+    pub connection_id: String,
+    #[serde(default)]
+    pub model_id: String,
     pub mode: Mode,
     pub scope: ExecutionScope,
     #[serde(default = "default_network_policy")]
@@ -41,6 +45,33 @@ pub struct SessionMapping {
     pub authority_revision: u32,
     pub created_at: u128,
     pub updated_at: u128,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct SessionBinding<'a> {
+    pub connection_id: &'a str,
+    pub model_id: &'a str,
+    pub mode: Mode,
+    pub scope: ExecutionScope,
+    pub network: NetworkPolicy,
+}
+
+impl<'a> SessionBinding<'a> {
+    pub fn new(
+        connection_id: &'a str,
+        model_id: &'a str,
+        mode: Mode,
+        scope: ExecutionScope,
+        network: NetworkPolicy,
+    ) -> Self {
+        Self {
+            connection_id,
+            model_id,
+            mode,
+            scope,
+            network,
+        }
+    }
 }
 
 impl SessionMapping {
@@ -94,7 +125,13 @@ impl SessionStore {
         Ok(canonical)
     }
 
-    pub fn find(&self, shell_id: &str, workspace: &Path) -> Result<Option<SessionMapping>> {
+    pub fn find(
+        &self,
+        shell_id: &str,
+        workspace: &Path,
+        connection_id: &str,
+        model_id: &str,
+    ) -> Result<Option<SessionMapping>> {
         validate_shell_id(shell_id)?;
         let workspace = Self::resolve_workspace(workspace)?;
         self.with_index(false, |index| {
@@ -105,6 +142,8 @@ impl SessionStore {
                     record.aishe_shell_id == shell_id
                         && record.workspace == workspace
                         && record.backend == "opencode"
+                        && record.connection_id == connection_id
+                        && record.model_id == model_id
                 })
                 .cloned())
         })
@@ -114,9 +153,7 @@ impl SessionStore {
         &self,
         shell_id: &str,
         session: &BackendSession,
-        mode: Mode,
-        scope: ExecutionScope,
-        network: NetworkPolicy,
+        binding: SessionBinding<'_>,
     ) -> Result<SessionMapping> {
         validate_shell_id(shell_id)?;
         validate_backend_id(&session.id)?;
@@ -127,11 +164,15 @@ impl SessionStore {
                 record.aishe_shell_id == shell_id
                     && record.workspace == workspace
                     && record.backend == "opencode"
+                    && record.connection_id == binding.connection_id
+                    && record.model_id == binding.model_id
             }) {
                 record.backend_session_id.clone_from(&session.id);
-                record.mode = mode;
-                record.scope = scope;
-                record.network = network;
+                record.connection_id = binding.connection_id.to_string();
+                record.model_id = binding.model_id.to_string();
+                record.mode = binding.mode;
+                record.scope = binding.scope;
+                record.network = binding.network;
                 record.authority_revision = AUTHORITY_CONTEXT_REVISION;
                 record.updated_at = now;
                 return Ok(record.clone());
@@ -146,9 +187,11 @@ impl SessionStore {
                 workspace,
                 backend: "opencode".into(),
                 backend_session_id: session.id.clone(),
-                mode,
-                scope,
-                network,
+                connection_id: binding.connection_id.to_string(),
+                model_id: binding.model_id.to_string(),
+                mode: binding.mode,
+                scope: binding.scope,
+                network: binding.network,
                 authority_revision: AUTHORITY_CONTEXT_REVISION,
                 created_at: now,
                 updated_at: now,
@@ -177,7 +220,13 @@ impl SessionStore {
     /// The OpenCode conversation itself is deliberately not deleted. Returning
     /// the mapping lets the caller identify and resume the retained session,
     /// while the next natural-language turn creates a fresh conversation.
-    pub fn reset(&self, shell_id: &str, workspace: &Path) -> Result<Option<SessionMapping>> {
+    pub fn reset(
+        &self,
+        shell_id: &str,
+        workspace: &Path,
+        connection_id: &str,
+        model_id: &str,
+    ) -> Result<Option<SessionMapping>> {
         validate_shell_id(shell_id)?;
         let workspace = Self::resolve_workspace(workspace)?;
         self.with_index(true, |index| {
@@ -185,6 +234,8 @@ impl SessionStore {
                 record.aishe_shell_id == shell_id
                     && record.workspace == workspace
                     && record.backend == "opencode"
+                    && record.connection_id == connection_id
+                    && record.model_id == model_id
             });
             Ok(position.map(|position| index.records.remove(position)))
         })
@@ -254,7 +305,12 @@ impl SessionStore {
                 records: Vec::new(),
             }
         };
-        if index.schema_version != STORE_SCHEMA_VERSION {
+        if index.schema_version == 1 {
+            index.schema_version = STORE_SCHEMA_VERSION;
+            for record in &mut index.records {
+                record.schema_version = STORE_SCHEMA_VERSION;
+            }
+        } else if index.schema_version != STORE_SCHEMA_VERSION {
             anyhow::bail!(
                 "unsupported OpenCode session mapping schema {}",
                 index.schema_version
@@ -340,13 +396,22 @@ mod tests {
             .bind(
                 "0123456789abcdef",
                 &session,
-                Mode::Auto,
-                ExecutionScope::Workspace,
-                NetworkPolicy::Deny,
+                SessionBinding::new(
+                    "openai-work",
+                    "gpt-test",
+                    Mode::Auto,
+                    ExecutionScope::Workspace,
+                    NetworkPolicy::Deny,
+                ),
             )
             .unwrap();
         let found = store
-            .find("0123456789abcdef", &workspace.join("src"))
+            .find(
+                "0123456789abcdef",
+                &workspace.join("src"),
+                "openai-work",
+                "gpt-test",
+            )
             .unwrap()
             .unwrap();
         assert_eq!(found.workspace, workspace.canonicalize().unwrap());
@@ -368,9 +433,13 @@ mod tests {
                         workspace: workspace.clone(),
                         backend: "opencode".into(),
                     },
-                    Mode::Yolo,
-                    ExecutionScope::Host,
-                    NetworkPolicy::Allow,
+                    SessionBinding::new(
+                        "openai-work",
+                        "gpt-test",
+                        Mode::Yolo,
+                        ExecutionScope::Host,
+                        NetworkPolicy::Allow,
+                    ),
                 )
                 .unwrap();
         }
@@ -396,9 +465,13 @@ mod tests {
                     workspace: workspace.clone(),
                     backend: "opencode".into(),
                 },
-                Mode::Yolo,
-                ExecutionScope::Workspace,
-                NetworkPolicy::Deny,
+                SessionBinding::new(
+                    "openai-work",
+                    "gpt-test",
+                    Mode::Yolo,
+                    ExecutionScope::Workspace,
+                    NetworkPolicy::Deny,
+                ),
             )
             .unwrap();
         assert!(mapping.matches_authority(
@@ -436,25 +509,82 @@ mod tests {
                     workspace: workspace.clone(),
                     backend: "opencode".into(),
                 },
-                Mode::Yolo,
-                ExecutionScope::Host,
-                NetworkPolicy::Allow,
+                SessionBinding::new(
+                    "openai-work",
+                    "gpt-test",
+                    Mode::Yolo,
+                    ExecutionScope::Host,
+                    NetworkPolicy::Allow,
+                ),
             )
             .unwrap();
 
         let detached = store
-            .reset("fedcba9876543210", &workspace)
+            .reset("fedcba9876543210", &workspace, "openai-work", "gpt-test")
             .unwrap()
             .unwrap();
         assert_eq!(detached.backend_session_id, "ses_retained");
         assert!(store
-            .find("fedcba9876543210", &workspace)
+            .find("fedcba9876543210", &workspace, "openai-work", "gpt-test",)
             .unwrap()
             .is_none());
         assert!(store
-            .reset("fedcba9876543210", &workspace)
+            .reset("fedcba9876543210", &workspace, "openai-work", "gpt-test",)
             .unwrap()
             .is_none());
+        fs::remove_dir_all(&store.root).unwrap();
+    }
+
+    #[test]
+    fn connection_and_model_selections_keep_independent_sessions() {
+        let store = temp_store("selection-identity");
+        let workspace = store.root.join("workspace");
+        fs::create_dir_all(&workspace).unwrap();
+        for (session_id, connection_id, model_id) in [
+            ("ses_work", "openai-work", "gpt-test"),
+            ("ses_personal", "openai-personal", "gpt-test"),
+            ("ses_other_model", "openai-work", "gpt-other"),
+        ] {
+            store
+                .bind(
+                    "0123456789abcdef",
+                    &BackendSession {
+                        id: session_id.into(),
+                        workspace: workspace.clone(),
+                        backend: "opencode".into(),
+                    },
+                    SessionBinding::new(
+                        connection_id,
+                        model_id,
+                        Mode::Auto,
+                        ExecutionScope::Workspace,
+                        NetworkPolicy::Deny,
+                    ),
+                )
+                .unwrap();
+        }
+        assert_eq!(store.records(None).unwrap().len(), 3);
+        assert_eq!(
+            store
+                .find("0123456789abcdef", &workspace, "openai-work", "gpt-test")
+                .unwrap()
+                .unwrap()
+                .backend_session_id,
+            "ses_work"
+        );
+        assert_eq!(
+            store
+                .find(
+                    "0123456789abcdef",
+                    &workspace,
+                    "openai-personal",
+                    "gpt-test"
+                )
+                .unwrap()
+                .unwrap()
+                .backend_session_id,
+            "ses_personal"
+        );
         fs::remove_dir_all(&store.root).unwrap();
     }
 

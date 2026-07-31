@@ -39,12 +39,50 @@ struct Audit {
     redact: bool,
     session: String,
     path: Option<PathBuf>,
+    identity: Value,
 }
 
 /// Initialize the global audit logger. Safe to call once; later calls are
 /// ignored. `enabled` opens the file for appending; `redact` scrubs secrets from
 /// logged text.
 pub fn init(enabled: bool, path: Option<PathBuf>, redact: bool) {
+    init_with_identity(enabled, path, redact, Value::Null);
+}
+
+pub fn init_for_config(
+    enabled: bool,
+    path: Option<PathBuf>,
+    redact: bool,
+    config: &crate::config::Config,
+) {
+    let identity = config
+        .active_connection()
+        .map_or(Value::Null, |connection| {
+            let (auth_type, auth_profile) = match &connection.auth {
+                crate::config::ConnectionAuth::ApiKey { credential, .. } => (
+                    "api_key",
+                    credential
+                        .clone()
+                        .unwrap_or_else(|| connection.settings.credential_profile()),
+                ),
+                crate::config::ConnectionAuth::OAuth { profile } => ("oauth", profile.clone()),
+                crate::config::ConnectionAuth::None => ("none", String::new()),
+                crate::config::ConnectionAuth::Auto => ("auto", String::new()),
+            };
+            json!({
+                "connection_id": config.active_connection_id(),
+                "connection_label": connection.label,
+                "provider": connection.provider,
+                "auth_type": auth_type,
+                "auth_profile": auth_profile,
+                "model": config.active_model(),
+                "reasoning_effort": config.active_reasoning_effort(),
+            })
+        });
+    init_with_identity(enabled, path, redact, identity);
+}
+
+fn init_with_identity(enabled: bool, path: Option<PathBuf>, redact: bool, identity: Value) {
     let resolved = path.unwrap_or_else(default_path);
     let sink = if enabled {
         if let Some(parent) = resolved.parent() {
@@ -78,6 +116,7 @@ pub fn init(enabled: bool, path: Option<PathBuf>, redact: bool) {
         redact,
         session: format!("{}-{}", std::process::id(), now_ms()),
         path: Some(resolved),
+        identity,
     };
     let _ = AUDIT.set(audit);
     // Mark the start of a session so log files are easy to segment.
@@ -118,6 +157,11 @@ pub fn event(kind: &str, fields: Value) {
         "session": audit.session,
         "kind": kind,
     });
+    if let (Some(map), Some(identity)) = (obj.as_object_mut(), audit.identity.as_object()) {
+        for (key, value) in identity {
+            map.insert(key.clone(), value.clone());
+        }
+    }
     if let (Some(map), Some(extra)) = (obj.as_object_mut(), fields.as_object()) {
         for (k, v) in extra {
             map.insert(k.clone(), v.clone());
@@ -249,6 +293,12 @@ pub struct Entry {
     pub session: String,
     pub kind: String,
     pub model: Option<String>,
+    pub connection_id: Option<String>,
+    pub connection_label: Option<String>,
+    pub provider: Option<String>,
+    pub auth_type: Option<String>,
+    pub auth_profile: Option<String>,
+    pub reasoning_effort: Option<String>,
     pub mode: Option<String>,
     pub tokens_in: Option<u64>,
     pub tokens_out: Option<u64>,
@@ -287,6 +337,12 @@ fn entry_from(v: Value) -> Entry {
         session: s("session").unwrap_or_default(),
         kind: s("kind").unwrap_or_default(),
         model: s("model"),
+        connection_id: s("connection_id"),
+        connection_label: s("connection_label"),
+        provider: s("provider"),
+        auth_type: s("auth_type"),
+        auth_profile: s("auth_profile"),
+        reasoning_effort: s("reasoning_effort"),
         mode: s("mode"),
         tokens_in: u("tokens_in"),
         tokens_out: u("tokens_out"),

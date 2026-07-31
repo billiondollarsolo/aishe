@@ -9,7 +9,7 @@ use crate::agent::{
     SessionFilter, SessionRequest, SessionSnapshot, SessionSummary,
 };
 
-use super::session::SessionStore;
+use super::session::{SessionBinding, SessionStore};
 use super::OpenCodeClient;
 
 pub struct OpenCodeBackend {
@@ -83,6 +83,13 @@ impl AgentBackend for OpenCodeBackend {
 
     fn ensure_session(&self, request: SessionRequest) -> Result<BackendSession> {
         let workspace = SessionStore::resolve_workspace(&request.workspace)?;
+        let binding = SessionBinding::new(
+            &request.connection_id,
+            &request.model_id,
+            request.mode,
+            request.scope,
+            request.network,
+        );
         if let Some(resume_id) = request.resume_id.as_deref() {
             let session = BackendSession {
                 id: resume_id.to_string(),
@@ -92,16 +99,15 @@ impl AgentBackend for OpenCodeBackend {
             self.client
                 .session(&session)?
                 .context("requested OpenCode session does not exist")?;
-            self.sessions.bind(
-                &request.shell_id,
-                &session,
-                request.mode,
-                request.scope,
-                request.network,
-            )?;
+            self.sessions.bind(&request.shell_id, &session, binding)?;
             return Ok(session);
         }
-        if let Some(mapping) = self.sessions.find(&request.shell_id, &workspace)? {
+        if let Some(mapping) = self.sessions.find(
+            &request.shell_id,
+            &workspace,
+            &request.connection_id,
+            &request.model_id,
+        )? {
             if mapping.matches_authority(request.mode, request.scope, request.network) {
                 let session = BackendSession {
                     id: mapping.backend_session_id,
@@ -111,13 +117,7 @@ impl AgentBackend for OpenCodeBackend {
                 // Only a definite 404 permits replacement. Connectivity or auth
                 // errors bubble up so they cannot create duplicate conversations.
                 if self.client.session(&session)?.is_some() {
-                    self.sessions.bind(
-                        &request.shell_id,
-                        &session,
-                        request.mode,
-                        request.scope,
-                        request.network,
-                    )?;
+                    self.sessions.bind(&request.shell_id, &session, binding)?;
                     return Ok(session);
                 }
             }
@@ -125,7 +125,12 @@ impl AgentBackend for OpenCodeBackend {
         self.sessions.serialize_creation(|| {
             // Another process may have created this shell/workspace session
             // while we waited for the creation lock. Recheck before POSTing.
-            if let Some(mapping) = self.sessions.find(&request.shell_id, &workspace)? {
+            if let Some(mapping) = self.sessions.find(
+                &request.shell_id,
+                &workspace,
+                &request.connection_id,
+                &request.model_id,
+            )? {
                 if mapping.matches_authority(request.mode, request.scope, request.network) {
                     let session = BackendSession {
                         id: mapping.backend_session_id,
@@ -133,13 +138,7 @@ impl AgentBackend for OpenCodeBackend {
                         backend: "opencode".into(),
                     };
                     if self.client.session(&session)?.is_some() {
-                        self.sessions.bind(
-                            &request.shell_id,
-                            &session,
-                            request.mode,
-                            request.scope,
-                            request.network,
-                        )?;
+                        self.sessions.bind(&request.shell_id, &session, binding)?;
                         return Ok(session);
                     }
                 }
@@ -150,13 +149,7 @@ impl AgentBackend for OpenCodeBackend {
                 request.scope,
                 request.network,
             )?;
-            self.sessions.bind(
-                &request.shell_id,
-                &session,
-                request.mode,
-                request.scope,
-                request.network,
-            )?;
+            self.sessions.bind(&request.shell_id, &session, binding)?;
             Ok(session)
         })
     }

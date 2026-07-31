@@ -807,6 +807,7 @@ fn run_interactive(options: Options) -> Result<Outcome> {
                         provider.base_url
                     ));
                     pending_credential = None;
+                    set_active_auth(&mut draft.config, crate::config::ConnectionAuth::None);
                     advance(&mut draft)?;
                     continue;
                 }
@@ -848,7 +849,14 @@ fn run_interactive(options: Options) -> Result<Outcome> {
                 } else {
                     None
                 };
+                let oauth_provider = crate::oauth::OAuthProvider::from_base_url(&provider.base_url);
+                let oauth_index = oauth_provider.map(|_| choices.len());
+                if oauth_provider.is_some() {
+                    choices.push("Sign in with a provider subscription (OAuth)".into());
+                }
+                let save_key_index = choices.len();
                 choices.push("Enter and save an API key locally (recommended)".into());
+                let env_index = choices.len();
                 choices.push(format!(
                     "Use environment variable only (${env})",
                     env = provider.api_key_env
@@ -862,11 +870,39 @@ fn run_interactive(options: Options) -> Result<Outcome> {
                 )? {
                     MenuResult::Selected(index) if Some(index) == existing_index => {
                         pending_credential = None;
+                        set_active_auth(
+                            &mut draft.config,
+                            crate::config::ConnectionAuth::ApiKey {
+                                credential: Some(profile.clone()),
+                                api_key_env: Some(provider.api_key_env.clone()),
+                            },
+                        );
                         advance(&mut draft)?;
                     }
-                    MenuResult::Selected(index)
-                        if index == usize::from(existing_index.is_some()) =>
-                    {
+                    MenuResult::Selected(index) if Some(index) == oauth_index => {
+                        let oauth_provider = oauth_provider.expect("index only exists with provider");
+                        let Some(label) = promptui::text("OAuth profile label", "work", |value| {
+                            crate::oauth::normalize_profile(value)?;
+                            Ok(())
+                        })? else {
+                            return cancel(draft);
+                        };
+                        if label == ":back" {
+                            continue;
+                        }
+                        let code = crate::oauth::login_profile(oauth_provider, &label, false, false)?;
+                        if code != 0 {
+                            promptui::error("OAuth login did not complete; choose a credential method again");
+                            continue;
+                        }
+                        set_active_auth(
+                            &mut draft.config,
+                            crate::config::ConnectionAuth::OAuth { profile: label },
+                        );
+                        pending_credential = None;
+                        advance(&mut draft)?;
+                    }
+                    MenuResult::Selected(index) if index == save_key_index => {
                         let Some(secret) = promptui::secret(
                             &format!("API key for '{profile}'"),
                             crate::credentials::MAX_SECRET_BYTES,
@@ -875,10 +911,17 @@ fn run_interactive(options: Options) -> Result<Outcome> {
                             return cancel(draft);
                         };
                         crate::credentials::validate_secret(&secret)?;
+                        set_active_auth(
+                            &mut draft.config,
+                            crate::config::ConnectionAuth::ApiKey {
+                                credential: Some(profile.clone()),
+                                api_key_env: Some(provider.api_key_env.clone()),
+                            },
+                        );
                         pending_credential = Some((profile, secret));
                         advance(&mut draft)?;
                     }
-                    MenuResult::Selected(_) => {
+                    MenuResult::Selected(index) if index == env_index => {
                         let provider = active_provider_mut(&mut draft.config);
                         match promptui::text(
                             "Environment override variable",
@@ -888,6 +931,15 @@ fn run_interactive(options: Options) -> Result<Outcome> {
                             Some(value) if value == ":back" => {}
                             Some(value) => {
                                 provider.api_key_env = value;
+                                let credential = provider.credential_profile();
+                                let key_env = provider.api_key_env.clone();
+                                set_active_auth(
+                                    &mut draft.config,
+                                    crate::config::ConnectionAuth::ApiKey {
+                                        credential: Some(credential),
+                                        api_key_env: Some(key_env),
+                                    },
+                                );
                                 pending_credential = None;
                                 advance(&mut draft)?;
                             }
@@ -896,11 +948,12 @@ fn run_interactive(options: Options) -> Result<Outcome> {
                     }
                     MenuResult::Back => draft.step = draft.step.previous(),
                     MenuResult::Cancel => return cancel(draft),
+                    MenuResult::Selected(_) => unreachable!(),
                 }
             }
             Step::Model => {
                 step_header(6, "Model and pricing");
-                let provider_name = draft.config.aishe.provider.clone();
+                let provider_name = draft.config.active_connection_id().to_string();
                 let current = active_provider(&draft.config).model.clone();
                 let using_oauth = pending_credential.is_none()
                     && crate::credentials::resolve(active_provider(&draft.config))
@@ -1655,16 +1708,34 @@ fn validate_managed_backend(config: &Config) -> Result<()> {
 }
 
 fn apply_service(config: &mut Config, service: &provider_catalog::Service) {
-    match service.family {
-        Family::Anthropic => {
-            config.aishe.provider = "anthropic".into();
-            provider_catalog::apply(service, &mut config.providers.anthropic);
-        }
-        Family::OpenAiCompatible => {
-            config.aishe.provider = "openai".into();
-            provider_catalog::apply(service, &mut config.providers.openai);
-        }
+    let id = match service.family {
+        Family::Anthropic => "anthropic",
+        Family::OpenAiCompatible => "openai",
+    };
+    if !config.connections.contains_key(id) {
+        let settings = if id == "anthropic" {
+            config.providers.anthropic.clone()
+        } else {
+            config.providers.openai.clone()
+        };
+        config.connections.insert(
+            id.into(),
+            crate::config::ConnectionConfig {
+                provider: id.into(),
+                label: service.label.into(),
+                settings,
+                auth: crate::config::ConnectionAuth::Auto,
+                reasoning_effort: None,
+            },
+        );
     }
+    let _ = config.select_connection(id);
+    if id == "anthropic" {
+        provider_catalog::apply(service, &mut config.providers.anthropic);
+    } else {
+        provider_catalog::apply(service, &mut config.providers.openai);
+    }
+    provider_catalog::apply(service, active_provider_mut(config));
 }
 
 fn apply_overrides(config: &mut Config, options: &Options) -> Result<()> {
@@ -1705,6 +1776,19 @@ fn apply_overrides(config: &mut Config, options: &Options) -> Result<()> {
         validate_transport(transport)?;
         provider.transport = transport.clone();
     }
+    let configure_key = options.key_env.is_some() || options.credential_profile.is_some();
+    let settings = active_provider(config).clone();
+    if !settings.requires_auth() {
+        set_active_auth(config, crate::config::ConnectionAuth::None);
+    } else if configure_key {
+        set_active_auth(
+            config,
+            crate::config::ConnectionAuth::ApiKey {
+                credential: Some(settings.credential_profile()),
+                api_key_env: Some(settings.api_key_env),
+            },
+        );
+    }
     if let Some(profile) = options.profile {
         profiles::apply(config, profile);
     } else if config.aishe.safety_profile == "custom" && !Config::path().exists() {
@@ -1725,18 +1809,23 @@ fn apply_overrides(config: &mut Config, options: &Options) -> Result<()> {
 }
 
 fn active_provider(config: &Config) -> &crate::config::ProviderConfig {
-    if config.aishe.provider == "openai" {
-        &config.providers.openai
-    } else {
-        &config.providers.anthropic
-    }
+    config.active_provider_config()
 }
 
 fn active_provider_mut(config: &mut Config) -> &mut crate::config::ProviderConfig {
-    if config.aishe.provider == "openai" {
+    let id = config.active_connection_id().to_string();
+    if config.connections.contains_key(&id) {
+        &mut config.connections.get_mut(&id).expect("checked").settings
+    } else if config.aishe.provider == "openai" {
         &mut config.providers.openai
     } else {
         &mut config.providers.anthropic
+    }
+}
+
+fn set_active_auth(config: &mut Config, auth: crate::config::ConnectionAuth) {
+    if let Some(connection) = config.active_connection_mut() {
+        connection.auth = auth;
     }
 }
 
@@ -1933,7 +2022,9 @@ fn choose_status_items(draft: &mut Draft) -> Result<bool> {
 
 fn validate_status_items(items: &[String]) -> Result<()> {
     const ALLOWED: &[&str] = &[
+        "connection",
         "model",
+        "reasoning",
         "mode",
         "backend",
         "scope",

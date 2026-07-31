@@ -7,41 +7,53 @@ Aishe configures three provider shapes:
 - any custom **OpenAI-compatible Chat Completions API**.
 
 For normal AI turns, Aishe generates a private provider definition for its
-managed OpenCode engine. Aishe remains authoritative for the endpoint, model,
-credential profile, prices, budget, and organization restrictions. API keys
+managed OpenCode engine. Aishe remains authoritative for the named connection,
+endpoint, model, authentication binding, prices, budget, and organization restrictions. API keys
 enter only the provider process environment; OAuth tokens remain in the
 managed runtime's private store. Model-controlled tools inherit neither.
 
-The `[providers.openai]` block's `transport = "auto"` selects the wire format
+A connection's `transport = "auto"` selects the wire format
 from `base_url`. `https://api.openai.com` and `https://api.x.ai` use Responses,
 including reasoning-model tool calls and their continuation items. Groq, Ollama,
 OpenRouter, Together, and other custom URLs use Chat Completions for broad
 compatibility. Set `transport = "responses"` or `"chat"` only when a gateway
 needs an explicit choice.
 
-API keys are resolved from the profile named by `credential` in Aishe's private
+API-key connections resolve the profile named by `credential` in Aishe's private
 `credentials.toml`. The variable named by `api_key_env` is an optional
 higher-precedence override for CI, containers, and temporary testing. Keys are
 never written to ordinary `config.toml`, generated backend config, session
 mappings, tool journals, or support bundles.
 
-OpenAI and xAI also support subscription OAuth through Aishe's pinned private
-OpenCode runtime:
+OpenAI and xAI also support any number of labeled subscription OAuth profiles
+through Aishe's pinned private OpenCode runtime:
 
 ```sh
-aishe auth login openai             # browser locally; device flow over SSH
-aishe auth login xai --headless     # force device flow in a VPS/container
-aishe auth status openai            # no token values are displayed
-aishe auth logout xai
+aishe auth login openai --profile work
+aishe auth login openai --profile personal --headless
+aishe auth status openai --profile work
+aishe auth logout openai --profile personal
 ```
 
-OAuth is accepted only when the configured host exactly matches
-`api.openai.com` or `api.x.ai`; it cannot be redirected to a compatible gateway.
+OAuth is accepted only when the normalized endpoint is exactly
+`https://api.openai.com` or `https://api.x.ai`; it cannot be redirected to a compatible gateway.
 The local callback flow is the default on a workstation, while Aishe
 automatically selects device authorization when SSH or a non-terminal output is
-detected. `--browser` and `--headless` explicitly select either flow. API-key
-environment variables, staged setup keys, and saved key profiles all take
-precedence over OAuth.
+detected. `--browser` and `--headless` explicitly select either flow. Each
+profile gets a complete private OpenCode HOME/XDG tree. An explicit `oauth`
+connection ignores API-key variables and stores; an explicit `api_key`
+connection ignores OAuth. Only schema-migrated `auto` connections retain the
+old key-first behavior.
+
+Create and inspect connections without editing TOML:
+
+```sh
+aishe connection add openai-work --provider openai --auth oauth --profile work
+aishe connection add openai-api --provider openai --auth api-key --credential openai-team
+aishe connection list
+aishe connection show openai-work
+aishe auth login --connection openai-work
+```
 
 With API-key authentication, interactive Setup calls `GET /v1/models`
 immediately after the credential step. This is a token-free
@@ -60,13 +72,17 @@ live check is requested.
 
 ```toml
 [aishe]
-provider = "anthropic"
+connection = "anthropic"
 
-[providers.anthropic]
+[connections.anthropic]
+provider = "anthropic"
+label = "Anthropic"
 base_url = "https://api.anthropic.com"
+model = "claude-sonnet-4-20250514"
+[connections.anthropic.auth]
+type = "api_key"
 credential = "anthropic"
 api_key_env = "ANTHROPIC_API_KEY"
-model = "claude-sonnet-4-20250514"
 ```
 
 ```sh
@@ -78,21 +94,22 @@ aishe
 
 ```toml
 [aishe]
-provider = "openai"
+connection = "openai-work"
 
-[providers.openai]
+[connections.openai-work]
+provider = "openai"
+label = "OpenAI work"
 base_url = "https://api.openai.com"
-credential = "openai"
-api_key_env = "OPENAI_API_KEY"
-model = "gpt-4o"
-transport = "auto"
-auth_required = true
+model = "gpt-5.6-luna"
+transport = "responses"
+[connections.openai-work.auth]
+type = "oauth"
+profile = "work"
 ```
 
 ```sh
-aishe auth set openai
-# or use a ChatGPT Plus/Pro subscription:
-aishe auth login openai
+aishe auth login --connection openai-work
+# API-key alternative: create an api_key connection and run aishe auth set PROFILE
 aishe
 ```
 
@@ -119,21 +136,22 @@ preset and the provider-native Responses transport:
 
 ```toml
 [aishe]
-provider = "openai"
+connection = "xai-prod"
 
-[providers.openai]
+[connections.xai-prod]
+provider = "xai"
+label = "xAI production"
 base_url = "https://api.x.ai"
-credential = "xai"
-api_key_env = "XAI_API_KEY"
 model = "grok-4.5"
 transport = "responses"
-auth_required = true
+[connections.xai-prod.auth]
+type = "oauth"
+profile = "prod"
 ```
 
 ```sh
-aishe auth login xai                # SuperGrok; device flow is automatic over SSH
-aishe setup --service xai
-# API-key alternative: aishe auth set xai
+aishe auth login --connection xai-prod
+# API-key alternative: a separate api_key connection with credential = "xai"
 ```
 
 The OAuth credential binds to OpenCode's exact `xai` provider identity so its
@@ -238,13 +256,19 @@ the service exposes.
 ## Switching providers and models at runtime
 
 ```sh
-aishe provider openai
-aishe model gpt-4o-mini
+aishe model                         # filterable connection/model picker
+aishe model gpt-5.6-terra           # current connection, this shell
+aishe model gpt-5.6-sol --connection openai-work
+aishe model openai-api/gpt-5.6-luna
+aishe model default                 # restore the durable default
+aishe connection use openai-work --default
 ```
 
-`aishe model` sets the model for the currently selected provider. Both persist to
-the config. In the zsh PTY front-end, the right-prompt model label refreshes on
-the next prompt after this command.
+In an interactive terminal, Enter applies the highlighted pair only to that
+shell and `d` both applies and saves it. `aishe models --connection ID` performs
+connection-scoped discovery. OAuth discovery falls back to configured, cached,
+recently audited, and typed model IDs when the pinned runtime cannot enumerate
+the subscription account. Aishe never queries `models.dev`.
 
 The native compatibility/provider-probe layer supports both `max_tokens` and
 `max_completion_tokens` for custom Chat Completions endpoints and caches the

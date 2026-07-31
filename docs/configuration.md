@@ -36,8 +36,10 @@ Inside them:
 - Durable AI tasks: `<data>/tasks/*.json` (private and redacted; stateless
   reasoning resumes may retain opaque encrypted provider continuation data)
 - Managed runtime: `<data>/runtime/opencode/<version>/`
-- Isolated backend state: `<data>/backend/opencode/`
-- Managed session map: `<data>/backend/sessions/index.json`
+- Isolated OAuth roots: `<data>/backend/opencode/profiles/<provider>/<profile>/`
+- Connection runtime roots: `<data>/backend/opencode/profiles/connections/<safe-id>/`
+- Supervisor pool state: `<data>/backend/instances/<safe-id>/`
+- Managed session map: `<data>/backend/sessions/mappings.json`
 - Tool idempotency/usage journal: `<data>/backend/journal/tool-calls.json`
 - Provider capability cache: `<data>/capabilities/*.json`
 - Resumable setup draft: `<data>/setup-draft.json`
@@ -59,6 +61,8 @@ brevity. Read `~/.config/aishe/...` as `<config>/...` and
 |-------|------|---------|---------|
 | `safety_profile` | string | `custom` | Named settings bundle: `conservative`, `balanced`, `autonomous`, or `custom`. |
 | `mode` | string | `suggest` | Interaction mode: `suggest`, `auto`, or `yolo`. |
+| `connection` | string | `anthropic` | Durable default named connection ID. `/model` changes only the current shell unless `d` or `--default` is used. |
+| `connection_fallback` | string | active connection | Named compatibility fallback connection. |
 | `provider` | string | `anthropic` | Which provider block to use: `anthropic` or `openai`. |
 | `provider_fallback` | array | `[]` | Native compatibility-provider fallback chain. Managed turns do not start a second provider request after prompt admission or any effect. |
 | `yolo_confirm_dangerous` | bool | `true` | Deprecated native compatibility behavior; managed yolo uses one per-shell scope acceptance. |
@@ -109,8 +113,9 @@ manifest owns them.
 | `idle_timeout_secs` | integer | `1800` | Stop the private per-user supervisor after this idle period (30–86400). |
 | `default_scope` | string | `workspace` | Default `workspace` or `host` selection. Yolo acceptance itself is never persisted. |
 | `workspace_network` | string | `deny` | `allow` or `deny` network capability for workspace agent tools. |
-| `output` | string | `focus` | `focus` (transient current command plus one activity summary and final response), `compact` (one persistent completion row per action), or `detailed` (raw command output, diffs, usage, and agent events). |
+| `output` | string | `focus` | `focus` (transient current command plus a bounded three-command digest, one activity summary, and final response), `compact` (one persistent completion row per action), or `detailed` (raw command output, diffs, usage, and agent events). |
 | `max_output_tokens` | integer | `0` | Hard provider output cap; `0` delegates to backend/model unless organization policy caps it. |
+| `max_instances` | integer | `8` | Maximum isolated connection supervisors that may coexist (1–32). Starting another deterministically stops the oldest idle candidate. |
 
 ```toml
 [backend]
@@ -122,6 +127,7 @@ default_scope = "workspace"
 workspace_network = "deny"
 output = "focus"
 max_output_tokens = 0
+max_instances = 8
 ```
 
 Fallback is one-way and pre-admission only. Aishe never duplicates a prompt
@@ -173,7 +179,73 @@ Off by default because it persists conversation and command history.
 
 See [Logging and privacy](logging.md) for the event shapes and examples.
 
-## `[providers.anthropic]` and `[providers.openai]`
+## `[connections.<id>]`
+
+Schema 6 makes a named connection the unit of provider selection. A connection
+binds a safe stable ID and label to a provider family, endpoint, transport,
+model, reasoning choice, and one explicit authentication method. Any number of
+connections may use the same provider.
+
+```toml
+[aishe]
+connection = "openai-work"
+connection_fallback = "openai-work"
+
+[connections.openai-work]
+provider = "openai"
+label = "OpenAI work"
+base_url = "https://api.openai.com"
+model = "gpt-5.6-luna"
+transport = "responses"
+reasoning_effort = "high"
+[connections.openai-work.auth]
+type = "oauth"
+profile = "work"
+
+[connections.openai-api]
+provider = "openai"
+label = "OpenAI API project"
+base_url = "https://api.openai.com"
+model = "gpt-5.6-luna"
+transport = "responses"
+[connections.openai-api.auth]
+type = "api_key"
+credential = "openai-team"
+api_key_env = "OPENAI_API_KEY"
+
+[connections.ollama-local]
+provider = "openai"
+label = "Ollama local"
+base_url = "http://127.0.0.1:11434"
+model = "qwen3:14b"
+transport = "chat"
+auth_required = false
+[connections.ollama-local.auth]
+type = "none"
+```
+
+Authentication types are deliberately non-overlapping:
+
+- `api_key` resolves only its named credential and environment override.
+- `oauth` resolves only the exact provider/profile OAuth root and ignores API
+  key variables, even when they are set.
+- `none` performs no credential lookup.
+- `auto` is migration compatibility: key first, then the legacy OAuth store.
+
+OAuth endpoints must normalize exactly to `https://api.openai.com` or
+`https://api.x.ai`. Profile labels are normalized for their private directory;
+config validation rejects two connections that would collide on one path.
+
+Use `aishe connection list|show|add|edit|remove|use`; use `/model` for the normal
+shell-local switch. `aishe models --connection ID` scopes discovery and its
+cache to the connection's safe launch identity.
+
+### Legacy `[providers.anthropic]` and `[providers.openai]`
+
+These blocks remain for schema-5 migration and unambiguous v0.5 workflows.
+Schema 5 is upgraded automatically to deterministic `anthropic` and `openai`
+`auto` connections. Before atomic replacement, Aishe writes the existing
+byte-for-byte versioned backup. New configuration should use `[connections]`.
 
 | Field | Type | Meaning |
 |-------|------|---------|
@@ -236,20 +308,22 @@ the containing config directory is mode `0700`. Aishe rejects symlinked,
 non-regular, oversized, malformed, or group/world-readable credential files;
 `aishe doctor --fix` can repair permissions without printing or changing a key.
 
-OpenAI and xAI subscription OAuth is deliberately separate:
+OpenAI and xAI subscription OAuth is profile-isolated:
 
 ```sh
-aishe auth login openai              # ChatGPT Plus/Pro
-aishe auth login xai --headless      # SuperGrok; device flow for SSH/VPS
-aishe auth status openai --json
-aishe auth logout openai
+aishe auth login openai --profile work
+aishe auth login openai --profile personal --headless
+aishe auth status openai --profile work --json
+aishe auth logout openai --profile personal
 ```
 
-Tokens are written by the pinned runtime to Aishe's isolated OpenCode
-`auth.json`, which is also required to be a current-user-owned regular file
+Tokens are written by the pinned runtime to a complete profile-specific
+OpenCode HOME/XDG root and `auth.json`, which is required to be a current-user-owned regular file
 with mode `0600`. Status and diagnostics deserialize only the provider, type,
-and expiration metadata; they never serialize access or refresh tokens. API
-keys keep precedence over OAuth when both are available.
+and expiration metadata; they never serialize access or refresh tokens. An
+explicit OAuth connection never consults an API key, and an explicit API-key
+connection never consults OAuth. Only a migrated `auto` connection uses the old
+precedence behavior.
 
 ## `[pricing."<model>"]` (optional)
 

@@ -355,7 +355,7 @@ def setup_checks_catalog_credential_and_manual_model():
                 rejected.expect("API endpoint")
                 rejected.line(endpoint)
                 rejected.expect("Credential profile 'custom'")
-                rejected.menu(1)
+                rejected.menu(2)
                 rejected.expect("API key for 'custom'")
                 rejected.line("wrong-key")
                 rejected.expect("Could not load /v1/models (InvalidCredential)")
@@ -375,7 +375,7 @@ def setup_checks_catalog_credential_and_manual_model():
                 restarted.expect("API endpoint")
                 restarted.line(endpoint)
                 restarted.expect("Credential profile 'custom'")
-                restarted.menu(1)
+                restarted.menu(2)
                 restarted.expect("API key for 'custom'")
                 restarted.line(good_key)
                 restarted.expect("Credential accepted; /v1/models returned 12 model(s)")
@@ -609,7 +609,7 @@ def hidden_auth_and_staged_setup_are_secret_safe():
             shell.expect("API endpoint")
             shell.line(endpoint)
             shell.expect("Credential profile 'custom'")
-            shell.menu(1)  # enter and save locally
+            shell.menu(2)  # enter and save locally (after OAuth)
             shell.expect("API key for 'custom'")
             shell.line(secret)
             shell.expect("Credential accepted; /v1/models returned 1 model(s)")
@@ -642,7 +642,7 @@ def hidden_auth_and_staged_setup_are_secret_safe():
         try:
             resumed.expect("returning to the Credential step")
             resumed.expect("Credential profile 'custom'")
-            resumed.menu(1)
+            resumed.menu(1)  # resumed custom draft exposes only API key/env
             resumed.expect("API key for 'custom'")
             resumed.line(secret)
             resumed.expect("Available models (refreshed from /v1/models)")

@@ -55,11 +55,13 @@ def write_config(root):
     config = root / "config" / "aishe" / "config.toml"
     config.parent.mkdir(parents=True)
     config.write_text(
-        """version = 5
+        """version = 6
 
 [aishe]
 mode = "suggest"
 provider = "openai"
+connection = "direct-shell"
+connection_fallback = "direct-shell"
 
 [backend]
 engine = "opencode"
@@ -72,6 +74,19 @@ api_key_env = "DIRECT_SHELL_UNUSED_KEY"
 model = "direct-shell-model"
 transport = "chat"
 auth_required = false
+
+[connections.direct-shell]
+provider = "openai"
+label = "Direct shell benchmark"
+base_url = "http://127.0.0.1:9"
+credential = "direct-shell"
+api_key_env = "DIRECT_SHELL_UNUSED_KEY"
+model = "direct-shell-model"
+transport = "chat"
+auth_required = false
+
+[connections.direct-shell.auth]
+type = "none"
 """,
         encoding="utf-8",
     )

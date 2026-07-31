@@ -162,11 +162,17 @@ jobs:
       - name: zsh-PTY statusline placement and live metrics
         run: python3 tests/statusline_pty.py target/release/aishe
 
+      - name: Unified connection/model picker and concurrent shell selection
+        run: python3 tests/model_picker_pty.py target/release/aishe
+
       - name: Interactive setup state-machine PTY
         run: python3 tests/setup_pty.py target/release/aishe
 
       - name: Pinned OpenCode provider and tool-bridge contract
         run: python3 tests/opencode_runtime_contract.py target/release/aishe
+
+      - name: Same-provider connection credential and runtime isolation
+        run: python3 tests/opencode_connection_isolation.py target/release/aishe
 
       - name: Workspace-to-host authority, focus output, and reset contract
         run: python3 tests/opencode_host_scope.py target/release/aishe

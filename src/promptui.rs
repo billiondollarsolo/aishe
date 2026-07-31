@@ -3,7 +3,7 @@
 //! supports arrow keys and simple letter shortcuts, and restores terminal mode
 //! on every exit path.
 
-use std::io::{IsTerminal, Write};
+use std::io::{IsTerminal, Read, Write};
 
 use anyhow::{Context, Result};
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyModifiers};
@@ -29,6 +29,180 @@ pub enum MenuResult {
     Selected(usize),
     Back,
     Cancel,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum PickerResult {
+    Use(usize),
+    SaveDefault(usize),
+    Cancel,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum PickerKey {
+    Up,
+    Down,
+    Enter,
+    SaveDefault,
+    Backspace,
+    Cancel,
+    Character(char),
+    Other,
+}
+
+/// Filterable single-column picker used by `/model`. It intentionally uses
+/// plain text and ASCII focus marks so terminal font/theme choices never turn
+/// status into colored pictographs.
+pub fn filter_picker(title: &str, options: &[String], default: usize) -> Result<PickerResult> {
+    if options.is_empty() {
+        anyhow::bail!("picker '{title}' has no options");
+    }
+    if !std::io::stdin().is_terminal() || !std::io::stdout().is_terminal() {
+        anyhow::bail!("interactive picker requires a terminal");
+    }
+    println!(
+        "\n  {}",
+        paint(&crate::commands::display_safe(title), ACCENT)
+    );
+    println!("  Type to filter · Enter use in this shell · d save as default · Esc cancel");
+    let guard = RawGuard::enter()?;
+    let stdin = std::io::stdin();
+    let mut input = stdin.lock();
+    let mut filter = String::new();
+    let mut selected = default.min(options.len() - 1);
+    loop {
+        let matches: Vec<usize> = options
+            .iter()
+            .enumerate()
+            .filter(|(_, option)| {
+                option
+                    .to_ascii_lowercase()
+                    .contains(&filter.to_ascii_lowercase())
+            })
+            .map(|(index, _)| index)
+            .collect();
+        if selected >= matches.len() {
+            selected = 0;
+        }
+        print!(
+            "\r\x1b[2K  filter: {}\r\n\x1b[J",
+            crate::commands::display_safe(&filter)
+        );
+        for (row, index) in matches.iter().take(20).enumerate() {
+            let marker = if row == selected { ">" } else { " " };
+            println!(
+                "  {marker} {}",
+                crate::commands::display_safe(&options[*index])
+            );
+        }
+        if matches.is_empty() {
+            println!("    no matches");
+        }
+        std::io::stdout().flush().ok();
+        match read_picker_key(&mut input).context("reading picker input")? {
+            PickerKey::Up => {
+                selected = selected
+                    .checked_sub(1)
+                    .unwrap_or(matches.len().saturating_sub(1))
+            }
+            PickerKey::Down => {
+                if !matches.is_empty() {
+                    selected = (selected + 1) % matches.len();
+                }
+            }
+            PickerKey::Enter if !matches.is_empty() => {
+                drop(guard);
+                println!();
+                return Ok(PickerResult::Use(matches[selected]));
+            }
+            PickerKey::SaveDefault
+                if (filter.is_empty() || matches.len() == 1) && !matches.is_empty() =>
+            {
+                drop(guard);
+                println!();
+                return Ok(PickerResult::SaveDefault(matches[selected]));
+            }
+            PickerKey::SaveDefault => {
+                filter.push('d');
+                selected = 0;
+            }
+            PickerKey::Backspace => {
+                filter.pop();
+                selected = 0;
+            }
+            PickerKey::Character(c) => {
+                if !c.is_control() {
+                    filter.push(c);
+                    selected = 0;
+                }
+            }
+            PickerKey::Cancel => {
+                drop(guard);
+                println!();
+                return Ok(PickerResult::Cancel);
+            }
+            _ => {}
+        }
+    }
+}
+
+/// Crossterm's global Unix input reader cannot initialize while this process is
+/// launched synchronously from a live zsh ZLE widget. Read this picker's small
+/// key vocabulary directly from the already-verified terminal instead. This
+/// keeps `/model` usable both as a standalone command and inside Aishe's shell.
+fn read_picker_key(input: &mut impl Read) -> std::io::Result<PickerKey> {
+    let mut first = [0_u8; 1];
+    input.read_exact(&mut first)?;
+    Ok(match first[0] {
+        b'\r' | b'\n' => PickerKey::Enter,
+        3 => PickerKey::Cancel,
+        8 | 127 => PickerKey::Backspace,
+        27 => {
+            let mut pollfd = libc::pollfd {
+                fd: libc::STDIN_FILENO,
+                events: libc::POLLIN,
+                revents: 0,
+            };
+            // SAFETY: `pollfd` points to one initialized entry and the call
+            // does not outlive it. A short timeout distinguishes Esc from an
+            // arrow-key escape sequence without making cancellation feel slow.
+            let available = unsafe { libc::poll(&mut pollfd, 1, 25) };
+            if available <= 0 || pollfd.revents & libc::POLLIN == 0 {
+                PickerKey::Cancel
+            } else {
+                let mut sequence = [0_u8; 2];
+                input.read_exact(&mut sequence)?;
+                match sequence {
+                    [b'[', b'A'] => PickerKey::Up,
+                    [b'[', b'B'] => PickerKey::Down,
+                    _ => PickerKey::Other,
+                }
+            }
+        }
+        b'd' => PickerKey::SaveDefault,
+        byte if byte.is_ascii() => PickerKey::Character(char::from(byte)),
+        byte => {
+            let width = if byte & 0b1110_0000 == 0b1100_0000 {
+                2
+            } else if byte & 0b1111_0000 == 0b1110_0000 {
+                3
+            } else if byte & 0b1111_1000 == 0b1111_0000 {
+                4
+            } else {
+                1
+            };
+            let mut bytes = [0_u8; 4];
+            bytes[0] = byte;
+            if width > 1 {
+                input.read_exact(&mut bytes[1..width])?;
+            }
+            std::str::from_utf8(&bytes[..width])
+                .ok()
+                .and_then(|value| value.chars().next())
+                .map(PickerKey::Character)
+                .unwrap_or(PickerKey::Other)
+        }
+    })
 }
 
 struct RawGuard;

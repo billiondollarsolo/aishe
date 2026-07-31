@@ -145,6 +145,8 @@ pub fn run_turn(
         .ensure_session(SessionRequest {
             shell_id: shell_id.clone(),
             workspace: requested_workspace,
+            connection_id: config.active_connection_id().to_string(),
+            model_id: config.active_model().to_string(),
             mode: options.mode,
             scope: options.scope,
             network: options.network,

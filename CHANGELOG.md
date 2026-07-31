@@ -6,6 +6,55 @@ breaking changes can land in any release.
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-07-30
+
+### Added
+- Schema 6 named connections bind a stable ID/label to provider, endpoint,
+  transport, model, reasoning effort, and an explicit `api_key`, `oauth`,
+  `none`, or compatibility `auto` authentication method. Multiple connections
+  may use the same provider and model with distinct credentials.
+- `/model` is a filterable connection-and-model picker. Enter changes only the
+  current shell, `d` saves the durable default, direct connection/model forms
+  are scriptable, and `/provider` opens the same primary selector.
+- `aishe connection list|show|add|edit|remove|use`, connection-scoped model
+  discovery, active-connection `/auth`, and profile-aware OAuth shortcuts make
+  account selection visible without exposing credentials.
+- OpenAI and xAI OAuth support independent labeled profiles, each with a
+  complete private OpenCode HOME/XDG root. Login, status, and logout target one
+  profile without disturbing another.
+
+### Changed
+- Managed supervisors are keyed by secret-free launch identity and coexist in
+  a bounded pool (default 8). Backend status, logs, stop, diagnostics, repair,
+  and deterministic oldest-instance eviction understand the whole pool.
+- Managed session identity now includes connection and model in addition to
+  shell, workspace, mode, scope, and network. Switching back resumes the exact
+  matching conversation; reset detaches only that selection.
+- Capability caches and model discovery are connection-scoped. OAuth pickers
+  merge configured, cached, static-catalog, and recently used models and still
+  accept typed IDs without depending on `models.dev`.
+- Status, compact prompt disclosure, audit events, and usage aggregation carry
+  safe connection ID/label, provider, auth type/profile, model, and reasoning
+  attribution. Project overlays may narrow existing connection model/reasoning;
+  organization policy can allow-list connection IDs.
+- Focus output retains a bounded digest of executed commands instead of losing
+  them with the transient status row. Reasoning selection follows the same
+  shell-local versus explicit `--default` behavior as `/model`.
+- Existing schema-5 files migrate atomically to deterministic `auto`
+  connections after a byte-for-byte versioned backup. Unambiguous legacy
+  provider/model workflows remain accepted; ambiguous provider names list the
+  exact connection choices.
+
+### Security
+- Explicit API-key, OAuth, and unauthenticated connections do not fall through
+  to one another. OAuth endpoints are bound exactly to the official HTTPS API
+  roots, OAuth/profile mutation invalidates only affected runtimes, and raw
+  secret material never enters launch keys, session mappings, status, or audit
+  identity fields.
+- Connection authentication variants reject fields belonging to another auth
+  method, and authenticated supervisor health binds connection, provider, and
+  model identity in addition to process and nonce checks.
+
 ## [0.5.3] - 2026-07-30
 
 ### Changed

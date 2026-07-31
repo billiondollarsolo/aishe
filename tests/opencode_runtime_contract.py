@@ -170,9 +170,11 @@ def find_persisted_secret(roots, secret):
 
 def assert_dependency_free_layout(data_home):
     backend = data_home / "aishe" / "backend" / "opencode"
-    roots = (backend / "config", backend / "xdg" / "config" / "opencode")
-    for root in roots:
-        lock_path = root / "package-lock.json"
+    locks = sorted(backend.rglob("package-lock.json"))
+    if len(locks) < 6:
+        raise AssertionError(f"isolated runtime loader layouts are missing: {locks}")
+    for lock_path in locks:
+        root = lock_path.parent
         lock = json.loads(lock_path.read_text(encoding="utf-8"))
         pinned = (
             lock.get("packages", {})
@@ -187,8 +189,9 @@ def assert_dependency_free_layout(data_home):
             raise AssertionError(
                 f"trusted bridge unexpectedly installed a runtime SDK: {installed}"
             )
-    if (backend / "home" / ".npm").exists():
-        raise AssertionError("legacy managed npm cache was not retired")
+    npm_caches = list(backend.rglob(".npm"))
+    if npm_caches:
+        raise AssertionError(f"managed npm caches were not retired: {npm_caches}")
 
     total = sum(
         path.stat().st_size
@@ -388,11 +391,14 @@ output = 2.0
 
 
 def read_managed_snapshot(data_home, workspace):
-    state = json.loads(
-        (data_home / "aishe" / "backend" / "supervisor.json").read_text(
-            encoding="utf-8"
+    state_paths = sorted(
+        (data_home / "aishe" / "backend" / "instances").glob(
+            "*/supervisor.json"
         )
     )
+    if len(state_paths) != 1:
+        raise AssertionError(f"expected one managed runtime state, found {state_paths}")
+    state = json.loads(state_paths[0].read_text(encoding="utf-8"))
     mappings = json.loads(
         (
             data_home

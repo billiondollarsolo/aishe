@@ -17,6 +17,8 @@ pub enum BackendHealth {
 pub struct SessionRequest {
     pub shell_id: String,
     pub workspace: PathBuf,
+    pub connection_id: String,
+    pub model_id: String,
     pub mode: Mode,
     pub scope: ExecutionScope,
     pub network: NetworkPolicy,

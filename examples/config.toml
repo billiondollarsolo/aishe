@@ -9,10 +9,10 @@
 # docs/configuration.md#file-locations.
 #
 # Every field has a sensible default, so you can delete any line you do not care
-# about. API keys are NEVER stored here. `credential` selects a profile in the
-# private credentials file; `api_key_env` is an optional process override.
+# about. API keys are NEVER stored here. Named connections bind a provider,
+# endpoint, model, and explicit auth method; secret values stay in private stores.
 
-version = 4
+version = 6
 
 [aishe]
 # Named setup bundle: conservative | balanced | autonomous | custom. Applying a
@@ -25,8 +25,10 @@ safety_profile = "custom"
 #   yolo    = agentic loop that runs commands and iterates until done
 mode = "suggest"
 
-# Which provider block below to use: "anthropic" or "openai".
-provider = "anthropic"
+# Durable default connection. `/model` changes only the current shell unless
+# you press `d` or pass `--default`.
+connection = "anthropic"
+connection_fallback = "anthropic"
 
 # Optional native-compatibility fallback chain. Managed OpenCode turns never
 # start a second provider request after prompt admission, partial output, or a
@@ -234,8 +236,9 @@ managed = true
 idle_timeout_secs = 1800
 default_scope = "workspace"     # workspace | host; yolo acceptance is not saved
 workspace_network = "deny"      # allow | deny
-output = "compact"              # compact | detailed
+output = "focus"                # focus | compact | detailed
 max_output_tokens = 0           # 0 = backend/model default
+max_instances = 8               # isolated provider runtimes, bounded 1..32
 
 [sandbox]
 linux_backend = "bwrap"         # bwrap | policy
@@ -257,30 +260,49 @@ allow_host_yolo = true
 # redact = true                       # scrub secrets from logged text
 
 # ---------------------------------------------------------------------------
-# Providers. Only the one named by `provider` above is used, but you can keep
-# both configured and switch with `aishe provider ...`.
+# Named connections. Multiple entries may use the same provider with different
+# API-key profiles or isolated OAuth profiles. `/model` switches them together.
 # ---------------------------------------------------------------------------
 
-[providers.anthropic]
+[connections.anthropic]
+provider = "anthropic"
+label = "Anthropic"
 base_url = "https://api.anthropic.com"
-credential = "anthropic"
-api_key_env = "ANTHROPIC_API_KEY"
 model = "claude-sonnet-4-20250514"
 transport = "auto"
 auth_required = true
+[connections.anthropic.auth]
+type = "api_key"
+credential = "anthropic"
+api_key_env = "ANTHROPIC_API_KEY"
 
-[providers.openai]
+[connections.openai-work]
+provider = "openai"
+label = "OpenAI work"
 # Point base_url at any OpenAI-compatible endpoint:
 #   OpenAI:     https://api.openai.com
 #   Groq:       https://api.groq.com/openai
 #   Ollama:     http://localhost:11434
 #   OpenRouter: https://openrouter.ai/api
 base_url = "https://api.openai.com"
-credential = "openai"
-api_key_env = "OPENAI_API_KEY"
-model = "gpt-4o"
+model = "gpt-5.6-luna"
 transport = "auto"    # official OpenAI => Responses; custom endpoints => Chat
 auth_required = true  # set false for a local Ollama; no dummy key is required
+[connections.openai-work.auth]
+type = "oauth"
+profile = "work"
+
+# A second OpenAI connection can use a separate API project at the same time.
+[connections.openai-api]
+provider = "openai"
+label = "OpenAI API key"
+base_url = "https://api.openai.com"
+model = "gpt-5.6-luna"
+transport = "responses"
+[connections.openai-api.auth]
+type = "api_key"
+credential = "openai-team"
+api_key_env = "OPENAI_API_KEY"
 
 # ---------------------------------------------------------------------------
 # Optional: MCP (Model Context Protocol) servers. Their tools are offered to the

@@ -175,13 +175,15 @@ link/special-file rejection), executable version verification, private license
 and metadata installation, atomic activation, compatible rollback, and bounded
 staging GC.
 
-`backend::supervisor` owns one private per-user topology:
+`backend::supervisor` owns a bounded pool of private per-user topologies. Each
+runtime is keyed by a non-secret hash of the named connection, endpoint,
+transport, model, and authentication profile:
 
 ```text
 foreground Aishe
-  -> authenticated control server (random 127.0.0.1 port)
-     -> OpenCode server (separate random 127.0.0.1 port + Basic Auth)
-     -> durable bridge/session journals
+  -> connection-specific authenticated control server (random 127.0.0.1 port)
+     -> isolated OpenCode server (separate random 127.0.0.1 port + Basic Auth)
+     -> shared durable bridge journal + connection-aware session mappings
 ```
 
 It launches OpenCode with an isolated HOME/XDG tree, explicit environment, one
@@ -189,10 +191,13 @@ embedded hash-verified plugin, and the exact verified executable. State files
 carry schema/protocol/runtime/plugin identity and private startup credentials;
 clients validate all of them and the owning processes before connecting.
 Supervisor state, control requests, SSE frames, outputs, and logs are bounded.
-The process exits after a configurable idle timeout.
+Each process exits after a configurable idle timeout. Different connections can
+coexist up to `backend.max_instances`; deterministic oldest-idle eviction keeps
+the pool bounded. Connection or credential mutation stops only matching
+runtimes.
 
-OpenAI and xAI OAuth also lives inside this isolated XDG tree. `aishe auth
-login` invokes only the checksum-pinned runtime with project config, external
+OpenAI and xAI OAuth lives in a complete isolated HOME/XDG tree for each
+provider/profile label. `aishe auth login` invokes only the checksum-pinned runtime with project config, external
 skills, auto-update, MCP, and arbitrary permissions disabled. Normal managed
 launches keep all OpenCode built-in plugins disabled for API-key providers; an
 OAuth-backed launch enables the pinned built-in provider hooks so they can
@@ -215,14 +220,15 @@ first-class backend operation. The fixture suite freezes the v1.18.9 endpoints
 and every normalized event class.
 
 `backend::opencode::session` atomically maps `(aishe shell ID, canonical
-workspace)` to the durable OpenCode session. That is why separate hook processes
+workspace, connection, model, mode, scope, network policy)` to the durable
+OpenCode session. That is why separate hook processes
 and supervisor restarts share conversation context. Managed mappings and legacy
 native task records appear in one `aishe sessions` view.
 
 ### Trusted plugin and foreground bridge
 
-Rust generates provider configuration from Aishe's active
-provider/model/credential. The dependency-free plugin in
+Rust generates provider configuration from the central resolved named
+connection (provider/model/endpoint/transport/auth identity). The dependency-free plugin in
 `assets/backend/opencode/aishe-plugin.mjs` requires Aishe authorization before
 each provider turn, reports authoritative usage, hides/denies OpenCode built-in
 host tools, and exposes only proxy tools. It has no third-party imports; the

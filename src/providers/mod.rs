@@ -519,9 +519,9 @@ pub fn make(config: &Config) -> Result<std::sync::Arc<dyn Provider>> {
         return Ok(p);
     }
     // Primary provider (errors if its key is missing — same as before).
-    let primary = build_one(config, &config.aishe.provider)?;
-    let mut chain: Vec<(String, Arc<dyn Provider>)> =
-        vec![(config.aishe.provider.clone(), primary)];
+    let active = config.active_connection_id().to_string();
+    let primary = build_one(config, &active)?;
+    let mut chain: Vec<(String, Arc<dyn Provider>)> = vec![(active, primary)];
     // Append any configured fallbacks, skipping the primary, duplicates, and any
     // that can't be built (e.g. a missing API key) so a bad fallback never breaks
     // the primary.
@@ -592,59 +592,42 @@ pub struct Probe {
 /// This makes the offline/fallback story (e.g. a local Ollama) actually testable
 /// from `aishe doctor --probe`.
 pub fn probe(config: &Config, name: &str) -> Probe {
-    let is_openai = name == "openai";
-    let (base_url, auth_header) = if is_openai {
-        let p = &config.providers.openai;
-        let key = match crate::credentials::resolve(p) {
-            Ok(resolved) => resolved.into_secret(),
-            Err(error) => {
-                return Probe {
-                    name: name.to_string(),
-                    endpoint: crate::provider_catalog::normalize_base_url(&p.base_url),
-                    reach: Reach::Down(crate::redact::redact(&error.to_string())),
-                }
-            }
-        };
-        if key.is_none() {
-            match crate::oauth::active_provider(config) {
-                Ok(Some(provider)) => {
-                    return Probe {
-                        name: name.to_string(),
-                        endpoint: crate::provider_catalog::normalize_base_url(&p.base_url),
-                        reach: Reach::ManagedOAuth(provider),
-                    }
-                }
-                Ok(None) => {}
-                Err(error) => {
-                    return Probe {
-                        name: name.to_string(),
-                        endpoint: crate::provider_catalog::normalize_base_url(&p.base_url),
-                        reach: Reach::Down(crate::redact::redact(&error.to_string())),
-                    }
-                }
-            }
+    let id = config
+        .resolve_connection_id(name)
+        .unwrap_or_else(|_| config.active_connection_id().to_string());
+    let resolved = match crate::connection::resolve_id(config, &id) {
+        Ok(resolved) => resolved,
+        Err(error) => {
+            let endpoint = config
+                .connections
+                .get(&id)
+                .map(|connection| {
+                    crate::provider_catalog::normalize_base_url(&connection.settings.base_url)
+                })
+                .unwrap_or_default();
+            return Probe {
+                name: id,
+                endpoint,
+                reach: Reach::Down(crate::redact::redact(&error.to_string())),
+            };
         }
-        (
-            p.base_url.clone(),
-            key.map(|k| ("Authorization".to_string(), format!("Bearer {k}"))),
-        )
-    } else {
-        let p = &config.providers.anthropic;
-        let key = match crate::credentials::resolve(p) {
-            Ok(resolved) => resolved.into_secret(),
-            Err(error) => {
-                return Probe {
-                    name: name.to_string(),
-                    endpoint: crate::provider_catalog::normalize_base_url(&p.base_url),
-                    reach: Reach::Down(crate::redact::redact(&error.to_string())),
-                }
-            }
-        };
-        (
-            p.base_url.clone(),
-            key.map(|k| ("x-api-key".to_string(), k)),
-        )
     };
+    if let crate::connection::ResolvedAuth::OAuth { provider, .. } = resolved.auth {
+        return Probe {
+            name: id,
+            endpoint: crate::provider_catalog::normalize_base_url(&resolved.settings.base_url),
+            reach: Reach::ManagedOAuth(provider),
+        };
+    }
+    let is_openai = resolved.provider != "anthropic";
+    let base_url = resolved.settings.base_url;
+    let auth_header = resolved.api_key.map(|key| {
+        if is_openai {
+            ("Authorization".to_string(), format!("Bearer {key}"))
+        } else {
+            ("x-api-key".to_string(), key)
+        }
+    });
     let base = crate::provider_catalog::normalize_base_url(&base_url);
     let url = format!("{base}/v1/models");
     let agent = ureq::AgentBuilder::new()
@@ -671,7 +654,7 @@ pub fn probe(config: &Config, name: &str) -> Probe {
         Err(ureq::Error::Transport(t)) => Reach::Down(t.to_string()),
     };
     Probe {
-        name: name.to_string(),
+        name: id,
         endpoint: base,
         reach,
     }
@@ -680,7 +663,7 @@ pub fn probe(config: &Config, name: &str) -> Probe {
 /// The ordered, de-duplicated provider chain: the active provider followed by any
 /// configured fallbacks. Used by the reachability probe and the fallback build.
 pub fn chain_names(config: &Config) -> Vec<String> {
-    let mut chain = vec![config.aishe.provider.clone()];
+    let mut chain = vec![config.active_connection_id().to_string()];
     for n in &config.aishe.provider_fallback {
         if !chain.contains(n) {
             chain.push(n.clone());
@@ -709,6 +692,28 @@ pub fn embedder(config: &Config) -> Result<std::sync::Arc<dyn Provider>> {
 /// unknown or the block's API key is missing.
 fn build_one(config: &Config, name: &str) -> Result<std::sync::Arc<dyn Provider>> {
     use std::sync::Arc;
+    if config.connections.contains_key(name) {
+        let resolved = crate::connection::resolve_id(config, name)?;
+        if matches!(resolved.auth, crate::connection::ResolvedAuth::OAuth { .. }) {
+            anyhow::bail!(
+                "connection '{name}' uses OAuth and requires the managed OpenCode backend"
+            );
+        }
+        let key = resolved.api_key.unwrap_or_default();
+        let p = resolved.settings;
+        return match resolved.provider.as_str() {
+            "anthropic" => Ok(Arc::new(anthropic::AnthropicProvider::new(
+                p.base_url, key, p.model,
+            ))),
+            _ => Ok(Arc::new(openai_compat::OpenAiProvider::with_options(
+                p.base_url,
+                key,
+                p.model,
+                &p.transport,
+                config.active_reasoning_effort(),
+            ))),
+        };
+    }
     match name {
         "anthropic" => {
             let p = &config.providers.anthropic;
@@ -727,7 +732,7 @@ fn build_one(config: &Config, name: &str) -> Result<std::sync::Arc<dyn Provider>
                 key,
                 p.model.clone(),
                 &p.transport,
-                &config.aishe.reasoning_effort,
+                config.active_reasoning_effort(),
             )))
         }
         other => anyhow::bail!("unknown provider '{other}' (expected 'anthropic' or 'openai')"),

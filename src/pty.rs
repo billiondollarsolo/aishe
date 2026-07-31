@@ -118,6 +118,11 @@ fn run_zsh_inner(config: &Config, history_log: &std::path::Path, shell_id: Strin
     let display_model = crate::commands::display_safe(config.active_model());
     cmd.env("AISHE_MODEL", &display_model);
     cmd.env(
+        "AISHE_CONNECTION",
+        crate::commands::display_safe(config.active_connection_id()),
+    );
+    cmd.env("AISHE_REASONING", config.active_reasoning_effort());
+    cmd.env(
         "AISHE_FAILURE_HINTS",
         if config.aishe.failure_hints { "1" } else { "0" },
     );
@@ -128,6 +133,22 @@ fn run_zsh_inner(config: &Config, history_log: &std::path::Path, shell_id: Strin
     let _model_guard = if std::fs::write(&model_file, &display_model).is_ok() {
         cmd.env("AISHE_MODEL_FILE", &model_file);
         Some(FileGuard(model_file))
+    } else {
+        None
+    };
+    let selection_file = std::env::temp_dir().join(format!("aishe-selection-{shell_id}"));
+    let _selection_guard = if crate::connection::write_selection(
+        &selection_file,
+        &crate::connection::ShellSelection {
+            connection_id: config.active_connection_id().to_string(),
+            model_id: config.active_model().to_string(),
+            reasoning_effort: config.active_reasoning_effort().to_string(),
+        },
+    )
+    .is_ok()
+    {
+        cmd.env("AISHE_SELECTION_FILE", &selection_file);
+        Some(FileGuard(selection_file))
     } else {
         None
     };
