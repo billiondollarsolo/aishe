@@ -6,6 +6,18 @@ breaking changes can land in any release.
 
 ## [Unreleased]
 
+## [0.6.5] - 2026-07-31
+
+### Fixed
+- Agent **approval** and **status** no longer dump multi-line shell as `\x0a`
+  walls: scripts render as a `$` preview block with real newlines; status uses
+  first line + `(+N lines)`.
+- When the agent **asks a question** (`ask_user`), the sticky status line is
+  cleared and a boxed prompt with `your answer:` is shown so typing is not stuck
+  at the end of `running ask user …`.
+- Parallel unit tests no longer race a global short lease-TTL override (macOS CI
+  flake after 0.6.4).
+
 ## [0.6.4] - 2026-07-31
 
 ### Fixed
