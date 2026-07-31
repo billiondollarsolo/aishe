@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<svg xmlns="http://www.w3.org/2000/svg" width="1080" height="1080" viewBox="0 0 1080 1080" role="img" aria-label="AIshe — AI Shell">
-  <title>AIshe — AI Shell</title>
-  <desc>Glasses mark with AIshe wordmark on white (AI Shell)</desc>
+<svg xmlns="http://www.w3.org/2000/svg" width="1080" height="1080" viewBox="0 0 1080 1080" role="img" aria-label="AIShe — AI Shell">
+  <title>AIShe — AI Shell</title>
+  <desc>Glasses mark with AIShe wordmark on white (AI Shell)</desc>
   <rect width="1080" height="1080" fill="#ffffff"/>
   <!-- Optically center the original Fabric composition in the square -->
   <g transform="translate(64.4, -40)">
@@ -23,7 +23,7 @@
       <text xml:space="preserve"
             font-family="DejaVu Sans, Liberation Sans, Arial, Helvetica, sans-serif"
             font-size="48" font-weight="700" fill="#000000">
-        <tspan x="-65.3555" y="15.0787">AIshe</tspan>
+        <tspan x="-65.3555" y="15.0787">AIShe</tspan>
       </text>
     </g>
   </g>

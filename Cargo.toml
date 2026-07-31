@@ -1,9 +1,9 @@
 [package]
 name = "aishe"
-version = "0.6.2"
+version = "0.6.3"
 edition = "2021"
 rust-version = "1.88"
-description = "AISHE (AI Shell): natural-language-aware shell that runs real zsh for commands and an agent for everything else"
+description = "AIShe (AI Shell): natural-language-aware shell that runs real zsh for commands and an agent for everything else"
 license = "MIT"
 repository = "https://github.com/billiondollarsolo/aishe"
 homepage = "https://github.com/billiondollarsolo/aishe"

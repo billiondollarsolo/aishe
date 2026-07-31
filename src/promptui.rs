@@ -17,15 +17,15 @@ const WARNING: &str = "1;33";
 const SUCCESS: &str = "1;32";
 const ERROR: &str = "1;31";
 
-/// Monochrome terminal approximation of the AIshe glasses mark + wordmark.
+/// Monochrome terminal approximation of the AIShe glasses mark + wordmark.
 /// ASCII only: terminals never need an emoji font or colored pictograph.
-/// Branding: **AIshe** / **AISHE** = **AI Shell**.
+/// Branding: **AIShe** = **AI Shell** (CLI package name remains `aishe`).
 pub const ASCII_LOGO: &str = r#"   \     /
     \___/
    /     \
   | o   o |
    \__v__/
-     AIshe
+     AIShe
     AI Shell"#;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

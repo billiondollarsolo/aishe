@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<svg xmlns="http://www.w3.org/2000/svg" width="960" height="360" viewBox="0 0 960 360" role="img" aria-label="AIshe — AI Shell">
-  <title>AIshe — AI Shell</title>
-  <desc>Large centered glasses mark with AIshe wordmark on a white banner</desc>
+<svg xmlns="http://www.w3.org/2000/svg" width="960" height="360" viewBox="0 0 960 360" role="img" aria-label="AIShe — AI Shell">
+  <title>AIShe — AI Shell</title>
+  <desc>Large centered glasses mark with AIShe wordmark on a white banner</desc>
   <rect width="960" height="360" fill="#ffffff" rx="20" ry="20"/>
   <!--
     Original art is 1080×1080 with the mark roughly in the middle third.
@@ -28,7 +28,7 @@
       <text xml:space="preserve"
             font-family="DejaVu Sans, Liberation Sans, Arial, Helvetica, sans-serif"
             font-size="48" font-weight="700" fill="#000000">
-        <tspan x="-65.3555" y="15.0787">AIshe</tspan>
+        <tspan x="-65.3555" y="15.0787">AIShe</tspan>
       </text>
     </g>
   </g>

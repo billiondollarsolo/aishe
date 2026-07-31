@@ -5,9 +5,9 @@
 # `aishe-<target>.tar.gz.sha256` files attached by .github/workflows/release.yml).
 # Then drop this file into a tap (e.g. homebrew-tap/Formula/aishe.rb).
 class Aishe < Formula
-  desc "AISHE (AI Shell): natural-language-aware shell — zsh for commands, an agent for everything else"
+  desc "AIShe (AI Shell): natural-language-aware shell — zsh for commands, an agent for everything else"
   homepage "https://github.com/billiondollarsolo/aishe"
-  version "0.6.2"
+  version "0.6.3"
   license "MIT"
 
   on_macos do
@@ -43,8 +43,8 @@ class Aishe < Formula
 
   def caveats
     <<~EOS
-      Run `aishe setup` to install and checksum-verify Aishe's pinned OpenCode
-      runtime in your user data directory. Aishe does not use an arbitrary
+      Run `aishe setup` to install and checksum-verify AIShe's pinned OpenCode
+      runtime in your user data directory. AIShe does not use an arbitrary
       Homebrew OpenCode version.
 
       macOS workspace policy checks are available, but this release does not

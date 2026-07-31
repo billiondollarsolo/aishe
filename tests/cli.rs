@@ -1158,7 +1158,7 @@ fn primary_commands_and_live_status_are_discoverable() {
         .assert()
         .success()
         .stdout(
-            contains("aishe help")
+            contains("AIShe")
                 .and(contains("/help"))
                 .and(contains("/connection"))
                 .and(contains("/model"))
@@ -1432,7 +1432,7 @@ model = "gpt-x"
     run(&["commands"])
         .assert()
         .success()
-        .stdout(contains("custom slash-commands: none").or(contains("aishe help")));
+        .stdout(contains("custom slash-commands: none").or(contains("AIShe")));
     run(&["skills"])
         .assert()
         .success()

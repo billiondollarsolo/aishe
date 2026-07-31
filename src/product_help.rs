@@ -1,6 +1,6 @@
 //! Task-first product help for `/help` and the built-in `aishe-product` skill.
 //!
-//! Keep this module the single source of truth for “how do I use Aishe?” so the
+//! Keep this module the single source of truth for “how do I use AIShe?” so the
 //! shell help surface and the model skill cannot drift apart.
 
 use crate::skills::Skill;
@@ -23,32 +23,16 @@ pub fn print_help(topic: Option<&str>) {
 }
 
 fn print_overview() {
-    println!("aishe help — what do you want to do?\n");
-    println!("Accounts & models");
-    println!("  /connection              switch account for this shell");
-    println!("  /model                   change model on the *current* account");
-    println!("  Add a new account:       aishe setup");
-    println!("                           aishe settings          (provider section)");
-    println!("                           aishe connection add ID --provider openai \\");
-    println!("                             --auth oauth --profile work");
-    println!("  Sign in (Codex OAuth):   aishe auth login openai --profile work");
-    println!("  Sign in (Grok OAuth):    aishe auth login xai --profile work");
-    println!("  Sign in (API key):       aishe auth set openai");
-    println!("  More:                    /help accounts\n");
-    println!("Session");
-    println!("  /status  /usage  /reset  /reasoning");
-    println!("  Shift-Tab                suggest → auto → yolo");
-    println!("  Ctrl-O                   focus ↔ detailed agent output");
-    println!("  More:                    /help session\n");
-    println!("Config & health");
-    println!("  /settings                interactive settings hub");
-    println!("  aishe doctor             diagnose environment");
-    println!("  aishe tour               guided first session");
-    println!("  More:                    /help config\n");
-    println!("Ask Aishe");
-    println!("  Type naturally, e.g.  how do I add a Codex OAuth account?");
-    println!("  (product answers use the built-in aishe-product skill)\n");
-    println!("Slash index: /commands   ·   Full CLI: aishe --help");
+    println!("AIShe (AI Shell) — what do you want to do?\n");
+    println!("  /connection · /model     switch account · model on *current* account");
+    println!("  /status · /usage · /reset · /reasoning · /details");
+    println!("  /settings · /auth");
+    println!("  Shift-Tab mode · Ctrl-O details");
+    println!("  Add account:  aishe setup  ·  aishe auth login openai|xai --profile work");
+    println!("  Health:       aishe doctor [--live]  ·  aishe tour\n");
+    println!("Topics:  /help accounts · models · session · config");
+    println!("Ask:     how do I add a Codex OAuth account?");
+    println!("CLI:     aishe --help");
 }
 
 fn print_accounts() {
@@ -119,7 +103,7 @@ fn print_config() {
 /// Condensed product truth always safe to inject into suggest/yolo system prompts.
 pub fn product_brief() -> &'static str {
     "\
-Aishe product rules (authoritative — prefer these over guessing):\n\
+AIShe product rules (authoritative — prefer these over guessing):\n\
 - /connection switches account; /model changes model on the *current* account only.\n\
 - Add accounts with `aishe setup`, `aishe settings`, or `aishe connection add …`.\n\
 - Codex OAuth: `aishe auth login openai --profile work` then pick via /connection.\n\
@@ -133,9 +117,9 @@ Aishe product rules (authoritative — prefer these over guessing):\n\
 
 /// Full skill body for progressive disclosure (yolo `use_skill`).
 pub fn product_skill_body() -> &'static str {
-    r#"# Aishe product help (authoritative)
+    r#"# AIShe product help (authoritative)
 
-Answer user questions about **using Aishe itself** with the recipes below.
+Answer user questions about **using AIShe itself** with the recipes below.
 Prefer exact commands. Do not invent OpenAI/xAI website-only steps.
 
 ## Mental model
@@ -213,14 +197,14 @@ pub fn product_skill() -> Skill {
     Skill {
         name: "aishe-product".into(),
         description:
-            "How to use Aishe: accounts, OAuth/API login, /connection vs /model, setup, doctor"
+            "How to use AIShe: accounts, OAuth/API login, /connection vs /model, setup, doctor"
                 .into(),
         body: product_skill_body().into(),
         source: None,
     }
 }
 
-/// Heuristic: user is asking how to operate Aishe, not a general shell question.
+/// Heuristic: user is asking how to operate AIShe, not a general shell question.
 pub fn looks_like_product_question(input: &str) -> bool {
     let t = input.to_ascii_lowercase();
     let mentions_product = t.contains("aishe")

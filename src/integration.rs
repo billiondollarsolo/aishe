@@ -1149,7 +1149,7 @@ mod tests {
     fn pty_wrapper_advertises_the_primary_command_surface_once() {
         let s = wrapper_zshrc();
         assert!(s.contains("aishe: /help · /connection · /model"));
-        assert!(s.contains("AIshe"));
+        assert!(s.contains("AIShe"));
         assert!(s.contains("AI Shell"));
         assert!(s.contains("| o   o |"));
         assert!(s.contains("AISHE_COMMAND_HINT_SHOWN"));

@@ -3,11 +3,11 @@
 > **Alpha (pre-1.0).** Behavior and config may still change; see the
 > [docs index](README.md) and [root README](../README.md).
 
-This page walks through your first session with **AISHE** (**AI Shell**).
+This page walks through your first session with **AIShe** (**AI Shell**).
 
 ## 1. Authenticate a provider
 
-Aishe keeps API keys out of ordinary config using an AWS CLI-style private
+AIShe keeps API keys out of ordinary config using an AWS CLI-style private
 credentials file. Pick the provider you want and enter its key through the
 hidden prompt:
 
@@ -50,7 +50,7 @@ It asks for:
 
 - existing-install discovery and organization-policy constraints,
 - the backing shell and platform capabilities,
-- installation and live verification of Aishe's exact managed OpenCode runtime,
+- installation and live verification of AIShe's exact managed OpenCode runtime,
 - on Linux, a bubblewrap functional check and an explicit offer to install the
   package when it is missing,
 - the provider/service and safety profile,
@@ -78,10 +78,10 @@ minimal generation request only when the ID was not listed. Credential,
 permission, network, and model-not-found failures stay in Setup with retry/back
 choices instead of silently accepting an unverified value.
 
-OpenCode is entirely managed by Aishe. Setup downloads the exact version pinned
-by this Aishe build, verifies its size/checksum/version/notices, launches it with
+OpenCode is entirely managed by AIShe. Setup downloads the exact version pinned
+by this AIShe build, verifies its size/checksum/version/notices, launches it with
 private HOME/XDG directories on authenticated loopback ports, and verifies the
-trusted Aishe plugin and tool restrictions. It never reuses an arbitrary
+trusted AIShe plugin and tool restrictions. It never reuses an arbitrary
 `opencode` on `PATH` and never opens a second TUI. Ordinary zsh commands remain
 independent of this runtime.
 
@@ -210,7 +210,7 @@ Inside the shell:
 ```
 
 After `aishe auth login openai --profile work` or `aishe auth login xai
---profile work`, Aishe creates a connection if one is missing so `/connection`
+--profile work`, AIShe creates a connection if one is missing so `/connection`
 lists **Codex - OAuth · work** or **Grok - OAuth · work** immediately. Details:
 [Commands](commands.md#primary-slash-commands) and [Providers](providers.md).
 

@@ -6,6 +6,25 @@ breaking changes can land in any release.
 
 ## [Unreleased]
 
+## [0.6.3] - 2026-07-31
+
+### Fixed
+- After `/connection` or `/model` Enter, the “make this the default?” prompt
+  defaults to **No** (`[y/N]`). Bare Enter keeps the choice shell-local; type
+  `y` (or use picker `d`) to save a durable default. Previously default Yes
+  promoted shell-local picks on accidental Enter.
+
+### Changed
+- Product brand is **AIShe** (**AI Shell**); CLI package/command remains
+  `aishe`. README H1, docs index/getting-started, ASCII logo, SVG titles, and
+  `/help` overview use the locked spelling (not AIshe / AISHE as product name).
+- `/help` overview is compact (primary commands + topics); the long slash-index
+  duplicate under `aishe commands` / bare `/help` is removed. Custom slash
+  commands still list when present.
+
+### Added
+- README banner and monochrome terminal mark show glasses + **AIShe** + **AI Shell**.
+
 ## [0.6.2] - 2026-07-31
 
 ### Fixed

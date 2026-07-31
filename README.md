@@ -2,20 +2,23 @@
   <img src="assets/aishe-banner.png" alt="AIShe — AI Shell" width="640">
 </p>
 
-Your real shell, with an agent built into the command line.
+# AIShe — AI Shell
+
+**AIShe** is **AI Shell**: your real shell, with an agent built into the command
+line. The CLI package name is `aishe`.
 
 > **Alpha (pre-1.0).** The product is usable day to day, but APIs, config shape,
 > and UX can still change. Autonomous host access can make irreversible changes —
 > prefer workspace scope and Linux isolation for untrusted work, read
 > [the safety model](docs/safety.md), and keep backups.
 
-AISHE runs an actual interactive zsh rather than emulating one, so aliases,
+AIShe runs an actual interactive zsh rather than emulating one, so aliases,
 plugins, completion, job control, history, and ordinary commands keep their
 native behavior. Input that is not a command becomes a plain-English request to
 the AI.
 
 The agent layer uses a private, compatibility-pinned OpenCode SDK/runtime for
-reasoning, tools, durable conversations, compaction, and subagents. AISHE stays
+reasoning, tools, durable conversations, compaction, and subagents. AIShe stays
 the control plane: routing, execution scope, sandbox policy, approvals,
 credentials, budgets, terminal rendering, and the audit trail. The result is an
 AI-driven systems shell — not a chatbot parked next to a terminal.
@@ -67,7 +70,7 @@ command — prefix with `?` to force natural language. See
 
 - **Your real zsh, untouched.** Plugins, completions, prompt, aliases, key
   bindings, and job control work unmodified — not a shell reimplementation.
-- **A real agent engine, still one shell.** Every AI turn uses Aishe's
+- **A real agent engine, still one shell.** Every AI turn uses AIShe's
   version-pinned OpenCode backend for durable conversations, reasoning,
   compaction, and subagents. It starts lazily on authenticated loopback, never
   opens a second TUI, and never hijacks direct zsh commands.
@@ -109,7 +112,7 @@ command — prefix with `?` to force natural language. See
 
 ## Built for systems work
 
-Aishe is built for sysadmins, SREs, infrastructure engineers, and operators who
+AIShe is built for sysadmins, SREs, infrastructure engineers, and operators who
 already live in a shell. Inspect failing services, correlate logs, find disk
 pressure, verify ports and DNS, operate containers, edit configuration, or carry
 a deployment through validation — the agent sees command results and can iterate.
@@ -194,7 +197,7 @@ after a failed command asks for diagnosis. Details: [docs/modes.md](docs/modes.m
 
 ## Accounts, providers, and models
 
-Aishe is authoritative for **named connections** (account + endpoint + auth +
+AIShe is authoritative for **named connections** (account + endpoint + auth +
 default model), then generates an isolated provider config for the managed
 engine. Supported shapes: Anthropic Messages, OpenAI/xAI **Responses**, and
 OpenAI-compatible Chat Completions (Groq, Ollama, OpenRouter, Together, …).

@@ -962,7 +962,7 @@ def main():
     add(
         "slash: /help prints primary command index",
         rc == 0
-        and ("aishe help" in out.lower() or "/connection" in out)
+        and ("aishe" in out.lower() or "/connection" in out)
         and "/status" in out
         and "Ctrl-O" in out,
     )

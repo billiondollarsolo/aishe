@@ -1,12 +1,13 @@
-# AISHE documentation
+# AIShe documentation
 
-> **Alpha (pre-1.0).** AISHE is under active development. Commands, config
+> **Alpha (pre-1.0).** AIShe is under active development. Commands, config
 > schema, and UX may change between releases. Prefer workspace scope and Linux
 > isolation for untrusted autonomous work; see [Safety](safety.md).
 
-Welcome to the **AISHE** (**AI Shell**) user guide. AISHE is a natural-language-aware
-shell: it behaves like zsh for real commands, and routes anything that is not a
-command to an LLM that either suggests a command or runs one autonomously.
+Welcome to the **AIShe** (**AI Shell**) user guide. The CLI is `aishe`. AIShe is a
+natural-language-aware shell: it behaves like zsh for real commands, and routes
+anything that is not a command to an LLM that either suggests a command or runs
+one autonomously.
 
 If you are new, start with [Installation](installation.md) and then
 [Getting started](getting-started.md). Product overview and marketing quickstart

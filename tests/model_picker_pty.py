@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""PTY coverage for the unified connection/model picker.
+"""PTY coverage for /connection vs /model (split pickers).
 
 The fixture is fully local and unauthenticated. It proves filtering, shell-local
 selection, durable-default selection, cancellation, rollback on error, plain
-text output, and independence between concurrent Aishe shells.
+text output, and independence between concurrent AIShe shells.
 """
 
 import os
@@ -164,8 +164,9 @@ def select_connection(shell, filter_text, save=False):
         # whether to make it the default — answer n to keep this shell only.
         shell.raw(b"\r")
         try:
+            # Confirm defaults to No ([y/N]); accept with n or bare Enter.
             shell.expect("the default connection?", timeout=3)
-            shell.raw(b"n\r")
+            shell.raw(b"\r")
         except AssertionError:
             # Same as current default: no follow-up confirm.
             pass
@@ -183,10 +184,9 @@ def select_model(shell, filter_text="", save=False):
         shell.raw(b"\r")
         try:
             shell.expect("the default for this connection?", timeout=3)
-            shell.raw(b"n\r")
+            shell.raw(b"\r")
         except AssertionError:
             pass
-
 
 def main():
     if not os.path.exists(BINARY):

@@ -3029,41 +3029,18 @@ fn print_mcp_listing(mcp: &aishe::mcp::McpRegistry) {
 }
 
 fn print_help_command(topic: Option<&str>) {
+    // Task-first product help is the single index; topics expand under
+    // /help accounts|models|session|config. Only append custom commands once.
     aishe::product_help::print_help(topic);
     if topic.is_none() {
         let commands = CommandRegistry::load();
-        println!("Slash commands (in-shell):");
-        for (name, description) in [
-            (
-                "/help [topic]",
-                "this help (topics: accounts models session config)",
-            ),
-            (
-                "/connection",
-                "switch account · see footer to add a new one",
-            ),
-            ("/model", "models for the active account only"),
-            ("/provider", "alias for /connection"),
-            ("/auth", "auth state for the active connection"),
-            ("/status", "connection, model, mode, spend, audit"),
-            ("/usage", "live token/cost totals"),
-            ("/log", "recent audit events"),
-            ("/reasoning", "reasoning effort"),
-            ("/details", "agent transcript density"),
-            ("/settings", "interactive settings hub"),
-            ("/reset", "fresh conversation"),
-            ("/commands", "same as /help"),
-        ] {
-            println!("  {name:<16} {description}");
-        }
-        println!("\nkeys:  Ctrl-O focus/detailed · Shift-Tab suggest/auto/yolo");
         if commands.is_empty() {
             println!(
-                "\ncustom slash-commands: none (add *.md under {})",
+                "custom slash-commands: none (add *.md under {})",
                 aishe::commands::user_dir().unwrap_or_default().display()
             );
         } else {
-            println!("\ncustom slash-commands:");
+            println!("custom slash-commands:");
             for (name, description) in commands.list() {
                 println!("  /{name:<14} {description}");
             }
@@ -3524,12 +3501,14 @@ fn model_command(
                     .map(|c| c.settings.model.as_str())
                     .unwrap_or(durable.active_model());
                 if durable_model != selected.active_model() {
+                    // Default to No so Enter (shell-local) stays shell-local;
+                    // only an explicit y promotes to durable default (d still skips this).
                     if let Ok(Some(true)) = aishe::promptui::confirm(
                         &format!(
                             "Make model '{}' the default for this connection?",
                             aishe::commands::display_safe(selected.active_model())
                         ),
-                        true,
+                        false,
                     ) {
                         save_default = true;
                     }
@@ -3731,6 +3710,7 @@ fn connection_pick_command(effective: &Config, value: Option<&str>, save_default
         if !save_default {
             if let Ok(Some(durable)) = Config::load_quiet() {
                 if durable.active_connection_id() != selected.active_connection_id() {
+                    // Default to No: Enter is shell-local; y (or picker `d`) saves default.
                     if let Ok(Some(true)) = aishe::promptui::confirm(
                         &format!(
                             "Make '{}' the default connection?",
@@ -3741,7 +3721,7 @@ fn connection_pick_command(effective: &Config, value: Option<&str>, save_default
                                     .unwrap_or(selected.active_connection_id())
                             )
                         ),
-                        true,
+                        false,
                     ) {
                         save_default = true;
                     }
