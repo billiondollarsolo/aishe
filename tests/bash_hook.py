@@ -20,18 +20,22 @@ from __future__ import annotations
 
 import argparse
 import dataclasses
+import fcntl
 import json
 import os
 import pathlib
 import pty
 import re
+import resource
 import select
 import shlex
 import shutil
 import signal
 import subprocess
+import struct
 import sys
 import tempfile
+import termios
 import time
 from typing import Iterable
 
@@ -309,20 +313,73 @@ def resolve_required_families(
     return required, problems
 
 
+class ForkedProcess:
+    """Small ``Popen``-like handle for a child created by ``pty.fork``."""
+
+    def __init__(self, pid: int, argv0: str):
+        self.pid = pid
+        self.argv0 = argv0
+        self.returncode: int | None = None
+
+    def poll(self) -> int | None:
+        if self.returncode is not None:
+            return self.returncode
+        waited, status = os.waitpid(self.pid, os.WNOHANG)
+        if waited:
+            self.returncode = os.waitstatus_to_exitcode(status)
+        return self.returncode
+
+    def wait(self, timeout: float) -> int:
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            result = self.poll()
+            if result is not None:
+                return result
+            time.sleep(0.01)
+        raise subprocess.TimeoutExpired([self.argv0], timeout)
+
+
 class PtyShell:
-    def __init__(self, argv: list[str], env: dict[str, str], cwd: pathlib.Path):
-        self.master, slave = pty.openpty()
-        self.proc = subprocess.Popen(
-            argv,
-            stdin=slave,
-            stdout=slave,
-            stderr=slave,
-            cwd=cwd,
-            env=env,
-            preexec_fn=os.setsid,
-            close_fds=True,
-        )
-        os.close(slave)
+    def __init__(
+        self,
+        argv: list[str],
+        env: dict[str, str],
+        cwd: pathlib.Path,
+        *,
+        atomic_terminal: bool,
+    ):
+        self.atomic_terminal = atomic_terminal
+        if atomic_terminal:
+            window_size = struct.pack("HHHH", 24, 100, 0, 0)
+            pid, self.master = pty.fork()
+            if pid == 0:
+                try:
+                    fcntl.ioctl(0, termios.TIOCSWINSZ, window_size)
+                    maximum_fd = min(
+                        1_048_576,
+                        resource.getrlimit(resource.RLIMIT_NOFILE)[0],
+                    )
+                    os.closerange(3, maximum_fd)
+                    os.chdir(cwd)
+                    os.execvpe(argv[0], argv, env)
+                except BaseException as error:
+                    os.write(2, f"could not start Bash fixture: {error}\n".encode())
+                    os._exit(127)
+            fcntl.ioctl(self.master, termios.TIOCSWINSZ, window_size)
+            self.proc = ForkedProcess(pid, argv[0])
+        else:
+            self.master, slave = pty.openpty()
+            self.proc = subprocess.Popen(
+                argv,
+                stdin=slave,
+                stdout=slave,
+                stderr=slave,
+                cwd=cwd,
+                env=env,
+                preexec_fn=os.setsid,
+                close_fds=True,
+            )
+            os.close(slave)
         self.buffer = ""
         self.transcript = ""
 
@@ -357,10 +414,18 @@ class PtyShell:
     def expect_prompt(self, timeout: float = TIMEOUT) -> None:
         self.expect(PROMPT, timeout)
 
+    def _pre_send(self) -> None:
+        if self.atomic_terminal:
+            # Match mature PTY drivers' bounded delay immediately before each
+            # write, after fixture state and response files are ready.
+            time.sleep(1.0)
+
     def sendline(self, line: str) -> None:
+        self._pre_send()
         os.write(self.master, (line + "\n").encode("utf-8"))
 
     def send_bytes(self, value: bytes) -> None:
+        self._pre_send()
         os.write(self.master, value)
 
     def settle(self, seconds: float = 0.25) -> None:
@@ -374,8 +439,9 @@ class PtyShell:
 
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
+            parent_option = "--ppid" if sys.platform.startswith("linux") else "-ppid"
             result = subprocess.run(
-                ["ps", "-o", "pid=", "-ppid", str(self.proc.pid)],
+                ["ps", "-o", "pid=", parent_option, str(self.proc.pid)],
                 capture_output=True,
                 text=True,
                 timeout=2,
@@ -576,6 +642,7 @@ def _write_fixture(
 def qualify_bash(binary: str, identity: BashIdentity) -> BashResult:
     cases: list[CaseResult] = []
     shell: PtyShell | None = None
+    reviewed_enter = b"\r" if identity.family == "5.x" else b"\n"
 
     def passed(case_id: str, detail: str = "") -> None:
         cases.append(CaseResult(case_id, "pass", detail))
@@ -604,6 +671,7 @@ def qualify_bash(binary: str, identity: BashIdentity) -> BashResult:
                 [identity.path, "--noprofile", "--rcfile", str(paths["rcfile"]), "-i"],
                 env,
                 work,
+                atomic_terminal=identity.family == "5.x",
             )
             shell.expect("AISHE_BASH_READY")
             shell.expect_prompt()
@@ -688,7 +756,7 @@ def qualify_bash(binary: str, identity: BashIdentity) -> BashResult:
             else:
                 shell.settle(0.5)
             shell.buffer = ""
-            shell.send_bytes(b"\n")
+            shell.send_bytes(reviewed_enter)
             if identity.family == "5.x":
                 shell.expect("BASH_CTRL_G_EXECUTED_OK")
                 shell.expect_prompt()
@@ -760,7 +828,7 @@ def qualify_bash(binary: str, identity: BashIdentity) -> BashResult:
             else:
                 shell.settle()
             shell.buffer = ""
-            shell.send_bytes(b"\n")
+            shell.send_bytes(reviewed_enter)
             if identity.family == "5.x":
                 shell.expect("BASH_RECALL_EXECUTED_OK")
                 shell.expect_prompt()
@@ -861,7 +929,7 @@ def qualify_bash(binary: str, identity: BashIdentity) -> BashResult:
             else:
                 shell.settle(0.5)
             shell.buffer = ""
-            shell.send_bytes(b"\n")
+            shell.send_bytes(reviewed_enter)
             if identity.family == "5.x":
                 shell.expect("BASH_FIX_EXECUTED_OK")
                 shell.expect_prompt()

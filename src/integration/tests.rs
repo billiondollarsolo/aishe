@@ -98,7 +98,7 @@ fn generated_shell_artifacts_match_the_reviewed_byte_snapshots() {
         (
             "bash init",
             bash_script(),
-            "cc3d452d585c2081b48baca14faebcb95f4a87d6dfe26c47ac7cad80df8eccaa",
+            "6daa6c81b8a4945b800bc5217d76a38bf8367b349f204e90ba483cbc8a186d4b",
         ),
         (
             "wrapper zshenv",
@@ -629,6 +629,15 @@ fn bash_script_has_handle_and_force_nl() {
     assert!(s.contains("AISHE_PENDING_FILE"));
     assert!(s.contains("__aishe_prompt"));
     assert!(s.contains("PROMPT_COMMAND"));
+    // AIShe children must not inherit Bash monitor mode: Bash 5.3 on Linux can
+    // otherwise leave the parent Readline loop outside a usable foreground
+    // process group after command-not-found or bind-x returns.
+    assert!(s.contains("if (set +m; _aishe_dispatch_slash"));
+    assert!(s.contains("printf 'suggest\\n%s\\n' \"$line\""));
+    assert!(s.contains("__aishe_capture_suggestion"));
+    assert!(s.contains("suggest)\n      if __aishe_capture_suggestion"));
+    assert!(!s.contains("$(set +m; command aishe --suggest-line"));
+    assert!(s.matches("set +m").count() >= 5);
 }
 
 #[test]

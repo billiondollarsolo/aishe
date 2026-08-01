@@ -23,12 +23,42 @@ __aishe_show_auth() {
   fi
 }
 
+# Capture a suggestion without running AIShe inside `$(...)`. Bash 5.3/Linux
+# can leave Readline outside a usable foreground process group when a monitored
+# command substitution launches AIShe and its shell-context probes. This helper
+# disables monitor mode only around the synchronous child, restores it before
+# returning, and reads the private per-shell file with Bash builtins.
+__aishe_capture_suggestion() {
+  local request="$1" stderr_mode="${2:-visible}" had_monitor=0 status line
+  AISHE_CAPTURED_SUGGESTION=""
+  case "$-" in *m*) had_monitor=1; set +m ;; esac
+  if [[ "$stderr_mode" == quiet ]]; then
+    command aishe --suggest-line "$request" > "$AISHE_FORCE_FILE" 2>/dev/null
+  else
+    command aishe --suggest-line "$request" > "$AISHE_FORCE_FILE" 2>/dev/tty
+  fi
+  status=$?
+  [[ "$had_monitor" -eq 1 ]] && set -m
+  if [[ "$status" -eq 0 && -r "$AISHE_FORCE_FILE" ]]; then
+    while IFS= read -r line || [[ -n "$line" ]]; do
+      [[ -n "$AISHE_CAPTURED_SUGGESTION" ]] && AISHE_CAPTURED_SUGGESTION+=$'\n'
+      AISHE_CAPTURED_SUGGESTION+="$line"
+    done < "$AISHE_FORCE_FILE"
+  fi
+  command rm -f "$AISHE_FORCE_FILE"
+  return "$status"
+}
+
 # Rendered from command_surface::COMMANDS. Do not add slash names by hand here.
 # __AISHE_GENERATED_SLASH_DISPATCH__
 
 command_not_found_handle() {
   local line="$*"
-  if _aishe_dispatch_slash "$line"; then
+  # Bash 5.3 on Linux can leave the parent Readline loop in a broken foreground
+  # state when a monitored command-not-found/bind-x child launches AIShe. Run
+  # every child path with monitor mode disabled inside its existing subshell;
+  # the interactive parent shell's job-control setting is unchanged.
+  if (set +m; _aishe_dispatch_slash "$line"); then
     return 0
   fi
   case "$line" in
@@ -39,17 +69,18 @@ command_not_found_handle() {
   esac
   case "${AISHE_MODE:-suggest}" in
     yolo)
-      AISHE_PENDING_FILE="$AISHE_PENDING_FILE" command aishe --yolo-line "$line" < /dev/tty > /dev/tty 2>&1
+      (set +m; AISHE_PENDING_FILE="$AISHE_PENDING_FILE" command aishe --yolo-line "$line" < /dev/tty > /dev/tty 2>&1)
       return 0
       ;;
     auto)
-      AISHE_PENDING_FILE="$AISHE_PENDING_FILE" command aishe --auto-line "$line" < /dev/tty > /dev/tty 2>&1
+      (set +m; AISHE_PENDING_FILE="$AISHE_PENDING_FILE" command aishe --auto-line "$line" < /dev/tty > /dev/tty 2>&1)
       return 0
       ;;
     *)
-      local cmd
-      cmd="$(command aishe --suggest-line "$line" 2> /dev/tty)"
-      [ -n "$cmd" ] && printf 'fill\n%s\n' "$cmd" > "$AISHE_PENDING_FILE"
+      # Keep provider/backend work out of Bash's command-not-found subshell.
+      # The parent PROMPT_COMMAND consumes this request before Readline starts,
+      # avoiding foreground-process-group races on Bash 5.3/Linux.
+      printf 'suggest\n%s\n' "$line" > "$AISHE_PENDING_FILE"
       return 0
       ;;
   esac
@@ -166,6 +197,14 @@ __aishe_prompt() {
   case "$action" in
     mode) _aishe_apply_session_mode "$cmd"; return ;;
     details) __aishe_toggle_details; return ;;
+    suggest)
+      if __aishe_capture_suggestion "$cmd"; then
+        cmd="$AISHE_CAPTURED_SUGGESTION"
+      else
+        cmd=""
+      fi
+      action=fill
+      ;;
   esac
   [ -z "$cmd" ] && return
   if [ "$action" = run ]; then
@@ -223,7 +262,11 @@ __aishe_nl() {
   local line="$READLINE_LINE"
   [ -z "$line" ] && return
   local cmd
-  cmd="$(command aishe --suggest-line "$line" 2> /dev/tty)"
+  if __aishe_capture_suggestion "$line"; then
+    cmd="$AISHE_CAPTURED_SUGGESTION"
+  else
+    cmd=""
+  fi
   if [ -n "$cmd" ]; then
     READLINE_LINE="$cmd"
     READLINE_POINT=${#cmd}
@@ -238,8 +281,13 @@ __aishe_fix() {
   if [ "${AISHE_LAST_EXIT:-0}" -eq 0 ] || [ -z "$AISHE_LAST_CMD" ]; then
     return
   fi
-  local fix
-  fix="$(command aishe --suggest-line "The previous shell command failed with exit status ${AISHE_LAST_EXIT}. Command: ${AISHE_LAST_CMD}. Reply with a corrected shell command." 2>/dev/null)"
+  local fix fix_request
+  fix_request="The previous shell command failed with exit status ${AISHE_LAST_EXIT}. Command: ${AISHE_LAST_CMD}. Reply with a corrected shell command."
+  if __aishe_capture_suggestion "$fix_request" quiet; then
+    fix="$AISHE_CAPTURED_SUGGESTION"
+  else
+    fix=""
+  fi
   if [ -n "$fix" ]; then
     READLINE_LINE="$fix"
     READLINE_POINT=${#fix}
@@ -254,7 +302,7 @@ __aishe_cycle_mode() {
   case "${AISHE_MODE:-suggest}" in
     suggest) export AISHE_MODE=auto ;;
     auto)
-      if command aishe --accept-yolo < /dev/tty > /dev/tty 2>&1; then
+      if (set +m; command aishe --accept-yolo < /dev/tty > /dev/tty 2>&1); then
         export AISHE_MODE=yolo
       else
         export AISHE_MODE=auto
