@@ -587,10 +587,10 @@ impl Bridge {
         let mut state = self.bridge_lock()?;
         cleanup_expired(&mut state);
         let owner = lease_owner(&state, &child.parent_session_id)?;
-        if !state
+        if state
             .leases
             .get(&owner)
-            .is_some_and(|lease| lease.expires_at > Instant::now())
+            .is_none_or(|lease| lease.expires_at <= Instant::now())
         {
             return Err(failure(
                 503,
@@ -903,10 +903,10 @@ impl Bridge {
                     "Timed out waiting for the foreground tool result",
                 ));
             }
-            if !state
+            if state
                 .leases
                 .get(&owner_session)
-                .is_some_and(|lease| lease.expires_at > Instant::now())
+                .is_none_or(|lease| lease.expires_at <= Instant::now())
             {
                 return Err(failure(
                     503,
