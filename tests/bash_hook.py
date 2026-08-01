@@ -680,6 +680,11 @@ def qualify_bash(binary: str, identity: BashIdentity) -> BashResult:
                 # prompt assertion cannot accidentally match the stale prompt
                 # (a race that only showed up on a slower Linux host).
                 shell.expect("BASH_CTRL_G_ EXECUTED_OK")
+                # Readline can expose the replacement buffer one scheduler
+                # tick before the bind-x widget has fully returned. Model a
+                # human review/Enter cadence instead of injecting Enter into
+                # that implementation-specific handoff window.
+                shell.settle()
             else:
                 shell.settle(0.5)
             shell.buffer = ""
@@ -751,6 +756,7 @@ def qualify_bash(binary: str, identity: BashIdentity) -> BashResult:
                 # neither a stale prompt nor a still-running bind-x callback can
                 # satisfy the post-execution wait on a slower host.
                 shell.expect("BASH_RECALL_ EXECUTED_OK")
+                shell.settle()
             else:
                 shell.settle()
             shell.buffer = ""
@@ -851,6 +857,7 @@ def qualify_bash(binary: str, identity: BashIdentity) -> BashResult:
                 )
                 shell.wait_for_no_children()
                 shell.expect("BASH_FIX_EXECUTED _OK")
+                shell.settle()
             else:
                 shell.settle(0.5)
             shell.buffer = ""
