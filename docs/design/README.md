@@ -39,8 +39,8 @@ The current authority/successor column says where to look next.
 | Document | Lifecycle | Baseline | Current authority or successor |
 | --- | --- | --- | --- |
 | [README.md](README.md) | Active | v0.6.5 | This lifecycle catalog |
-| [NEXT_PRODUCT_UX_RELIABILITY_PLAN.md](NEXT_PRODUCT_UX_RELIABILITY_PLAN.md) | Active | v0.6.5 (`4a2c7e4`) | Implemented candidate and remaining external qualification/ONB-001 source of truth; see the linked implementation report |
-| [NEXT_PRODUCT_UX_RELIABILITY_IMPLEMENTATION_REPORT.md](NEXT_PRODUCT_UX_RELIABILITY_IMPLEMENTATION_REPORT.md) | Validation evidence | v0.6.5 development tree based on `4a2c7e4` | Story-by-story and Definition-of-Done implementation/evidence audit; candidate-specific and not a release decision |
+| [NEXT_PRODUCT_UX_RELIABILITY_PLAN.md](NEXT_PRODUCT_UX_RELIABILITY_PLAN.md) | Active | v0.6.5 (`4a2c7e4`) | Implemented and clean deterministic candidate-qualified at `35297d0`; ONB-001 research and external release disposition remain open |
+| [NEXT_PRODUCT_UX_RELIABILITY_IMPLEMENTATION_REPORT.md](NEXT_PRODUCT_UX_RELIABILITY_IMPLEMENTATION_REPORT.md) | Validation evidence | v0.6.5 functional candidate (`35297d0`) | Story-by-story and Definition-of-Done implementation/evidence audit; candidate-specific and not a release decision |
 | [FISH_INTEGRATION_DECISION.md](FISH_INTEGRATION_DECISION.md) | Active | v0.6.5 (`4a2c7e4`) | No native Fish hook in the current milestone; Fish completions remain distinct |
 | [WSL_COMPATIBILITY_DECISION.md](WSL_COMPATIBILITY_DECISION.md) | Active | v0.6.5 (`4a2c7e4`) | No WSL-specific build or support claim until genuine WSL2 qualification |
 | [OPENCODE_BACKEND_IMPLEMENTATION_PLAN.md](OPENCODE_BACKEND_IMPLEMENTATION_PLAN.md) | Implemented | v0.5.0 (`b388ee3`) | Backend design record; current operations are in [Managed agent backend](../managed-agent-backend.md) |

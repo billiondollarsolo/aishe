@@ -1,6 +1,7 @@
 > **Lifecycle: Active.** Baseline: AIShe v0.6.5 (`4a2c7e4`). The implementation
-> candidate is complete; frozen-candidate release evidence and ONB-001's actual
-> new-user observation remain open. See the
+> and clean deterministic macOS/Linux candidate qualification are complete at
+> functional commit `35297d0`; ONB-001's actual new-user observation and the
+> separate hosted-CI/paid-live release disposition remain open. See the
 > [implementation report](NEXT_PRODUCT_UX_RELIABILITY_IMPLEMENTATION_REPORT.md).
 
 [PRD]
@@ -9,7 +10,7 @@
 
 | Field | Value |
 | --- | --- |
-| Status | Implemented candidate; external qualification and ONB-001 observation remain open |
+| Status | Implemented and clean deterministic candidate-qualified; ONB-001 research and external release disposition remain open |
 | Baseline | AIShe 0.6.5, commit 4a2c7e4 |
 | Audit date | 2026-07-31, America/New_York |
 | Scope | Post-0.6.5 product quality, UX, routing, terminal compatibility, maintainability, and release confidence |
