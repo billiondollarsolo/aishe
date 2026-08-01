@@ -60,12 +60,32 @@ fn hidden_hook_typo_is_local_silent_on_stdout_and_once_per_shell() {
     let _ = std::fs::remove_file(&state);
     let _ = std::fs::remove_file(&session);
     let _ = std::fs::remove_dir_all(&config_root);
+    let config_dir = config_root.join("aishe");
+    std::fs::create_dir_all(&config_dir).expect("create isolated config directory");
+    std::fs::write(
+        config_dir.join("config.toml"),
+        r#"[aishe]
+mode = "suggest"
+provider = "anthropic"
+
+[backend]
+engine = "native"
+
+[providers.anthropic]
+base_url = "https://api.anthropic.com"
+api_key_env = "ANTHROPIC_API_KEY"
+model = "test-model"
+"#,
+    )
+    .expect("write isolated config");
 
     let invoke = || {
         std::process::Command::new(env!("CARGO_BIN_EXE_aishe"))
             .args(["--suggest-line", "gti status"])
             .env("XDG_CONFIG_HOME", &config_root)
             .env("XDG_DATA_HOME", config_root.join("data"))
+            .env("AISHE_CONFIG_DIR", &config_root)
+            .env("AISHE_DATA_DIR", config_root.join("data"))
             .env("AISHE_SHELL_ID", &shell_id)
             .env("AISHE_ACCEPTANCE_FILE", &state)
             .env("AISHE_SESSION_FILE", &session)
@@ -74,7 +94,11 @@ fn hidden_hook_typo_is_local_silent_on_stdout_and_once_per_shell() {
     };
 
     let first = invoke();
-    assert!(first.status.success());
+    assert!(
+        first.status.success(),
+        "first hidden-hook invocation failed: {}",
+        String::from_utf8_lossy(&first.stderr)
+    );
     assert!(
         first.stdout.is_empty(),
         "hook protocol stdout must stay empty"
