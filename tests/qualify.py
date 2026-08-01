@@ -30,7 +30,7 @@ from harness_identity import cargo_version, parse_binary_identity, require_curre
 
 
 SCHEMA_VERSION = 1
-PROFILE_REVISION = "2026-07-31.4"
+PROFILE_REVISION = "2026-07-31.5"
 THREAT_MODEL_VERSION = "2026-07-31.1"
 THREAT_MODEL_REVIEWED = "2026-07-31"
 BINARY = "{release_binary}"
@@ -790,6 +790,10 @@ def run_qualification(
         lambda tool: shutil.which(tool, path=run_env.get("PATH"))
     )
     system = platform_name or platform.system()
+    if system == "Linux" and profile.name in {"linux-full", "release", "paid-live"}:
+        # Those profiles claim functional Linux isolation, so host-scope must
+        # exercise bubblewrap rather than the policy-only compatibility path.
+        run_env.setdefault("AISHE_TEST_REQUIRE_BWRAP", "1")
     started_wall = datetime.datetime.now(datetime.timezone.utc)
     started = time.monotonic_ns()
     metadata = collect_metadata(root, profile, run_env, platform_name=system)

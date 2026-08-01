@@ -20,10 +20,12 @@ class FakeRunner:
     def __init__(self, failures=()):
         self.failures = {tuple(command) for command in failures}
         self.commands = []
+        self.environments = []
 
     def run(self, command, *, cwd, env, timeout):
         command = tuple(command)
         self.commands.append(command)
+        self.environments.append(dict(env))
         if command in self.failures:
             return qualify.CommandResult(9, "", "synthetic failure")
         stdout = VERSION_OUTPUT if command[-1:] == ("--version",) else ""
@@ -249,6 +251,27 @@ class QualificationTests(unittest.TestCase):
         self.assertEqual(record["status"], "skip")
         self.assertFalse(record["required"])
         self.assertEqual(report["summary"]["outcome"], "passed_with_skips")
+
+    def test_linux_release_profiles_require_functional_bubblewrap(self):
+        for profile_name in ("linux-full", "release", "paid-live"):
+            runner = FakeRunner()
+            self.run_profile(qualify.PROFILES[profile_name], runner)
+            self.assertTrue(runner.environments)
+            self.assertTrue(
+                all(
+                    environment.get("AISHE_TEST_REQUIRE_BWRAP") == "1"
+                    for environment in runner.environments
+                ),
+                profile_name,
+            )
+
+        runner = FakeRunner()
+        self.run_profile(
+            qualify.PROFILES["release"], runner, platform_name="Darwin"
+        )
+        self.assertTrue(
+            all("AISHE_TEST_REQUIRE_BWRAP" not in env for env in runner.environments)
+        )
 
 
 class ArgumentTests(unittest.TestCase):

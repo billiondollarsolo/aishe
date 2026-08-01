@@ -675,19 +675,32 @@ def qualify_bash(binary: str, identity: BashIdentity) -> BashResult:
                     "--suggest-line printf is forced through the agent",
                 )
                 shell.wait_for_no_children()
+                # bind-x redisplays the prompt plus staged command before the
+                # user presses Enter. Consume that redisplay so the following
+                # prompt assertion cannot accidentally match the stale prompt
+                # (a race that only showed up on a slower Linux host).
+                shell.expect("BASH_CTRL_G_ EXECUTED_OK")
             else:
                 shell.settle(0.5)
             shell.buffer = ""
             shell.send_bytes(b"\n")
-            shell.expect_prompt()
-            force_segment = shell.transcript[force_start:].replace("\r", "")
-            if "BASH_CTRL_G_EXECUTED_OK\n" in force_segment:
+            if identity.family == "5.x":
+                shell.expect("BASH_CTRL_G_EXECUTED_OK")
+                shell.expect_prompt()
                 passed("force-agent-key", "Ctrl-G works independently of command-not-found")
             else:
-                limited(
-                    "force-agent-key",
-                    "Ctrl-G did not replace and submit the editable buffer through AIShe",
-                )
+                shell.expect_prompt()
+                force_segment = shell.transcript[force_start:].replace("\r", "")
+                if "BASH_CTRL_G_EXECUTED_OK\n" in force_segment:
+                    passed(
+                        "force-agent-key",
+                        "Ctrl-G works independently of command-not-found",
+                    )
+                else:
+                    limited(
+                        "force-agent-key",
+                        "Ctrl-G did not replace and submit the editable buffer through AIShe",
+                    )
 
             calls_before_slash = paths["call_log"].read_text(encoding="utf-8")
             shell.sendline("/help")
@@ -733,18 +746,29 @@ def qualify_bash(binary: str, identity: BashIdentity) -> BashResult:
             shell.buffer = ""
             recall_start = len(shell.transcript)
             shell.send_bytes(b"\x18\x12")
-            shell.settle()
+            if identity.family == "5.x":
+                # Consume Readline's staged-command redisplay before Enter, so
+                # neither a stale prompt nor a still-running bind-x callback can
+                # satisfy the post-execution wait on a slower host.
+                shell.expect("BASH_RECALL_ EXECUTED_OK")
+            else:
+                shell.settle()
             shell.buffer = ""
             shell.send_bytes(b"\n")
-            shell.expect_prompt()
-            recall_segment = shell.transcript[recall_start:].replace("\r", "")
-            if "BASH_RECALL_EXECUTED_OK\n" in recall_segment:
+            if identity.family == "5.x":
+                shell.expect("BASH_RECALL_EXECUTED_OK")
+                shell.expect_prompt()
                 passed("suggestion-recall-key", "Ctrl-X Ctrl-R")
             else:
-                limited(
-                    "suggestion-recall-key",
-                    "the recall macro did not execute the printed command cleanly",
-                )
+                shell.expect_prompt()
+                recall_segment = shell.transcript[recall_start:].replace("\r", "")
+                if "BASH_RECALL_EXECUTED_OK\n" in recall_segment:
+                    passed("suggestion-recall-key", "Ctrl-X Ctrl-R")
+                else:
+                    limited(
+                        "suggestion-recall-key",
+                        "the recall macro did not execute the printed command cleanly",
+                    )
 
             shell.sendline("export AISHE_MODE=suggest")
             shell.expect_prompt()
@@ -826,24 +850,34 @@ def qualify_bash(binary: str, identity: BashIdentity) -> BashResult:
                     "--suggest-line The previous shell command failed",
                 )
                 shell.wait_for_no_children()
+                shell.expect("BASH_FIX_EXECUTED _OK")
             else:
                 shell.settle(0.5)
             shell.buffer = ""
             shell.send_bytes(b"\n")
-            shell.expect_prompt()
-            fix_segment = shell.transcript[fix_start:].replace("\r", "")
-            if "BASH_FIX_EXECUTED_OK\n" in fix_segment:
+            if identity.family == "5.x":
+                shell.expect("BASH_FIX_EXECUTED_OK")
+                shell.expect_prompt()
                 passed("failure-fix-key", "Ctrl-X Ctrl-F prefills without auto-running")
             else:
-                limited(
-                    "failure-fix-key",
-                    "Ctrl-X Ctrl-F did not prefill and execute the reviewed correction",
-                )
-                shell.sendline(
-                    "command aishe --suggest-line 'Return a corrected command for manual review'"
-                )
-                shell.expect("printf '%s%s\\n' BASH_FIX_EXECUTED _OK")
                 shell.expect_prompt()
+                fix_segment = shell.transcript[fix_start:].replace("\r", "")
+                if "BASH_FIX_EXECUTED_OK\n" in fix_segment:
+                    passed(
+                        "failure-fix-key",
+                        "Ctrl-X Ctrl-F prefills without auto-running",
+                    )
+                else:
+                    limited(
+                        "failure-fix-key",
+                        "Ctrl-X Ctrl-F did not prefill and execute the reviewed correction",
+                    )
+                    shell.sendline(
+                        "command aishe --suggest-line "
+                        "'Return a corrected command for manual review'"
+                    )
+                    shell.expect("printf '%s%s\\n' BASH_FIX_EXECUTED _OK")
+                    shell.expect_prompt()
 
             history_command = "printf '%s%s\\n' BASH_HISTORY_ OK"
             shell.sendline(history_command)

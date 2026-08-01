@@ -566,7 +566,15 @@ impl PickerInput {
         if !self.poll_ready(timeout_ms) {
             return Ok(None);
         }
-        Ok(Some(self.read_byte()?))
+        match self.read_byte() {
+            Ok(byte) => Ok(Some(byte)),
+            // A descriptor can report readable and then return EOF. Linux does
+            // this for /dev/null (used by the deterministic byte fixture), and
+            // a detached terminal can do the same during shutdown. Treat that
+            // exactly like "no continuation byte": bare Esc cancels safely.
+            Err(error) if error.kind() == std::io::ErrorKind::UnexpectedEof => Ok(None),
+            Err(error) => Err(error),
+        }
     }
 
     fn poll_ready(&self, timeout_ms: i32) -> bool {
