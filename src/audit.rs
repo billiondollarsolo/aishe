@@ -31,6 +31,10 @@ const MAX_FIELD_CHARS: usize = 64 * 1024;
 /// request that caused it. Keep a meaningful tail-sized record without turning
 /// the audit log into an unbounded transcript of build/download output.
 const MAX_OUTPUT_CHARS: usize = 16 * 1024;
+/// Rotate the active JSONL before it exceeds 256 MiB. One `.1` generation is
+/// retained so audit logging is bounded without silently deleting the active
+/// session's only evidence.
+pub const AUDIT_ROTATE_BYTES: u64 = 256 * 1024 * 1024;
 
 static AUDIT: OnceLock<Audit> = OnceLock::new();
 
@@ -93,6 +97,7 @@ fn init_with_identity(enabled: bool, path: Option<PathBuf>, redact: bool, identi
                 let _ = std::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o700));
             }
         }
+        let _ = rotate_if_needed(&resolved, AUDIT_ROTATE_BYTES);
         let mut options = OpenOptions::new();
         options.create(true).append(true);
         #[cfg(unix)]
@@ -124,6 +129,29 @@ fn init_with_identity(enabled: bool, path: Option<PathBuf>, redact: bool, identi
         "session_start",
         json!({ "version": env!("CARGO_PKG_VERSION") }),
     );
+}
+
+fn rotated_path(path: &std::path::Path) -> PathBuf {
+    let mut value = path.as_os_str().to_os_string();
+    value.push(".1");
+    PathBuf::from(value)
+}
+
+fn rotate_if_needed(path: &std::path::Path, limit: u64) -> std::io::Result<bool> {
+    let Ok(metadata) = std::fs::symlink_metadata(path) else {
+        return Ok(false);
+    };
+    if !metadata.is_file() || metadata.len() < limit {
+        return Ok(false);
+    }
+    let rotated = rotated_path(path);
+    match std::fs::remove_file(&rotated) {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error),
+    }
+    std::fs::rename(path, rotated)?;
+    Ok(true)
 }
 
 /// Whether logging is active (enabled and the file opened).
@@ -167,6 +195,7 @@ pub fn event(kind: &str, fields: Value) {
             map.insert(k.clone(), v.clone());
         }
     }
+    obj["schema_version"] = Value::from(crate::cli::json_contract::SCHEMA_VERSION);
     if let Ok(mut f) = sink.lock() {
         let _ = writeln!(f, "{obj}");
     }
@@ -286,7 +315,8 @@ fn now_ms() -> u128 {
 // --- Reading the log back (for `aishe log` / `aishe usage`) -----------------
 
 /// One parsed audit line. Fields absent for a given `kind` are `None`. The raw
-/// JSON is kept so `--json` can re-emit it verbatim.
+/// JSON is kept so `--json` can re-emit it. Legacy unversioned records are
+/// normalized additively to public schema v1 at the read boundary.
 #[derive(Debug, Clone)]
 pub struct Entry {
     pub ts_ms: u64,
@@ -325,11 +355,17 @@ pub fn read_entries(path: &std::path::Path) -> Vec<Entry> {
     };
     text.lines()
         .filter_map(|l| serde_json::from_str::<Value>(l).ok())
+        .map(crate::cli::json_contract::normalize_legacy_object)
+        .filter(|value| {
+            value.get("schema_version").and_then(Value::as_u64)
+                == Some(u64::from(crate::cli::json_contract::SCHEMA_VERSION))
+        })
         .map(entry_from)
         .collect()
 }
 
 fn entry_from(v: Value) -> Entry {
+    let v = crate::cli::json_contract::normalize_legacy_object(v);
     let s = |k: &str| v.get(k).and_then(|x| x.as_str()).map(str::to_string);
     let u = |k: &str| v.get(k).and_then(|x| x.as_u64());
     Entry {
@@ -450,6 +486,8 @@ mod tests {
             &p,
             "{\"ts_ms\":1,\"session\":\"s1\",\"kind\":\"ai_response\",\"model\":\"gpt-4o\",\"tokens_in\":10,\"tokens_out\":5,\"summary\":\"ok\"}\n\
              {\"ts_ms\":2,\"session\":\"s1\",\"kind\":\"action\",\"source\":\"yolo\",\"command\":\"ls\",\"exit\":0}\n\
+             {\"schema_version\":99,\"ts_ms\":3,\"session\":\"s1\",\"kind\":\"action\"}\n\
+             42\n\
              not json — skipped\n",
         )
         .unwrap();
@@ -458,6 +496,7 @@ mod tests {
         assert_eq!(es[0].kind, "ai_response");
         assert_eq!(es[0].tokens_in, Some(10));
         assert_eq!(es[0].model.as_deref(), Some("gpt-4o"));
+        assert_eq!(es[0].raw["schema_version"], 1);
         assert_eq!(es[1].command.as_deref(), Some("ls"));
         assert_eq!(es[1].exit, Some(0));
         // Missing file → empty, no panic.
@@ -498,5 +537,26 @@ mod tests {
         action("yolo", "ls", Some(0));
         assert_eq!(bounded_output("ok"), "ok");
         assert!(!is_active());
+    }
+
+    #[test]
+    fn audit_rotation_keeps_exactly_one_previous_generation() {
+        let dir = std::env::temp_dir().join(format!(
+            "aishe-audit-rotation-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("audit.jsonl");
+        std::fs::write(&path, b"old-generation").unwrap();
+        std::fs::write(rotated_path(&path), b"older-generation").unwrap();
+        assert!(rotate_if_needed(&path, 4).unwrap());
+        assert!(!path.exists());
+        assert_eq!(
+            std::fs::read(rotated_path(&path)).unwrap(),
+            b"old-generation"
+        );
+        assert!(!rotate_if_needed(&path, 4).unwrap());
+        std::fs::remove_dir_all(dir).ok();
     }
 }

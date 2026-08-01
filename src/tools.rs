@@ -12,7 +12,6 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use crossterm::style::Stylize;
 use serde_json::{json, Value};
 
 use crate::providers::ToolDef;
@@ -130,12 +129,18 @@ fn print_activity(name: &str, args: &Value) {
     let Some((verb, detail, write_like)) = activity_label(name, args) else {
         return;
     };
-    let verb = if write_like {
-        verb.yellow()
+    let capabilities = crate::ui::TerminalCapabilities::detect_stdout();
+    let token = if write_like {
+        crate::ui::StyleToken::Warning
     } else {
-        verb.cyan()
+        crate::ui::StyleToken::Activity
     };
-    println!("  {verb} {}", detail.dim());
+    let detail = crate::commands::display_safe(&detail);
+    println!(
+        "  {} {}",
+        capabilities.paint(token, verb),
+        capabilities.paint(crate::ui::StyleToken::Muted, &detail)
+    );
 }
 
 fn read_file_tool() -> ToolDef {
@@ -244,11 +249,14 @@ fn confirm(action: &str, path: &str) -> bool {
     if !std::io::stdin().is_terminal() {
         return true;
     }
+    let capabilities = crate::ui::TerminalCapabilities::detect_stdout();
+    let action = crate::commands::display_safe(action);
+    let path = crate::commands::display_safe(path);
     print!(
         "  {} {} {} (type 'yes'): ",
-        action.yellow().bold(),
-        "outside the working tree:".dim(),
-        path.white(),
+        capabilities.paint(crate::ui::StyleToken::Warning, &action),
+        capabilities.paint(crate::ui::StyleToken::Muted, "outside the working tree:"),
+        capabilities.paint(crate::ui::StyleToken::ProposedCommand, &path),
     );
     let _ = std::io::stdout().flush();
     let mut line = String::new();
@@ -341,10 +349,13 @@ fn confirm_apply(action: &str, path: &str, diff: &str) -> bool {
     if !std::io::stdin().is_terminal() {
         return true;
     }
+    let capabilities = crate::ui::TerminalCapabilities::detect_stdout();
+    let action = crate::commands::display_safe(action);
+    let path = crate::commands::display_safe(path);
     print!(
         "  {} apply this {action} to {}? [y/N]: ",
-        "?".yellow().bold(),
-        path.white()
+        capabilities.paint(crate::ui::StyleToken::Warning, "?"),
+        capabilities.paint(crate::ui::StyleToken::ProposedCommand, &path)
     );
     let _ = std::io::stdout().flush();
     let mut line = String::new();
@@ -359,15 +370,17 @@ fn print_diff(diff: &str) {
     if diff.is_empty() {
         return;
     }
+    let capabilities = crate::ui::TerminalCapabilities::detect_stdout();
     for line in diff.lines() {
-        let colored = if line.starts_with('-') {
-            line.red().to_string()
+        let token = if line.starts_with('-') {
+            crate::ui::StyleToken::DiffRemove
         } else if line.starts_with('+') {
-            line.green().to_string()
+            crate::ui::StyleToken::DiffAdd
         } else {
-            line.dim().to_string()
+            crate::ui::StyleToken::Muted
         };
-        println!("    {colored}");
+        let line = crate::commands::display_safe(line);
+        println!("    {}", capabilities.paint(token, &line));
     }
 }
 
@@ -553,23 +566,26 @@ fn fetch_url(args: &Value) -> (String, String) {
             "Error: only http and https URLs are supported.".into(),
         );
     }
-    let agent = ureq::AgentBuilder::new()
-        .timeout_connect(Duration::from_secs(10))
-        .timeout_read(Duration::from_secs(FETCH_TIMEOUT_SECS))
-        .build();
+    let agent = crate::providers::external_http_agent(
+        Duration::from_secs(10),
+        None,
+        Some(Duration::from_secs(FETCH_TIMEOUT_SECS)),
+        Some(Duration::from_secs(FETCH_TIMEOUT_SECS)),
+    );
     let resp = match agent
         .get(url)
-        .set("User-Agent", "aishe/fetch_url")
-        .set(
+        .header("User-Agent", "aishe/fetch_url")
+        .header(
             "Accept",
             "text/html,text/plain,application/json;q=0.9,*/*;q=0.8",
         )
         .call()
     {
-        Ok(r) => r,
-        Err(ureq::Error::Status(status, r)) => {
-            let ct = r.content_type().to_string();
-            let body = read_capped(r.into_reader());
+        Ok(r) if crate::providers::status_is_accepted(r.status()) => r,
+        Ok(r) => {
+            let status = r.status().as_u16();
+            let ct = r.body().mime_type().unwrap_or("").to_string();
+            let body = read_capped(r.into_body().into_reader());
             let snippet = html_to_text(&body, &ct);
             return (
                 format!("fetch {url}"),
@@ -584,8 +600,8 @@ fn fetch_url(args: &Value) -> (String, String) {
         }
     };
 
-    let content_type = resp.content_type().to_string();
-    let body = read_capped(resp.into_reader());
+    let content_type = resp.body().mime_type().unwrap_or("").to_string();
+    let body = read_capped(resp.into_body().into_reader());
     let text = html_to_text(&body, &content_type);
     let text = text.trim();
     let out = if text.is_empty() {

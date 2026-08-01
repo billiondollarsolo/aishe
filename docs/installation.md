@@ -26,8 +26,10 @@ separately.
 - A network-reachable LLM endpoint and either an API key (`aishe auth set` or an
   environment override) or a supported OpenAI/xAI subscription OAuth login
   (`aishe auth login`). See [Providers](providers.md).
-- Platforms: macOS (arm64 and x86_64) and Linux (x86_64 and arm64). Windows is
-  not supported.
+- Platforms: macOS (arm64 and x86_64) and Linux (x86_64 and arm64). WSL is
+  currently an unqualified research target, not a supported platform tier;
+  native Windows is unsupported. See the
+  [WSL decision](design/WSL_COMPATIBILITY_DECISION.md).
 
 ## Quick install (Linux and macOS)
 
@@ -49,7 +51,9 @@ binary activation does not invalidate the runtime expected by the old binary.
 The script also ensures **zsh** is installed (best effort, via your system
 package manager), because aishe's interactive shell drives your real zsh in a
 PTY. Without zsh you can still use `aishe -c …`, piped input, and the bash hook
-(`aishe init bash`). Opt out of the zsh step with `AISHE_SKIP_ZSH=1`.
+(`aishe init bash`). The hook is qualified as Tier B on Bash 5.x and reduced
+Tier B- on Bash 3.2; see the [tested matrix](bash-compatibility.md). Opt out of
+the zsh step with `AISHE_SKIP_ZSH=1`.
 On Linux the non-interactive installer reports when **bubblewrap** is absent but
 does not run a package manager without authorization. Guided `aishe setup`
 offers a consent-gated install and functional self-test. For scripted
@@ -165,6 +169,10 @@ aishe completions bash > /etc/bash_completion.d/aishe
 aishe completions fish > ~/.config/fish/completions/aishe.fish
 ```
 
+The Fish file completes AIShe's CLI. It is not an interactive Fish hook and
+does not make `aishe init fish` supported. See the
+[Fish integration decision](design/FISH_INTEGRATION_DECISION.md).
+
 ## Build and install with Cargo
 
 From a checkout of the repository:
@@ -244,6 +252,11 @@ aishe uninstall --sessions --dry-run
 aishe uninstall --config --history --audit-undo
 aishe uninstall --all --dry-run
 ```
+
+`--sessions` preserves API credentials and managed OpenCode OAuth login state;
+those belong exclusively to `--config`. See [Data retention and deletion](data-retention.md)
+for the complete state inventory, rotation bounds, exports, and exact category
+semantics.
 
 State removal requires explicit targeted confirmation (`--yes` for
 non-interactive automation) and is reported as permanently unrecoverable by

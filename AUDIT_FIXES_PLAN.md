@@ -1,3 +1,9 @@
+> **Lifecycle: Historical.** Baseline: v0.2.24 (`a80c49f`). This is a
+> point-in-time audit record, not a current backlog; use
+> [SECURITY.md](SECURITY.md) for the threat model and the
+> [post-0.6.5 plan](docs/design/NEXT_PRODUCT_UX_RELIABILITY_PLAN.md) for current
+> work.
+
 # aishe — Audit Fixes Plan (post-v0.2.24 security & correctness pass)
 
 **Source:** multi-agent audit of `main` @ `a80c49f` (v0.2.24), 9 dimensions ×

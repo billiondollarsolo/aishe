@@ -1,5 +1,6 @@
-> **Superseded (product truth as of 0.6.x):** account switching is `/connection`;
-> `/model` lists models for the **active** connection only. See
+> **Lifecycle: Superseded.** Baseline: the pre-v0.6.0 unified-model proposal.
+> Account switching is now `/connection`; `/model` lists models for the
+> **active** connection only. See
 > [Commands — connection vs model](../commands.md#connection-vs-model) and
 > the root README. This document remains historical context.
 

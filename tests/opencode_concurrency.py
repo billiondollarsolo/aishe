@@ -13,6 +13,7 @@ import tempfile
 import threading
 import time
 
+from harness_identity import require_current_binary
 from opencode_runtime_contract import (
     CANARY,
     ProviderHandler,
@@ -201,7 +202,7 @@ def main():
     if not runtime:
         raise SystemExit("AISHE_RUNTIME_DIR must point to the installed pinned runtime")
     qualify(
-        str(pathlib.Path(args.binary).resolve()),
+        require_current_binary(args.binary),
         pathlib.Path(runtime).resolve(),
         args.sessions,
     )

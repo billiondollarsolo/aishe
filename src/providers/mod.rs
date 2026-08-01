@@ -13,6 +13,53 @@ use serde_json::Value;
 
 use crate::config::Config;
 
+/// Ureq 3 response type used by every synchronous HTTP client in AIShe.
+pub(crate) type HttpResponse = ureq::http::Response<ureq::Body>;
+
+/// Explicit ceiling for non-streaming provider and discovery responses. Ureq 3
+/// defaults to 10 MiB for convenience readers; naming the bound here makes the
+/// transport contract stable across dependency upgrades.
+pub(crate) const MAX_PROVIDER_BODY_BYTES: u64 = 10 * 1024 * 1024;
+
+/// Match ureq 2's status contract: only 4xx/5xx were errors. Redirects are
+/// normally followed, but a terminal 3xx without `Location` remains a response
+/// for the caller to parse just as it was before the migration.
+pub(crate) fn status_is_accepted(status: ureq::http::StatusCode) -> bool {
+    status.as_u16() < 400
+}
+
+/// Build an external-network agent with the same trust and proxy contract used
+/// by all provider, MCP, capability-discovery, and web-fetch clients.
+///
+/// `Config::default()` retains ureq's environment proxy discovery (including
+/// `NO_PROXY`). PlatformVerifier makes rustls consult the operating system's
+/// native trust policy instead of relying only on a bundled WebPKI root list.
+/// Status responses remain available to callers so retry and diagnostic code
+/// can inspect bounded error bodies.
+pub(crate) fn external_http_agent(
+    connect_timeout: Duration,
+    global_timeout: Option<Duration>,
+    response_timeout: Option<Duration>,
+    body_read_timeout: Option<Duration>,
+) -> ureq::Agent {
+    use ureq::tls::{RootCerts, TlsConfig};
+
+    ureq::Agent::config_builder()
+        .http_status_as_error(false)
+        .max_redirects(5)
+        .timeout_connect(Some(connect_timeout))
+        .timeout_global(global_timeout)
+        .timeout_recv_response(response_timeout)
+        .timeout_recv_body(body_read_timeout)
+        .tls_config(
+            TlsConfig::builder()
+                .root_certs(RootCerts::PlatformVerifier)
+                .build(),
+        )
+        .build()
+        .into()
+}
+
 pub mod anthropic;
 pub mod fake;
 pub mod fallback;
@@ -123,42 +170,121 @@ impl ProviderError {
     }
 }
 
-/// Redacted, deterministic recovery text for an end-user provider failure.
-/// Keeping this mapping next to `ErrorKind` prevents setup, shell modes, and
-/// future front ends from offering contradictory next actions.
-pub fn actionable_error(error: &ProviderError) -> String {
-    let base = crate::redact::redact(&error.to_string());
-    let next = match error.kind() {
-        ErrorKind::MissingCredential => {
-            "Set the named API-key environment variable, then run `aishe doctor --live`."
-        }
-        ErrorKind::InvalidCredential => {
-            "Check the configured API-key environment variable, then run `aishe doctor --live`."
-        }
-        ErrorKind::Permission => {
-            "Verify that this API project can access the selected model and endpoint."
-        }
-        ErrorKind::ModelNotFound => {
-            "Run `aishe models --refresh`, then select an available model with `aishe model MODEL`."
-        }
-        ErrorKind::UnsupportedTools => {
-            "Run `aishe settings`; for GPT-5.6 reasoning plus tools choose the Responses transport."
-        }
-        ErrorKind::UnsupportedParameter | ErrorKind::UnsupportedFormat => {
-            "Run `aishe doctor --live` to verify this model/transport combination, then open `aishe settings`."
-        }
-        ErrorKind::RateLimited => "The retry budget was exhausted; wait briefly and retry.",
-        ErrorKind::Quota => "Check provider billing or quota before retrying.",
-        ErrorKind::Timeout | ErrorKind::Network => {
-            "Check connectivity and the endpoint with `aishe doctor --probe`."
-        }
-        ErrorKind::Server => "The provider returned a server error after retries; retry later.",
-        ErrorKind::MalformedResponse => {
-            "Run `aishe doctor --live`; the endpoint returned an incompatible response shape."
-        }
-        ErrorKind::Unknown => "Run `aishe doctor --live` for a classified compatibility report.",
+/// Convert a provider failure to the shared, stable public error contract.
+/// Keeping this mapping next to [`ErrorKind`] prevents setup, shell modes, and
+/// future front ends from offering contradictory codes or recovery actions.
+pub fn user_error(error: &ProviderError) -> crate::user_error::UserError {
+    use crate::user_error::ErrorNamespace;
+
+    let (namespace, name, message, next, retryable) = match error.kind() {
+        ErrorKind::MissingCredential => (
+            ErrorNamespace::Auth,
+            "missing_credential",
+            "The provider credential is missing.",
+            "Set the named API-key environment variable, then run `aishe doctor --live`.",
+            false,
+        ),
+        ErrorKind::InvalidCredential => (
+            ErrorNamespace::Auth,
+            "invalid_credential",
+            "Provider authentication failed.",
+            "Check the configured API-key environment variable, then run `aishe doctor --live`.",
+            false,
+        ),
+        ErrorKind::Permission => (
+            ErrorNamespace::Auth,
+            "permission_denied",
+            "The provider denied access to this model or endpoint.",
+            "Verify that this API project can access the selected model and endpoint.",
+            false,
+        ),
+        ErrorKind::ModelNotFound => (
+            ErrorNamespace::Provider,
+            "model_not_found",
+            "The selected model is unavailable.",
+            "Run `aishe models --refresh`, then select an available model with `aishe model MODEL`.",
+            false,
+        ),
+        ErrorKind::UnsupportedTools => (
+            ErrorNamespace::Provider,
+            "unsupported_tools",
+            "The selected provider transport does not support tool use.",
+            "Run `aishe settings`; for reasoning plus tools choose the Responses transport.",
+            false,
+        ),
+        ErrorKind::UnsupportedParameter => (
+            ErrorNamespace::Provider,
+            "unsupported_parameter",
+            "The provider rejected a request parameter.",
+            "Run `aishe doctor --live` to verify this model/transport combination, then open `aishe settings`.",
+            false,
+        ),
+        ErrorKind::UnsupportedFormat => (
+            ErrorNamespace::Provider,
+            "unsupported_format",
+            "The provider does not support the requested response format.",
+            "Run `aishe doctor --live` to verify this model/transport combination, then open `aishe settings`.",
+            false,
+        ),
+        ErrorKind::RateLimited => (
+            ErrorNamespace::Provider,
+            "rate_limited",
+            "The provider rate limit was reached.",
+            "Wait briefly, then retry the request.",
+            true,
+        ),
+        ErrorKind::Quota => (
+            ErrorNamespace::Provider,
+            "quota_exhausted",
+            "The provider quota is exhausted.",
+            "Check provider billing or quota before retrying.",
+            false,
+        ),
+        ErrorKind::Timeout => (
+            ErrorNamespace::Network,
+            "timeout",
+            "The provider request timed out.",
+            "Check connectivity and the endpoint with `aishe doctor --probe`, then retry.",
+            true,
+        ),
+        ErrorKind::Network => (
+            ErrorNamespace::Network,
+            "provider_unreachable",
+            "AIShe could not reach the provider.",
+            "Check connectivity and the endpoint with `aishe doctor --probe`, then retry.",
+            true,
+        ),
+        ErrorKind::Server => (
+            ErrorNamespace::Provider,
+            "server_unavailable",
+            "The provider returned a server error after retries.",
+            "Wait briefly, then retry the request.",
+            true,
+        ),
+        ErrorKind::MalformedResponse => (
+            ErrorNamespace::Provider,
+            "malformed_response",
+            "The provider returned an incompatible response.",
+            "Run `aishe doctor --live` to verify the endpoint and transport.",
+            false,
+        ),
+        ErrorKind::Unknown => (
+            ErrorNamespace::Provider,
+            "unknown",
+            "The provider could not complete the request.",
+            "Run `aishe doctor --live` for a classified compatibility report.",
+            false,
+        ),
     };
-    format!("{base}\nNext: {next}")
+    crate::user_error::UserError::classified(namespace, name, message, next)
+        .expect("static provider user-error code is valid")
+        .with_retryable(retryable)
+        .with_source_chain(error)
+}
+
+/// Backward-compatible human-readable provider recovery text.
+pub fn actionable_error(error: &ProviderError) -> String {
+    user_error(error).render_body()
 }
 
 pub fn classify_api_error(status: u16, message: &str) -> ErrorKind {
@@ -225,6 +351,7 @@ mod recovery_tests {
         let text = actionable_error(&error);
         assert!(text.contains("Responses transport"));
         assert!(text.contains("Next:"));
+        assert!(text.contains("[provider.unsupported_tools]"));
 
         let auth = ProviderError::Api {
             status: 401,
@@ -233,6 +360,49 @@ mod recovery_tests {
         let text = actionable_error(&auth);
         assert!(!text.contains("abcdefghijklmnopqrstuvwxyz"));
         assert!(text.contains("API-key environment variable"));
+        assert!(text.contains("[auth.invalid_credential]"));
+    }
+
+    #[test]
+    fn provider_error_contract_table_is_stable() {
+        let cases = [
+            (
+                ProviderError::Api {
+                    status: 401,
+                    message: "rejected".into(),
+                },
+                "auth.invalid_credential",
+                4,
+                false,
+            ),
+            (
+                ProviderError::Api {
+                    status: 429,
+                    message: "slow down".into(),
+                },
+                "provider.rate_limited",
+                5,
+                true,
+            ),
+            (
+                ProviderError::Http("request timed out".into()),
+                "network.timeout",
+                6,
+                true,
+            ),
+            (
+                ProviderError::Parse("bad shape".into()),
+                "provider.malformed_response",
+                5,
+                false,
+            ),
+        ];
+        for (source, code, exit, retryable) in cases {
+            let error = user_error(&source);
+            assert_eq!(error.code().as_str(), code);
+            assert_eq!(error.exit_code(), exit);
+            assert_eq!(error.retryable(), retryable);
+        }
     }
 }
 
@@ -357,23 +527,26 @@ pub(crate) fn stream_post(
     url: &str,
     headers: &[(&str, &str)],
     body: &Value,
-) -> Result<ureq::Response, ProviderError> {
+) -> Result<HttpResponse, ProviderError> {
     let mut attempt = 0;
     loop {
         // Fast-fail the TCP connect so an unreachable endpoint doesn't sit on the
         // read timeout, but keep the per-read timeout (not a whole-call deadline)
         // so legitimate slow streams aren't cut.
-        let agent = ureq::AgentBuilder::new()
-            .timeout_connect(Duration::from_secs(5))
-            .timeout_read(Duration::from_secs(HTTP_TIMEOUT_SECS))
-            .build();
+        let agent = external_http_agent(
+            Duration::from_secs(5),
+            None,
+            Some(Duration::from_secs(HTTP_TIMEOUT_SECS)),
+            Some(Duration::from_secs(HTTP_TIMEOUT_SECS)),
+        );
         let mut req = agent.post(url);
         for (k, v) in headers {
-            req = req.set(k, v);
+            req = req.header(*k, *v);
         }
         match req.send_json(body.clone()) {
-            Ok(resp) => return Ok(resp),
-            Err(ureq::Error::Status(status, resp)) => {
+            Ok(resp) if status_is_accepted(resp.status()) => return Ok(resp),
+            Ok(resp) => {
+                let status = resp.status().as_u16();
                 if status == 401 {
                     return Err(ProviderError::Api {
                         status,
@@ -411,11 +584,8 @@ const MAX_SSE_LINE_BYTES: u64 = 1024 * 1024;
 
 /// Read an SSE stream line by line, invoking `on_data` with the payload of each
 /// `data:` line (skipping blanks and the `[DONE]` sentinel).
-pub(crate) fn read_sse(
-    resp: ureq::Response,
-    on_data: impl FnMut(&str),
-) -> Result<(), ProviderError> {
-    read_sse_lines(resp.into_reader(), on_data);
+pub(crate) fn read_sse(resp: HttpResponse, on_data: impl FnMut(&str)) -> Result<(), ProviderError> {
+    read_sse_lines(resp.into_body().into_reader(), on_data);
     Ok(())
 }
 
@@ -470,8 +640,14 @@ pub(crate) fn is_retryable_status(status: u16) -> bool {
 
 /// The `Retry-After` hint in whole seconds, if the response carries one as an
 /// integer (the HTTP-date form is ignored).
-pub(crate) fn retry_after_secs(resp: &ureq::Response) -> Option<u64> {
-    resp.header("retry-after")?.trim().parse::<u64>().ok()
+pub(crate) fn retry_after_secs(resp: &HttpResponse) -> Option<u64> {
+    resp.headers()
+        .get("retry-after")?
+        .to_str()
+        .ok()?
+        .trim()
+        .parse::<u64>()
+        .ok()
 }
 
 /// Backoff before retry `attempt` (1-based): honor a `Retry-After` hint (capped),
@@ -497,8 +673,13 @@ fn jitter_ms() -> u64 {
 }
 
 /// Pull a human-readable message out of an error response body.
-pub(crate) fn error_message(resp: ureq::Response) -> String {
-    match resp.into_json::<Value>() {
+pub(crate) fn error_message(mut resp: HttpResponse) -> String {
+    match resp
+        .body_mut()
+        .with_config()
+        .limit(MAX_PROVIDER_BODY_BYTES)
+        .read_json::<Value>()
+    {
         Ok(v) => v
             .get("error")
             .and_then(|e| e.get("message"))
@@ -630,20 +811,22 @@ pub fn probe(config: &Config, name: &str) -> Probe {
     });
     let base = crate::provider_catalog::normalize_base_url(&base_url);
     let url = format!("{base}/v1/models");
-    let agent = ureq::AgentBuilder::new()
-        .timeout_connect(Duration::from_secs(3))
-        .timeout(Duration::from_secs(6))
-        .build();
+    let agent = external_http_agent(
+        Duration::from_secs(3),
+        Some(Duration::from_secs(6)),
+        None,
+        None,
+    );
     let mut req = agent.get(&url);
     if let Some((k, v)) = &auth_header {
-        req = req.set(k, v);
+        req = req.header(k, v);
     }
     if !is_openai {
-        req = req.set("anthropic-version", "2023-06-01");
+        req = req.header("anthropic-version", "2023-06-01");
     }
     let reach = match req.call() {
-        Ok(resp) => Reach::Up(resp.status()),
-        Err(ureq::Error::Status(code, _)) => {
+        Ok(resp) => {
+            let code = resp.status().as_u16();
             if code == 401 || code == 403 {
                 Reach::Unauthorized(code)
             } else {
@@ -651,7 +834,7 @@ pub fn probe(config: &Config, name: &str) -> Probe {
                 Reach::Up(code)
             }
         }
-        Err(ureq::Error::Transport(t)) => Reach::Down(t.to_string()),
+        Err(error) => Reach::Down(error.to_string()),
     };
     Probe {
         name: id,
@@ -749,6 +932,38 @@ mod tests {
     use super::*;
 
     #[test]
+    fn external_agent_contract_preserves_native_trust_and_timeouts() {
+        use ureq::tls::RootCerts;
+
+        let agent = external_http_agent(
+            Duration::from_secs(3),
+            Some(Duration::from_secs(10)),
+            Some(Duration::from_secs(7)),
+            Some(Duration::from_secs(5)),
+        );
+        let config = agent.config();
+        let timeouts = config.timeouts();
+        assert!(!config.http_status_as_error());
+        assert_eq!(config.max_redirects(), 5);
+        assert!(matches!(
+            config.tls_config().root_certs(),
+            RootCerts::PlatformVerifier
+        ));
+        assert_eq!(
+            config.proxy().is_some(),
+            ureq::Proxy::try_from_env().is_some(),
+            "custom agent must retain ureq's environment-proxy discovery"
+        );
+        assert_eq!(timeouts.connect, Some(Duration::from_secs(3)));
+        assert_eq!(timeouts.global, Some(Duration::from_secs(10)));
+        assert_eq!(timeouts.recv_response, Some(Duration::from_secs(7)));
+        assert_eq!(timeouts.recv_body, Some(Duration::from_secs(5)));
+        assert!(status_is_accepted(ureq::http::StatusCode::OK));
+        assert!(status_is_accepted(ureq::http::StatusCode::FOUND));
+        assert!(!status_is_accepted(ureq::http::StatusCode::BAD_REQUEST));
+    }
+
+    #[test]
     fn sse_survives_invalid_utf8_mid_stream() {
         // A stray byte between two frames. The old `.lines()` loop treated the
         // decode error as end-of-stream and returned Ok(()), so the answer was
@@ -767,6 +982,23 @@ mod tests {
         let mut got = Vec::new();
         read_sse_lines(std::io::Cursor::new(bytes), |d| got.push(d.to_string()));
         assert_eq!(got, vec!["a".to_string(), "b".to_string()]);
+    }
+
+    #[test]
+    fn oversized_sse_frame_is_bounded_and_does_not_hide_the_next_frame() {
+        let mut bytes = b"data: ".to_vec();
+        bytes.extend(std::iter::repeat_n(
+            b'x',
+            MAX_SSE_LINE_BYTES as usize + 4096,
+        ));
+        bytes.extend_from_slice(b"\ndata: recovered\ndata: [DONE]\n");
+        let mut got = Vec::new();
+        read_sse_lines(std::io::Cursor::new(bytes), |data| {
+            assert!(data.len() < MAX_SSE_LINE_BYTES as usize);
+            got.push(data.to_string());
+        });
+        assert_eq!(got.last().map(String::as_str), Some("recovered"));
+        assert!(got.len() <= 2, "oversized tail became extra SSE frames");
     }
 
     #[test]

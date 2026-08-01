@@ -17,8 +17,11 @@ import sys
 import tempfile
 import time
 
+from harness_identity import require_current_binary
 
-BINARY = os.path.abspath(sys.argv[1] if len(sys.argv) > 1 else "target/release/aishe")
+BINARY = require_current_binary(
+    os.path.abspath(sys.argv[1] if len(sys.argv) > 1 else "target/release/aishe")
+)
 TIMEOUT = 20
 EMOJI = re.compile("[\U0001F000-\U0001FAFF\u270F\U0001F4C2\u26A1]")
 
@@ -29,7 +32,7 @@ def environment():
     os.makedirs(config_dir)
     with open(os.path.join(config_dir, "config.toml"), "w", encoding="utf-8") as file:
         file.write(
-            'version = 6\n\n'
+            'version = 7\n\n'
             '[aishe]\n'
             'mode = "suggest"\n'
             'provider = "openai"\n'
@@ -156,17 +159,21 @@ def select_connection(shell, filter_text, save=False):
     shell.expect("Select a connection")
     shell.raw(filter_text.encode())
     shell.expect("filter: " + filter_text)
+    shell.raw(b"\r")
     if save:
-        # d applies and saves as durable default without the post-Enter prompt.
-        shell.raw(b"d")
+        # Promotion is one explicit interaction after selection; printable
+        # picker keys are always available to the filter.
+        shell.expect("the default connection for new shells?", timeout=3)
+        shell.expect("[y/N]:", timeout=3)
+        shell.raw(b"y\r")
     else:
         # Enter is shell-local; when the choice differs from config, Aishe asks
         # whether to make it the default — answer n to keep this shell only.
-        shell.raw(b"\r")
         try:
             # Confirm defaults to No ([y/N]); accept with n or bare Enter.
-            shell.expect("the default connection?", timeout=3)
-            shell.raw(b"\r")
+            shell.expect("the default connection for new shells?", timeout=3)
+            shell.expect("[y/N]:", timeout=3)
+            shell.raw(b"n\r")
         except AssertionError:
             # Same as current default: no follow-up confirm.
             pass
@@ -178,13 +185,16 @@ def select_model(shell, filter_text="", save=False):
     if filter_text:
         shell.raw(filter_text.encode())
         shell.expect("filter: " + filter_text)
+    shell.raw(b"\r")
     if save:
-        shell.raw(b"d")
+        shell.expect("the default for new shells on this connection?", timeout=3)
+        shell.expect("[y/N]:", timeout=3)
+        shell.raw(b"y\r")
     else:
-        shell.raw(b"\r")
         try:
-            shell.expect("the default for this connection?", timeout=3)
-            shell.raw(b"\r")
+            shell.expect("the default for new shells on this connection?", timeout=3)
+            shell.expect("[y/N]:", timeout=3)
+            shell.raw(b"n\r")
         except AssertionError:
             pass
 
@@ -240,25 +250,30 @@ def main():
         first.identity("ROLLED_BACK")
         first.expect("ROLLED_BACK:openai-personal:personal-model")
 
-        select_connection(first, "work", save=True)
-        first.expect("connection = openai-work")
+        # Promote the already shell-local personal selection while the durable
+        # default is still work. The post-Enter confirmation, not a hidden
+        # picker shortcut, is the only durable write.
+        select_connection(first, "personal", save=True)
+        first.expect("connection = openai-personal")
         first.line("print -r -- SAVED_SCOPE:$AISHE_SELECTION_SCOPE")
         first.expect("SAVED_SCOPE:default")
         first.identity("SAVED")
-        first.expect("SAVED:openai-work:work-model")
+        first.expect("SAVED:openai-personal:personal-model")
 
         config = os.path.join(home, ".config", "aishe", "config.toml")
         with open(config, encoding="utf-8") as file:
             durable = file.read()
-        if 'connection = "openai-work"' not in durable:
-            raise AssertionError("d did not save the durable connection")
+        if 'connection = "openai-personal"' not in durable:
+            raise AssertionError("confirmation did not save the durable connection")
 
-        select_connection(second, "personal")
-        second.expect("connection = openai-personal")
+        # The concurrent shell remains on its old work selection until it
+        # explicitly restores the now-personal durable default.
+        second.identity("BEFORE_RESTORE")
+        second.expect("BEFORE_RESTORE:openai-work:work-model")
         second.line("/model default")
-        second.expect("restored saved default")
+        second.expect("restored default for new shells")
         second.identity("RESTORED")
-        second.expect("RESTORED:openai-work:work-model")
+        second.expect("RESTORED:openai-personal:personal-model")
 
         combined = first.transcript + second.transcript
         if EMOJI.search(combined):

@@ -1,0 +1,24 @@
+{
+  "backend_install": {"ready": {"version": "1.18.9", "binary": "/runtime/opencode", "sha256": "fixture-sha256"}},
+  "backend_verify": {"runtime": {"missing": {"expected_version": "1.18.9"}}, "live": false},
+  "backend_repair": {"invalid": {"expected_version": "1.18.9", "reason": "checksum mismatch"}},
+  "models": ["model-a", "model-b"],
+  "config": {"version": 7, "aishe": {"mode": "suggest"}},
+  "effective_config": {
+    "config": {"version": 7, "aishe": {"mode": "suggest"}},
+    "provenance": {"config_path": "/config.toml", "fields": []}
+  },
+  "settings": {"config_path": "/config.toml", "fields": []},
+  "connection_list": [
+    {"id": "openai", "label": "OpenAI", "provider": "openai", "model": "model-a", "auth": "api_key", "active": true}
+  ],
+  "connection_show": {
+    "id": "openai", "label": "OpenAI", "provider": "openai", "base_url": "https://api.openai.com",
+    "model": "model-a", "transport": "responses", "reasoning_effort": "auto", "auth": {"type": "auto"},
+    "auth_state": "ready", "active": true
+  },
+  "auth_status": {"profile": "openai", "available": false, "selected": "none", "usable": false},
+  "auth_list": [{"profile": "openai", "saved": false, "oauth": false, "active": true}],
+  "readiness": {"ready": false, "checks": [{"id": "sandbox", "ready": false, "required": true, "detail": "unavailable"}]},
+  "audit_event": {"ts_ms": 1, "session": "fixture", "kind": "action", "command": "true", "exit": 0}
+}

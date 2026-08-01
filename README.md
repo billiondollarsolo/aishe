@@ -72,8 +72,9 @@ echo 'eval "$(aishe init zsh)"' >> ~/.zshrc   # or: aishe init bash
 **Common trap:** lines whose **first word is a real binary** run as shell — even
 if the rest is English. `install` is `/usr/bin/install` on every Mac/Linux box,
 so `install kubectl please` is **not** “please install the package”; use
-`? install kubectl please`. Buffer color (when highlighting is on): **green** =
-shell, **magenta** = natural language.
+`? install kubectl please`. Optional highlighting uses green for shell and
+magenta for agent input; color is never required. Press **Ctrl-X ?** in zsh or
+run `aishe route -- '<line>'` to read the route and reason as plain text.
 
 Full routing, Option/Alt+Return, and Mac terminal Meta settings:
 [Getting started §6](docs/getting-started.md#6-force-a-route-when-needed) ·
@@ -123,8 +124,9 @@ Full routing, Option/Alt+Return, and Mac terminal Meta settings:
 - **Private by default.** API keys in a mode-`0600` credentials file; OAuth in
   profile-isolated OpenCode HOME/XDG roots. Neither leaks into config, status,
   or audit identity fields.
-- **Works anywhere.** Interactive zsh-PTY, optional zsh/bash hook, `aishe -c`,
-  and pipes.
+- **Multiple front-ends.** Interactive zsh-PTY, optional zsh hook, qualified
+  [Bash 5.x Tier B / Bash 3.2 Tier B- hook](docs/bash-compatibility.md),
+  `aishe -c`, and pipes.
 
 ## Built for systems work
 
@@ -220,7 +222,7 @@ engine. Supported shapes: Anthropic Messages, OpenAI/xAI **Responses**, and
 OpenAI-compatible Chat Completions (Groq, Ollama, OpenRouter, Together, …).
 
 ```sh
-# Switch account (this shell; d in picker = durable default)
+# Switch account (Enter is shell-local; the following prompt can save a default)
 /connection
 aishe connection use openai-work --default
 
@@ -266,7 +268,7 @@ aishe sessions|resume|reset|undo|log|usage|history|runbook|…
 
 ```
 /help [topic]   task-first help  (accounts · models · session · config)
-/connection     switch account   (↑/↓ or j/k · Enter this shell · d default)
+/connection     switch account   (↑/↓ · type to filter · Enter this shell)
 /model          models for *active* connection only
 /provider       alias for /connection
 /auth           auth state for the active connection
@@ -292,7 +294,9 @@ built-in `aishe-product` skill.
 3. **Non-interactive** — `aishe -c '…'` and pipes.
 
 Details: [docs/front-ends.md](docs/front-ends.md) ·
-[docs/shell-integration.md](docs/shell-integration.md).
+[docs/shell-integration.md](docs/shell-integration.md) ·
+[Bash compatibility](docs/bash-compatibility.md) ·
+[terminal/transport compatibility](docs/terminal-compatibility.md).
 
 ## Safety, cost, logging
 
@@ -358,7 +362,7 @@ Startup aliases for delegated commands: `~/.aishrc` (portable) — see
 | Logging | [docs/logging.md](docs/logging.md) |
 | Troubleshooting | [docs/troubleshooting.md](docs/troubleshooting.md) |
 | Architecture | [docs/architecture.md](docs/architecture.md) |
-| Roadmap | [docs/ROADMAP.md](docs/ROADMAP.md) |
+| Product plan | [post-0.6.5 implementation plan](docs/design/NEXT_PRODUCT_UX_RELIABILITY_PLAN.md) · [design lifecycle index](docs/design/README.md) |
 | **Index** | **[docs/README.md](docs/README.md)** |
 
 ## Development

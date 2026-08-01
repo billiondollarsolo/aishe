@@ -122,6 +122,11 @@ pub fn display_safe(s: &str) -> String {
             '\u{0}'..='\u{1f}' | '\u{7f}'..='\u{9f}' => {
                 out.push_str(&format!("\\x{:02x}", c as u32));
             }
+            '\u{061c}'
+            | '\u{200e}'
+            | '\u{200f}'
+            | '\u{202a}'..='\u{202e}'
+            | '\u{2066}'..='\u{2069}' => out.push_str(&format!("\\u{{{:04x}}}", c as u32)),
             _ => out.push(c),
         }
     }
@@ -143,6 +148,11 @@ pub fn display_safe_multiline(s: &str) -> String {
             '\u{0}'..='\u{1f}' | '\u{7f}'..='\u{9f}' => {
                 out.push_str(&format!("\\x{:02x}", c as u32));
             }
+            '\u{061c}'
+            | '\u{200e}'
+            | '\u{200f}'
+            | '\u{202a}'..='\u{202e}'
+            | '\u{2066}'..='\u{2069}' => out.push_str(&format!("\\u{{{:04x}}}", c as u32)),
             _ => out.push(c),
         }
     }
@@ -483,6 +493,7 @@ mod tests {
         );
         assert_eq!(display_safe("echo hi"), "echo hi"); // untouched
         assert_eq!(display_safe("a\u{7f}b\u{9b}c"), "a\\x7fb\\x9bc");
+        assert_eq!(display_safe("safe\u{202e}txt"), "safe\\u{202e}txt");
     }
 
     #[test]
@@ -492,8 +503,8 @@ mod tests {
             "# Audit\n\n- **ok**\n```bash\nprintf 'ok'\n```\n"
         );
         assert_eq!(
-            display_safe_multiline("one\r\u{1b}[2J\ttwo"),
-            "one\\x0d\\x1b[2J    two"
+            display_safe_multiline("one\r\u{1b}[2J\ttwo\u{2066}"),
+            "one\\x0d\\x1b[2J    two\\u{2066}"
         );
     }
 

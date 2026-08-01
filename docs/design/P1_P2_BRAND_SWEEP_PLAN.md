@@ -1,8 +1,12 @@
+> **Lifecycle: Implemented.** Baseline: v0.6.3; delivered in v0.6.4. Retained as
+> brand-sweep history; use the
+> [post-0.6.5 plan](NEXT_PRODUCT_UX_RELIABILITY_PLAN.md) for current work.
+
 # AIShe P1 / P2 / brand-sweep plan
 
 | Field | Value |
 |-------|--------|
-| **Status** | Ready for implementation |
+| **Original status** | Ready for implementation |
 | **Owner** | AIShe maintainers |
 | **Baseline** | `v0.6.3` (`6b1c023`) + uncommitted half-block terminal mark on Hetzner/local |
 | **Last updated** | 2026-07-31 |

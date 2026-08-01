@@ -1,0 +1,26 @@
+{
+  "schema_version": 1,
+  "false_positive_budget_percent": 1.0,
+  "cases": [
+    {"id":"git-transposition","label":"typo","input":"gti status","known_commands":["git"],"expected_candidate":"git"},
+    {"id":"docker-transposition","label":"typo","input":"dcoker ps","known_commands":["docker"],"expected_candidate":"docker"},
+    {"id":"kubectl-deletion","label":"typo","input":"kubctl get","known_commands":["kubectl"],"expected_candidate":"kubectl"},
+    {"id":"python-transposition-option","label":"typo","input":"pyhton --version","known_commands":["python"],"expected_candidate":"python"},
+    {"id":"cargo-transposition","label":"typo","input":"carog build","known_commands":["cargo"],"expected_candidate":"cargo"},
+    {"id":"grep-insertion","label":"typo","input":"grepp -n needle file","known_commands":["grep"],"expected_candidate":"grep"},
+    {"id":"forced-agent-typo","label":"natural_language","input":"? gti status","known_commands":["git"],"expected_candidate":null},
+    {"id":"forced-shell-typo","label":"natural_language","input":"! gti status","known_commands":["git"],"expected_candidate":null},
+    {"id":"known-command","label":"natural_language","input":"git status","known_commands":["git"],"expected_candidate":null},
+    {"id":"common-list","label":"natural_language","input":"list files","known_commands":["last"],"expected_candidate":null},
+    {"id":"common-plan","label":"natural_language","input":"plan release","known_commands":["plant"],"expected_candidate":null},
+    {"id":"common-build","label":"natural_language","input":"build app","known_commands":["guild"],"expected_candidate":null},
+    {"id":"common-read","label":"natural_language","input":"read docs","known_commands":["red"],"expected_candidate":null},
+    {"id":"common-help","label":"natural_language","input":"help me","known_commands":["helm"],"expected_candidate":null},
+    {"id":"greeting","label":"natural_language","input":"hello there","known_commands":["hell"],"expected_candidate":null},
+    {"id":"question-head","label":"natural_language","input":"could this work","known_commands":["cloud"],"expected_candidate":null},
+    {"id":"long-prose-no-command-args","label":"natural_language","input":"releaze the next version carefully","known_commands":["release"],"expected_candidate":null},
+    {"id":"unicode-head","label":"natural_language","input":"résume this task","known_commands":["resume"],"expected_candidate":null},
+    {"id":"path-shaped-head","label":"natural_language","input":"./gti status","known_commands":["git"],"expected_candidate":null},
+    {"id":"distant-spelling","label":"natural_language","input":"zzzzz status","known_commands":["git"],"expected_candidate":null}
+  ]
+}

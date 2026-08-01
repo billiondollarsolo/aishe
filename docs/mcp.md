@@ -69,7 +69,7 @@ Each call is recorded in the [audit log](logging.md) as
 List what is connected:
 
 ```sh
-aishe mcp        # or /mcp in the REPL
+aishe mcp        # list available MCP tools
 ```
 
 ```

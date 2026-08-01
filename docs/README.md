@@ -20,17 +20,26 @@ live in the [root README](../README.md).
   [forcing natural language (`?`)](getting-started.md#6-force-a-route-when-needed)
   when a line starts with a real binary (`install`, `find`, …)
 - [Commands and slash-commands](commands.md) — CLI surface, `/help`, `/connection` vs `/model`
+- [Route overrides](route-prefixes.md) — canonical `?`, one-line shell `!`, and the deprecated `#` alias
 - [Providers](providers.md) — Anthropic, OpenAI/Codex, xAI/Grok, Groq, Ollama, OAuth
 - [Managed agent backend](managed-agent-backend.md) — pinned OpenCode runtime, security boundary, recovery
 - [Modes](modes.md) — suggest, auto, yolo, streaming, structured output
 - [Front-ends](front-ends.md) — the zsh-PTY interactive shell and the native hook
+- [Native Bash compatibility](bash-compatibility.md) — tested Tier B/B- matrix,
+  version differences, and deterministic qualification evidence
+- [Terminal compatibility](terminal-compatibility.md) — macOS PTY gate,
+  multiplexer/latency/resize evidence, SSH limitations, and manual terminal matrix
+- [Accessibility and palette review](accessibility.md) — non-color cues,
+  static/ASCII fallbacks, keyboard access, and maintained contrast evidence
 - [Configuration reference](configuration.md) — every field in config.toml
+- [Automation contracts](automation.md) — JSON/JSONL schemas, streams, exit codes, fixtures, and compatibility policy
 - [Custom commands and skills](custom-commands-and-skills.md) — your own /commands and model skills
 - [MCP servers](mcp.md) — connect Model Context Protocol tool servers to yolo
 - [Per-project context](project-context.md) — feed repo conventions via `.aishe/context.md`
 - [Token usage and cost](usage-and-cost.md) — metering, the price table, and budgets
 - [Safety gate](safety.md) — how dangerous commands are screened
 - [Logging and privacy](logging.md) — secret redaction and the audit log
+- [Data retention and deletion](data-retention.md) — local state inventory, bounds, export, dry-run cleanup, and preservation guarantees
 - [Runbooks](runbooks.md) — export a yolo session as a script + markdown runbook
 - [Shell integration and .aishrc](shell-integration.md) — native hook, startup
   file, [force-NL / Option-as-Meta on Mac](shell-integration.md#force-nl-and-input-prefixes)
@@ -38,11 +47,11 @@ live in the [root README](../README.md).
 - [Troubleshooting](troubleshooting.md) — common issues (`install` ran as shell,
   `aishe doctor`, …)
 - [Development](development.md) — building, testing, and the validation harness
-- [Roadmap](ROADMAP.md) — where aishe is headed
-- [Master plan](design/PLAN.md) — long-form plan and acceptance criteria
-- [Interactive UX milestone](design/UX_MILESTONE_PLAN.md) — setup, diagnostics, status, durable tasks
-- [OpenCode backend implementation](design/OPENCODE_BACKEND_IMPLEMENTATION_PLAN.md) — architecture and release criteria
-- [Feature proposals](proposals.md) — specs for the next wave
+- [Release readiness and rollback](release-readiness.md) — required evidence, holds, state compatibility, and failed-rollout response
+- [Legacy compatibility lifecycle](legacy-compatibility.md) — removed front-end tombstones, migration windows, and retained native/task fields
+- [Active product plan](design/NEXT_PRODUCT_UX_RELIABILITY_PLAN.md) — post-0.6.5 UX, routing, compatibility, and reliability work
+- [Design lifecycle index](design/README.md) — authoritative inventory of active, implemented, superseded, historical, and validation documents
+- [OpenCode backend implementation](design/OPENCODE_BACKEND_IMPLEMENTATION_PLAN.md) — implemented backend design record
 
 ## Reference files in the repo
 

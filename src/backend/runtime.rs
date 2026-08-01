@@ -411,12 +411,32 @@ impl RuntimeManager {
         {
             anyhow::bail!("unencrypted runtime downloads are allowed only from loopback");
         }
-        let response = ureq::get(url)
-            .timeout(std::time::Duration::from_secs(300))
-            .call()
-            .with_context(|| format!("downloading OpenCode runtime from {url}"))?;
+        let mut response = crate::providers::external_http_agent(
+            std::time::Duration::from_secs(300),
+            Some(std::time::Duration::from_secs(300)),
+            None,
+            None,
+        )
+        .get(url)
+        .call()
+        .with_context(|| format!("downloading OpenCode runtime from {url}"))?;
+        if !crate::providers::status_is_accepted(response.status()) {
+            let status = response.status().as_u16();
+            let detail = response
+                .body_mut()
+                .with_config()
+                .limit(1024)
+                .read_to_string()
+                .unwrap_or_else(|_| "request rejected".into());
+            anyhow::bail!(
+                "runtime download returned HTTP {status}: {}",
+                detail.trim().chars().take(1024).collect::<String>()
+            );
+        }
         if let Some(length) = response
-            .header("content-length")
+            .headers()
+            .get("content-length")
+            .and_then(|value| value.to_str().ok())
             .and_then(|value| value.parse::<u64>().ok())
         {
             if length != expected {
@@ -426,7 +446,7 @@ impl RuntimeManager {
             }
         }
         copy_bounded(
-            &mut response.into_reader(),
+            &mut response.into_body().into_reader(),
             destination,
             expected + DOWNLOAD_SLACK,
         )
@@ -733,6 +753,35 @@ mod tests {
             assert!(validate_archive_path(Path::new(value)).is_err(), "{value}");
         }
         assert!(validate_archive_path(Path::new("package/opencode")).is_ok());
+    }
+
+    #[test]
+    fn archive_path_validation_is_total_for_deterministic_hostile_seeds() {
+        let mut state = 0x4149_5348_455f_0005_u64;
+        for _ in 0..10_000 {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            let alphabet = ["a", "opencode", ".", "..", "", "tmp", "界"];
+            let mut value = String::new();
+            if state & 1 == 0 {
+                value.push('/');
+            }
+            for index in 0..(state as usize % 12) {
+                if index > 0 {
+                    value.push('/');
+                }
+                value.push_str(alphabet[((state >> (index % 8)) as usize) % alphabet.len()]);
+            }
+            let path = Path::new(&value);
+            let result = validate_archive_path(path);
+            let safe = !path.as_os_str().is_empty()
+                && !path.is_absolute()
+                && path
+                    .components()
+                    .all(|component| matches!(component, Component::Normal(_)));
+            assert_eq!(result.is_ok(), safe, "archive path {value:?}");
+        }
     }
 
     #[test]

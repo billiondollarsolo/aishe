@@ -12,8 +12,9 @@ use std::sync::Arc;
 use serde_json::{json, Value};
 
 use super::{
-    read_sse, stream_post, usage_from_value, Completion, Msg, Provider, ProviderError,
-    ResponseFormat, ToolCall, ToolDef, HTTP_TIMEOUT_SECS, MAX_TOKENS,
+    external_http_agent, read_sse, status_is_accepted, stream_post, usage_from_value, Completion,
+    HttpResponse, Msg, Provider, ProviderError, ResponseFormat, ToolCall, ToolDef,
+    HTTP_TIMEOUT_SECS, MAX_PROVIDER_BODY_BYTES, MAX_TOKENS,
 };
 use crate::usage::UsageMeter;
 
@@ -1071,22 +1072,29 @@ fn post_with_retry(url: &str, api_key: &str, body: &Value) -> Result<Value, Prov
     use super::{backoff, is_retryable_status, retry_after_secs, MAX_RETRIES};
     let mut attempt = 0;
     loop {
-        let agent = ureq::AgentBuilder::new()
-            .timeout(std::time::Duration::from_secs(HTTP_TIMEOUT_SECS))
-            .build();
-        let mut request = agent.post(url).set("content-type", "application/json");
+        let agent = external_http_agent(
+            std::time::Duration::from_secs(HTTP_TIMEOUT_SECS),
+            Some(std::time::Duration::from_secs(HTTP_TIMEOUT_SECS)),
+            None,
+            None,
+        );
+        let mut request = agent.post(url).header("content-type", "application/json");
         if !api_key.is_empty() {
-            request = request.set("Authorization", &format!("Bearer {api_key}"));
+            request = request.header("Authorization", format!("Bearer {api_key}"));
         }
         let result = request.send_json(body.clone());
 
         match result {
-            Ok(resp) => {
+            Ok(mut resp) if status_is_accepted(resp.status()) => {
                 return resp
-                    .into_json::<Value>()
+                    .body_mut()
+                    .with_config()
+                    .limit(MAX_PROVIDER_BODY_BYTES)
+                    .read_json::<Value>()
                     .map_err(|e| ProviderError::Parse(e.to_string()));
             }
-            Err(ureq::Error::Status(status, resp)) => {
+            Ok(resp) => {
+                let status = resp.status().as_u16();
                 if status == 401 {
                     return Err(ProviderError::Api {
                         status,
@@ -1119,8 +1127,13 @@ fn post_with_retry(url: &str, api_key: &str, body: &Value) -> Result<Value, Prov
     }
 }
 
-fn extract_error_message(resp: ureq::Response) -> String {
-    match resp.into_json::<Value>() {
+fn extract_error_message(mut resp: HttpResponse) -> String {
+    match resp
+        .body_mut()
+        .with_config()
+        .limit(MAX_PROVIDER_BODY_BYTES)
+        .read_json::<Value>()
+    {
         Ok(v) => v
             .get("error")
             .and_then(|e| e.get("message"))

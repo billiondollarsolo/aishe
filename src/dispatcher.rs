@@ -2,11 +2,360 @@
 //! request, and maintain the command cache that backs that decision.
 
 use std::collections::HashSet;
+use std::fmt;
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 use std::process::{Command, Stdio};
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
+
+use serde::Serialize;
+
+use crate::command_surface;
+
+/// Schema version for the public `aishe route --json` contract.
+pub const ROUTE_SCHEMA_VERSION: u32 = 1;
+
+/// Maximum user-input characters retained by diagnostic and debug views.
+const ROUTE_DIAGNOSTIC_INPUT_CHARS: usize = 512;
+/// Maximum effective-head characters retained by diagnostic and debug views.
+const ROUTE_DIAGNOSTIC_HEAD_CHARS: usize = 128;
+
+/// Schema version for the deliberately separate typo-assistance research
+/// contract. A cue is advisory only: it never changes [`RouteDecision`],
+/// executes a command, or authorizes an agent request.
+pub const TYPO_ASSISTANCE_SCHEMA_VERSION: u32 = 1;
+
+/// One conservative two-word question form shared with generated zsh routing.
+/// Keep the table declarative: changing a pair updates Rust classification,
+/// zsh highlighting, and zsh Enter submission together.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct QuestionPairRule {
+    pub first: &'static str,
+    pub seconds: &'static [&'static str],
+}
+
+const QUESTION_VERBS: &[&str] = &[
+    "is", "are", "was", "were", "do", "does", "did", "can", "could", "would", "should", "will",
+];
+
+/// Canonical two-word natural-language grammar for command-name collisions.
+pub const QUESTION_PAIR_RULES: &[QuestionPairRule] = &[
+    QuestionPairRule {
+        first: "what",
+        seconds: QUESTION_VERBS,
+    },
+    QuestionPairRule {
+        first: "where",
+        seconds: QUESTION_VERBS,
+    },
+    QuestionPairRule {
+        first: "when",
+        seconds: QUESTION_VERBS,
+    },
+    QuestionPairRule {
+        first: "why",
+        seconds: QUESTION_VERBS,
+    },
+    QuestionPairRule {
+        first: "who",
+        seconds: &[
+            "is", "are", "was", "were", "am", "do", "does", "did", "can", "could", "would",
+            "should", "will",
+        ],
+    },
+    QuestionPairRule {
+        first: "how",
+        seconds: &[
+            "is", "are", "was", "were", "do", "does", "did", "can", "could", "would", "should",
+            "will", "many", "much", "long", "far", "old", "often",
+        ],
+    },
+    QuestionPairRule {
+        first: "can",
+        seconds: &["you"],
+    },
+    QuestionPairRule {
+        first: "could",
+        seconds: &["you"],
+    },
+    QuestionPairRule {
+        first: "would",
+        seconds: &["you"],
+    },
+    QuestionPairRule {
+        first: "will",
+        seconds: &["you"],
+    },
+    QuestionPairRule {
+        first: "should",
+        seconds: &["i", "we"],
+    },
+    QuestionPairRule {
+        first: "is",
+        seconds: &["there"],
+    },
+    QuestionPairRule {
+        first: "are",
+        seconds: &["there"],
+    },
+    QuestionPairRule {
+        first: "do",
+        seconds: &["you"],
+    },
+    QuestionPairRule {
+        first: "does",
+        seconds: &["the"],
+    },
+    QuestionPairRule {
+        first: "did",
+        seconds: &["the"],
+    },
+];
+
+/// A trailing question mark is agent evidence only for these first words.
+pub const TRAILING_QUESTION_HEADS: &[&str] = &[
+    "what", "where", "who", "when", "why", "how", "which", "whose", "whom", "can", "could",
+    "would", "will", "should", "is", "are", "do", "does", "did",
+];
+
+/// Characters which make a line shell-shaped before question-pair grammar.
+pub const QUESTION_SHELL_EVIDENCE: &[char] =
+    &['|', ';', '&', '<', '>', '$', '`', '(', ')', '{', '}'];
+
+/// The destination selected for one submitted line.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RouteKind {
+    Shell,
+    NaturalLanguage,
+    Builtin,
+}
+
+impl fmt::Display for RouteKind {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let name = match self {
+            Self::Shell => "shell",
+            Self::NaturalLanguage => "natural_language",
+            Self::Builtin => "builtin",
+        };
+        formatter.write_str(name)
+    }
+}
+
+/// Stable, deterministic evidence for a route decision.
+///
+/// Variant names are part of the public JSON contract. Add variants rather
+/// than repurposing an existing reason when the classifier gains a new rule.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RouteReason {
+    EmptyInput,
+    ForcedAgent,
+    ForcedShell,
+    SlashCommand,
+    InterceptedBuiltin,
+    ShellSyntax,
+    FunctionDefinition,
+    ControlStructure,
+    Assignment,
+    QuestionGrammar,
+    CompoundShell,
+    CompoundUnknown,
+    KnownCommand,
+    UnknownInput,
+}
+
+impl fmt::Display for RouteReason {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let name = match self {
+            Self::EmptyInput => "empty_input",
+            Self::ForcedAgent => "forced_agent",
+            Self::ForcedShell => "forced_shell",
+            Self::SlashCommand => "slash_command",
+            Self::InterceptedBuiltin => "intercepted_builtin",
+            Self::ShellSyntax => "shell_syntax",
+            Self::FunctionDefinition => "function_definition",
+            Self::ControlStructure => "control_structure",
+            Self::Assignment => "assignment",
+            Self::QuestionGrammar => "question_grammar",
+            Self::CompoundShell => "compound_shell",
+            Self::CompoundUnknown => "compound_unknown",
+            Self::KnownCommand => "known_command",
+            Self::UnknownInput => "unknown_input",
+        };
+        formatter.write_str(name)
+    }
+}
+
+/// Classifier surface responsible for the decision.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RouteSource {
+    Rust,
+    GeneratedZsh,
+    GeneratedBash,
+    Explicit,
+}
+
+impl fmt::Display for RouteSource {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let name = match self {
+            Self::Rust => "rust",
+            Self::GeneratedZsh => "generated_zsh",
+            Self::GeneratedBash => "generated_bash",
+            Self::Explicit => "explicit",
+        };
+        formatter.write_str(name)
+    }
+}
+
+/// A complete, inspectable route decision.
+///
+/// `normalized` is the exact executable/prompt payload after an explicit sigil
+/// is stripped. Debug and CLI diagnostic representations are separately
+/// bounded so a pathological input cannot flood logs or inject control bytes.
+#[derive(Clone, PartialEq, Eq)]
+pub struct RouteDecision {
+    pub kind: RouteKind,
+    pub normalized: String,
+    pub reason: RouteReason,
+    pub head: Option<String>,
+    pub known_command: bool,
+    pub ambiguous: bool,
+    pub source: RouteSource,
+    dispatch: Dispatch,
+}
+
+impl fmt::Debug for RouteDecision {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("RouteDecision")
+            .field("kind", &self.kind)
+            .field(
+                "normalized",
+                &safe_bounded(&self.normalized, ROUTE_DIAGNOSTIC_INPUT_CHARS),
+            )
+            .field("reason", &self.reason)
+            .field(
+                "head",
+                &self
+                    .head
+                    .as_deref()
+                    .map(|head| safe_bounded(head, ROUTE_DIAGNOSTIC_HEAD_CHARS)),
+            )
+            .field("known_command", &self.known_command)
+            .field("ambiguous", &self.ambiguous)
+            .field("source", &self.source)
+            .finish_non_exhaustive()
+    }
+}
+
+/// Machine-readable instruction for selecting the opposite route.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct RouteOverride {
+    pub kind: RouteKind,
+    pub prefix: &'static str,
+    pub guidance: &'static str,
+    pub safety_bypass: bool,
+}
+
+/// Bounded public representation used by `aishe route --json`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct RouteDiagnostic {
+    pub schema_version: u32,
+    pub kind: RouteKind,
+    pub reason: RouteReason,
+    pub normalized: String,
+    pub head: Option<String>,
+    pub known_command: bool,
+    pub ambiguous: bool,
+    pub source: RouteSource,
+    /// Whether the selected route bypasses AIShe's AI command safety gate.
+    pub safety_bypass: bool,
+    pub opposite_route_override: RouteOverride,
+}
+
+/// A conservative, process-local spelling cue for an otherwise unknown head.
+///
+/// This is intentionally not embedded in [`RouteDecision`] or
+/// [`RouteDiagnostic`]. Routing remains a stable, deterministic decision; a
+/// suggestion depends on the commands visible on this machine's `PATH` and is
+/// therefore optional evidence presented after classification.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct TypoAssistance {
+    pub schema_version: u32,
+    pub original: String,
+    pub candidate: String,
+    pub edit_distance: usize,
+    pub executes_automatically: bool,
+}
+
+impl RouteDecision {
+    pub fn into_dispatch(self) -> Dispatch {
+        self.dispatch
+    }
+
+    pub fn opposite_route_override(&self) -> RouteOverride {
+        match self.kind {
+            RouteKind::Shell => RouteOverride {
+                kind: RouteKind::NaturalLanguage,
+                prefix: "?",
+                guidance: "prefix ? to force the agent route",
+                safety_bypass: false,
+            },
+            RouteKind::NaturalLanguage | RouteKind::Builtin => RouteOverride {
+                kind: RouteKind::Shell,
+                prefix: "!",
+                guidance: "prefix ! to force the shell route; this bypasses the AI safety gate",
+                safety_bypass: true,
+            },
+        }
+    }
+
+    /// Produce a bounded, schema-versioned diagnostic object. Control bytes are
+    /// retained as data here and escaped by JSON serialization; text rendering
+    /// should call [`safe_diagnostic_text`] before writing a field to a TTY.
+    pub fn diagnostic(&self) -> RouteDiagnostic {
+        RouteDiagnostic {
+            schema_version: ROUTE_SCHEMA_VERSION,
+            kind: self.kind,
+            reason: self.reason,
+            normalized: bounded(&self.normalized, ROUTE_DIAGNOSTIC_INPUT_CHARS),
+            head: self
+                .head
+                .as_deref()
+                .map(|head| bounded(head, ROUTE_DIAGNOSTIC_HEAD_CHARS)),
+            known_command: self.known_command,
+            ambiguous: self.ambiguous,
+            source: self.source,
+            safety_bypass: self.reason == RouteReason::ForcedShell,
+            opposite_route_override: self.opposite_route_override(),
+        }
+    }
+}
+
+/// Escape control characters and bound a user-controlled value for terminal
+/// diagnostics. The classifier's execution payload is never altered.
+pub fn safe_diagnostic_text(value: &str) -> String {
+    safe_bounded(value, ROUTE_DIAGNOSTIC_INPUT_CHARS)
+}
+
+fn bounded(value: &str, max_chars: usize) -> String {
+    let mut chars = value.chars();
+    let mut result: String = chars.by_ref().take(max_chars).collect();
+    if chars.next().is_some() {
+        result.push('…');
+    }
+    result
+}
+
+fn safe_bounded(value: &str, max_chars: usize) -> String {
+    bounded(value, max_chars)
+        .chars()
+        .flat_map(char::escape_default)
+        .collect()
+}
 
 /// The outcome of dispatching one input line.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -104,6 +453,19 @@ impl CommandCache {
         Self {
             inner: Arc::new(RwLock::new(HashSet::new())),
         }
+    }
+
+    /// Populate only process-local command evidence: executable names from the
+    /// current `PATH` plus AIShe's intercepted and fallback shell builtins.
+    ///
+    /// Unlike [`Self::build`], this does not spawn a shell or a discovery
+    /// thread. It is used by `aishe route`, which must remain a backend-free,
+    /// configuration-free diagnostic fast path.
+    pub fn discover_local(&self) {
+        let mut commands = self.write();
+        commands.extend(scan_path());
+        commands.extend(INTERCEPTED.iter().map(|name| (*name).to_owned()));
+        commands.extend(FALLBACK_BUILTINS.iter().map(|name| (*name).to_owned()));
     }
 
     /// Read/write the command set, recovering from a poisoned lock rather than
@@ -228,6 +590,117 @@ impl CommandCache {
     }
 }
 
+/// Return a conservative local typo cue without changing the route.
+///
+/// The cue is eligible only for an unforced, unknown natural-language route,
+/// uses edit distance one, and rejects common prose verbs. Longer phrases need
+/// command-shaped argument evidence so ordinary requests are not peppered with
+/// executable-name suggestions. Callers are responsible for rate limiting the
+/// presentation; this pure function performs no I/O and no network activity.
+pub fn typo_assistance(line: &str, cache: &CommandCache) -> Option<TypoAssistance> {
+    let route = route(line, cache);
+    if route.kind != RouteKind::NaturalLanguage || route.reason != RouteReason::UnknownInput {
+        return None;
+    }
+
+    let head = route.head.as_deref()?;
+    if !(3..=32).contains(&head.chars().count())
+        || !head
+            .chars()
+            .all(|character| character.is_ascii_alphanumeric() || "._+-".contains(character))
+        || common_natural_language_head(head)
+    {
+        return None;
+    }
+
+    let words: Vec<&str> = route.normalized.split_whitespace().collect();
+    if words.len() > 2
+        && !words
+            .iter()
+            .skip(1)
+            .any(|word| command_argument_evidence(word))
+    {
+        return None;
+    }
+
+    let candidate = cache.correction(head, 1)?;
+    let edit_distance = crate::fuzzy::edit_distance(head, &candidate);
+    Some(TypoAssistance {
+        schema_version: TYPO_ASSISTANCE_SCHEMA_VERSION,
+        original: bounded(head, ROUTE_DIAGNOSTIC_HEAD_CHARS),
+        candidate: bounded(&candidate, ROUTE_DIAGNOSTIC_HEAD_CHARS),
+        edit_distance,
+        executes_automatically: false,
+    })
+}
+
+fn command_argument_evidence(word: &str) -> bool {
+    word.starts_with('-')
+        || word.starts_with('/')
+        || word.starts_with("./")
+        || word.starts_with("../")
+        || word.starts_with("~/")
+        || word.contains('=')
+}
+
+fn common_natural_language_head(head: &str) -> bool {
+    matches!(
+        head.to_ascii_lowercase().as_str(),
+        "add"
+            | "analyze"
+            | "answer"
+            | "are"
+            | "build"
+            | "can"
+            | "change"
+            | "check"
+            | "compare"
+            | "could"
+            | "create"
+            | "debug"
+            | "describe"
+            | "design"
+            | "did"
+            | "do"
+            | "does"
+            | "edit"
+            | "explain"
+            | "fix"
+            | "generate"
+            | "give"
+            | "help"
+            | "hello"
+            | "hi"
+            | "how"
+            | "implement"
+            | "is"
+            | "list"
+            | "make"
+            | "plan"
+            | "please"
+            | "read"
+            | "review"
+            | "should"
+            | "show"
+            | "summarize"
+            | "tell"
+            | "thank"
+            | "thanks"
+            | "update"
+            | "what"
+            | "when"
+            | "where"
+            | "which"
+            | "who"
+            | "whom"
+            | "whose"
+            | "why"
+            | "will"
+            | "would"
+            | "write"
+    )
+}
+
 /// Return a delegated shell line only when it can be proven without loading
 /// user configuration, providers, plugins, MCP servers, or the managed backend.
 ///
@@ -252,15 +725,29 @@ pub fn fast_shell_line(line: &str) -> Option<String> {
     }
     let cache = CommandCache::new();
     cache.seed_for_line(trimmed);
-    match dispatch(trimmed, &cache) {
+    match route(trimmed, &cache).into_dispatch() {
         Dispatch::Shell(command) => Some(command),
         Dispatch::NaturalLanguage(_) | Dispatch::Builtin(_) => None,
     }
 }
 
-/// Dispatch one input line against the cache (PRD §4.2 decision order).
-pub fn dispatch(line: &str, cache: &CommandCache) -> Dispatch {
+/// Classify one input line against the cache and preserve the evidence used.
+///
+/// This is the canonical Rust routing contract. It performs no configuration,
+/// provider, network, or managed-backend work.
+pub fn route(line: &str, cache: &CommandCache) -> RouteDecision {
     let trimmed = line.trim();
+
+    if trimmed.is_empty() {
+        return decision(
+            RouteKind::NaturalLanguage,
+            String::new(),
+            RouteReason::EmptyInput,
+            RouteSource::Rust,
+            cache,
+            Dispatch::NaturalLanguage(String::new()),
+        );
+    }
 
     // 1. Forced LLM: a leading `?` or `#` sends the line to the AI even if it
     //    starts with a real command (e.g. `? who was the first man on the moon`).
@@ -268,21 +755,46 @@ pub fn dispatch(line: &str, cache: &CommandCache) -> Dispatch {
         .strip_prefix('?')
         .or_else(|| trimmed.strip_prefix('#'))
     {
-        return Dispatch::NaturalLanguage(rest.trim().to_string());
+        let normalized = rest.trim().to_string();
+        return decision(
+            RouteKind::NaturalLanguage,
+            normalized.clone(),
+            RouteReason::ForcedAgent,
+            RouteSource::Explicit,
+            cache,
+            Dispatch::NaturalLanguage(normalized),
+        );
     }
     // 2. Forced shell (safety-exempt).
     if let Some(rest) = trimmed.strip_prefix('!') {
-        return Dispatch::Shell(rest.trim().to_string());
+        let normalized = rest.trim().to_string();
+        return decision(
+            RouteKind::Shell,
+            normalized.clone(),
+            RouteReason::ForcedShell,
+            RouteSource::Explicit,
+            cache,
+            Dispatch::Shell(normalized),
+        );
     }
 
-    // 2b. Slash-commands: `/<meta> …` is an alias for `aishe <meta> …`. Only a
-    //     known meta subcommand intercepts, so `/usr/bin/x` stays a shell path.
-    if let Some(rest) = trimmed.strip_prefix('/') {
-        let sub = rest.split_whitespace().next().unwrap_or("");
-        if is_meta_subcommand(sub) {
-            let mut toks = vec!["aishe".to_string()];
-            toks.extend(rest.split_whitespace().map(str::to_string));
-            return Dispatch::Builtin(toks);
+    // 2b. Built-in slash commands are reserved by the command-surface
+    //     registry. Tombstones intercept too, so removed commands produce local
+    //     migration guidance rather than becoming model input. Unknown `/name`
+    //     remains available to custom commands/MCP prompts, and an executable
+    //     absolute path such as `/usr/bin/env` remains a shell line.
+    if let Some(parsed) = command_surface::parse_slash(trimmed) {
+        if let Some(spec) = parsed.spec {
+            let mut toks = vec!["aishe".to_string(), spec.id.to_string()];
+            toks.extend(parsed.args.into_iter().map(str::to_string));
+            return decision(
+                RouteKind::Builtin,
+                trimmed.to_string(),
+                RouteReason::SlashCommand,
+                RouteSource::Rust,
+                cache,
+                Dispatch::Builtin(toks),
+            );
         }
     }
 
@@ -291,36 +803,43 @@ pub fn dispatch(line: &str, cache: &CommandCache) -> Dispatch {
 
     // 3. Intercepted builtins.
     if INTERCEPTED.contains(&first) {
-        return Dispatch::Builtin(tokens);
+        return decision(
+            RouteKind::Builtin,
+            trimmed.to_string(),
+            RouteReason::InterceptedBuiltin,
+            RouteSource::Rust,
+            cache,
+            Dispatch::Builtin(tokens),
+        );
     }
 
     // 4. Shell-syntax signals.
     if starts_with_shell_syntax(trimmed) {
-        return Dispatch::Shell(trimmed.to_string());
+        return shell_decision(trimmed, RouteReason::ShellSyntax, cache);
     }
 
     // 4b. Function definitions (`name() { … }`, `function name { … }`) — route
     //     to shell before the operator/cache checks (the body may contain `;`).
     if function_def_name(trimmed).is_some() {
-        return Dispatch::Shell(trimmed.to_string());
+        return shell_decision(trimmed, RouteReason::FunctionDefinition, cache);
     }
 
     // 4c. Shell control structures (`for`/`while`/`if`/`case`/…, `[[`, `((`,
     //     `{`) — route to shell so loops/conditionals can be typed and run.
     if is_shell_construct_head(trimmed) {
-        return Dispatch::Shell(trimmed.to_string());
+        return shell_decision(trimmed, RouteReason::ControlStructure, cache);
     }
 
     // Env assignments: `FOO=bar cmd`. A pure assignment line is shell.
     let effective_first = effective_command_token(&tokens);
     if let EffectiveHead::Assignment = effective_first {
-        return Dispatch::Shell(trimmed.to_string());
+        return shell_decision(trimmed, RouteReason::Assignment, cache);
     }
 
     // Assignment at the head of the line (`v='a b'`, `x=$(cmd)`, `arr=(a b c)`,
     // `m[k]=v`), possibly followed by `; cmd …` — route the whole line to shell.
     if is_assignment_head(trimmed) {
-        return Dispatch::Shell(trimmed.to_string());
+        return shell_decision(trimmed, RouteReason::Assignment, cache);
     }
 
     // A small, conservative full-buffer grammar resolves command-name
@@ -329,7 +848,15 @@ pub fn dispatch(line: &str, cache: &CommandCache) -> Dispatch {
     // like `what is the capital of France` reaches the AI while `what app.o`,
     // `who -u`, and `find . -name foo?` remain real commands.
     if looks_like_question(trimmed) {
-        return Dispatch::NaturalLanguage(trimmed.to_string());
+        let normalized = trimmed.to_string();
+        return decision(
+            RouteKind::NaturalLanguage,
+            normalized.clone(),
+            RouteReason::QuestionGrammar,
+            RouteSource::Rust,
+            cache,
+            Dispatch::NaturalLanguage(normalized),
+        );
     }
 
     // 5. Pipelines / compound lines, split quote-aware on `|`/`;`/`&&`/`||`. It's
@@ -348,21 +875,119 @@ pub fn dispatch(line: &str, cache: &CommandCache) -> Dispatch {
             }
         });
         return if all_shell {
-            Dispatch::Shell(trimmed.to_string())
+            shell_decision(trimmed, RouteReason::CompoundShell, cache)
         } else {
-            Dispatch::NaturalLanguage(trimmed.to_string())
+            let normalized = trimmed.to_string();
+            decision(
+                RouteKind::NaturalLanguage,
+                normalized.clone(),
+                RouteReason::CompoundUnknown,
+                RouteSource::Rust,
+                cache,
+                Dispatch::NaturalLanguage(normalized),
+            )
         };
     }
 
     // 6. Cache hit on the effective head.
     if let EffectiveHead::Token(tok) = effective_first {
         if cache.contains(&tok) {
-            return Dispatch::Shell(trimmed.to_string());
+            return shell_decision(trimmed, RouteReason::KnownCommand, cache);
         }
     }
 
     // 7. Else → natural language.
-    Dispatch::NaturalLanguage(trimmed.to_string())
+    let normalized = trimmed.to_string();
+    decision(
+        RouteKind::NaturalLanguage,
+        normalized.clone(),
+        RouteReason::UnknownInput,
+        RouteSource::Rust,
+        cache,
+        Dispatch::NaturalLanguage(normalized),
+    )
+}
+
+/// Compatibility adapter for existing execution call sites.
+pub fn dispatch(line: &str, cache: &CommandCache) -> Dispatch {
+    route(line, cache).into_dispatch()
+}
+
+fn shell_decision(normalized: &str, reason: RouteReason, cache: &CommandCache) -> RouteDecision {
+    let normalized = normalized.to_string();
+    decision(
+        RouteKind::Shell,
+        normalized.clone(),
+        reason,
+        RouteSource::Rust,
+        cache,
+        Dispatch::Shell(normalized),
+    )
+}
+
+fn decision(
+    kind: RouteKind,
+    normalized: String,
+    reason: RouteReason,
+    source: RouteSource,
+    cache: &CommandCache,
+    dispatch: Dispatch,
+) -> RouteDecision {
+    let head = match effective_command_token(&tokenize(&normalized)) {
+        EffectiveHead::Token(head) => Some(head),
+        EffectiveHead::Assignment | EffectiveHead::None => None,
+    };
+    let known_command = head.as_deref().is_some_and(|head| cache.contains(head));
+    let ambiguous = known_command
+        && (reason == RouteReason::QuestionGrammar
+            || looks_like_known_command_collision(&normalized));
+    RouteDecision {
+        kind,
+        normalized,
+        reason,
+        head,
+        known_command,
+        ambiguous,
+        source,
+        dispatch,
+    }
+}
+
+/// Mark only known command-name phrases with local natural-language evidence.
+/// This hint never changes the route or grants authority.
+fn looks_like_known_command_collision(line: &str) -> bool {
+    if line.chars().any(|character| {
+        matches!(
+            character,
+            '|' | ';' | '&' | '<' | '>' | '$' | '`' | '(' | ')' | '{' | '}'
+        )
+    }) {
+        return false;
+    }
+    let words: Vec<&str> = line.split_whitespace().collect();
+    let Some(first) = words.first() else {
+        return false;
+    };
+    let collision_head = matches!(
+        first.to_ascii_lowercase().as_str(),
+        "what"
+            | "where"
+            | "who"
+            | "time"
+            | "test"
+            | "find"
+            | "install"
+            | "open"
+            | "say"
+            | "yes"
+            | "false"
+            | "true"
+            | "read"
+            | "type"
+            | "source"
+            | "history"
+    );
+    collision_head && words.len() >= 3 && !words.iter().skip(1).any(|word| word.starts_with('-'))
 }
 
 enum EffectiveHead {
@@ -506,12 +1131,10 @@ fn looks_like_question(line: &str) -> bool {
         return false;
     }
     // These characters are stronger evidence of shell grammar than English.
-    if trimmed.chars().any(|ch| {
-        matches!(
-            ch,
-            '|' | ';' | '&' | '<' | '>' | '$' | '`' | '(' | ')' | '{' | '}'
-        )
-    }) {
+    if trimmed
+        .chars()
+        .any(|character| QUESTION_SHELL_EVIDENCE.contains(&character))
+    {
         return false;
     }
     let mut words = trimmed.split_whitespace();
@@ -524,62 +1147,13 @@ fn looks_like_question(line: &str) -> bool {
     if second.is_empty() {
         return false;
     }
-    let verb = matches!(
-        second.as_str(),
-        "is" | "are"
-            | "was"
-            | "were"
-            | "do"
-            | "does"
-            | "did"
-            | "can"
-            | "could"
-            | "would"
-            | "should"
-            | "will"
-    );
-    let question_pair = match first.as_str() {
-        "what" | "where" | "when" | "why" => verb,
-        "who" => verb || second == "am",
-        "how" => {
-            verb || matches!(
-                second.as_str(),
-                "many" | "much" | "long" | "far" | "old" | "often"
-            )
-        }
-        "can" | "could" | "would" | "will" => second == "you",
-        "should" => matches!(second.as_str(), "i" | "we"),
-        "is" | "are" => second == "there",
-        "do" => second == "you",
-        "does" | "did" => second == "the",
-        _ => false,
-    };
+    let question_pair = QUESTION_PAIR_RULES
+        .iter()
+        .any(|rule| rule.first == first && rule.seconds.contains(&second.as_str()));
     if question_pair {
         return true;
     }
-    trimmed.ends_with('?')
-        && matches!(
-            first.as_str(),
-            "what"
-                | "where"
-                | "who"
-                | "when"
-                | "why"
-                | "how"
-                | "which"
-                | "whose"
-                | "whom"
-                | "can"
-                | "could"
-                | "would"
-                | "will"
-                | "should"
-                | "is"
-                | "are"
-                | "do"
-                | "does"
-                | "did"
-        )
+    trimmed.ends_with('?') && TRAILING_QUESTION_HEADS.contains(&first.as_str())
 }
 
 /// Split a line into top-level segments on **unquoted, unparenthesized** `|`,
@@ -686,42 +1260,6 @@ fn split_top_level(line: &str) -> Vec<String> {
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())
         .collect()
-}
-
-/// `aishe` meta subcommands (also reachable as `/<name>` slash-commands). Keep
-/// in sync with `handle_meta` in main.rs and the completer's list.
-pub fn is_meta_subcommand(w: &str) -> bool {
-    matches!(
-        w,
-        "mode"
-            | "model"
-            | "provider"
-            | "editor"
-            | "frontend"
-            | "stream"
-            | "structured"
-            | "theme"
-            | "config"
-            | "rehash"
-            | "commands"
-            | "skills"
-            | "mcp"
-            | "status"
-            | "log"
-            | "usage"
-            | "reset"
-            | "details"
-            | "settings"
-            | "output"
-            | "reasoning"
-            | "ghost"
-            | "plan"
-            | "sandbox"
-            | "cache"
-            | "trust"
-            | "untrust"
-            | "help"
-    )
 }
 
 /// Shell reserved words / compound-command heads that are valid segment heads
@@ -835,7 +1373,12 @@ fn fetch_aliases_and_functions(shell: &Path) -> HashSet<String> {
             .filter(|l| !l.is_empty())
             .collect(),
         None => {
-            eprintln!("\x1b[2maishe: aliases/functions query timed out; continuing\x1b[0m");
+            let message = "aishe: aliases/functions query timed out; continuing";
+            eprintln!(
+                "{}",
+                crate::ui::TerminalCapabilities::detect_stderr()
+                    .paint(crate::ui::StyleToken::Muted, message)
+            );
             HashSet::new()
         }
     }
@@ -911,6 +1454,27 @@ mod tests {
     use super::*;
 
     #[test]
+    fn declarative_question_grammar_is_unique_and_nonempty() {
+        let mut pairs = HashSet::new();
+        for rule in QUESTION_PAIR_RULES {
+            assert!(!rule.first.is_empty());
+            assert!(!rule.seconds.is_empty());
+            for second in rule.seconds {
+                assert!(
+                    pairs.insert((rule.first, *second)),
+                    "duplicate question pair {}:{second}",
+                    rule.first
+                );
+            }
+        }
+        let mut trailing = HashSet::new();
+        assert!(TRAILING_QUESTION_HEADS
+            .iter()
+            .all(|head| !head.is_empty() && trailing.insert(*head)));
+        assert!(!QUESTION_SHELL_EVIDENCE.is_empty());
+    }
+
+    #[test]
     fn run_with_timeout_drains_large_output() {
         // ~164 KiB: more than an OS pipe buffer holds. Without a concurrent
         // drainer the child blocks in write(2), `try_wait()` never reports exit,
@@ -950,6 +1514,131 @@ mod tests {
             }
         }
         cache
+    }
+
+    #[test]
+    fn every_route_rule_has_stable_structured_evidence() {
+        let cache = cache_with(&["echo", "grep", "install", "what"]);
+        let cases = [
+            ("", RouteKind::NaturalLanguage, RouteReason::EmptyInput),
+            (
+                "?echo hello",
+                RouteKind::NaturalLanguage,
+                RouteReason::ForcedAgent,
+            ),
+            ("!unknown", RouteKind::Shell, RouteReason::ForcedShell),
+            ("/help", RouteKind::Builtin, RouteReason::SlashCommand),
+            (
+                "cd /tmp",
+                RouteKind::Builtin,
+                RouteReason::InterceptedBuiltin,
+            ),
+            ("./run.sh", RouteKind::Shell, RouteReason::ShellSyntax),
+            (
+                "greet() { echo hi; }",
+                RouteKind::Shell,
+                RouteReason::FunctionDefinition,
+            ),
+            (
+                "while true; do echo hi; done",
+                RouteKind::Shell,
+                RouteReason::ControlStructure,
+            ),
+            ("NAME=value", RouteKind::Shell, RouteReason::Assignment),
+            (
+                "what is this",
+                RouteKind::NaturalLanguage,
+                RouteReason::QuestionGrammar,
+            ),
+            (
+                "echo hi | grep h",
+                RouteKind::Shell,
+                RouteReason::CompoundShell,
+            ),
+            (
+                "echo hi | missing",
+                RouteKind::NaturalLanguage,
+                RouteReason::CompoundUnknown,
+            ),
+            (
+                "install kubectl please",
+                RouteKind::Shell,
+                RouteReason::KnownCommand,
+            ),
+            (
+                "explain this repository",
+                RouteKind::NaturalLanguage,
+                RouteReason::UnknownInput,
+            ),
+        ];
+
+        for (input, expected_kind, expected_reason) in cases {
+            let actual = route(input, &cache);
+            assert_eq!(actual.kind, expected_kind, "kind for {input:?}");
+            assert_eq!(actual.reason, expected_reason, "reason for {input:?}");
+        }
+
+        let collision = route("install kubectl please", &cache);
+        assert_eq!(collision.head.as_deref(), Some("install"));
+        assert!(collision.known_command);
+        assert!(collision.ambiguous);
+    }
+
+    #[test]
+    fn sigils_strip_exactly_one_prefix_and_outer_whitespace() {
+        let cache = cache_with(&["install", "echo"]);
+        let bodies = [
+            "plain words",
+            "install kubectl please",
+            "?nested question marker",
+            "!nested shell marker",
+            "# nested compatibility marker",
+            "echo \u{1f642}",
+        ];
+        for body in bodies {
+            for prefix in ['?', '#'] {
+                let input = format!("  {prefix}  {body}  ");
+                let actual = route(&input, &cache);
+                assert_eq!(actual.kind, RouteKind::NaturalLanguage);
+                assert_eq!(actual.reason, RouteReason::ForcedAgent);
+                assert_eq!(actual.normalized, body);
+                assert_eq!(actual.source, RouteSource::Explicit);
+            }
+            let input = format!("  !  {body}  ");
+            let actual = route(&input, &cache);
+            assert_eq!(actual.kind, RouteKind::Shell);
+            assert_eq!(actual.reason, RouteReason::ForcedShell);
+            assert_eq!(actual.normalized, body);
+            assert_eq!(actual.source, RouteSource::Explicit);
+        }
+    }
+
+    #[test]
+    fn diagnostics_are_bounded_and_control_safe() {
+        let cache = cache_with(&[]);
+        let input = format!("?\u{1b}[31m{}\n", "x".repeat(2_000));
+        let actual = route(&input, &cache);
+        let diagnostic = actual.diagnostic();
+        assert!(diagnostic.normalized.chars().count() <= ROUTE_DIAGNOSTIC_INPUT_CHARS + 1);
+        let debug = format!("{actual:?}");
+        assert!(!debug.contains('\u{1b}'));
+        assert!(!debug.contains('\n'));
+        assert!(debug.len() < 1_000);
+
+        let json = serde_json::to_string(&diagnostic).unwrap();
+        assert!(!json.contains('\u{1b}'));
+        assert!(json.contains(r#""schema_version":1"#));
+    }
+
+    #[test]
+    fn route_compatibility_adapter_preserves_payloads() {
+        let cache = cache_with(&["echo"]);
+        for input in ["?echo hello", "!echo hello", "/help models", "echo hello"] {
+            assert_eq!(
+                dispatch(input, &cache),
+                route(input, &cache).into_dispatch()
+            );
+        }
     }
 
     #[test]
@@ -1151,16 +1840,22 @@ mod tests {
     }
 
     #[test]
-    fn slash_commands_route_to_meta() {
+    fn every_registered_slash_alias_routes_to_its_stable_identity() {
         let c = cache_with(&[]);
-        assert_eq!(
-            dispatch("/mode auto", &c),
-            Dispatch::Builtin(vec!["aishe".into(), "mode".into(), "auto".into()])
-        );
-        assert_eq!(
-            dispatch("/help", &c),
-            Dispatch::Builtin(vec!["aishe".into(), "help".into()])
-        );
+        for spec in crate::command_surface::COMMANDS {
+            for alias in spec.slash_aliases {
+                assert_eq!(
+                    dispatch(&format!("/{alias} sample"), &c),
+                    Dispatch::Builtin(vec!["aishe".into(), spec.id.into(), "sample".into()]),
+                    "failed slash alias /{alias}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn slash_paths_and_unregistered_names_keep_non_builtin_routing() {
+        let c = cache_with(&[]);
         // an absolute path is NOT a slash-command
         assert!(matches!(dispatch("/usr/bin/env", &c), Dispatch::Shell(_)));
         assert!(matches!(

@@ -22,6 +22,7 @@ import sys
 import threading
 import urllib.parse
 
+from harness_identity import require_current_binary
 import opencode_runtime_contract as contract
 
 
@@ -195,7 +196,7 @@ def main():
     if not runtime:
         raise SystemExit("AISHE_RUNTIME_DIR must point to the installed pinned runtime")
     mode = sys.argv[1]
-    binary = str(pathlib.Path(sys.argv[2]).resolve())
+    binary = require_current_binary(sys.argv[2])
     root = pathlib.Path(sys.argv[3]).resolve()
     runtime_path = pathlib.Path(runtime).resolve()
     if mode == "prepare":

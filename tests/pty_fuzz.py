@@ -31,7 +31,11 @@ import random
 import tempfile
 import subprocess
 
-BINARY = sys.argv[1] if len(sys.argv) > 1 else "target/release/aishe"
+from harness_identity import require_current_binary
+
+BINARY = require_current_binary(
+    sys.argv[1] if len(sys.argv) > 1 else "target/release/aishe"
+)
 SCALE = int(sys.argv[2]) if len(sys.argv) > 2 else 1
 TIMEOUT = 20.0
 SEED = 1234
@@ -356,8 +360,14 @@ def gen_command_inputs(rng, n):
         m = "%05d" % rng.randint(0, 99999)
         a = "".join(rng.choice(string.ascii_lowercase) for _ in range(3))
         b = "".join(rng.choice(string.ascii_lowercase) for _ in range(3))
-        sub = lambda s: (s.replace("@M@", m).replace("@A@", a).replace("@B@", b)
-                          .replace("@AU@", a.upper()).replace("@BU@", b.upper()))
+        def sub(value):
+            return (
+                value.replace("@M@", m)
+                .replace("@A@", a)
+                .replace("@B@", b)
+                .replace("@AU@", a.upper())
+                .replace("@BU@", b.upper())
+            )
         cases.append({"kind": "command", "input": sub(tpl), "want": sub(exp)})
     return cases
 

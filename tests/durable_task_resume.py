@@ -10,14 +10,14 @@ import sys
 import tempfile
 import time
 
-BINARY = os.path.abspath(
-    sys.argv[1] if len(sys.argv) > 1 else "target/release/aishe"
+from harness_identity import require_current_binary
+
+BINARY = require_current_binary(
+    os.path.abspath(sys.argv[1] if len(sys.argv) > 1 else "target/release/aishe")
 )
 
 
 def main():
-    if not os.path.exists(BINARY):
-        raise SystemExit("FAIL: binary not found: " + BINARY)
     root = tempfile.mkdtemp(prefix="aishe-task-resume-")
     try:
         config_root = os.path.join(root, "config")

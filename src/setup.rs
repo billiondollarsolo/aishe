@@ -484,6 +484,14 @@ fn print_setup_json(
 }
 
 fn run_interactive(options: Options) -> Result<Outcome> {
+    if options.restart {
+        discard_draft()?;
+    }
+    let baseline = Config::load_quiet()?.unwrap_or_default();
+    // A setup rerun is still part of the configured terminal experience. Load
+    // presentation policy before the first branded output; fresh installs use
+    // the conservative defaults from `Config::default()`.
+    crate::ui::configure(&baseline.ui);
     promptui::brand();
     promptui::header(
         "aishe setup",
@@ -491,10 +499,6 @@ fn run_interactive(options: Options) -> Result<Outcome> {
         "Active config is not changed until the final Apply step.",
     );
 
-    if options.restart {
-        discard_draft()?;
-    }
-    let baseline = Config::load_quiet()?.unwrap_or_default();
     let mut draft = if options.resume {
         load_draft()?.context("no resumable setup draft exists")?
     } else if let Some(saved) = load_draft()? {
@@ -560,10 +564,19 @@ fn run_interactive(options: Options) -> Result<Outcome> {
             Step::Discovery => {
                 step_header(1, "Welcome and existing state");
                 print_existing_state(&baseline)?;
-                let choices = vec![
-                    "Continue setup".to_string(),
-                    "Pause and resume later".to_string(),
-                ];
+                let quick_verify = quick_verify_available(&baseline);
+                let choices = if quick_verify {
+                    vec![
+                        "Verify the current setup and continue to live checks".to_string(),
+                        "Review or change setup choices".to_string(),
+                        "Pause and resume later".to_string(),
+                    ]
+                } else {
+                    vec![
+                        "Continue setup".to_string(),
+                        "Pause and resume later".to_string(),
+                    ]
+                };
                 match promptui::menu(
                     "AIShe is ready to verify this environment",
                     &choices,
@@ -571,8 +584,14 @@ fn run_interactive(options: Options) -> Result<Outcome> {
                     true,
                     "Setup preserves config, credentials, history, tasks, and sessions. Only the final Apply changes active configuration.",
                 )? {
+                    MenuResult::Selected(0) if quick_verify => {
+                        draft.config = baseline.clone();
+                        draft.step = Step::Validation;
+                        save_draft(&draft)?;
+                    }
                     MenuResult::Selected(0) => advance(&mut draft)?,
-                    MenuResult::Selected(1) | MenuResult::Cancel => return cancel(draft),
+                    MenuResult::Selected(1) if quick_verify => advance(&mut draft)?,
+                    MenuResult::Selected(1 | 2) | MenuResult::Cancel => return cancel(draft),
                     MenuResult::Back => {}
                     MenuResult::Selected(_) => unreachable!(),
                 }
@@ -1431,10 +1450,11 @@ fn run_interactive(options: Options) -> Result<Outcome> {
                 promptui::success(
                     "runtime, authenticated loopback server, isolated config, and trusted plugin passed",
                 );
-                let Some(live) = promptui::confirm(
-                    "Run live text/structured/tool/streaming checks? (may use tokens)",
-                    true,
-                )?
+                promptui::warning(
+                    "Live validation sends minimal provider requests for text, structured output, tools, and streaming. It consumes tokens and may incur provider charges; declining keeps the verified local setup and marks live capabilities not run.",
+                );
+                let Some(live) =
+                    promptui::confirm("Run the disclosed live capability checks now", true)?
                 else {
                     return cancel(draft);
                 };
@@ -1543,6 +1563,22 @@ fn step_header(number: usize, title: &str) {
     promptui::section(&format!("Step {number} of 10 · {title}"));
 }
 
+fn quick_verify_available(config: &Config) -> bool {
+    if !Config::path().is_file()
+        || !config
+            .active_connection()
+            .is_some_and(|connection| crate::connection::auth_status(connection).available)
+    {
+        return false;
+    }
+    crate::backend::RuntimeManager::new().is_ok_and(|manager| {
+        matches!(
+            manager.status(),
+            crate::backend::RuntimeStatus::Ready { .. }
+        )
+    })
+}
+
 fn print_existing_state(config: &Config) -> Result<()> {
     let config_path = Config::path();
     let schema = Config::schema_version_on_disk()?;
@@ -1637,21 +1673,20 @@ fn print_platform_state() {
     } else {
         println!("  zsh: not installed");
     }
+    let terminal = crate::ui::TerminalCapabilities::detect_stdout();
     println!(
-        "  terminal: PTY {} · color {} · width {}",
-        if std::io::stdin().is_terminal() && std::io::stdout().is_terminal() {
+        "  terminal: PTY {} · theme {:?} · color {:?} · characters {:?} · motion {:?} · {}x{}",
+        if terminal.is_tty {
             "available"
         } else {
             "unavailable"
         },
-        if std::env::var_os("NO_COLOR").is_some() {
-            "disabled by NO_COLOR"
-        } else {
-            "enabled when supported"
-        },
-        crossterm::terminal::size()
-            .map(|(columns, _)| columns)
-            .unwrap_or(80)
+        terminal.theme,
+        terminal.color_depth,
+        terminal.unicode,
+        terminal.motion,
+        terminal.columns,
+        terminal.rows,
     );
     println!("  config: {}", Config::path().display());
     println!(
@@ -2331,6 +2366,24 @@ pub(crate) fn validate_config(config: &Config) -> Result<()> {
         "focus" | "compact" | "detailed"
     ) {
         anyhow::bail!("backend.output must be focus, compact, or detailed");
+    }
+    if !matches!(
+        config.ui.theme.as_str(),
+        "auto" | "dark" | "light" | "mono" | "none"
+    ) {
+        anyhow::bail!("ui.theme must be auto, dark, light, mono, or none");
+    }
+    if !matches!(
+        config.ui.color_depth.as_str(),
+        "auto" | "16" | "256" | "truecolor" | "none"
+    ) {
+        anyhow::bail!("ui.color_depth must be auto, 16, 256, truecolor, or none");
+    }
+    if !matches!(config.ui.unicode.as_str(), "auto" | "unicode" | "ascii") {
+        anyhow::bail!("ui.unicode must be auto, unicode, or ascii");
+    }
+    if !matches!(config.ui.motion.as_str(), "auto" | "live" | "static") {
+        anyhow::bail!("ui.motion must be auto, live, or static");
     }
     if !matches!(config.sandbox.linux_backend.as_str(), "bwrap" | "policy") {
         anyhow::bail!("sandbox.linux_backend must be bwrap or policy");

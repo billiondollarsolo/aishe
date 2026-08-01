@@ -4,8 +4,8 @@
 use std::io::{IsTerminal, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
 
+use crate::ui::SemanticStylize;
 use anyhow::Result;
-use crossterm::style::Stylize;
 
 use super::{render_markdown, run_command_tool, safety_gate, use_skill_tool, GateOutcome};
 use crate::config::Config;
@@ -281,8 +281,12 @@ fn run_loop(
         let result = if config.aishe.stream {
             let mut out = std::io::stdout();
             provider.complete_with_tools_stream(&system, &messages, &tools, &mut |delta| {
+                if !streamed {
+                    let capabilities = crate::ui::TerminalCapabilities::detect_stdout();
+                    let _ = writeln!(out, "\n{}", capabilities.assistant_answer_header());
+                }
                 streamed = true;
-                print!("{delta}");
+                let _ = write!(out, "{delta}");
                 let _ = out.flush();
             })
         } else {
@@ -320,10 +324,16 @@ fn run_loop(
         // No tool calls → final answer.
         if completion.tool_calls.is_empty() {
             match (&completion.text, streamed) {
-                // Re-render the streamed raw text as proper markdown in place.
+                // Finish the one-pass stream without rewriting scrollback.
                 (Some(text), true) => super::rerender_streamed_markdown(text),
                 // Not streamed: render markdown directly.
-                (Some(text), false) => render_markdown(text),
+                (Some(text), false) => {
+                    println!(
+                        "\n{}",
+                        crate::ui::TerminalCapabilities::detect_stdout().assistant_answer_header()
+                    );
+                    render_markdown(text);
+                }
                 _ => {}
             }
             messages.push(Msg::Assistant(AssistantMsg {

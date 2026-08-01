@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
-pub const CONFIG_SCHEMA_VERSION: u32 = 6;
+pub const CONFIG_SCHEMA_VERSION: u32 = 7;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
@@ -28,6 +28,10 @@ pub struct Config {
     pub connections: BTreeMap<String, ConnectionConfig>,
     #[serde(default)]
     pub logging: LoggingConfig,
+    /// Terminal presentation and accessibility preferences. Environment
+    /// overrides remain available for one invocation; `NO_COLOR` always wins.
+    #[serde(default)]
+    pub ui: UiConfig,
     /// Agent-engine lifecycle and rendering policy. Schema-v4 keeps this
     /// separate from `[aishe]` so backend updates never rewrite shell behavior.
     #[serde(default)]
@@ -93,6 +97,22 @@ pub struct LoggingConfig {
     pub redact: bool,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, Eq, PartialEq)]
+pub struct UiConfig {
+    /// `auto`, `dark`, `light`, `mono`, or `none`.
+    #[serde(default = "default_ui_theme")]
+    pub theme: String,
+    /// `auto`, `16`, `256`, `truecolor`, or `none`.
+    #[serde(default = "default_ui_color_depth")]
+    pub color_depth: String,
+    /// `auto`, `unicode`, or `ascii`.
+    #[serde(default = "default_ui_unicode")]
+    pub unicode: String,
+    /// `auto`, `live`, or `static`.
+    #[serde(default = "default_ui_motion")]
+    pub motion: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BackendConfig {
     /// `opencode` is the managed default; `native` is the rollout/repair path.
@@ -147,6 +167,17 @@ impl Default for LoggingConfig {
             enabled: false,
             file: None,
             redact: true,
+        }
+    }
+}
+
+impl Default for UiConfig {
+    fn default() -> Self {
+        Self {
+            theme: default_ui_theme(),
+            color_depth: default_ui_color_depth(),
+            unicode: default_ui_unicode(),
+            motion: default_ui_motion(),
         }
     }
 }
@@ -325,6 +356,11 @@ pub struct AisheConfig {
     /// Show one concise recovery hint after a non-zero interactive shell command.
     #[serde(default = "default_true")]
     pub failure_hints: bool,
+    /// Show bounded, one-time product discovery hints in interactive shells.
+    /// Seen-state is local metadata only and can be cleared with
+    /// `aishe hints reset`.
+    #[serde(default = "default_true")]
+    pub discovery_hints: bool,
     /// Optional context sections suppressed before model requests. Core cwd and
     /// shell facts are always included.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -693,6 +729,18 @@ fn default_backend_output() -> String {
 fn default_linux_sandbox() -> String {
     "bwrap".to_string()
 }
+fn default_ui_theme() -> String {
+    "auto".to_string()
+}
+fn default_ui_color_depth() -> String {
+    "auto".to_string()
+}
+fn default_ui_unicode() -> String {
+    "auto".to_string()
+}
+fn default_ui_motion() -> String {
+    "auto".to_string()
+}
 
 fn default_anthropic() -> ProviderConfig {
     ProviderConfig {
@@ -755,6 +803,7 @@ impl Default for AisheConfig {
             hook_timeout_secs: default_hook_timeout_secs(),
             reasoning_effort: default_reasoning_effort(),
             failure_hints: true,
+            discovery_hints: true,
             context_exclude: Vec::new(),
             show_usage: true,
             status_line: true,
@@ -810,6 +859,7 @@ impl Default for Config {
             providers,
             connections,
             logging: LoggingConfig::default(),
+            ui: UiConfig::default(),
             backend: BackendConfig::default(),
             sandbox: SandboxConfig::default(),
             pricing: std::collections::BTreeMap::new(),
@@ -970,11 +1020,13 @@ impl Config {
             Err(_) => return Ok(None),
         };
         cfg.save()?;
-        eprintln!(
-            "aishe: migrated config from {} to {}",
-            legacy.display(),
-            new_path.display()
-        );
+        if !crate::ui::machine_output() {
+            eprintln!(
+                "aishe: migrated config from {} to {}",
+                legacy.display(),
+                new_path.display()
+            );
+        }
         Ok(Some(cfg))
     }
 
@@ -1046,12 +1098,14 @@ impl Config {
                     let serialized =
                         toml::to_string_pretty(&cfg).context("serializing migrated config")?;
                     write_atomic(path, serialized.as_bytes())?;
-                    eprintln!(
-                        "aishe: migrated config schema {source_version} → {} \
-                         (backup: {})",
-                        CONFIG_SCHEMA_VERSION,
-                        backup.display()
-                    );
+                    if !crate::ui::machine_output() {
+                        eprintln!(
+                            "aishe: migrated config schema {source_version} → {} \
+                             (backup: {})",
+                            CONFIG_SCHEMA_VERSION,
+                            backup.display()
+                        );
+                    }
                 }
                 cfg.fill_credential_profiles();
                 cfg.validate_connections()?;
@@ -1465,9 +1519,9 @@ impl Config {
             }
         }
 
-        // Whole tables: theme/named_dirs/pricing are safe; mcp_servers/logging
+        // Whole tables: UI/named_dirs/pricing are safe; mcp_servers/logging
         // are sensitive.
-        for name in ["named_dirs", "pricing"] {
+        for name in ["ui", "named_dirs", "pricing"] {
             if let Some(v) = proj.get(name) {
                 overlay.insert(name.into(), v.clone());
                 applied.push(format!("[{name}]"));
@@ -1507,6 +1561,24 @@ impl Config {
     }
 
     pub fn validate_connections(&self) -> Result<()> {
+        if !matches!(
+            self.ui.theme.as_str(),
+            "auto" | "dark" | "light" | "mono" | "none"
+        ) {
+            anyhow::bail!("ui.theme must be auto, dark, light, mono, or none");
+        }
+        if !matches!(
+            self.ui.color_depth.as_str(),
+            "auto" | "16" | "256" | "truecolor" | "none"
+        ) {
+            anyhow::bail!("ui.color_depth must be auto, 16, 256, truecolor, or none");
+        }
+        if !matches!(self.ui.unicode.as_str(), "auto" | "unicode" | "ascii") {
+            anyhow::bail!("ui.unicode must be auto, unicode, or ascii");
+        }
+        if !matches!(self.ui.motion.as_str(), "auto" | "live" | "static") {
+            anyhow::bail!("ui.motion must be auto, live, or static");
+        }
         if self.connections.is_empty() {
             anyhow::bail!("at least one named connection is required");
         }
@@ -1889,6 +1961,31 @@ mod tests {
         assert_eq!(cfg.aishe.provider, "anthropic");
         assert_eq!(cfg.providers.openai.base_url, "https://api.openai.com");
         assert_eq!(cfg.backend.output, "focus");
+        assert_eq!(cfg.ui, UiConfig::default());
+    }
+
+    #[test]
+    fn ui_preferences_round_trip_and_reject_unknown_values() {
+        let mut config = Config {
+            ui: UiConfig {
+                theme: "light".into(),
+                color_depth: "256".into(),
+                unicode: "ascii".into(),
+                motion: "static".into(),
+            },
+            ..Config::default()
+        };
+        let text = toml::to_string(&config).unwrap();
+        let parsed: Config = toml::from_str(&text).unwrap();
+        assert_eq!(parsed.ui, config.ui);
+        parsed.validate_connections().unwrap();
+
+        config.ui.motion = "spin".into();
+        assert!(config
+            .validate_connections()
+            .unwrap_err()
+            .to_string()
+            .contains("ui.motion"));
     }
 
     #[test]

@@ -22,6 +22,7 @@ import sys
 import tempfile
 import threading
 
+from harness_identity import require_current_binary
 import opencode_runtime_contract as contract
 
 
@@ -51,7 +52,7 @@ def main():
     if not runtime:
         raise SystemExit("AISHE_RUNTIME_DIR must point to the installed pinned runtime")
     require_bwrap = os.environ.get("AISHE_TEST_REQUIRE_BWRAP") == "1"
-    binary = str(pathlib.Path(sys.argv[1]).resolve())
+    binary = require_current_binary(sys.argv[1])
     with contract.STATE.lock:
         contract.STATE.requests.clear()
         contract.STATE.authenticated_requests = 0

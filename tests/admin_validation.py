@@ -17,15 +17,15 @@ Seven suites:
      switching, custom NL commands, model-invoked skills (progressive
      disclosure), token-usage display, the budget cap, and audit logging against
      the real model. The model output is shown in the report.
-  4. Plugins, slash-commands & skills (deterministic) — meta slash-commands,
+  4. Plugins, slash-commands & skills (deterministic) — registered built-ins,
      custom command discovery, `shell:`/`$ARGUMENTS`/`$1`/`$2` templating,
      no-frontmatter discovery, and project→user override precedence.
   5. Dispatch classification — assert each input routes to shell vs natural
      language (independent of output determinism).
-  6. Config & meta robustness — a full config round-trips through `/config`,
-     `aishe doctor` passes, the example config parses, the meta commands behave,
-     the `history` builtin reads the log, and CLI/distribution bits
-     (`--version`, `completions`, exit codes, pipe mode).
+  6. Config & command-surface robustness — a full config round-trips through
+     `/config`, `aishe doctor` passes, the example config parses, registered
+     slash availability/tombstones behave, the `history` builtin reads the log,
+     and CLI/distribution bits (`--version`, hook syntax, exit codes, pipe mode).
   7. MCP client — stdio + HTTP transports, resources/prompts, and real npx/uvx
      MCP servers (best-effort).
 
@@ -46,6 +46,8 @@ import subprocess
 import sys
 import tempfile
 import time
+
+from harness_identity import require_current_binary
 
 
 import re as _re_ansi
@@ -76,9 +78,13 @@ def model_quote(text, limit=700):
         return None
     return "\n".join("  > " + ln for ln in lines)
 
-BIN = os.path.abspath(sys.argv[1] if len(sys.argv) > 1 else "target/release/aishe")
+BIN = require_current_binary(
+    os.path.abspath(sys.argv[1] if len(sys.argv) > 1 else "target/release/aishe")
+)
 RAW_SHELL = shutil.which("zsh") or shutil.which("bash")
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+ADMIN_CORPUS_VERSION = 2
+COMMAND_UNAVAILABLE_EXIT = 2
 
 
 # ----- commands compared verbatim against the raw shell (deterministic) -------
@@ -451,6 +457,17 @@ def reached_model_path(stderr):
     return any(note in stderr for note in LLM_UNAVAILABLE_NOTES)
 
 
+def failed_locally_as_unavailable(rc, stdout, stderr):
+    """Stable command-surface contract: local exit 2, no stdout or model call."""
+
+    return (
+        rc == COMMAND_UNAVAILABLE_EXIT
+        and not stdout.strip()
+        and bool(stderr.strip())
+        and not reached_model_path(stderr)
+    )
+
+
 DISPATCH_SHELL = [
     "ls -la",
     "git status",
@@ -475,12 +492,11 @@ DISPATCH_SHELL = [
     "[[ -d subdir ]] && echo yes",
     "(( 1 + 1 ))",
     "!echo forced-shell",                     # ! sigil = forced shell
-    "/usage",                                 # meta slash-commands route to builtin
+    "/usage",                                 # registered slash-command → builtin
     "/reset",
-    "/ghost",
     "/skills",
     "/help",
-    "jobs",                                    # job-control builtins (reedline)
+    "jobs",                                    # shell job-control builtins
     "fg",
     "bg",
     "wait",
@@ -660,7 +676,7 @@ def make_config():
     os.makedirs(cdir)
     with open(os.path.join(cdir, "config.toml"), "w") as f:
         f.write(
-            'version = 6\n\n[aishe]\nmode = "suggest"\nprovider = "openai"\n'
+            'version = 7\n\n[aishe]\nmode = "suggest"\nprovider = "openai"\n'
             'connection = "groq-test"\nconnection_fallback = "groq-test"\n'
             'structured = "schema"\n\n[providers.openai]\n'
             'base_url = "https://api.groq.com/openai"\napi_key_env = "GROQ_API_KEY"\n'
@@ -947,8 +963,8 @@ def main():
     # ---- Suite 4: plugins / slash-commands / skills (deterministic) ----
     section("Suite 4 — Plugins, slash-commands & skills (no model needed)")
 
-    # Read-only meta commands work under `-c`.
-    report.append("\n**Meta slash-commands (`-c`):**\n")
+    # Read-only registered commands work under `-c`.
+    report.append("\n**Registered slash-commands (`-c`):**\n")
     rc, out, err = run([BIN, "-c", "/commands"], env_local, cwd=fixture)
     add("slash: /commands lists customs", rc == 0 and "echo-args" in out and "bigfiles" in out,
         "" if "echo-args" in out else f"(out={out.strip()!r})")
@@ -962,9 +978,11 @@ def main():
     add(
         "slash: /help prints primary command index",
         rc == 0
-        and ("aishe" in out.lower() or "/connection" in out)
+        and "/connection" in out
+        and "/model" in out
+        and "/mode" in out
         and "/status" in out
-        and "Ctrl-O" in out,
+        and "/settings" in out,
     )
 
     # Custom *shell* command: $ARGUMENTS / $1 templating + `shell: true` exec.
@@ -1021,8 +1039,8 @@ def main():
             "→ reached the model path" if ok else f"**not routed to NL** ({trunc(repr(err.strip()), 80)})",
         )
 
-    # ---- Suite 6: config & meta-command robustness (deterministic) ----
-    section("Suite 6 — Config & meta-command robustness (no model needed)")
+    # ---- Suite 6: config & command-surface robustness (deterministic) ----
+    section("Suite 6 — Config & command-surface robustness (no model needed)")
 
     # 6a. A config exercising every newer field round-trips through `/config`.
     full_root = write_config(FULL_CONFIG)
@@ -1053,7 +1071,7 @@ def main():
         'engine = "native"',
     ]
     for token in expected:
-        add(f"config: {token}", token in out, "" if token in out else f"(missing from /config)")
+        add(f"config: {token}", token in out, "" if token in out else "(missing from /config)")
     add("config: parses (rc 0)", rc == 0)
 
     # 6b. `aishe doctor` reports the privacy/logging status and passes.
@@ -1072,25 +1090,38 @@ def main():
             "" if "[aishe]" in out else f"(err={err.strip()[:80]!r})")
         shutil.rmtree(ex_root, ignore_errors=True)
 
-    # 6d. New read-only / toggle meta commands behave in `-c` (no crash, not NL).
-    report.append("\n**New meta commands (`-c`):**\n")
-    for meta in ["/usage", "/reset", "/ghost", "/plan", "/cache", "/sandbox", "/help"]:
-        rc, out, err = run([BIN, "-c", meta], env_local, cwd=fixture)
-        if meta == "/reset":
-            # Reset is intentionally shell-scoped: a one-shot `-c` process has
-            # no active managed mapping to detach, and must fail locally rather
-            # than reaching the model or deleting durable state.
-            ok = (
-                rc != 0
-                and "must run inside an active Aishe shell" in err
-                and not reached_model_path(err)
-            )
-        else:
-            ok = rc == 0 and not reached_model_path(err)
-        add(f"meta: {meta}", ok, "" if ok else f"(rc={rc} err={err.strip()[:60]!r})")
+    # 6d. Registered commands follow the one-shot availability contract. This
+    # deliberately asserts exit/routing semantics rather than user-facing copy;
+    # exhaustive alias and migration-guidance coverage lives in the Rust registry
+    # tests.
+    report.append("\n**Registered command availability (`-c`):**\n")
+    for command in ["/usage", "/help"]:
+        rc, out, err = run([BIN, "-c", command], env_local, cwd=fixture)
+        ok = rc == 0 and not reached_model_path(err)
+        add(
+            f"surface: supported {command}",
+            ok,
+            "" if ok else f"(rc={rc} err={err.strip()[:60]!r})",
+        )
+    for command in ["/reset", "/connection", "/auth", "/scope", "/network"]:
+        rc, out, err = run([BIN, "-c", command], env_local, cwd=fixture)
+        ok = failed_locally_as_unavailable(rc, out, err)
+        add(
+            f"surface: one-shot unavailable {command}",
+            ok,
+            "" if ok else f"(rc={rc} out={out.strip()[:30]!r} err={err.strip()[:60]!r})",
+        )
+    for command in ["/ghost", "/plan", "/cache", "/sandbox"]:
+        rc, out, err = run([BIN, "-c", command], env_local, cwd=fixture)
+        ok = failed_locally_as_unavailable(rc, out, err)
+        add(
+            f"surface: tombstone {command}",
+            ok,
+            "" if ok else f"(rc={rc} out={out.strip()[:30]!r} err={err.strip()[:60]!r})",
+        )
     # `/usage` with no calls reports an empty session rather than erroring.
     rc, out, err = run([BIN, "-c", "/usage"], env_local, cwd=fixture)
-    add("meta: /usage reports empty session", "no model calls" in out.lower() or "usage" in out.lower())
+    add("surface: /usage reports empty session", "no model calls" in out.lower() or "usage" in out.lower())
 
     # 6e. The `history` builtin lists a seeded EXTENDED_HISTORY log (with -E times).
     report.append("\n**`history` builtin reads the timestamped log:**\n")
@@ -1122,9 +1153,29 @@ def main():
     add("cli: completions zsh emits a script", rc == 0 and "_aishe" in out)
     rc, out, err = run([BIN, "completions", "bash"], env_local)
     add("cli: completions bash emits a script", rc == 0 and "aishe" in out)
+    for shell_name in ["zsh", "bash"]:
+        rc, hook, err = run([BIN, "init", shell_name], env_local)
+        interpreter = shutil.which(shell_name)
+        parsed = None
+        if interpreter and rc == 0:
+            parsed = subprocess.run(
+                [interpreter, "-n"],
+                input=hook,
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+        ok = rc == 0 and parsed is not None and parsed.returncode == 0
+        detail = "" if ok else (
+            f"(generator rc={rc}; interpreter={interpreter!r}; "
+            f"syntax stderr={(parsed.stderr if parsed else err).strip()[:80]!r})"
+        )
+        add(f"cli: generated {shell_name} hook parses", ok, detail)
     rc, out, err = run([BIN, "doctor"], env_local)
     add("cli: doctor shows version/MCP/history",
-        "version: aishe" in out and "MCP servers" in out and "history:" in out)
+        bool(_re_ansi.search(r"version:.*\d+\.\d+\.\d+", out))
+        and "MCP servers" in out
+        and "history:" in out)
     # Exit-code propagation.
     add("cli: -c '!false' exits 1", run([BIN, "-c", "!false"], env_local)[0] == 1)
     add("cli: -c '!true' exits 0", run([BIN, "-c", "!true"], env_local)[0] == 0)
@@ -1151,7 +1202,7 @@ def main():
     with open(server_py, "w") as f:
         f.write(MCP_SERVER_PY)
     mcp_cfg = write_config(
-        '[aishe]\nmode = "yolo"\nprovider = "openai"\nfront_end = "reedline"\n'
+        '[aishe]\nmode = "yolo"\nprovider = "openai"\n'
         "\n[providers.openai]\n"
         'base_url = "https://api.groq.com/openai"\napi_key_env = "GROQ_API_KEY"\n'
         'model = "openai/gpt-oss-120b"\n\n'
@@ -1171,7 +1222,7 @@ def main():
         "" if "[mcp_servers.demo]" in out else "(missing from /config)")
     # A disabled server is not connected.
     mcp_off = write_config(
-        '[aishe]\nmode = "yolo"\nprovider = "openai"\nfront_end = "reedline"\n'
+        '[aishe]\nmode = "yolo"\nprovider = "openai"\n'
         "\n[providers.openai]\n"
         'base_url = "https://api.groq.com/openai"\napi_key_env = "GROQ_API_KEY"\n'
         'model = "openai/gpt-oss-120b"\n\n'
@@ -1188,7 +1239,7 @@ def main():
     with open(rp_py, "w") as f:
         f.write(MCP_RP_SERVER_PY)
     rp_cfg = write_config(
-        '[aishe]\nmode = "yolo"\nprovider = "openai"\nfront_end = "reedline"\n'
+        '[aishe]\nmode = "yolo"\nprovider = "openai"\n'
         "\n[providers.openai]\n"
         'base_url = "https://api.groq.com/openai"\napi_key_env = "GROQ_API_KEY"\n'
         'model = "openai/gpt-oss-120b"\n\n'
@@ -1211,21 +1262,21 @@ def main():
     if shutil.which("npx"):
         real_servers.append((
             "everything",
-            f'[mcp_servers.everything]\ncommand = "npx"\n'
-            f'args = ["-y", "@modelcontextprotocol/server-everything"]\n',
+            '[mcp_servers.everything]\ncommand = "npx"\n'
+            'args = ["-y", "@modelcontextprotocol/server-everything"]\n',
             ["mcp__everything__"],   # exposes echo/add/... tools
         ))
     if shutil.which("uvx"):
         real_servers.append((
             "fetch",
-            f'[mcp_servers.fetch]\ncommand = "uvx"\nargs = ["mcp-server-fetch"]\n',
+            '[mcp_servers.fetch]\ncommand = "uvx"\nargs = ["mcp-server-fetch"]\n',
             ["mcp__fetch__"],
         ))
     if not real_servers:
         report.append("- ⏭️  skipped (no npx/uvx on PATH)")
     for name, block, needles in real_servers:
         real_cfg = write_config(
-            '[aishe]\nmode = "yolo"\nprovider = "openai"\nfront_end = "reedline"\n'
+            '[aishe]\nmode = "yolo"\nprovider = "openai"\n'
             "\n[providers.openai]\n"
             'base_url = "https://api.groq.com/openai"\napi_key_env = "GROQ_API_KEY"\n'
             'model = "openai/gpt-oss-120b"\n\n' + block
@@ -1237,7 +1288,7 @@ def main():
             listed = any(nd in out for nd in needles)
             if connected and listed:
                 add(f"mcp-real: {name} connects and lists tools", True,
-                    f"→ {trunc(repr([l for l in out.splitlines() if 'mcp__'+name in l][:3]))}")
+                    f"→ {trunc(repr([line for line in out.splitlines() if 'mcp__'+name in line][:3]))}")
             else:
                 # Network/registry hiccup: report as skipped, not failed.
                 report.append(f"- ⏭️  `mcp-real: {name}` unavailable "
@@ -1253,7 +1304,7 @@ def main():
         report.append("- ⏭️  skipped (no API key)")
     else:
         env_llm = base_env(cfgroot, with_key=True)
-        report.append(f"\n_Model: openai/gpt-oss-120b via Groq_\n")
+        report.append("\n_Model: openai/gpt-oss-120b via Groq_\n")
         # suggest: expect a non-empty, non-error command line (the model output is
         # the suggested command, shown inline).
         report.append("\n**Suggest (`-c`, structured schema) - NL to command (model output shown):**\n")
@@ -1337,7 +1388,7 @@ def main():
         # Budget cap: a tiny budget stops a yolo run before it finishes.
         report.append("\n**Budget cap stops a yolo run:**\n")
         budget_root = write_config(
-            '[aishe]\nmode = "yolo"\nprovider = "openai"\nfront_end = "reedline"\n'
+            '[aishe]\nmode = "yolo"\nprovider = "openai"\n'
             "budget_usd = 0.00001\n\n[providers.openai]\n"
             'base_url = "https://api.groq.com/openai"\napi_key_env = "GROQ_API_KEY"\n'
             'model = "openai/gpt-oss-120b"\n'
@@ -1355,7 +1406,7 @@ def main():
         # Audit logging: an NL call is recorded as ai_request + ai_response.
         report.append("\n**Audit log records AI calls:**\n")
         log_root = write_config(
-            '[aishe]\nmode = "suggest"\nprovider = "openai"\nfront_end = "reedline"\n'
+            '[aishe]\nmode = "suggest"\nprovider = "openai"\n'
             "\n[providers.openai]\n"
             'base_url = "https://api.groq.com/openai"\napi_key_env = "GROQ_API_KEY"\n'
             'model = "openai/gpt-oss-120b"\n\n[logging]\nenabled = true\n'
@@ -1394,7 +1445,7 @@ def main():
     )
 
     md = []
-    md.append(f"# aishe validation report")
+    md.append("# aishe validation report")
     md.append("")
     md.append(f"> **{total_ok}/{total} checks passed** ({len(failures)} failed) · "
               f"{len(ordered)} suites · {elapsed:.1f}s")
@@ -1404,6 +1455,7 @@ def main():
     aishe_ver = subprocess.run([BIN, '--version'], capture_output=True, text=True).stdout.strip()
     md.append(f"| **aishe** | `{aishe_ver}` |")
     md.append(f"| **Binary** | `{BIN}` |")
+    md.append(f"| **corpus_version** | `{ADMIN_CORPUS_VERSION}` |")
     md.append(f"| **Raw shell** | `{RAW_SHELL}` ({raw_ver}) |")
     md.append(f"| **Host** | {platform.platform()} · python {platform.python_version()} |")
     md.append(f"| **Model suite** | {'enabled (Groq gpt-oss-120b)' if key() else 'skipped (no API key)'} |")
@@ -1478,7 +1530,7 @@ def main():
     # NL word on the host); a real command misrouted to NL (route-shell) is a bug.
     critical = (full("shell") and full("fileop") and full("slash")
                 and full("plugin") and full("route-shell")
-                and full("config") and full("meta")
+                and full("config") and full("surface")
                 and full("cli") and full("history") and full("mcp"))
     sys.exit(0 if critical else 1)
 

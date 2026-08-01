@@ -14,7 +14,6 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{anyhow, Context, Result};
-use crossterm::style::Stylize;
 use portable_pty::{native_pty_system, CommandBuilder, PtySize};
 
 use crate::config::Config;
@@ -126,6 +125,12 @@ fn run_zsh_inner(config: &Config, history_log: &std::path::Path, shell_id: Strin
         "AISHE_FAILURE_HINTS",
         if config.aishe.failure_hints { "1" } else { "0" },
     );
+    let show_launch_hint = crate::hints::launch_hint_pending(config);
+    if !show_launch_hint {
+        // The generated wrapper uses this inherited marker to suppress both
+        // the logo and launch hint. Disabled/seen state remains entirely local.
+        cmd.env("AISHE_COMMAND_HINT_SHOWN", "1");
+    }
     // `aishe model <name>` runs as a child of zsh, so it cannot directly update
     // the parent shell's AISHE_MODEL. Share the current value through a tiny
     // per-session file that the prompt hook reads before every prompt.
@@ -250,6 +255,12 @@ fn run_zsh_inner(config: &Config, history_log: &std::path::Path, shell_id: Strin
         .slave
         .spawn_command(cmd)
         .map_err(|e| anyhow!("failed to spawn zsh: {e}"))?;
+    if show_launch_hint {
+        // Only consume the one-time state after the child was successfully
+        // admitted. A metadata write failure is non-fatal and fails quiet on
+        // the next launch through `launch_hint_pending`.
+        let _ = crate::hints::mark_launch_hint_seen(config);
+    }
     // The parent does not use the slave end.
     drop(pair.slave);
 
@@ -363,7 +374,11 @@ fn run_zsh_inner(config: &Config, history_log: &std::path::Path, shell_id: Strin
     // and usage display is on. To stderr so it never pollutes piped stdout.
     if config.aishe.show_usage {
         if let Some(line) = crate::usagelog::summarize(&usage_file, &config.pricing) {
-            eprintln!("{}", line.dim());
+            eprintln!(
+                "{}",
+                crate::ui::TerminalCapabilities::detect_stderr()
+                    .paint(crate::ui::StyleToken::Muted, &line)
+            );
         }
     }
 
@@ -374,13 +389,14 @@ fn run_zsh_inner(config: &Config, history_log: &std::path::Path, shell_id: Strin
         let store = history_log.with_file_name("history.vec");
         if let Ok(Ok(ix)) = crate::index::reindex(config, &store, history_log, false) {
             if ix.added > 0 {
+                let message = format!(
+                    "aishe: indexed {} new command(s) for semantic search",
+                    ix.added
+                );
                 eprintln!(
                     "{}",
-                    format!(
-                        "aishe: indexed {} new command(s) for semantic search",
-                        ix.added
-                    )
-                    .dim()
+                    crate::ui::TerminalCapabilities::detect_stderr()
+                        .paint(crate::ui::StyleToken::Muted, &message)
                 );
             }
         }

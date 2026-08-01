@@ -715,11 +715,19 @@ fn verify_smoke_tool_policy(url: &str, password: &str, directory: &Path) -> Resu
     let deadline = std::time::Instant::now() + Duration::from_secs(10);
     loop {
         let last_error = match ureq::get(ids_url.as_str())
-            .set("Authorization", &authorization)
-            .timeout(Duration::from_secs(1))
+            .header("Authorization", &authorization)
+            .config()
+            .max_redirects(5)
+            .timeout_global(Some(Duration::from_secs(1)))
+            .build()
             .call()
         {
-            Ok(response) => match response.into_json::<Vec<String>>() {
+            Ok(mut response) => match response
+                .body_mut()
+                .with_config()
+                .limit(MAX_BOOTSTRAP_BYTES)
+                .read_json::<Vec<String>>()
+            {
                 Ok(ids) => {
                     let missing = required
                         .iter()
@@ -782,11 +790,18 @@ fn wait_for_health(
             anyhow::bail!("OpenCode server exited before health check ({status})");
         }
         let response = ureq::get(&format!("{url}/global/health"))
-            .set("Authorization", &authorization)
-            .timeout(Duration::from_secs(1))
+            .header("Authorization", &authorization)
+            .config()
+            .max_redirects(5)
+            .timeout_global(Some(Duration::from_secs(1)))
+            .build()
             .call();
-        if let Ok(response) = response {
-            let body: serde_json::Value = response.into_json()?;
+        if let Ok(mut response) = response {
+            let body: serde_json::Value = response
+                .body_mut()
+                .with_config()
+                .limit(MAX_BOOTSTRAP_BYTES)
+                .read_json()?;
             if body.get("healthy").and_then(|value| value.as_bool()) == Some(true)
                 && body.get("version").and_then(|value| value.as_str()) == Some(expected_version)
             {

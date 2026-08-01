@@ -6,6 +6,7 @@ import fcntl
 import http.server
 import os
 import pty
+import re
 import select
 import shutil
 import signal
@@ -18,8 +19,10 @@ import threading
 import time
 from contextlib import contextmanager
 
-BINARY = os.path.abspath(
-    sys.argv[1] if len(sys.argv) > 1 else "target/release/aishe"
+from harness_identity import require_current_binary
+
+BINARY = require_current_binary(
+    os.path.abspath(sys.argv[1] if len(sys.argv) > 1 else "target/release/aishe")
 )
 
 
@@ -88,7 +91,13 @@ class Pty:
         )
 
     def send(self, text):
-        os.write(self.master, text.encode())
+        try:
+            os.write(self.master, text.encode())
+        except OSError as error:
+            raise AssertionError(
+                "PTY closed while sending input (process=%r)\n%s"
+                % (self.proc.poll(), self.transcript[-3000:])
+            ) from error
 
     def line(self, text=""):
         self.send(text + "\r")
@@ -233,8 +242,13 @@ def cleanup_isolated_root(root):
 
 
 def setup_to_provider(shell, install_runtime=False):
-    shell.expect("Continue setup")
-    shell.line()
+    welcome = shell.expect_any(
+        ["Continue setup", "Review or change setup choices"], timeout=30
+    )
+    if welcome == "Review or change setup choices":
+        shell.menu(2)
+    else:
+        shell.line()
     reached = shell.expect_any(
         [
             "Provider service",
@@ -275,13 +289,19 @@ def setup_visual_style_and_alignment():
         try:
             setup_to_provider(shell)
             shell.drain(0.3)
-            if "\x1b[1;36mProvider service\x1b[0m" not in shell.transcript:
-                raise AssertionError("setup menu title was not color styled")
-            if "\x1b[1;36;7m› " not in shell.transcript:
+            if not re.search(
+                r"\x1b\[[0-9;]*mProvider service\x1b\[0m",
+                shell.transcript,
+            ):
+                raise AssertionError(
+                    "setup menu title was not color styled\n"
+                    + shell.transcript[-2500:]
+                )
+            if not re.search(r"\x1b\[[0-9;]*7[0-9;]*m› ", shell.transcript):
                 raise AssertionError("current setup selection was not highlighted")
             if "…\x1b[0m" not in shell.transcript:
                 raise AssertionError("narrow focus row was not kept to one line")
-            if "       ChatGPT/Codex OAuth above for Plus/Pro." not in shell.transcript:
+            if "\r\n       OAuth above for Plus/Pro." not in shell.transcript:
                 raise AssertionError("long provider help did not word-wrap with indentation")
             if "ChatGPT / Codex OAuth" not in shell.transcript:
                 raise AssertionError("explicit ChatGPT/Codex OAuth option missing from setup menu")
@@ -291,8 +311,10 @@ def setup_visual_style_and_alignment():
             shell.menu(4)  # OpenAI API-key catalog row (after two OAuth shortcuts)
             shell.expect("API endpoint")
             shell.drain(0.2)
-            aligned = "\x1b[0m\r\n  \x1b[1;36mAPI endpoint\x1b[0m"
-            if aligned not in shell.transcript:
+            aligned = re.compile(
+                r"\x1b\[0m\r\n  \x1b\[[0-9;]*mAPI endpoint\x1b\[0m"
+            )
+            if not aligned.search(shell.transcript):
                 raise AssertionError(
                     "text prompt did not return to the left margin after raw menu mode\n"
                     + shell.transcript[-2500:]
@@ -320,7 +342,7 @@ def setup_width_and_no_color_matrix():
                     raise AssertionError(
                         "setup entered an alternate-screen UI at %d columns" % cols
                     )
-                if "\x1b[1;36;7m› " not in shell.transcript:
+                if not re.search(r"\x1b\[[0-9;]*7[0-9;]*m› ", shell.transcript):
                     raise AssertionError(
                         "setup lost its visible focus row at %d columns" % cols
                     )
@@ -342,9 +364,9 @@ def setup_width_and_no_color_matrix():
         try:
             setup_to_provider(shell)
             shell.drain(0.2)
-            if "\x1b[1;36m" in shell.transcript or "\x1b[1;36;7m" in shell.transcript:
+            if re.search(r"\x1b\[(?:3[0-9]|9[0-9]|38;|48;)", shell.transcript):
                 raise AssertionError("NO_COLOR setup emitted color styling")
-            if "› " not in shell.transcript or "Provider service" not in shell.transcript:
+            if not re.search(r"(?:›|>) ", shell.transcript) or "Provider service" not in shell.transcript:
                 raise AssertionError("NO_COLOR setup lost its focus marker or title")
             shell.send("\x1b")
             shell.expect("Setup paused")
@@ -473,7 +495,7 @@ def complete_setup(root, env, endpoint):
         shell.expect("Enable the private redacted audit log?")
         shell.line("n")
 
-        shell.expect("Run live text/structured/tool/streaming checks?", timeout=60)
+        shell.expect("Run the disclosed live capability checks now", timeout=60)
         shell.line("n")
         shell.expect("Provider check:")
         shell.expect("Review")
@@ -581,20 +603,20 @@ def settings_are_transactional(root, env, config, endpoint):
         apply.expect("Choose a section")
         apply.menu(2)  # shell/history/status
         apply.expect("Shell, history & statusline")
-        apply.menu(4)  # hook timeout
+        apply.menu(5)  # hook timeout (after discovery hints)
         apply.expect("AI hook timeout seconds")
         apply.line("75")
         apply.expect("Shell, history & statusline")
-        apply.menu(5)  # placement
+        apply.menu(6)  # placement
         apply.expect("Statusline placement")
         apply.menu(1)  # right
         apply.expect("preview (right)")
         apply.expect("Shell, history & statusline")
-        apply.menu(7)  # transcript density
+        apply.menu(8)  # transcript density
         apply.expect("Agent transcript density")
         apply.menu(3)  # detailed
         apply.expect("Shell, history & statusline")
-        apply.menu(9)  # back
+        apply.menu(14)  # back (after terminal accessibility controls)
         apply.expect("Choose a section")
         apply.menu(8)  # review/apply
         apply.expect("Apply these settings")
@@ -770,7 +792,7 @@ def hidden_auth_and_staged_setup_are_secret_safe(runtime_root):
             resumed.expect("Enable the private redacted audit log?")
             resumed.line("n")
             resumed.expect(
-                "Run live text/structured/tool/streaming checks?", timeout=60
+                "Run the disclosed live capability checks now", timeout=60
             )
             resumed.line("n")
             resumed.expect("Review")

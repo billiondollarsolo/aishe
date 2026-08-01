@@ -1,3 +1,8 @@
+> **Lifecycle: Implemented.** Baseline: v0.1. This is the original product
+> specification, not the current architecture; use
+> [Architecture](../architecture.md) and the
+> [post-0.6.5 plan](NEXT_PRODUCT_UX_RELIABILITY_PLAN.md).
+
 # PRD: `aishe` — A Natural-Language-Aware Shell (Rust)
 
 **Version:** 1.1
@@ -5,7 +10,7 @@
 **Target:** Working v0.1, single repo, single static binary, `cargo install aishe`
 
 > This document is the design spec that `aishe` v0.1 was built against. For
-> usage, see [README.md](README.md).
+> usage, see the [root README](../../README.md).
 
 ## 1. Overview
 

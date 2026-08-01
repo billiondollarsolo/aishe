@@ -130,9 +130,18 @@ pub fn provenance() -> Result<(Config, Provenance)> {
             &source,
         ),
         field("backend.output", json!(config.backend.output), &source),
+        field("ui.theme", json!(config.ui.theme), &source),
+        field("ui.color_depth", json!(config.ui.color_depth), &source),
+        field("ui.unicode", json!(config.ui.unicode), &source),
+        field("ui.motion", json!(config.ui.motion), &source),
         field(
             "aishe.failure_hints",
             json!(config.aishe.failure_hints),
+            &source,
+        ),
+        field(
+            "aishe.discovery_hints",
+            json!(config.aishe.discovery_hints),
             &source,
         ),
         field(
@@ -241,6 +250,7 @@ pub fn run() -> Result<bool> {
         );
     }
     let baseline = Config::load_quiet()?.context("no config exists; run `aishe setup` first")?;
+    crate::ui::configure(&baseline.ui);
     let mut draft = baseline.clone();
     loop {
         promptui::header(
@@ -536,6 +546,7 @@ fn shell_section(config: &mut Config) -> Result<()> {
             format!("History sharing: {}", on_off(config.aishe.share_history)),
             format!("Branded prompt: {}", on_off(config.aishe.pty_prompt)),
             format!("Failure hints: {}", on_off(config.aishe.failure_hints)),
+            format!("Discovery hints: {}", on_off(config.aishe.discovery_hints)),
             format!(
                 "AI hook timeout: {} seconds",
                 config.aishe.hook_timeout_secs
@@ -553,6 +564,10 @@ fn shell_section(config: &mut Config) -> Result<()> {
                 config.aishe.status_line_items.join(",")
             ),
             format!("Agent transcript: {}", config.backend.output),
+            format!("Theme: {}", config.ui.theme),
+            format!("Color depth: {}", config.ui.color_depth),
+            format!("Characters: {}", config.ui.unicode),
+            format!("Motion: {}", config.ui.motion),
             "Reset this section to defaults".into(),
             "Back".into(),
         ];
@@ -566,15 +581,59 @@ fn shell_section(config: &mut Config) -> Result<()> {
             MenuResult::Selected(0) => config.aishe.share_history = !config.aishe.share_history,
             MenuResult::Selected(1) => config.aishe.pty_prompt = !config.aishe.pty_prompt,
             MenuResult::Selected(2) => config.aishe.failure_hints = !config.aishe.failure_hints,
-            MenuResult::Selected(3) => choose_hook_timeout(config)?,
-            MenuResult::Selected(4) => choose_status_position(config)?,
-            MenuResult::Selected(5) => choose_status_items(config)?,
-            MenuResult::Selected(6) => choose_agent_output(config)?,
-            MenuResult::Selected(7) => reset_shell_section(config),
-            MenuResult::Selected(8) | MenuResult::Back | MenuResult::Cancel => return Ok(()),
+            MenuResult::Selected(3) => config.aishe.discovery_hints = !config.aishe.discovery_hints,
+            MenuResult::Selected(4) => choose_hook_timeout(config)?,
+            MenuResult::Selected(5) => choose_status_position(config)?,
+            MenuResult::Selected(6) => choose_status_items(config)?,
+            MenuResult::Selected(7) => choose_agent_output(config)?,
+            MenuResult::Selected(8) => choose_ui_value(
+                "Terminal theme",
+                &mut config.ui.theme,
+                &["auto", "dark", "light", "mono", "none"],
+                "Auto detects light/dark when the terminal reports it; none disables styling.",
+            )?,
+            MenuResult::Selected(9) => choose_ui_value(
+                "Color depth",
+                &mut config.ui.color_depth,
+                &["auto", "16", "256", "truecolor", "none"],
+                "Choose a conservative depth when colors look wrong over a remote terminal.",
+            )?,
+            MenuResult::Selected(10) => choose_ui_value(
+                "Character set",
+                &mut config.ui.unicode,
+                &["auto", "unicode", "ascii"],
+                "ASCII removes box drawing, symbols, and the half-block logo.",
+            )?,
+            MenuResult::Selected(11) => choose_ui_value(
+                "Terminal motion",
+                &mut config.ui.motion,
+                &["auto", "live", "static"],
+                "Static keeps durable phase lines and avoids cursor-up redraws.",
+            )?,
+            MenuResult::Selected(12) => {
+                reset_shell_section(config);
+                crate::ui::configure(&config.ui);
+            }
+            MenuResult::Selected(13) | MenuResult::Back | MenuResult::Cancel => return Ok(()),
             MenuResult::Selected(_) => {}
         }
+        crate::ui::configure(&config.ui);
     }
+}
+
+fn choose_ui_value(title: &str, value: &mut String, choices: &[&str], help: &str) -> Result<()> {
+    let options = choices
+        .iter()
+        .map(|choice| (*choice).to_string())
+        .collect::<Vec<_>>();
+    let default = choices
+        .iter()
+        .position(|choice| choice.eq_ignore_ascii_case(value))
+        .unwrap_or(0);
+    if let MenuResult::Selected(index) = promptui::menu(title, &options, default, true, help)? {
+        *value = choices[index].to_string();
+    }
+    Ok(())
 }
 
 fn choose_agent_output(config: &mut Config) -> Result<()> {
@@ -971,10 +1030,12 @@ fn reset_shell_section(config: &mut Config) {
     config.aishe.pty_prompt = defaults.aishe.pty_prompt;
     config.aishe.hook_timeout_secs = defaults.aishe.hook_timeout_secs;
     config.aishe.failure_hints = defaults.aishe.failure_hints;
+    config.aishe.discovery_hints = defaults.aishe.discovery_hints;
     config.aishe.status_line = defaults.aishe.status_line;
     config.aishe.status_line_position = defaults.aishe.status_line_position;
     config.aishe.status_line_items = defaults.aishe.status_line_items;
     config.backend.output = defaults.backend.output;
+    config.ui = defaults.ui;
 }
 
 fn reset_context_section(config: &mut Config) {
@@ -1244,6 +1305,7 @@ mod tests {
         config.aishe.share_history = !defaults.aishe.share_history;
         config.aishe.pty_prompt = !defaults.aishe.pty_prompt;
         config.aishe.failure_hints = !defaults.aishe.failure_hints;
+        config.aishe.discovery_hints = !defaults.aishe.discovery_hints;
         config.aishe.hook_timeout_secs = 1;
         config.aishe.status_line = !defaults.aishe.status_line;
         config.aishe.status_line_position = "off".into();
@@ -1253,6 +1315,7 @@ mod tests {
         assert_eq!(config.aishe.share_history, defaults.aishe.share_history);
         assert_eq!(config.aishe.pty_prompt, defaults.aishe.pty_prompt);
         assert_eq!(config.aishe.failure_hints, defaults.aishe.failure_hints);
+        assert_eq!(config.aishe.discovery_hints, defaults.aishe.discovery_hints);
         assert_eq!(
             config.aishe.hook_timeout_secs,
             defaults.aishe.hook_timeout_secs

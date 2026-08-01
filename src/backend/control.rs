@@ -185,15 +185,14 @@ impl SupervisorClient {
         timeout: Duration,
     ) -> Result<U> {
         let url = format!("{}{}", self.state.control_url.trim_end_matches('/'), path);
-        let agent = ureq::AgentBuilder::new().redirects(0).build();
-        let response = agent
+        let agent = loopback_agent(timeout);
+        let mut response = agent
             .post(&url)
-            .set(
+            .header(
                 "Authorization",
-                &format!("Bearer {}", self.state.control_token),
+                format!("Bearer {}", self.state.control_token),
             )
-            .set("Content-Type", "application/json")
-            .timeout(timeout)
+            .header("Content-Type", "application/json")
             .send_json(serde_json::to_value(body)?)
             .map_err(|error| {
                 anyhow::anyhow!(
@@ -201,8 +200,17 @@ impl SupervisorClient {
                     crate::redact::redact(&control_error(error))
                 )
             })?;
+        if !crate::providers::status_is_accepted(response.status()) {
+            return Err(anyhow::anyhow!(
+                "backend control request failed: {}",
+                crate::redact::redact(&control_response_error(response))
+            ));
+        }
         response
-            .into_json()
+            .body_mut()
+            .with_config()
+            .limit(MAX_BODY_BYTES as u64)
+            .read_json()
             .context("backend control response is invalid")
     }
 }
@@ -376,17 +384,21 @@ fn verified_loaded_state_with_health(
         return Ok(None);
     }
     let url = format!("{}/v1/health", state.control_url.trim_end_matches('/'));
-    let agent = ureq::AgentBuilder::new().redirects(0).build();
-    let response = match agent
+    let agent = loopback_agent(Duration::from_secs(2));
+    let mut response = match agent
         .get(&url)
-        .set("Authorization", &format!("Bearer {}", state.control_token))
-        .timeout(Duration::from_secs(2))
+        .header("Authorization", format!("Bearer {}", state.control_token))
         .call()
     {
-        Ok(response) => response,
+        Ok(response) if crate::providers::status_is_accepted(response.status()) => response,
         Err(_) => return Ok(None),
+        Ok(_) => return Ok(None),
     };
-    let health: HealthResponse = response.into_json()?;
+    let health: HealthResponse = response
+        .body_mut()
+        .with_config()
+        .limit(MAX_BODY_BYTES as u64)
+        .read_json()?;
     if !health.healthy
         || health.protocol_version != SUPERVISOR_PROTOCOL_VERSION
         || health.runtime_version != state.runtime_version
@@ -424,16 +436,17 @@ fn request_stop_state(state: Option<SupervisorState>) -> Result<bool> {
     };
     let url = format!("{}/v1/stop", state.control_url.trim_end_matches('/'));
     let send = || -> std::result::Result<(), String> {
-        ureq::AgentBuilder::new()
-            .redirects(0)
-            .build()
+        let response = loopback_agent(Duration::from_secs(3))
             .post(&url)
-            .set("Authorization", &format!("Bearer {}", state.control_token))
-            .set("Content-Type", "application/json")
-            .timeout(Duration::from_secs(3))
+            .header("Authorization", format!("Bearer {}", state.control_token))
+            .header("Content-Type", "application/json")
             .send_json(serde_json::json!({}))
-            .map(|_| ())
-            .map_err(|error| crate::redact::redact(&control_error(error)))
+            .map_err(|error| crate::redact::redact(&control_error(error)))?;
+        if crate::providers::status_is_accepted(response.status()) {
+            Ok(())
+        } else {
+            Err(crate::redact::redact(&control_response_error(response)))
+        }
     };
     match send() {
         Ok(()) => Ok(true),
@@ -825,19 +838,31 @@ fn validate_loopback_url(value: &str) -> Result<()> {
     Ok(())
 }
 
+fn loopback_agent(timeout: Duration) -> ureq::Agent {
+    ureq::Agent::config_builder()
+        .http_status_as_error(false)
+        .max_redirects(0)
+        .timeout_global(Some(timeout))
+        .build()
+        .into()
+}
+
 fn control_error(error: ureq::Error) -> String {
-    match error {
-        ureq::Error::Status(status, response) => {
-            let body = response
-                .into_string()
-                .unwrap_or_else(|_| "request rejected".into());
-            format!(
-                "status {status}: {}",
-                body.chars().take(1024).collect::<String>()
-            )
-        }
-        ureq::Error::Transport(error) => error.to_string(),
-    }
+    error.to_string()
+}
+
+fn control_response_error(mut response: ureq::http::Response<ureq::Body>) -> String {
+    let status = response.status().as_u16();
+    let body = response
+        .body_mut()
+        .with_config()
+        .limit(1024)
+        .read_to_string()
+        .unwrap_or_else(|_| "request rejected".into());
+    format!(
+        "status {status}: {}",
+        body.chars().take(1024).collect::<String>()
+    )
 }
 
 fn process_exists(pid: u32) -> bool {
@@ -913,16 +938,11 @@ mod tests {
             let (stream, _) = listener.accept().unwrap();
             serve_connection(stream, &server).unwrap();
         });
-        let response: serde_json::Value =
-            ureq::get(&format!("{}/v1/health", context.state.control_url))
-                .set(
-                    "Authorization",
-                    &format!("Bearer {}", context.control_token),
-                )
-                .call()
-                .unwrap()
-                .into_json()
-                .unwrap();
+        let mut response = ureq::get(&format!("{}/v1/health", context.state.control_url))
+            .header("Authorization", format!("Bearer {}", context.control_token))
+            .call()
+            .unwrap();
+        let response: serde_json::Value = response.body_mut().read_json().unwrap();
         worker.join().unwrap();
         std::fs::remove_file(bridge_path(port)).unwrap();
         assert_eq!(response["healthy"], true);
@@ -996,8 +1016,8 @@ mod tests {
             serve_connection(stream, &server).unwrap();
         });
         let result = ureq::post(&format!("{}/v1/stop", context.state.control_url))
-            .set("Authorization", &format!("Bearer {}", context.plugin_token))
-            .set("Content-Type", "application/json")
+            .header("Authorization", format!("Bearer {}", context.plugin_token))
+            .header("Content-Type", "application/json")
             .send_json(serde_json::json!({}));
         worker.join().unwrap();
         std::fs::remove_file(bridge_path(
@@ -1011,7 +1031,7 @@ mod tests {
                 .unwrap(),
         ))
         .unwrap();
-        assert!(matches!(result, Err(ureq::Error::Status(401, _))));
+        assert!(matches!(result, Err(ureq::Error::StatusCode(401))));
         assert!(!context.shutdown.load(Ordering::SeqCst));
     }
 

@@ -32,15 +32,14 @@ default = ["highlight"]
 highlight = ["dep:syntect"]
 
 [dependencies]
-ureq = { version = "2", features = ["json", "tls", "native-certs"] }
-# The managed OpenCode loopback transport uses ureq 3's panic-free response
-# body handling. TLS is intentionally omitted because this client accepts only
-# private HTTP endpoints on the local host.
-ureq3 = { package = "ureq", version = "3.3.0", default-features = false, features = ["json"] }
+# One transport stack serves external HTTPS providers/MCP/fetch clients and the
+# private loopback backend. External agents opt into the platform verifier so
+# enterprise/native trust roots keep working; rustls remains the TLS provider.
+ureq = { version = "3.3.0", default-features = false, features = ["json", "rustls", "platform-verifier", "gzip"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 toml = "0.8"
-crossterm = "0.28"
+crossterm = "0.29"
 termimad = "0.31"
 clap = { version = "4", features = ["derive"] }
 clap_complete = "4"
@@ -48,6 +47,8 @@ clap_mangen = "0.2"
 anyhow = "1"
 thiserror = "2"
 regex = "1"
+unicode-segmentation = "1.12"
+unicode-width = "0.2"
 dirs = "5"
 libc = "0.2"
 portable-pty = "0.9"

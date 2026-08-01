@@ -6,6 +6,76 @@ breaking changes can land in any release.
 
 ## [Unreleased]
 
+### Added
+- A versioned, reason-bearing route contract with `aishe route [--json] --
+  <line>`, cross-surface routing corpora, conservative one-time typo assistance,
+  and explicit `?`, `!`, and legacy `#` prefix policy.
+- A declarative command registry now owns slash aliases, availability, shell
+  handoff behavior, side-effect class, help metadata, and removed-command
+  tombstones across Rust, zsh, Bash, help, completions, docs, and tests.
+- A semantic terminal design system with dark, light, mono, and no-style themes;
+  ANSI16/256/truecolor policy; static-motion and ASCII modes; Unicode cell-aware
+  layout; reusable proposal/approval/error views; and an `AIShe · answer`
+  authorship boundary.
+- Versioned JSON for status, suggest, route diagnostics, shared public errors,
+  and local discovery-hint status, with prior-minor compatibility fixtures and a
+  documented automation-contract inventory.
+- Compatibility and release qualification profiles (`quick`, `local-full`,
+  `linux-full`, `release`, and `paid-live`) that build and identify the exact
+  candidate and record gate results, skips, durations, corpus versions, and
+  artifact digests.
+- Real Bash 3.2/5.x, terminal-latency, tmux, screen, optional SSH, accessibility,
+  parser-boundary, lazy-loading, performance, and agent-interaction harnesses.
+- Category-specific retention inspection, preview, and deletion controls,
+  threat-model/release evidence, compatibility decision records for Fish and
+  WSL, and lifecycle labels for historical design documents.
+- Contextual discovery state with `aishe hints status [--json]` and
+  `aishe hints reset`; hints are local-only, disableable, rate-limited, and do
+  not retain prompts or model content.
+
+### Changed
+- Every public JSON/JSONL path now has an explicit schema version. Legacy
+  backend lifecycle, models, config/settings, connection/auth, readiness, and
+  audit-log outputs migrate losslessly: array/raw roots use named v1 wrappers,
+  object roots gain `schema_version`, and old audit records are normalized when
+  replayed. Automation consuming the former bare arrays or raw config should
+  select `models`, `connections`, `profiles`, `runtime`, or `config` from the
+  new wrapper.
+- Printable picker keys always filter; arrow keys and Ctrl-P/Ctrl-N navigate,
+  selection follows a bounded viewport, and default promotion remains a
+  separate safe-negative confirmation.
+- Suggested commands return to native shell editing before execution, preserving
+  cursor movement, history, completion, and syntax highlighting.
+- Agent activity distinguishes queued/running/waiting/recovering/final states,
+  recovered failures from terminal failures, bounded changed-file summaries,
+  and effective scope/network/sandbox authority without depending on color.
+- `main.rs` is now a small orchestration layer backed by focused CLI modules;
+  terminal views are pure renderers, and shell integration templates are split
+  from their typed Rust orchestration.
+- All remaining HTTPS clients use `ureq` 3, and the terminal stack uses one
+  `crossterm` 0.29 line. Dependency exceptions now carry owners and expiry
+  review dates.
+
+### Fixed
+- Picker focus can no longer move to an invisible item, including catalogs with
+  1,000 rows, narrow terminals, emoji, combining text, and wide CJK cells.
+- `NO_COLOR`, `TERM=dumb`, non-TTY, explicit no-style, static ASCII, and JSON
+  output paths no longer emit ANSI or cursor-control bytes.
+- Picker-to-confirm transitions read bounded unbuffered input from `/dev/tty`
+  without hanging under macOS Bash 3.2 or Bash 5.x; EOF, Esc, and Ctrl-C retain
+  the safe negative default.
+- Local harnesses reject stale release binaries and stale product spelling;
+  shell scripts are syntax-checked and ShellCheck-clean, and Python cache/output
+  directories are ignored.
+
+### Security
+- Forced-shell routing carries a non-color, one-line warning that the AI safety
+  gate is bypassed; approvals disclose effective authority and use fail-closed
+  defaults for destructive or host actions.
+- Public errors and model-controlled terminal text are bounded, redacted, and
+  control-safe. Boundary regression tests cover route/safety fixed points,
+  shell handoffs, JSON/SSE frames, archives, selections, and terminal escapes.
+
 ## [0.6.5] - 2026-07-31
 
 ### Fixed

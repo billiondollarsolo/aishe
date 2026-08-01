@@ -4,3 +4,16 @@ Cargo.lock.bak
 .DS_Store
 .claude/
 /test-results/
+
+# Python test and tooling artifacts
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+/coverage/
+/coverage.xml
+/.venv/
+/venv/
+/env/

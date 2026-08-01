@@ -94,7 +94,6 @@ impl Plan {
                 data_dir.join("tasks"),
                 data_dir.join("backend").join("sessions"),
                 data_dir.join("backend").join("journal"),
-                data_dir.join("backend").join("opencode").join("xdg"),
             ] {
                 targets.push(directory("AI sessions/tool journals", path, false));
             }
@@ -112,6 +111,14 @@ impl Plan {
             for path in [config_dir.join("commands"), config_dir.join("skills")] {
                 targets.push(directory("config/credentials", path, false));
             }
+            // Managed OAuth tokens and per-profile authentication state live
+            // under the private OpenCode XDG root. They are credentials, not
+            // conversation/session history: `--sessions` must preserve them.
+            targets.push(directory(
+                "config/credentials",
+                data_dir.join("backend").join("opencode").join("xdg"),
+                false,
+            ));
         }
         if selection.history {
             for path in [data_dir.join("history.ext"), data_dir.join("history.vec")] {
@@ -120,17 +127,28 @@ impl Plan {
         }
         if selection.audit_undo {
             let loaded = crate::config::Config::load_quiet().ok().flatten();
-            let audit = loaded
-                .as_ref()
-                .and_then(|config| config.logging.file.as_ref())
+            let audit = std::env::var_os("AISHE_LOG_FILE")
+                .filter(|value| !value.is_empty())
                 .map(PathBuf::from)
-                .or_else(|| std::env::var_os("AISHE_LOG_FILE").map(PathBuf::from))
+                .or_else(|| {
+                    loaded
+                        .as_ref()
+                        .and_then(|config| config.logging.file.as_ref())
+                        .map(PathBuf::from)
+                })
                 .unwrap_or_else(|| data_dir.join("audit.jsonl"));
             let undo = std::env::var_os("AISHE_UNDO_JOURNAL")
+                .filter(|value| !value.is_empty())
                 .map(PathBuf::from)
                 .unwrap_or_else(|| data_dir.join("undo.jsonl"));
-            targets.push(file("audit/undo data", audit, false));
-            targets.push(file("audit/undo data", undo, false));
+            for path in [
+                audit.clone(),
+                suffixed(&audit, ".1"),
+                undo.clone(),
+                suffixed(&undo, ".1"),
+            ] {
+                targets.push(file("audit/undo data", path, false));
+            }
         }
 
         let current_dir = std::env::current_dir().context("resolving current directory")?;
@@ -249,6 +267,12 @@ fn directory(category: &'static str, path: PathBuf, recoverable: bool) -> Target
         kind: TargetKind::Directory,
         recoverable,
     }
+}
+
+fn suffixed(path: &Path, suffix: &str) -> PathBuf {
+    let mut value = path.as_os_str().to_os_string();
+    value.push(suffix);
+    PathBuf::from(value)
 }
 
 fn validate_target(target: &Target, config_dir: &Path, data_dir: &Path) -> Result<()> {

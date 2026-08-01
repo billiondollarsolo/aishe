@@ -14,6 +14,59 @@ Add `--probe` for reachability, `--live` for minimal feature calls,
 `--json` for automation, `--fix` for safe local repairs, or `--bundle PATH` for
 a redacted support bundle.
 
+Support bundles exclude API keys, OAuth tokens, provider request bodies,
+private backend control URLs/tokens, environment values, and unredacted
+credential data. They still contain paths, configuration metadata, endpoint
+hosts, versions, and diagnostic summaries; inspect a bundle before sharing it.
+
+## Stable error-code index
+
+Structured errors use the same codes in text and JSON. Start with the exact
+primary action in the error; use this table when automating recovery or when
+the action did not resolve the problem.
+
+| Code | Meaning | Maintained recovery |
+| --- | --- | --- |
+| `cli.missing_request` | `suggest` received no request | `aishe suggest "list files by size"` |
+| `cli.invalid_provider_flags` | incompatible legacy provider-selection flags were combined | use one of `--connection`, `--provider`, or the active default; inspect `aishe connection list` |
+| `cli.interactive_shell_missing` | the requested interactive zsh front end is unavailable | install zsh, use `aishe -c …`, or generate the tested Bash hook with `aishe init bash` |
+| `config.setup_failed` | setup validation or its transactional apply step failed | rerun `aishe setup --resume`; use `aishe doctor` for the reported dependency/config category |
+| `config.provider_unavailable` | no usable connection/provider | `aishe setup`, then `aishe doctor --live` |
+| `auth.missing_credential` | configured credential is absent | `aishe auth status`; then `aishe auth set PROFILE` or set the configured environment variable |
+| `auth.invalid_credential` | provider rejected authentication | `aishe auth status`; replace the credential; `aishe doctor --live` |
+| `auth.permission_denied` | credential lacks endpoint/model access | `aishe connection show --json`; verify project/model access; `aishe doctor --live` |
+| `provider.model_not_found` | model ID is unavailable | `aishe models --refresh`; then `aishe model MODEL` |
+| `provider.unsupported_tools` | transport cannot execute tools | `aishe settings`; choose a tool-capable Responses transport; `aishe provider test --live` |
+| `provider.unsupported_parameter` | model rejected a request option | `aishe doctor --live`; review the connection in `aishe settings` |
+| `provider.unsupported_format` | structured-output mode is unsupported | `aishe doctor --live`; review transport/model settings |
+| `provider.rate_limited` | short-term provider rate limit | wait, then retry; inspect `aishe status` for repeated requests |
+| `provider.quota_exhausted` | provider billing/quota exhausted | check provider billing/quota before retrying |
+| `network.timeout` | provider request timed out | `aishe doctor --probe`; verify proxy/endpoint; retry |
+| `network.provider_unreachable` | DNS/TLS/connectivity failure | `aishe doctor --probe`; verify proxy, OS trust store, and endpoint |
+| `provider.server_unavailable` | provider returned a retryable server failure | retry later; use `aishe doctor --probe` if persistent |
+| `provider.malformed_response` | endpoint returned an incompatible document/stream | `aishe doctor --live`; confirm provider transport compatibility |
+| `provider.unknown` | provider failure could not be classified safely | `aishe doctor --live`; create a redacted support bundle if persistent |
+| `provider.connection_unavailable` | the selected line needs an agent but no usable provider/connection is active | `aishe connection list`; select one or run `aishe setup`; then `aishe doctor --live` |
+| `backend.suggest_failed` | managed backend failed an admitted suggest turn | `aishe backend status`; `aishe backend verify --live`; then retry or resume |
+| `backend.suggest_line_managed` | the interactive suggest hook failed in the managed backend | `aishe backend status`; inspect `aishe sessions`; verify/repair before retrying |
+| `backend.fix_line_managed` | the fix-last-command hook failed in the managed backend | keep the failed command unchanged; run `aishe backend status`, then retry the explicit fix action |
+| `backend.yolo_line_managed` | an autonomous hook turn failed after managed dispatch | inspect `aishe sessions` for partial effects; verify the backend; resume rather than blindly replaying |
+| `backend.auto_line_managed` | an automatic hook turn failed after managed dispatch | inspect the shell and session state; run `aishe backend status`; retry only after reconciling effects |
+| `backend.one_shot_managed` | a managed `-c`/pipe turn failed | inspect `aishe sessions`; run `aishe backend verify --live`; preserve the nonzero status in automation |
+| `network.operation_failed` | an untyped outer network path failed before a more specific provider classification | `aishe doctor --probe`; verify endpoint/proxy/TLS; retry |
+| `auth.unavailable` | an outer command could not load required authentication | `aishe auth status`; repair the named credential; retry |
+| `policy.denied` | effective organization/user policy rejected the operation | `aishe doctor --json`; review effective policy and requested authority |
+| `sandbox.unavailable` | required kernel/policy sandbox could not be established | `aishe doctor --json`; repair the reported sandbox requirement |
+| `backend.operation_failed` | runtime/supervisor/backend operation failed | `aishe backend status`; `aishe backend verify --live` |
+| `config.invalid` | effective configuration could not be loaded | `aishe doctor`; repair the reported config file |
+| `io.operation_failed` | local path, permissions, or operating-system operation failed | `aishe doctor`; inspect the bounded details and correct the path/permissions |
+| `internal.unexpected` | no safer public domain classification was available | `aishe doctor`; if persistent, create and inspect a redacted support bundle |
+
+Error namespaces also define stable domain statuses for automation; see
+[Automation and machine-readable contracts](automation.md#error-document-v1).
+`aishe suggest --json` deliberately keeps its legacy aggregate process status 1
+on failure while reporting the precise domain status inside the stderr object.
+
 ## "Managed agent engine unavailable"
 
 Inspect the runtime separately from the provider:
@@ -129,25 +182,25 @@ install kubectl please
 ? install kubectl please
 ```
 
-Green buffer = shell; magenta = natural language. There is no separate NL mode
-on the status line. Optional Meta/Alt+Return needs Option-as-Meta in the
+The semantic route highlight distinguishes shell and agent input when color is
+available; `aishe route -- '<line>'` names the route and reason in plain text,
+and `?` remains the unambiguous non-color agent cue. There is no separate NL
+mode on the status line. Optional Meta/Alt+Return needs Option-as-Meta in the
 terminal (iTerm/Terminal/VS Code); see
 [Getting started §6](getting-started.md#6-force-a-route-when-needed).
 
 ## A command was treated as natural language
 
-If a valid command was sent to the model, the command may not be on your `PATH`
-or known yet. Rebuild the command cache with the `rehash` meta command, typed
-**at the aishe prompt** (bare or as `/rehash`):
+If a valid command was sent to the model, first confirm that it is available to
+the same shell and `PATH` AIShe is using:
 
-```
-~/projects/app ❯ rehash
+```sh
+command -v your-command
 ```
 
-`rehash` is not an `aishe` subcommand — running `aishe rehash` from a terminal
-fails with `error: unrecognized subcommand`. The same is true of `sandbox`,
-`plan`, `cache`, and `details`; `reset` also has the real `aishe reset` form. See
-[Prompt-only meta commands](commands.md#prompt-only-meta-commands).
+The flagship front end uses your live zsh command resolution. If you just
+installed a command and zsh cached an earlier miss, run zsh's own `rehash` (or
+`hash -r`) as an ordinary shell builtin. `/rehash` is not an AIShe command.
 
 If it is a shell builtin or a function from a sourced file, define it in
 `.aishrc` so aishe knows about it, or use the zsh-PTY front-end where your real
@@ -191,9 +244,8 @@ model's price is known.
 
 The endpoint may not support SSE, in which case the whole answer arrives at once.
 Streaming is also not used for the scriptable `-c` path. Confirm streaming is on
-with `stream on` at the aishe prompt, or `stream = true` in your config
-(`stream` is a [prompt-only meta command](commands.md#prompt-only-meta-commands),
-not an `aishe` subcommand).
+through `aishe settings`, or set `stream = true` in your config. `stream` is not
+a slash or CLI command.
 
 ## Repairing or reconfiguring
 

@@ -14,6 +14,13 @@ use crate::providers::{self, Reach};
 
 pub const REPORT_SCHEMA_VERSION: u32 = 1;
 
+const STATE_SCAN_ENTRY_LIMIT: usize = 10_000;
+const HISTORY_WARN_BYTES: u64 = 64 * 1024 * 1024;
+const CONFIG_WARN_BYTES: u64 = 128 * 1024 * 1024;
+const SESSION_WARN_BYTES: u64 = 512 * 1024 * 1024;
+const CAPABILITY_WARN_BYTES: u64 = 32 * 1024 * 1024;
+const RUNTIME_WARN_BYTES: u64 = 2 * 1024 * 1024 * 1024;
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Status {
@@ -159,6 +166,8 @@ pub fn inspect(version: &str, options: &Options) -> Report {
             "install zsh; `aishe -c` and `aishe init bash` remain available",
         )
     });
+    checks.push(shell_compatibility_check());
+    checks.push(shell_keybinding_check());
 
     let (mut config, config_valid) = match Config::load_quiet() {
         Ok(Some(config)) => {
@@ -295,6 +304,22 @@ pub fn inspect(version: &str, options: &Options) -> Report {
     }
 
     append_policy_checks(&mut checks, &mut config);
+    crate::ui::configure(&config.ui);
+    let terminal = crate::ui::TerminalCapabilities::detect_stdout();
+    checks.push(Check::new(
+        "ui.terminal_policy",
+        Status::Pass,
+        Severity::Info,
+        format!(
+            "terminal UI: {:?} theme · {:?} color · {:?} glyphs · {:?} motion",
+            terminal.theme, terminal.color_depth, terminal.unicode, terminal.motion
+        )
+        .to_ascii_lowercase(),
+        format!(
+            "{}x{} cells; NO_COLOR, TERM=dumb, redirection, and JSON can reduce the configured presentation policy",
+            terminal.columns, terminal.rows
+        ),
+    ));
     append_backend_checks(&mut checks, &config, config_valid, options);
 
     let provider = config.active_provider_name().to_string();
@@ -499,6 +524,7 @@ pub fn inspect(version: &str, options: &Options) -> Report {
         )
         .fixable(config_valid),
     );
+    append_retention_checks(&mut checks, &paths, &config);
     checks.push(Check::new(
         "statusline",
         Status::Pass,
@@ -549,6 +575,135 @@ pub fn inspect(version: &str, options: &Options) -> Report {
         checks,
         capability_report,
     }
+}
+
+fn shell_compatibility_check() -> Check {
+    let shell = std::env::var_os("SHELL")
+        .and_then(|value| PathBuf::from(value).file_name().map(|name| name.to_owned()))
+        .and_then(|name| name.to_str().map(str::to_ascii_lowercase))
+        .unwrap_or_else(|| "unknown".into());
+    let pty = std::env::var_os("AISHE_OUR_ZDOTDIR").is_some()
+        || std::env::var_os("AISHE_PTY_PROMPT").is_some();
+    let hook = std::env::var_os("AISHE_PENDING_FILE").is_some();
+    let bash_version = std::env::var("BASH_VERSION").ok().or_else(|| {
+        std::process::Command::new("bash")
+            .arg("--version")
+            .output()
+            .ok()
+            .filter(|output| output.status.success())
+            .and_then(|output| String::from_utf8(output.stdout).ok())
+            .and_then(|output| output.lines().next().map(str::to_string))
+    });
+    let (tier, surface, caveat) = compatibility_tier(&shell, pty, hook, bash_version.as_deref());
+    Check::new(
+        "shell.compatibility",
+        Status::Pass,
+        Severity::Info,
+        format!("interactive shell: {tier} · {surface}"),
+        caveat,
+    )
+}
+
+fn shell_keybinding_check() -> Check {
+    let bindings = [
+        (
+            "force-agent",
+            std::env::var("AISHE_NL_KEY").unwrap_or_else(|_| "^[^M".into()),
+        ),
+        (
+            "mode-cycle",
+            std::env::var("AISHE_MODE_KEY").unwrap_or_else(|_| "^[[Z".into()),
+        ),
+        (
+            "fix-last",
+            std::env::var("AISHE_FIX_KEY").unwrap_or_else(|_| "^X^F".into()),
+        ),
+        (
+            "semantic-recall",
+            std::env::var("AISHE_RECALL_KEY").unwrap_or_else(|_| "^X^R".into()),
+        ),
+    ];
+    let collisions = keybinding_collisions(&bindings);
+    if collisions.is_empty() {
+        Check::new(
+            "shell.keybindings",
+            Status::Pass,
+            Severity::Info,
+            "AIShe keybindings: distinct",
+            "force-agent, mode-cycle, fix-last, and semantic-recall use distinct configured sequences",
+        )
+    } else {
+        Check::new(
+            "shell.keybindings",
+            Status::Warn,
+            Severity::Warning,
+            "AIShe keybindings: configured conflict",
+            format!(
+                "{}; rebind AISHE_NL_KEY, AISHE_MODE_KEY, AISHE_FIX_KEY, or AISHE_RECALL_KEY",
+                collisions.join("; ")
+            ),
+        )
+    }
+}
+
+fn keybinding_collisions(bindings: &[(&str, String)]) -> Vec<String> {
+    let mut collisions = Vec::new();
+    for (index, (left_name, left_value)) in bindings.iter().enumerate() {
+        for (right_name, right_value) in bindings.iter().skip(index + 1) {
+            if !left_value.is_empty() && left_value == right_value {
+                collisions.push(format!(
+                    "{left_name} and {right_name} both use {left_value:?}"
+                ));
+            }
+        }
+    }
+    collisions
+}
+
+fn compatibility_tier(
+    shell: &str,
+    pty: bool,
+    hook: bool,
+    bash_version: Option<&str>,
+) -> (&'static str, String, &'static str) {
+    if pty {
+        return (
+            "Tier A",
+            "zsh PTY".into(),
+            "flagship routing, native zsh editing/plugins, prompt, status, approvals, and agent rendering",
+        );
+    }
+    if hook && shell.contains("zsh") {
+        return (
+            "Tier A-",
+            "native zsh hook".into(),
+            "full-buffer route/staging contract; the user's prompt and plugin stack remain authoritative",
+        );
+    }
+    if hook && shell.contains("bash") {
+        let version = bash_version.unwrap_or("unknown version");
+        let major = version
+            .split(|character: char| !character.is_ascii_digit())
+            .find(|part| !part.is_empty())
+            .and_then(|part| part.parse::<u32>().ok());
+        if major == Some(3) {
+            return (
+                "Tier B-",
+                format!("native Bash {version}"),
+                "core hook routing/state is qualified; Ctrl-G, recall, Shift-Tab, Ctrl-O, and Ctrl-X Ctrl-F use documented alternatives",
+            );
+        }
+        return (
+            "Tier B",
+            format!("native Bash {version}"),
+            "declared Bash hook matrix; reduced full-buffer classification and Bash-native # comments remain",
+        );
+    }
+    (
+        "Tier C",
+        format!("non-interactive/current {shell}"),
+        "stable -c, pipe, route, and JSON contracts; launch `aishe` for Tier A or install a documented native hook",
+    )
 }
 
 fn append_policy_checks(checks: &mut Vec<Check>, config: &mut Config) {
@@ -1047,6 +1202,223 @@ pub fn resolved_paths() -> Paths {
     }
 }
 
+#[derive(Debug, Default, Eq, PartialEq)]
+struct StateSize {
+    bytes: u64,
+    entries: usize,
+    present: bool,
+    complete: bool,
+}
+
+fn append_retention_checks(checks: &mut Vec<Check>, paths: &Paths, config: &Config) {
+    let audit_path = std::env::var_os("AISHE_LOG_FILE")
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+        .or_else(|| config.logging.file.as_ref().map(PathBuf::from))
+        .unwrap_or_else(crate::audit::default_path);
+    let undo_path = std::env::var_os("AISHE_UNDO_JOURNAL")
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+        .unwrap_or_else(|| paths.data_dir.join("undo.jsonl"));
+    let open_code_credentials = paths.data_dir.join("backend").join("opencode").join("xdg");
+    let runtime_path = std::env::var_os("AISHE_RUNTIME_DIR")
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+        .unwrap_or_else(|| paths.data_dir.join("runtime"));
+
+    let audit_rotated = with_suffix(&audit_path, ".1");
+    for specification in [
+        RetentionSpec {
+            id: "state.size.history",
+            label: "shell history",
+            paths: vec![paths.history.clone(), paths.data_dir.join("history.vec")],
+            warn_bytes: HISTORY_WARN_BYTES,
+            per_file_warn_bytes: None,
+            cleanup: "aishe uninstall --history --dry-run",
+            policy: "retained until explicit deletion; no automatic rotation",
+        },
+        RetentionSpec {
+            id: "state.size.audit",
+            label: "audit log",
+            paths: vec![audit_path, audit_rotated],
+            warn_bytes: crate::audit::AUDIT_ROTATE_BYTES * 2,
+            per_file_warn_bytes: Some(crate::audit::AUDIT_ROTATE_BYTES),
+            cleanup: "aishe uninstall --audit-undo --dry-run",
+            policy: "active file rotates at 256 MiB; one .1 generation is retained",
+        },
+        RetentionSpec {
+            id: "state.size.undo",
+            label: "undo journal",
+            paths: vec![with_suffix(&undo_path, ".1"), undo_path],
+            warn_bytes: crate::undo::UNDO_ROTATE_BYTES * 2,
+            per_file_warn_bytes: Some(crate::undo::UNDO_ROTATE_BYTES),
+            cleanup: "aishe uninstall --audit-undo --dry-run",
+            policy: "active file rotates at 128 MiB; one .1 generation is retained",
+        },
+        RetentionSpec {
+            id: "state.size.sessions",
+            label: "sessions, tasks, and usage journals",
+            paths: vec![
+                paths.data_dir.join("tasks"),
+                paths.data_dir.join("backend").join("sessions"),
+                paths.data_dir.join("backend").join("journal"),
+                paths.data_dir.join("backend").join("journal.json"),
+            ],
+            warn_bytes: SESSION_WARN_BYTES,
+            per_file_warn_bytes: None,
+            cleanup: "aishe uninstall --sessions --dry-run",
+            policy: "retained until explicit deletion; OAuth credentials are excluded",
+        },
+        RetentionSpec {
+            id: "state.size.config",
+            label: "configuration and credentials",
+            paths: vec![paths.config_dir.clone(), open_code_credentials],
+            warn_bytes: CONFIG_WARN_BYTES,
+            per_file_warn_bytes: None,
+            cleanup: "aishe uninstall --config --dry-run",
+            policy: "retained until explicit credential/config deletion",
+        },
+        RetentionSpec {
+            id: "state.size.capabilities",
+            label: "capability cache",
+            paths: vec![paths.capability_dir.clone()],
+            warn_bytes: CAPABILITY_WARN_BYTES,
+            per_file_warn_bytes: None,
+            cleanup: "aishe doctor --fix",
+            policy: "records expire after seven days; Doctor removes stale entries",
+        },
+        RetentionSpec {
+            id: "state.size.runtime",
+            label: "managed runtime/cache",
+            paths: vec![runtime_path],
+            warn_bytes: RUNTIME_WARN_BYTES,
+            per_file_warn_bytes: None,
+            cleanup: "aishe uninstall --runtime --dry-run",
+            policy: "managed artifacts persist across upgrades until explicit cleanup",
+        },
+    ] {
+        checks.push(retention_check(&specification));
+    }
+}
+
+struct RetentionSpec<'a> {
+    id: &'a str,
+    label: &'a str,
+    paths: Vec<PathBuf>,
+    warn_bytes: u64,
+    per_file_warn_bytes: Option<u64>,
+    cleanup: &'a str,
+    policy: &'a str,
+}
+
+fn retention_check(specification: &RetentionSpec<'_>) -> Check {
+    let size = state_size(&specification.paths, STATE_SCAN_ENTRY_LIMIT);
+    let oversized_file = specification.per_file_warn_bytes.is_some_and(|limit| {
+        specification.paths.iter().any(|path| {
+            std::fs::symlink_metadata(path)
+                .is_ok_and(|metadata| metadata.is_file() && metadata.len() >= limit)
+        })
+    });
+    let status = if !size.present {
+        Status::Skipped
+    } else if !size.complete || oversized_file || size.bytes >= specification.warn_bytes {
+        Status::Warn
+    } else {
+        Status::Pass
+    };
+    let scan = if size.complete {
+        format!(
+            "{} across {} filesystem entries",
+            human_bytes(size.bytes),
+            size.entries
+        )
+    } else {
+        format!(
+            "at least {} across {} filesystem entries; bounded scan stopped at {} entries",
+            human_bytes(size.bytes),
+            size.entries,
+            STATE_SCAN_ENTRY_LIMIT
+        )
+    };
+    Check::new(
+        specification.id,
+        status,
+        Severity::Warning,
+        format!("{}: {scan}", specification.label),
+        format!(
+            "{}; warning threshold {}; preview cleanup with `{}`",
+            specification.policy,
+            human_bytes(specification.warn_bytes),
+            specification.cleanup
+        ),
+    )
+}
+
+fn state_size(paths: &[PathBuf], entry_limit: usize) -> StateSize {
+    let mut result = StateSize {
+        complete: true,
+        ..StateSize::default()
+    };
+    let mut pending = paths.to_vec();
+    while let Some(path) = pending.pop() {
+        if result.entries >= entry_limit {
+            result.complete = false;
+            break;
+        }
+        let metadata = match std::fs::symlink_metadata(&path) {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(_) => {
+                result.present = true;
+                result.complete = false;
+                continue;
+            }
+        };
+        result.present = true;
+        result.entries += 1;
+        if metadata.file_type().is_symlink() {
+            continue;
+        }
+        if metadata.is_file() {
+            result.bytes = result.bytes.saturating_add(metadata.len());
+            continue;
+        }
+        if metadata.is_dir() {
+            match std::fs::read_dir(&path) {
+                Ok(entries) => {
+                    pending.extend(
+                        entries
+                            .filter_map(|entry| entry.ok())
+                            .map(|entry| entry.path()),
+                    );
+                }
+                Err(_) => result.complete = false,
+            }
+        }
+    }
+    result
+}
+
+fn with_suffix(path: &Path, suffix: &str) -> PathBuf {
+    let mut value = path.as_os_str().to_os_string();
+    value.push(suffix);
+    PathBuf::from(value)
+}
+
+fn human_bytes(bytes: u64) -> String {
+    const UNITS: &[(&str, u64)] = &[
+        ("GiB", 1024 * 1024 * 1024),
+        ("MiB", 1024 * 1024),
+        ("KiB", 1024),
+    ];
+    for (unit, divisor) in UNITS {
+        if bytes >= *divisor {
+            return format!("{:.1} {unit}", bytes as f64 / *divisor as f64);
+        }
+    }
+    format!("{bytes} B")
+}
+
 fn apply_safe_fixes(paths: &Paths, config_valid: bool) -> Check {
     let mut changed = Vec::new();
     let mut notes = Vec::new();
@@ -1377,6 +1749,104 @@ mod tests {
         let json = serde_json::to_string(&report).unwrap();
         assert!(text.contains("example.check"));
         assert!(json.contains("example.check"));
+    }
+
+    #[test]
+    fn compatibility_tiers_name_surfaces_and_bash_caveats() {
+        let cases = [
+            ("zsh", true, true, None, "Tier A"),
+            ("zsh", false, true, None, "Tier A-"),
+            ("bash", false, true, Some("3.2.57"), "Tier B-"),
+            ("bash", false, true, Some("5.3.9"), "Tier B"),
+            ("fish", false, false, None, "Tier C"),
+        ];
+        for (shell, pty, hook, version, expected) in cases {
+            let (tier, surface, caveat) = compatibility_tier(shell, pty, hook, version);
+            assert_eq!(tier, expected);
+            assert!(!surface.is_empty());
+            assert!(!caveat.is_empty());
+        }
+        let (_, _, bash3) = compatibility_tier("bash", false, true, Some("3.2.57"));
+        assert!(bash3.contains("Ctrl-G"));
+    }
+
+    #[test]
+    fn keybinding_conflicts_are_reported_without_dropping_an_action() {
+        let distinct = [
+            ("force-agent", "^[^M".into()),
+            ("mode-cycle", "^[[Z".into()),
+            ("fix-last", "^X^F".into()),
+            ("semantic-recall", "^X^R".into()),
+        ];
+        assert!(keybinding_collisions(&distinct).is_empty());
+
+        let colliding = [
+            ("force-agent", "^G".into()),
+            ("mode-cycle", "^[[Z".into()),
+            ("fix-last", "^G".into()),
+            ("semantic-recall", "^X^R".into()),
+        ];
+        let collisions = keybinding_collisions(&colliding);
+        assert_eq!(collisions.len(), 1);
+        assert!(collisions[0].contains("force-agent and fix-last"));
+        assert!(collisions[0].contains("^G"));
+    }
+
+    #[test]
+    fn retention_check_warns_at_the_documented_bound() {
+        let path = std::env::temp_dir().join(format!(
+            "aishe-retention-bound-{}-{}",
+            std::process::id(),
+            std::thread::current().name().unwrap_or("test")
+        ));
+        std::fs::remove_file(&path).ok();
+        let file = std::fs::File::create(&path).unwrap();
+        file.set_len(4096).unwrap();
+        let check = retention_check(&RetentionSpec {
+            id: "state.size.test",
+            label: "test state",
+            paths: vec![path.clone()],
+            warn_bytes: 4096,
+            per_file_warn_bytes: None,
+            cleanup: "aishe cleanup --dry-run",
+            policy: "test policy",
+        });
+        assert_eq!(check.status, Status::Warn);
+        assert!(check.summary.contains("4.0 KiB"));
+        assert!(check.detail.contains("aishe cleanup --dry-run"));
+        std::fs::remove_file(path).ok();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn state_size_is_bounded_and_never_follows_symlinks() {
+        use std::os::unix::fs::symlink;
+
+        let root = std::env::temp_dir().join(format!(
+            "aishe-state-size-{}-{}",
+            std::process::id(),
+            std::thread::current().name().unwrap_or("test")
+        ));
+        let outside = root.with_extension("outside");
+        std::fs::remove_dir_all(&root).ok();
+        std::fs::remove_file(&outside).ok();
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("small"), [0_u8; 17]).unwrap();
+        let outside_file = std::fs::File::create(&outside).unwrap();
+        outside_file.set_len(1024 * 1024).unwrap();
+        symlink(&outside, root.join("outside-link")).unwrap();
+
+        let complete = state_size(std::slice::from_ref(&root), 100);
+        assert!(complete.complete);
+        assert_eq!(complete.bytes, 17);
+        assert_eq!(complete.entries, 3);
+
+        let bounded = state_size(std::slice::from_ref(&root), 1);
+        assert!(!bounded.complete);
+        assert_eq!(bounded.entries, 1);
+
+        std::fs::remove_dir_all(&root).ok();
+        std::fs::remove_file(&outside).ok();
     }
 
     #[cfg(unix)]

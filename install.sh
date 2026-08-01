@@ -302,9 +302,9 @@ if [ "$os" = "Linux" ] && ! command -v bwrap >/dev/null 2>&1; then
 fi
 
 if [ "$existing" = 1 ]; then
-  note 'Run `aishe doctor` to verify the upgraded installation.'
+  note "Run \`aishe doctor\` to verify the upgraded installation."
 else
-  note 'Run `aishe setup`'
+  note "Run \`aishe setup\`"
 fi
 
 if [ "$RUN_SETUP" = 1 ]; then

@@ -28,18 +28,24 @@ behavior see [front-ends.md](front-ends.md), [modes.md](modes.md), and
 
 ## Crate layout
 
-The crate is a library (`src/lib.rs`) with a thin binary driver
-(`src/main.rs`). Everything testable lives in the library so the integration
-tests in `tests/` can exercise internals directly.
+The crate exposes its reusable contracts through `src/lib.rs`.
+`src/main.rs` is a compact binary composition root (kept below 1,500 lines by a
+structural test): it parses the binary-owned Clap surface and coordinates the
+top-level flow. Focused modules under `src/cli/` own backend, connection,
+history, hints, runtime, session, settings, status, and public-error behavior;
+library domains remain directly testable without the binary driver.
 
 | Module | Responsibility |
 | --- | --- |
+| `cli` | Focused command orchestration and output contracts; `cli/args.rs` remains binary-owned through an explicit path module. |
 | `dispatcher` | Classify a line: shell / natural language / intercepted builtin. Owns the command cache. |
+| `command_surface` | Declarative built-in slash namespace, lifecycle, CLI mapping, and per-front-end availability. |
 | `executor` | Run shell lines via `zsh -c`/`bash -c`; intercept state-mutating builtins (`cd`, `export`, ...); capture output; job table. |
 | `pty` | The flagship front-end: run the user's real interactive zsh inside a PTY. |
 | `integration` | The zsh/bash hook scripts (`aishe init zsh`) injected as `command_not_found_handler` + `precmd` + ZLE widgets. |
 | `setup` / `promptui` | Resumable setup state machine and reusable interactive menus/text prompts. |
-| `config` / `credentials` / `auth` | Schema/versioned ordinary config, the separate private shared store/resolver, and credential-management CLI. |
+| `ui` | Terminal capability resolution, semantic palettes/glyphs, cell/grapheme layout, and plain/static policy. |
+| `config` / `credentials` / `auth` | Schema-versioned ordinary config, atomic migration/precedence, the separate private shared store/resolver, and credential-management CLI. |
 | `settings` / `profiles` | Transactional settings with provenance; named safety bundles and readiness checks. |
 | `agent` | Backend-neutral session/prompt/event/scope/usage contract plus the foreground turn controller/renderer. |
 | `backend::runtime` / `manifest` | Exact-version platform manifest, bounded download/extraction, SHA/version verification, atomic install/repair/rollback/GC. |
@@ -60,7 +66,6 @@ tests in `tests/` can exercise internals directly.
 | `uninstall` | Exact category/path uninstall planning with state-preserving defaults. |
 | `usagelog` | Cross-process PTY usage aggregation and live status rendering data. |
 | `session` | In-session conversation memory, persisted to a per-session file for the hook front-ends (whose NL calls are separate processes). |
-| `config` | Versioned config schema, atomic migration/save, CLI override and project-overlay precedence. |
 | `trust` | Trust store for project `.aishe/config.toml` overlays (`aishe trust`). |
 | `cache` | Short-TTL response cache wrapping a `Provider` for identical suggest repeats. |
 | `redact` | Best-effort secret scrubbing of the context block. |
@@ -73,17 +78,23 @@ tests in `tests/` can exercise internals directly.
 
 ## The routing decision (the heart of it)
 
-`dispatcher::dispatch(line, cache) -> Dispatch` decides what a line *is*, and is
-the single most important function to understand. It returns
-`Shell` / `NaturalLanguage` / `Builtin`. The order is deliberate; earlier rules
-win:
+`dispatcher::route(line, cache) -> RouteDecision` decides what a line *is*, and
+is the single most important function to understand. It returns the stable
+route kind/reason, effective head, known-command/ambiguity evidence, and the
+compatible execution payload. `dispatcher::dispatch` remains a compatibility
+adapter. The order is deliberate; earlier rules win:
 
-1. **Forced LLM:** a leading `?` or `#` always routes to the model, even if the
-   rest is a real command (`? who wrote zsh`). The sigil is stripped.
+1. **Forced LLM:** a leading `?` always routes to the model, even if the rest is
+   a real command (`? who wrote zsh`). `#` is a deprecated compatibility alias
+   in the zsh/Rust paths through AIShe 0.8; Bash retains comment syntax. The
+   force-agent sigil is stripped.
 2. **Forced shell:** a leading `!` routes to the shell and is exempt from the
    safety gate. The sigil is stripped.
-3. **Slash-commands:** `/<meta> ...` is an alias for `aishe <meta> ...`, but only
-   if `<meta>` is a known subcommand, so `/usr/bin/x` stays a path.
+3. **Slash-commands:** `command_surface` reserves the built-in namespace and
+   maps a supported `/<command> ...` to its explicit AIShe action. The
+   interactive hook intentionally supports a curated subset of CLI commands;
+   an arbitrary `aishe` subcommand does not automatically gain a slash form.
+   Absolute paths such as `/usr/bin/x` stay shell paths.
 4. **Intercepted builtins:** `cd`, `export`, `unset`, `source`, `exit`, `aishe`,
    the dir-stack and job builtins, `history` (state that must persist in-process).
 5. **Shell-syntax signals:** lines starting with `./`, `/`, `~/`, `$(`, `(`;
@@ -103,12 +114,13 @@ win:
 
 ### The command cache
 
-`CommandCache` backs rule 7. `build()` scans `$PATH` synchronously (so builtins
+`CommandCache` backs rule 8. `build()` scans `$PATH` synchronously (so builtins
 and PATH commands are recognized on the very first prompt) and then fetches zsh
 builtins, aliases, and functions on a background thread (so a slow `.zshrc`
 doesn't block startup). A hardcoded `FALLBACK_BUILTINS` set covers the window
-before the async fetch lands and the case where querying zsh fails. `aishe
-rehash` rebuilds it synchronously.
+before the async fetch lands and the case where querying zsh fails. Each
+short-lived AIShe process builds current PATH state; the flagship zsh front end
+also uses zsh's own live command resolution.
 
 The classification logic is pure and exhaustively unit-tested at the bottom of
 `src/dispatcher.rs` and in `tests/dispatcher.rs`; the deterministic PTY suites
@@ -147,9 +159,12 @@ The hook (in `src/integration.rs`) is the subtle part:
   prompt glyph.
 
 The same `init` mechanism also works as a pure hook in the user's own shell
-without the PTY (`eval "$(aishe init zsh)"` in `.zshrc`); the PTY wrapper is just
-the turnkey path that needs no rc edit. bash has an equivalent script (the way to
-use aishe interactively without zsh).
+without the PTY (`eval "$(aishe init zsh)"` in `.zshrc`); the PTY wrapper is the
+turnkey path that needs no rc edit. The Bash hook supports tested
+unknown-command routing and core controls as Tier B on Bash 5.x and reduced
+Tier B- on Bash 3.2, but it is not feature-equivalent to the zsh full-buffer
+classifier and has no AIShe-managed PTY experience. The executable contract is
+in the [Bash compatibility matrix](bash-compatibility.md).
 
 ### Non-interactive (`-c`, piped stdin)
 
@@ -286,9 +301,11 @@ AIShe never falls through to native or starts a second provider request.
 
 ## Cross-cutting concerns
 
-- **Config and credentials (`config.rs`, `credentials.rs`).** Schema-v4 config
-  migration creates a private backup and atomically adds non-secret credential
-  profile references. API keys live in a separate mode-`0600`, versioned,
+- **Config and credentials (`config.rs`, `credentials.rs`).** The current user
+  config schema is version 7. Loading an earlier supported schema creates a
+  private backup and applies the migration chain atomically, including
+  non-secret credential profiles and named connections. API keys live in a
+  separate mode-`0600`, versioned,
   atomically written shared file; one resolver applies environment > staged
   setup value > saved profile precedence for every provider path. Ordinary
   config rewrites remain atomic. Precedence is `CLI flags > project overlay >
@@ -296,7 +313,7 @@ AIShe never falls through to native or starts a second provider request.
   `Config::apply_project_overlay` merges a repo's `.aishe/config.toml` under the
   tiered trust rules (safe keys always, sensitive keys only when `trust::is_trusted`),
   walking up from cwd. Audit logging resolves `AISHE_LOG`/`AISHE_LOG_FILE` over the
-  file via `resolve_audit` (in `main.rs`). Missing non-TTY config is actionable and
+  file via `resolve_audit` (in `src/cli/history.rs`). Missing non-TTY config is actionable and
   never creates guessed defaults; guided setup is explicit and resumable. A
   pre-rename `llmsh` config is migrated on first run. All precedence is unit/E2E
   tested.
@@ -357,7 +374,8 @@ informational because model output varies.
 
 ## Where to start reading
 
-- To change routing: `src/dispatcher.rs` (and its tests).
+- To change routing: `src/dispatcher.rs`; to change the built-in slash namespace
+  or surface availability: `src/command_surface.rs`.
 - To change how commands run: `src/executor.rs`.
 - To change the interactive experience: `src/pty.rs` + `src/integration.rs` (the
   default) — the only interactive front-end.

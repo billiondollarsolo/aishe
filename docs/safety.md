@@ -179,10 +179,9 @@ model proposed.
 ## Sandbox (policy-based, best-effort)
 
 The native compatibility backend has an optional policy screen
-(`yolo_sandbox = true`, off by default; toggle
-by typing `sandbox on` at the aishe prompt — a
-[prompt-only meta command](commands.md#prompt-only-meta-commands), not an `aishe`
-subcommand). When on, before a `run_command` runs, aishe classifies
+(`yolo_sandbox = true`, off by default). Set it in `config.toml`; selecting a
+named safety profile through `aishe settings` may also update it. `sandbox` is
+not a slash or CLI command. When on, before a `run_command` runs, AIShe classifies
 the command and refuses it - feeding the reason back to the model as the tool
 result instead of executing - if it:
 

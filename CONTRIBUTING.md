@@ -16,7 +16,10 @@ gate, plus the conventions the project follows.
 cargo build            # debug
 cargo build --release  # what the PTY/admin harnesses run against
 ```
-`Cargo.lock` is committed and the build is fully offline.
+`Cargo.lock` is committed, so dependency versions are pinned. A fresh build may
+still need network access to download the Rust toolchain, crates, or the managed
+runtime. After those artifacts are cached, Cargo work can be run offline with
+`cargo build --locked --offline`.
 
 ## The full local gate
 Run this before opening a PR — it mirrors CI:
@@ -24,6 +27,8 @@ Run this before opening a PR — it mirrors CI:
 cargo fmt --all -- --check
 cargo clippy --all-targets -- -D warnings
 cargo test                                   # unit + integration (spawns a real shell)
+# Lint maintained shell sources and syntax-check exactly what `aishe init` emits.
+python3 tests/shell_contract.py target/debug/aishe
 
 # PTY harnesses (need zsh; use the release binary)
 cargo build --release
@@ -32,6 +37,7 @@ python3 tests/pty_scenarios.py target/release/aishe
 python3 tests/pty_fuzz.py      target/release/aishe        # add a multiplier to scale: `... 5`
 python3 tests/zsh_features.py  target/release/aishe
 python3 tests/pty_signals.py   target/release/aishe
+python3 tests/bash_hook.py target/release/aishe --bash bash --require-current-family
 python3 tests/admin_validation.py target/release/aishe
 ```
 

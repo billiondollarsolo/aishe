@@ -115,9 +115,10 @@ server and verifies its health/config/plugin/tool restrictions without making a
 provider call. `repair` stages and verifies a replacement before activation.
 `rollback` swaps to the immediately previous compatible, already-verified
 runtime. `gc` removes only abandoned download/staging paths.
-`status --json` emits schema version 1 with separate `runtime` and sanitized
-`supervisor` objects; private listener credentials, tokens, nonces, and URLs are
-never serialized.
+Every lifecycle `--json` result is schema-versioned. `status` emits v1 with
+separate `runtime` and sanitized `supervisor` objects; `install`/`repair` wrap
+runtime status under `runtime`, and `verify` adds `live`. Private listener
+credentials, tokens, nonces, and URLs are never serialized.
 
 For an offline or mirrored setup:
 

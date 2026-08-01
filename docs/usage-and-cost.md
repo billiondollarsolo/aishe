@@ -145,9 +145,8 @@ commands, git state), so running anything between two otherwise-identical
 requests changes the key and misses the cache — you never get a stale suggestion
 after the situation has moved on. Managed conversations rely on their durable
 session rather than this native response cache; tool loops are never cached.
-Toggle by typing `cache on` / `cache off` at the aishe prompt — a
-[prompt-only meta command](commands.md#prompt-only-meta-commands), not an `aishe`
-subcommand — or set `cache` in your config.
+Configure the native cache through `aishe settings` or the `cache` field in
+`config.toml`. `cache` is not a slash or CLI command.
 
 ## Notes on accuracy
 

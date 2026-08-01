@@ -4,14 +4,16 @@
 pub mod suggest;
 pub mod yolo;
 
-use std::io::{IsTerminal, Write};
+use std::io::Write;
 
-use crossterm::style::Stylize;
 use serde_json::json;
 
 use crate::config::Config;
 use crate::providers::{Provider, ToolDef};
 use crate::safety::{self, Risk};
+#[cfg(feature = "highlight")]
+use crate::ui::ColorDepth;
+use crate::ui::{StyleToken, TerminalCapabilities, Theme};
 use crate::usage;
 
 /// `true` if the session has reached the configured `budget_usd`. When it has,
@@ -24,16 +26,16 @@ pub fn budget_reached(provider: &dyn Provider, config: &Config) -> bool {
         &config.pricing,
         config.aishe.budget_usd,
     ) {
+        let message = format!(
+            "budget reached (~${:.2} ≥ ${:.2}); raise `budget_usd` to continue",
+            usage::price_for(config.active_model(), &config.pricing)
+                .map(|p| usage::cost(snap, p))
+                .unwrap_or(0.0),
+            config.aishe.budget_usd,
+        );
         eprintln!(
             "  {}",
-            format!(
-                "budget reached (~${:.2} ≥ ${:.2}); raise `budget_usd` to continue",
-                usage::price_for(config.active_model(), &config.pricing)
-                    .map(|p| usage::cost(snap, p))
-                    .unwrap_or(0.0),
-                config.aishe.budget_usd,
-            )
-            .red()
+            TerminalCapabilities::detect_stderr().paint(StyleToken::Danger, &message)
         );
         return true;
     }
@@ -50,9 +52,10 @@ pub fn report_usage(provider: &dyn Provider, config: &Config) {
     if snap.is_empty() {
         return;
     }
+    let summary = usage::summary(snap, config.active_model(), &config.pricing);
     eprintln!(
         "  {}",
-        usage::summary(snap, config.active_model(), &config.pricing).dim()
+        TerminalCapabilities::detect_stderr().paint(StyleToken::Muted, &summary)
     );
 }
 
@@ -158,10 +161,8 @@ pub fn run_command_tool() -> ToolDef {
 /// code blocks are syntax-highlighted (when the `highlight` feature is on).
 pub fn render_markdown(text: &str) {
     let text = crate::commands::display_safe_multiline(text);
-    let styled = std::io::stdout().is_terminal()
-        && std::env::var_os("NO_COLOR").is_none()
-        && std::env::var("TERM").ok().as_deref() != Some("dumb");
-    if !styled {
+    let capabilities = TerminalCapabilities::detect_stdout();
+    if !capabilities.styled() {
         print!("{text}");
         if !text.ends_with('\n') {
             println!();
@@ -172,29 +173,70 @@ pub fn render_markdown(text: &str) {
 
     #[cfg(not(feature = "highlight"))]
     {
-        markdown_skin().print_text(&text);
+        markdown_skin(&capabilities).print_text(&text);
     }
     #[cfg(feature = "highlight")]
     {
-        render_markdown_highlighted(&text);
+        if capabilities.color_depth == ColorDepth::TrueColor {
+            render_markdown_highlighted(&text, &capabilities);
+        } else {
+            markdown_skin(&capabilities).print_text(&text);
+        }
     }
 }
 
-fn markdown_skin() -> termimad::MadSkin {
+/// Render a long answer through the styled production path for the repository's
+/// standalone performance probe.
+///
+/// The caller redirects stdout to a sink, so this measures sanitization,
+/// markdown layout, and (with the default feature set) syntax highlighting
+/// without measuring a particular terminal emulator's write latency.
+#[doc(hidden)]
+pub fn performance_render_long_answer(text: &str) -> usize {
+    let text = crate::commands::display_safe_multiline(text);
+    let capabilities = TerminalCapabilities::resolve(&crate::ui::CapabilityInputs {
+        is_tty: true,
+        term: Some("xterm-256color".into()),
+        colorterm: Some("truecolor".into()),
+        locale: Some("en_US.UTF-8".into()),
+        theme: Some("dark".into()),
+        size: Some((100, 40)),
+        ..crate::ui::CapabilityInputs::default()
+    });
+    #[cfg(feature = "highlight")]
+    render_markdown_highlighted(&text, &capabilities);
+    #[cfg(not(feature = "highlight"))]
+    markdown_skin(&capabilities).print_text(&text);
+    let _ = std::io::stdout().flush();
+    text.len()
+}
+
+fn markdown_skin(capabilities: &TerminalCapabilities) -> termimad::MadSkin {
     use termimad::crossterm::style::{Attribute, Color};
 
     let mut skin = termimad::MadSkin::default();
     for (depth, header) in skin.headers.iter_mut().enumerate() {
         header.align = termimad::Alignment::Left;
         header.compound_style.remove_attr(Attribute::Underlined);
-        header.set_fg(if depth == 0 {
+        header.set_fg(if capabilities.theme == Theme::Light {
+            if depth == 0 {
+                Color::Blue
+            } else {
+                Color::DarkBlue
+            }
+        } else if depth == 0 {
             Color::Cyan
         } else {
             Color::DarkCyan
         });
     }
-    skin.bullet.set_fg(Color::Cyan);
-    skin.quote_mark.set_fg(Color::DarkCyan);
+    let accent = if capabilities.theme == Theme::Light {
+        Color::Blue
+    } else {
+        Color::Cyan
+    };
+    skin.bullet.set_fg(accent);
+    skin.quote_mark.set_fg(accent);
     skin.horizontal_rule.set_fg(Color::DarkGrey);
     skin
 }
@@ -203,8 +245,8 @@ fn markdown_skin() -> termimad::MadSkin {
 /// blocks (syntax-highlighted), preserving order. A trailing unterminated fence
 /// is still rendered as code.
 #[cfg(feature = "highlight")]
-fn render_markdown_highlighted(text: &str) {
-    let skin = markdown_skin();
+fn render_markdown_highlighted(text: &str, capabilities: &TerminalCapabilities) {
+    let skin = markdown_skin(capabilities);
     let mut prose = String::new();
     let mut code = String::new();
     let mut lang = String::new();
@@ -214,7 +256,7 @@ fn render_markdown_highlighted(text: &str) {
         let head = line.trim_start();
         if in_code {
             if head.starts_with("```") {
-                highlight::print_code_block(&code, &lang);
+                highlight::print_code_block(&code, &lang, capabilities);
                 code.clear();
                 lang.clear();
                 in_code = false;
@@ -235,7 +277,7 @@ fn render_markdown_highlighted(text: &str) {
         }
     }
     if in_code && !code.is_empty() {
-        highlight::print_code_block(&code, &lang);
+        highlight::print_code_block(&code, &lang, capabilities);
     }
     if !prose.trim().is_empty() {
         skin.print_text(&prose);
@@ -254,30 +296,43 @@ mod highlight {
     use syntect::util::{as_24_bit_terminal_escaped, LinesWithEndings};
 
     static SYNTAXES: OnceLock<SyntaxSet> = OnceLock::new();
-    static THEME: OnceLock<Theme> = OnceLock::new();
+    static DARK_THEME: OnceLock<Theme> = OnceLock::new();
+    static LIGHT_THEME: OnceLock<Theme> = OnceLock::new();
 
     fn syntaxes() -> &'static SyntaxSet {
         SYNTAXES.get_or_init(SyntaxSet::load_defaults_newlines)
     }
 
-    fn theme() -> &'static Theme {
-        THEME.get_or_init(|| {
+    fn theme(light: bool) -> &'static Theme {
+        let slot = if light { &LIGHT_THEME } else { &DARK_THEME };
+        slot.get_or_init(|| {
             let mut ts = ThemeSet::load_defaults();
-            ts.themes
-                .remove("base16-ocean.dark")
-                .unwrap_or_else(|| ThemeSet::load_defaults().themes["InspiredGitHub"].clone())
+            let name = if light {
+                "InspiredGitHub"
+            } else {
+                "base16-ocean.dark"
+            };
+            ts.themes.remove(name).unwrap_or_default()
         })
     }
 
     /// Print one fenced code block, syntax-highlighted by `lang` (falling back to
     /// plain text for unknown or empty languages). A subdued label and rule make
     /// the block distinct without prefixing copied code with border characters.
-    pub fn print_code_block(code: &str, lang: &str) {
-        print!("{}", render_code_block(code, lang));
+    pub fn print_code_block(
+        code: &str,
+        lang: &str,
+        capabilities: &crate::ui::TerminalCapabilities,
+    ) {
+        print!("{}", render_code_block(code, lang, capabilities));
         let _ = std::io::stdout().flush();
     }
 
-    pub(super) fn render_code_block(code: &str, lang: &str) -> String {
+    pub(super) fn render_code_block(
+        code: &str,
+        lang: &str,
+        capabilities: &crate::ui::TerminalCapabilities,
+    ) -> String {
         let ss = syntaxes();
         let syntax = (!lang.is_empty())
             .then(|| {
@@ -287,10 +342,12 @@ mod highlight {
             .flatten()
             .unwrap_or_else(|| ss.find_syntax_plain_text());
 
-        let mut h = HighlightLines::new(syntax, theme());
+        let mut h =
+            HighlightLines::new(syntax, theme(capabilities.theme == crate::ui::Theme::Light));
         let mut out = String::new();
         let label = if lang.is_empty() { "code" } else { lang };
-        out.push_str(&format!("\x1b[2;36m  {label}\x1b[0m\n"));
+        out.push_str(&capabilities.paint(crate::ui::StyleToken::CodeLabel, &format!("  {label}")));
+        out.push('\n');
         for line in LinesWithEndings::from(code) {
             match h.highlight_line(line, ss) {
                 Ok(ranges) => {
@@ -305,37 +362,26 @@ mod highlight {
         if !code.ends_with('\n') {
             out.push('\n');
         }
-        out.push_str("\x1b[2;36m  ────────────────────\x1b[0m\n");
+        let rule = if capabilities.glyphs().focus() == ">" {
+            "  --------------------"
+        } else {
+            "  ────────────────────"
+        };
+        out.push_str(&capabilities.paint(crate::ui::StyleToken::CodeLabel, rule));
+        out.push('\n');
         out
     }
 }
 
-/// After a final answer has been streamed to the screen as raw text, re-render it
-/// as markdown in place so code fences, lists, and emphasis look right. We move
-/// the cursor back up over the streamed block (a relative move, robust to the
-/// terminal having scrolled) and clear it before rendering. If the streamed block
-/// was taller than the screen, the top scrolled off and cannot be erased, so we
-/// just terminate the line and keep the raw text.
+/// Finish the stable streaming contract.
+///
+/// Streamed answers are printed once as terminal-safe Markdown source. We do
+/// not move the cursor upward or destructively re-render at completion: that
+/// made short and long answers behave differently, duplicated text after some
+/// resize/scroll sequences, and was unreliable through multiplexers and SSH.
+/// Buffered answers can still use the rich Markdown renderer.
 pub fn rerender_streamed_markdown(text: &str) {
-    use crossterm::{cursor, terminal, ExecutableCommand};
-    let text = crate::commands::display_safe_multiline(text);
-    // In a pipe/file there is no cursor to move; the raw markdown already streamed
-    // out, so just end the line and leave it.
-    if !std::io::stdout().is_terminal() {
-        println!();
-        return;
-    }
-    let (cols, rows) = terminal::size().unwrap_or((80, 24));
-    let used = streamed_rows(&text, cols);
-    if used + 1 < rows as usize {
-        let mut out = std::io::stdout();
-        let _ = out.execute(cursor::MoveToColumn(0));
-        if used > 1 {
-            let _ = out.execute(cursor::MoveUp((used - 1) as u16));
-        }
-        let _ = out.execute(terminal::Clear(terminal::ClearType::FromCursorDown));
-        render_markdown(&text);
-    } else {
+    if !text.ends_with('\n') {
         println!();
     }
 }
@@ -345,29 +391,21 @@ mod markdown_tests {
     #[cfg(feature = "highlight")]
     #[test]
     fn fenced_code_highlighting_is_visually_delimited_and_preserves_code() {
-        let rendered = super::highlight::render_code_block("echo \"$HOME\"\n", "bash");
+        let capabilities = crate::ui::TerminalCapabilities::resolve(&crate::ui::CapabilityInputs {
+            is_tty: true,
+            term: Some("xterm-256color".into()),
+            colorterm: Some("truecolor".into()),
+            locale: Some("en_US.UTF-8".into()),
+            ..crate::ui::CapabilityInputs::default()
+        });
+        let rendered =
+            super::highlight::render_code_block("echo \"$HOME\"\n", "bash", &capabilities);
         assert!(rendered.contains("bash"));
         assert!(rendered.contains("echo"));
         assert!(rendered.contains("HOME"));
         assert!(rendered.contains("\x1b["));
         assert!(rendered.contains("────────────────────"));
     }
-}
-
-/// Estimate how many terminal rows a raw streamed string occupied, accounting for
-/// line wrapping at `cols`. Used to reposition the cursor for re-rendering.
-fn streamed_rows(text: &str, cols: u16) -> usize {
-    let cols = cols.max(1) as usize;
-    text.split('\n')
-        .map(|line| {
-            let w = line.chars().count();
-            if w == 0 {
-                1
-            } else {
-                w.div_ceil(cols)
-            }
-        })
-        .sum()
 }
 
 /// Strip code fences and slice from the first `{` to the last `}` so we can
@@ -413,21 +451,35 @@ pub fn safety_gate(command: &str) -> GateOutcome {
 }
 
 fn confirm_dangerous(command: &str, reason: &str) -> GateOutcome {
+    let capabilities = TerminalCapabilities::detect_stdout();
+    let ascii = capabilities.glyphs().focus() == ">";
+    let top = if ascii {
+        "  +-- DANGEROUS COMMAND ----------------"
+    } else {
+        "  ┌─ DANGEROUS COMMAND ─────────────────"
+    };
+    let side = if ascii { "|" } else { "│" };
+    let bottom = if ascii {
+        "  +--------------------------------------"
+    } else {
+        "  └─────────────────────────────────────"
+    };
+    let command = crate::commands::display_safe(command);
+    let reason = crate::commands::display_safe(reason);
     println!();
+    println!("{}", capabilities.paint(StyleToken::Danger, top));
     println!(
-        "{}",
-        "  ┌─ DANGEROUS COMMAND ─────────────────".red().bold()
+        "  {} {}",
+        capabilities.paint(StyleToken::Danger, side),
+        capabilities.paint(StyleToken::ProposedCommand, &command)
     );
-    println!("  {} {}", "│".red(), command.white().bold());
-    println!("  {} reason: {}", "│".red(), reason.yellow());
     println!(
-        "{}",
-        "  └─────────────────────────────────────".red().bold()
+        "  {} reason: {}",
+        capabilities.paint(StyleToken::Danger, side),
+        capabilities.paint(StyleToken::Warning, &reason)
     );
-    print!(
-        "  Type {} to proceed (anything else cancels): ",
-        "yes".red().bold()
-    );
+    println!("{}", capabilities.paint(StyleToken::Danger, bottom));
+    print!("  Type yes to proceed (anything else cancels): ");
     std::io::stdout().flush().ok();
 
     let mut line = String::new();
@@ -437,27 +489,44 @@ fn confirm_dangerous(command: &str, reason: &str) -> GateOutcome {
     if line.trim() == "yes" {
         GateOutcome::Proceed
     } else {
-        println!("  {}", "cancelled".dim());
+        println!("  {}", capabilities.paint(StyleToken::Muted, "cancelled"));
         GateOutcome::Declined
     }
 }
 
 fn confirm_unresolved(command: &str, reason: &str) -> GateOutcome {
+    let capabilities = TerminalCapabilities::detect_stdout();
+    let ascii = capabilities.glyphs().focus() == ">";
+    let top = if ascii {
+        "  +-- COULD NOT VERIFY ------------------"
+    } else {
+        "  ┌─ COULD NOT VERIFY ──────────────────"
+    };
+    let side = if ascii { "|" } else { "│" };
+    let bottom = if ascii {
+        "  +--------------------------------------"
+    } else {
+        "  └─────────────────────────────────────"
+    };
+    let command = crate::commands::display_safe(command);
+    let reason = crate::commands::display_safe(reason);
     println!();
+    println!("{}", capabilities.paint(StyleToken::Warning, top));
     println!(
-        "{}",
-        "  ┌─ COULD NOT VERIFY ──────────────────".yellow().bold()
+        "  {} {}",
+        capabilities.paint(StyleToken::Warning, side),
+        capabilities.paint(StyleToken::ProposedCommand, &command)
     );
-    println!("  {} {}", "│".yellow(), command.white().bold());
-    println!("  {} {}", "│".yellow(), reason.dim());
+    println!(
+        "  {} {}",
+        capabilities.paint(StyleToken::Warning, side),
+        capabilities.paint(StyleToken::Muted, &reason)
+    );
     println!(
         "  {} the safety gate could not tell what this runs",
-        "│".yellow()
+        capabilities.paint(StyleToken::Warning, side)
     );
-    println!(
-        "{}",
-        "  └─────────────────────────────────────".yellow().bold()
-    );
+    println!("{}", capabilities.paint(StyleToken::Warning, bottom));
     print!("  Run it anyway? [y/N]: ");
     std::io::stdout().flush().ok();
 
@@ -468,7 +537,7 @@ fn confirm_unresolved(command: &str, reason: &str) -> GateOutcome {
     if matches!(line.trim().to_ascii_lowercase().as_str(), "y" | "yes") {
         GateOutcome::Proceed
     } else {
-        println!("  {}", "cancelled".dim());
+        println!("  {}", capabilities.paint(StyleToken::Muted, "cancelled"));
         GateOutcome::Declined
     }
 }

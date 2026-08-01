@@ -1,6 +1,10 @@
+> **Lifecycle: Implemented.** Baseline: v0.2.30; delivered in v0.3.0. Retained
+> with its requirement-to-test evidence; use the
+> [post-0.6.5 plan](NEXT_PRODUCT_UX_RELIABILITY_PLAN.md) for current UX work.
+
 # Aishe interactive UX and reliability milestone
 
-Status: implementation contract
+Original status: implementation contract
 Owner: Aishe maintainers
 Baseline: v0.2.30
 Last updated: 2026-07-29

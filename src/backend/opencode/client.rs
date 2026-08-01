@@ -517,7 +517,7 @@ impl OpenCodeClient {
     }
 
     fn subscribe(&self) -> Result<Box<dyn BufRead + Send>> {
-        let response = ureq3::get(format!(
+        let response = ureq::get(format!(
             "{}/global/event",
             self.connection.base_url.trim_end_matches('/')
         ))
@@ -543,7 +543,7 @@ impl OpenCodeClient {
 
     fn get_json(&self, path: &str, workspace: Option<&Path>) -> Result<Value> {
         let url = self.url(path, workspace)?;
-        let response = ureq3::get(&url)
+        let response = ureq::get(&url)
             .header("Authorization", self.authorization())
             .header("User-Agent", concat!("aishe/", env!("CARGO_PKG_VERSION")))
             .config()
@@ -556,7 +556,7 @@ impl OpenCodeClient {
 
     fn get_json_optional(&self, path: &str, workspace: Option<&Path>) -> Result<Option<Value>> {
         let url = self.url(path, workspace)?;
-        match ureq3::get(&url)
+        match ureq::get(&url)
             .header("Authorization", self.authorization())
             .header("User-Agent", concat!("aishe/", env!("CARGO_PKG_VERSION")))
             .config()
@@ -565,14 +565,14 @@ impl OpenCodeClient {
             .call()
         {
             Ok(response) => read_json_bounded(response).map(Some),
-            Err(ureq3::Error::StatusCode(404)) => Ok(None),
+            Err(ureq::Error::StatusCode(404)) => Ok(None),
             Err(error) => Err(error).with_context(|| format!("OpenCode GET {path} failed")),
         }
     }
 
     fn post_json(&self, path: &str, workspace: Option<&Path>, body: &Value) -> Result<Value> {
         let url = self.url(path, workspace)?;
-        let response = ureq3::post(&url)
+        let response = ureq::post(&url)
             .header("Authorization", self.authorization())
             .header("User-Agent", concat!("aishe/", env!("CARGO_PKG_VERSION")))
             .config()
@@ -585,7 +585,7 @@ impl OpenCodeClient {
 
     fn post_no_content(&self, path: &str, workspace: Option<&Path>, body: &Value) -> Result<()> {
         let url = self.url(path, workspace)?;
-        ureq3::post(&url)
+        ureq::post(&url)
             .header("Authorization", self.authorization())
             .header("User-Agent", concat!("aishe/", env!("CARGO_PKG_VERSION")))
             .config()
@@ -671,7 +671,7 @@ fn agent_for_mode(mode: Mode) -> &'static str {
     }
 }
 
-fn read_json_bounded(response: ureq3::http::Response<ureq3::Body>) -> Result<Value> {
+fn read_json_bounded(response: ureq::http::Response<ureq::Body>) -> Result<Value> {
     let mut bytes = Vec::new();
     let (_, body) = response.into_parts();
     body.into_reader()

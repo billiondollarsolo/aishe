@@ -192,27 +192,36 @@ pub fn apply_journaled(
 
 /// Print a previewed change set: a header per file plus colorized unified diffs.
 pub fn print_changes(changes: &[Change]) {
-    use crossterm::style::Stylize;
+    let capabilities = crate::ui::TerminalCapabilities::detect_stdout();
     for c in changes {
-        let (tag, painted) = match c.kind {
-            ChangeKind::Added => ("added", c.rel.as_str().green().to_string()),
-            ChangeKind::Modified => ("modified", c.rel.as_str().yellow().to_string()),
-            ChangeKind::Deleted => ("deleted", c.rel.as_str().red().to_string()),
+        let (tag, token) = match c.kind {
+            ChangeKind::Added => ("added", crate::ui::StyleToken::DiffAdd),
+            ChangeKind::Modified => ("modified", crate::ui::StyleToken::Warning),
+            ChangeKind::Deleted => ("deleted", crate::ui::StyleToken::DiffRemove),
         };
-        println!("  {} {painted}", format!("{tag:>8}").dim());
+        let rel = crate::commands::display_safe(&c.rel);
+        println!(
+            "  {} {}",
+            capabilities.paint(crate::ui::StyleToken::Muted, &format!("{tag:>8}")),
+            capabilities.paint(token, &rel)
+        );
         if let Some(diff) = &c.diff {
             for line in diff.lines() {
-                let colored = if line.starts_with('-') {
-                    line.red().to_string()
+                let token = if line.starts_with('-') {
+                    crate::ui::StyleToken::DiffRemove
                 } else if line.starts_with('+') {
-                    line.green().to_string()
+                    crate::ui::StyleToken::DiffAdd
                 } else {
-                    line.dim().to_string()
+                    crate::ui::StyleToken::Muted
                 };
-                println!("    {colored}");
+                let line = crate::commands::display_safe(line);
+                println!("    {}", capabilities.paint(token, &line));
             }
         } else if c.kind != ChangeKind::Deleted {
-            println!("    {}", "(binary)".dim());
+            println!(
+                "    {}",
+                capabilities.paint(crate::ui::StyleToken::Muted, "(binary)")
+            );
         }
     }
 }

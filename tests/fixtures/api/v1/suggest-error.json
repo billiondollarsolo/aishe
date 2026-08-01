@@ -1,0 +1,9 @@
+{
+  "schema_version": 1,
+  "code": "cli.missing_request",
+  "message": "The suggest command needs a natural-language request.",
+  "retryable": false,
+  "exit_code": 2,
+  "next_action": "Run `aishe suggest \"list files by size\"`.",
+  "detail": null
+}

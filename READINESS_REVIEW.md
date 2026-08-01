@@ -1,3 +1,8 @@
+> **Lifecycle: Historical.** Baseline: v0.2.23 (`62654ef`). This review records
+> its original release-readiness findings; use the
+> [post-0.6.5 plan](docs/design/NEXT_PRODUCT_UX_RELIABILITY_PLAN.md) for current
+> requirements and priorities.
+
 # aishe — CLI Shell-Tool Readiness Review
 
 **Reviewer:** Fable 5 · **Date:** 2026-06-13 · **Commit:** `62654ef` (v0.2.23)

@@ -67,7 +67,7 @@ aishe untrust        # drop trust for this repo
 aishe untrust --all  # drop trust for every trusted file
 ```
 
-(Each also works as a slash-command in the REPL: `/trust`, `/untrust`.)
+These are CLI commands; there is no `/trust` or `/untrust` slash form.
 
 ### Trusting a single project file
 

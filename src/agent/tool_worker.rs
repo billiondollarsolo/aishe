@@ -295,7 +295,7 @@ fn execute(
         return result;
     }
     let mut work = work.clone();
-    if let Err(message) = approve(&mut work, approvals, context.audit) {
+    if let Err(message) = approve(&mut work, approvals, context.audit, context.cancel) {
         let result = failure(&message);
         audit_tool_result(
             &work,
@@ -327,7 +327,7 @@ fn execute(
         "fetch_url" => fetch_url(&work, context.cancel),
         "use_skill" => use_skill(&work, skills),
         "mcp_call" => mcp_call(&work, mcp, context.cancel),
-        "ask_user" => ask_user(&work),
+        "ask_user" => ask_user(&work, context.cancel),
         "apply_patch" => apply_patch(&work, context.denied_environment, context.cancel),
         _ => failure("unknown foreground tool"),
     };
@@ -512,6 +512,7 @@ fn approve(
     work: &mut ToolWork,
     approvals: &mut HashSet<String>,
     audit: &ToolAuditContext,
+    cancel: &Arc<AtomicBool>,
 ) -> std::result::Result<(), String> {
     match work.mode {
         Mode::Suggest => {
@@ -541,6 +542,16 @@ fn approve(
         return Ok(());
     }
     loop {
+        if cancel.load(Ordering::SeqCst) {
+            audit_tool_approval(
+                work,
+                audit,
+                "decision",
+                Some("cancelled"),
+                Some("foreground request was interrupted"),
+            );
+            return Err("Agent approval was cancelled; no action ran.".into());
+        }
         let Some(reason) = auto_approval_reason(work) else {
             return Ok(());
         };
@@ -553,15 +564,32 @@ fn approve(
         println!();
         print_approval_panel(work, &detail, &reason);
         if work.tool == "run_command" {
-            print!("  [o] allow once  [s] allow matching this session  [e] edit  [d] deny: ");
+            print!(
+                "  [o] allow once  [s] allow matching this session  [e] edit  [d] deny (default): "
+            );
         } else {
-            print!("  [o] allow once  [s] allow matching this session  [d] deny: ");
+            print!("  [o] allow once  [s] allow matching this session  [d] deny (default): ");
         }
         let _ = std::io::stdout().flush();
         let mut answer = String::new();
-        if std::io::stdin().read_line(&mut answer).is_err() {
-            audit_tool_approval(work, audit, "decision", Some("error"), Some(&reason));
-            return Err("Could not read the approval decision.".into());
+        match std::io::stdin().read_line(&mut answer) {
+            Ok(0) => {
+                audit_tool_approval(work, audit, "decision", Some("denied_eof"), Some(&reason));
+                return Err("Agent approval was denied at EOF; no action ran.".into());
+            }
+            Ok(_) if cancel.load(Ordering::SeqCst) => {
+                audit_tool_approval(work, audit, "decision", Some("cancelled"), Some(&reason));
+                return Err("Agent approval was cancelled; no action ran.".into());
+            }
+            Ok(_) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {
+                audit_tool_approval(work, audit, "decision", Some("cancelled"), Some(&reason));
+                return Err("Agent approval was cancelled by Ctrl-C; no action ran.".into());
+            }
+            Err(_) => {
+                audit_tool_approval(work, audit, "decision", Some("error"), Some(&reason));
+                return Err("Could not read the approval decision; no action ran.".into());
+            }
         }
         match answer.trim().to_ascii_lowercase().as_str() {
             "o" | "once" | "y" | "yes" => {
@@ -604,25 +632,89 @@ fn approve(
 /// Render the auto-mode approval card without `\x0a` walls or duplicated
 /// one-line dumps of multi-line shell scripts.
 fn print_approval_panel(work: &ToolWork, detail: &str, reason: &str) {
-    let tool = crate::commands::display_safe(&work.tool.replace('_', " "));
-    println!("  ┌─ agent action · {tool} ─────────────────────────");
-    println!("  │ reason   {}", crate::commands::display_safe(reason));
-    println!(
-        "  │ policy   {:?} scope · {:?} network · {}",
-        work.scope,
-        work.network,
-        approval_capabilities(work)
+    let capabilities = crate::ui::TerminalCapabilities::detect_stdout();
+    print!(
+        "{}",
+        approval_panel_view(work, detail, reason, &capabilities)
     );
-    if work.tool == "run_command" {
-        println!("  │");
-        for line in crate::commands::command_preview_lines(detail, 24) {
-            // Indent body under the box; keep `$` alignment readable.
-            println!("  │ {line}");
-        }
+}
+
+#[cfg(test)]
+fn approval_panel(work: &ToolWork, detail: &str, reason: &str, ascii: bool) -> String {
+    let capabilities = crate::ui::TerminalCapabilities::resolve(&crate::ui::CapabilityInputs {
+        is_tty: false,
+        locale: Some(if ascii { "C" } else { "en_US.UTF-8" }.into()),
+        unicode: Some(if ascii { "ascii" } else { "unicode" }.into()),
+        size: Some((100, 30)),
+        ..crate::ui::CapabilityInputs::default()
+    });
+    approval_panel_view(work, detail, reason, &capabilities)
+}
+
+fn approval_panel_view(
+    work: &ToolWork,
+    detail: &str,
+    reason: &str,
+    capabilities: &crate::ui::TerminalCapabilities,
+) -> String {
+    let authority = match work.scope {
+        ExecutionScope::Workspace => format!("workspace only ({})", work.workspace.display()),
+        ExecutionScope::Host => "host — may modify paths outside the workspace".into(),
+    };
+    let safety_cue = if reason.contains("dangerous") {
+        crate::ui::render::SafetyCue::Dangerous
+    } else if reason.contains("unknown") || reason.contains("not classified") {
+        crate::ui::render::SafetyCue::Unknown
     } else {
-        println!("  │ target   {}", crate::commands::display_safe(detail));
+        crate::ui::render::SafetyCue::Review
+    };
+    let mode = format!("{:?}", work.mode).to_ascii_lowercase();
+    let network = format!("{:?}", work.network).to_ascii_lowercase();
+    let tool = work.tool.replace('_', " ");
+    let choices = if work.tool == "run_command" {
+        "o once; s matching session; e edit; d/Esc/Ctrl-C/EOF deny"
+    } else {
+        "o once; s matching session; d/Esc/Ctrl-C/EOF deny"
+    };
+    crate::ui::render::approval_panel(
+        &crate::ui::render::ApprovalView {
+            proposal: crate::ui::render::ProposalView {
+                title: "AIShe · approval",
+                command: detail,
+                effect: &approval_capabilities(work),
+                reason,
+                safety: reason,
+                safety_cue,
+                scope: &authority,
+                network: &network,
+                sandbox: approval_sandbox(work),
+                default_action: "deny; Enter, Esc, Ctrl-C, EOF, and unknown answers run nothing",
+            },
+            tool: &tool,
+            mode: &mode,
+            choices,
+        },
+        capabilities,
+        usize::from(capabilities.columns),
+    )
+}
+
+fn approval_sandbox(work: &ToolWork) -> &'static str {
+    if work.scope == ExecutionScope::Host {
+        return "none — host authority is not sandboxed";
     }
-    println!("  └────────────────────────────────────────────────");
+    #[cfg(target_os = "linux")]
+    {
+        if crate::sandbox::bwrap_available() {
+            "bubblewrap — OS-enforced workspace; host root is read-only"
+        } else {
+            "unavailable — workspace execution fails closed without functional bubblewrap"
+        }
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        "policy-only — not an OS security boundary"
+    }
 }
 
 fn approval_detail(work: &ToolWork) -> String {
@@ -1286,9 +1378,12 @@ fn mcp_call(
     }
 }
 
-fn ask_user(work: &ToolWork) -> ExecutionResult {
+fn ask_user(work: &ToolWork, cancel: &Arc<AtomicBool>) -> ExecutionResult {
     if !work.interactive || !std::io::stdin().is_terminal() {
         return failure("The agent asked a question, but no interactive terminal is attached.");
+    }
+    if cancel.load(Ordering::SeqCst) {
+        return failure("The agent question was cancelled before input started.");
     }
     let prompt = work
         .args
@@ -1297,65 +1392,55 @@ fn ask_user(work: &ToolWork) -> ExecutionResult {
         .unwrap_or("Agent question");
     // Clear any in-place status line ("running ask user …") so the question is
     // not appended mid-line and typing does not look "random" at the end.
-    print!("\r\x1b[2K");
-    println!();
-    println!("  ┌─ agent question ────────────────────────────────");
-    for line in wrap_prompt_lines(prompt, 72) {
-        if line.is_empty() {
-            println!("  │");
-        } else {
-            println!("  │ {line}");
-        }
+    let capabilities = crate::ui::TerminalCapabilities::detect_stdout();
+    if capabilities.motion == crate::ui::Motion::Live {
+        print!("\r\x1b[2K");
     }
-    println!("  │");
-    println!("  │ Type an answer and press Enter to continue.");
-    println!("  └────────────────────────────────────────────────");
+    let task = format!("{} · {}", work.session_id, work.call_id);
+    let panel = super::renderer::waiting_question_panel(
+        &capabilities,
+        prompt,
+        Some("agent"),
+        Some(&task),
+        Some(&work.message_id),
+    );
+    println!();
+    print!("{panel}");
     print!("  your answer: ");
     let _ = std::io::stdout().flush();
     let mut answer = String::new();
-    match std::io::stdin().read_line(&mut answer) {
-        Ok(_) => success(answer.trim_end().to_string()),
-        Err(error) => failure(&error.to_string()),
+    match classify_question_answer(
+        std::io::stdin().read_line(&mut answer),
+        &answer,
+        cancel.load(Ordering::SeqCst),
+    ) {
+        Ok(answer) => success(answer),
+        Err(message) => failure(&message),
     }
 }
 
-/// Display-safe soft-wrapped lines for the ask_user panel body.
-fn wrap_prompt_lines(prompt: &str, width: usize) -> Vec<String> {
-    let width = width.max(16);
-    let body = crate::commands::display_safe_multiline(prompt);
-    let mut out = Vec::new();
-    for raw in body.lines() {
-        let line = raw.trim_end();
-        if line.is_empty() {
-            out.push(String::new());
-            continue;
+fn classify_question_answer(
+    read: std::io::Result<usize>,
+    answer: &str,
+    cancelled: bool,
+) -> std::result::Result<String, String> {
+    match read {
+        Ok(0) => Err("The agent question was cancelled (EOF); no answer was submitted.".into()),
+        Ok(_) if cancelled => {
+            Err("The agent question was cancelled; no answer was submitted.".into())
         }
-        let mut rest: &str = line;
-        while !rest.is_empty() {
-            let mut end = rest.len();
-            for (count, (idx, _)) in rest.char_indices().enumerate() {
-                if count == width {
-                    end = idx;
-                    break;
-                }
-            }
-            // Prefer breaking on a space when the chunk is full-width.
-            if end < rest.len() {
-                if let Some(space) = rest[..end].rfind(char::is_whitespace) {
-                    if space > 0 {
-                        end = space;
-                    }
-                }
-            }
-            let chunk = rest[..end].trim_end();
-            out.push(chunk.to_string());
-            rest = rest[end..].trim_start();
+        Ok(_) if answer.trim() == "\u{1b}" => {
+            Err("The agent question was cancelled (Esc); no answer was submitted.".into())
         }
+        Ok(_) => Ok(answer.trim_end().to_string()),
+        Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {
+            Err("The agent question was cancelled (Ctrl-C); no answer was submitted.".into())
+        }
+        Err(error) => Err(format!(
+            "Could not read the agent answer: {}",
+            crate::redact::redact(&error.to_string())
+        )),
     }
-    if out.is_empty() {
-        out.push(String::new());
-    }
-    out
 }
 
 fn success(output: String) -> ExecutionResult {
@@ -1439,13 +1524,52 @@ mod tests {
         };
         let mut approvals = HashSet::new();
         let audit = audit_context();
-        assert!(approve(&mut item, &mut approvals, &audit).is_err());
+        let cancel = Arc::new(AtomicBool::new(false));
+        assert!(approve(&mut item, &mut approvals, &audit, &cancel).is_err());
         item.mode = Mode::Auto;
-        assert!(approve(&mut item, &mut approvals, &audit).is_ok());
+        assert!(approve(&mut item, &mut approvals, &audit, &cancel).is_ok());
         item.args = serde_json::json!({"command":"rm -rf /tmp/aishe-do-not-run"});
-        assert!(approve(&mut item, &mut approvals, &audit).is_err());
+        assert!(approve(&mut item, &mut approvals, &audit, &cancel).is_err());
         item.mode = Mode::Yolo;
-        assert!(approve(&mut item, &mut approvals, &audit).is_ok());
+        assert!(approve(&mut item, &mut approvals, &audit, &cancel).is_ok());
+    }
+
+    #[test]
+    fn approval_panel_states_effective_authority_and_safe_negative_default() {
+        let workspace = std::env::temp_dir().join("aishe-approval-workspace");
+        std::fs::create_dir_all(&workspace).unwrap();
+        let mut item = work(
+            &workspace,
+            "run_command",
+            serde_json::json!({"command":"printf '\u{1b}[31munsafe\u{1b}[0m'"}),
+        );
+        item.mode = Mode::Auto;
+        item.scope = ExecutionScope::Workspace;
+        item.network = NetworkPolicy::Deny;
+        let ascii = approval_panel(
+            &item,
+            "printf '\u{1b}[31munsafe\u{1b}[0m'",
+            "command safety is unknown",
+            true,
+        );
+        assert!(ascii.contains("approval required"));
+        assert!(ascii.contains("mode      auto"));
+        assert!(ascii.contains("scope     workspace only"));
+        assert!(ascii.contains("network   deny"));
+        assert!(ascii.contains("sandbox   "));
+        assert!(ascii.contains("safety    [unknown]"));
+        assert!(ascii.contains("default   deny"));
+        assert!(ascii.contains("\\x1b[31munsafe\\x1b[0m"));
+        assert!(!ascii.contains('\u{1b}'));
+        assert!(!ascii
+            .chars()
+            .any(|character| matches!(character, '┌' | '│' | '└')));
+
+        item.scope = ExecutionScope::Host;
+        let host = approval_panel(&item, "command", "reason", false);
+        assert!(host.contains("host — may modify paths outside the workspace"));
+        assert!(host.contains("sandbox   none — host authority is not sandboxed"));
+        std::fs::remove_dir_all(workspace).ok();
     }
 
     #[test]
@@ -1512,6 +1636,27 @@ mod tests {
         assert!(result.output.contains("cancelled"));
         assert!(!root.join("must-not-exist").exists());
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn agent_question_answers_are_visible_and_all_terminal_cancels_fail_closed() {
+        assert_eq!(
+            classify_question_answer(Ok(17), "accept yolo-host\n", false).unwrap(),
+            "accept yolo-host"
+        );
+        assert!(classify_question_answer(Ok(0), "", false)
+            .unwrap_err()
+            .contains("EOF"));
+        assert!(classify_question_answer(Ok(1), "\u{1b}", false)
+            .unwrap_err()
+            .contains("Esc"));
+        assert!(classify_question_answer(Ok(4), "yes\n", true)
+            .unwrap_err()
+            .contains("cancelled"));
+        let interrupted = std::io::Error::from(std::io::ErrorKind::Interrupted);
+        assert!(classify_question_answer(Err(interrupted), "", false)
+            .unwrap_err()
+            .contains("Ctrl-C"));
     }
 
     #[test]

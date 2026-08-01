@@ -88,6 +88,21 @@ strong and it matters which one you are actually relying on:
 
 ## Threat model
 
+**Threat-model version:** `2026-07-31.1`
+
+**Reviewed:** 2026-07-31
+
+**Qualification authority:** `tests/qualify.py` records this version together
+with the exact source commit, runtime manifest, trusted plugin digest, sandbox
+disposition, and corpus digests. A release is evidence for this model only when
+its qualification report identifies the same version and all required security
+gates pass.
+
+This model treats the text safety matcher as defense in depth, never as an
+isolation boundary. The maintained hard boundary is a functionally tested
+bubblewrap workspace on Linux. macOS workspace policy and Linux host scope are
+explicitly policy-only/host-authority states.
+
 Being blunt about this, because the answer decides whether you should run aishe on a
 work machine.
 

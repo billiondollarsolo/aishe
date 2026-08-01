@@ -26,40 +26,9 @@ const USAGE_RECONCILIATION_GRACE: Duration = Duration::from_secs(30);
 const BUDGET_RESERVATION_TTL: Duration = Duration::from_secs(10 * 60);
 const TOOL_WAIT: Duration = Duration::from_secs(60 * 60);
 
-/// Override for tests only (`0` = use [`LEASE_TTL`]). Guarded by
-/// [`TEST_LEASE_TTL_LOCK`] so parallel lib tests cannot clobber each other.
-#[cfg(test)]
-static TEST_LEASE_TTL_MS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-#[cfg(test)]
-static TEST_LEASE_TTL_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
-fn lease_ttl() -> Duration {
-    #[cfg(test)]
-    {
-        let ms = TEST_LEASE_TTL_MS.load(std::sync::atomic::Ordering::Relaxed);
-        if ms > 0 {
-            return Duration::from_millis(ms);
-        }
-    }
-    LEASE_TTL
-}
-
 /// How often the foreground tool worker should renew the lease while a turn is
 /// live (including during long `run_command` executions).
 pub const LEASE_KEEPALIVE_INTERVAL: Duration = Duration::from_secs(20);
-
-/// Hold the returned guard for the whole test that mutates the lease TTL.
-#[cfg(test)]
-pub fn lock_test_lease_ttl() -> std::sync::MutexGuard<'static, ()> {
-    TEST_LEASE_TTL_LOCK
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
-}
-
-#[cfg(test)]
-pub fn set_test_lease_ttl_ms(ms: u64) {
-    TEST_LEASE_TTL_MS.store(ms, std::sync::atomic::Ordering::Relaxed);
-}
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -279,6 +248,10 @@ struct BridgeState {
 
 pub struct Bridge {
     journal_path: PathBuf,
+    // Instance-local so a short lease used by one test can never change a
+    // concurrently running bridge. Production constructors always use the
+    // constant policy above.
+    lease_ttl: Duration,
     state: Mutex<BridgeState>,
     changed: Condvar,
 }
@@ -322,6 +295,7 @@ impl Bridge {
             .collect();
         let bridge = Self {
             journal_path,
+            lease_ttl: LEASE_TTL,
             state: Mutex::new(BridgeState {
                 leases: HashMap::new(),
                 retired_usage_leases: HashMap::new(),
@@ -361,7 +335,7 @@ impl Bridge {
                 lease_id: lease_id.clone(),
                 registration,
                 workspace,
-                expires_at: Instant::now() + lease_ttl(),
+                expires_at: Instant::now() + self.lease_ttl,
                 queue: VecDeque::new(),
                 pending_budget_reservations: HashMap::new(),
             },
@@ -376,7 +350,7 @@ impl Bridge {
     pub fn heartbeat(&self, identity: &LeaseIdentity) -> Result<(), BridgeFailure> {
         let mut state = self.bridge_lock()?;
         let lease = lease_for_identity(&mut state, identity)?;
-        lease.expires_at = Instant::now() + lease_ttl();
+        lease.expires_at = Instant::now() + self.lease_ttl;
         Ok(())
     }
 
@@ -450,7 +424,7 @@ impl Bridge {
                 "The foreground provider-turn lease expired",
             ));
         }
-        lease.expires_at = Instant::now() + lease_ttl();
+        lease.expires_at = Instant::now() + self.lease_ttl;
         let requested = request
             .requested_max_output_tokens
             .unwrap_or(16_384)
@@ -667,7 +641,7 @@ impl Bridge {
         let mut state = self.bridge_lock()?;
         loop {
             let lease = lease_for_identity(&mut state, identity)?;
-            lease.expires_at = Instant::now() + lease_ttl();
+            lease.expires_at = Instant::now() + self.lease_ttl;
             if let Some(key) = lease.queue.pop_front() {
                 let workspace = lease.workspace.clone();
                 let registration = lease.registration.clone();
@@ -722,7 +696,7 @@ impl Bridge {
         validate_call_owner(&mut state, &started.lease_id, &key)?;
         // Renew while a tool is in flight so multi-minute run_command does not
         // drop provider-turn authority before the next model step.
-        renew_lease_by_id(&mut state, &started.lease_id);
+        renew_lease_by_id(&mut state, &started.lease_id, self.lease_ttl);
         let call = state
             .calls
             .get_mut(&key)
@@ -745,7 +719,7 @@ impl Bridge {
         validate_output(&completion.output)?;
         let mut state = self.bridge_lock()?;
         validate_call_owner(&mut state, &completion.lease_id, &key)?;
-        renew_lease_by_id(&mut state, &completion.lease_id);
+        renew_lease_by_id(&mut state, &completion.lease_id, self.lease_ttl);
         let call = state
             .calls
             .get_mut(&key)
@@ -1085,7 +1059,7 @@ fn lease_for_identity<'a>(
 
 /// Extend the lease matching `lease_id` if it is still live. Used on tool
 /// start/complete so long host work does not race the next model authorize.
-fn renew_lease_by_id(state: &mut BridgeState, lease_id: &str) {
+fn renew_lease_by_id(state: &mut BridgeState, lease_id: &str, lease_ttl: Duration) {
     let now = Instant::now();
     if let Some(lease) = state
         .leases
@@ -1093,7 +1067,7 @@ fn renew_lease_by_id(state: &mut BridgeState, lease_id: &str) {
         .find(|lease| constant_time_eq(lease.lease_id.as_bytes(), lease_id.as_bytes()))
     {
         if lease.expires_at > now {
-            lease.expires_at = now + lease_ttl();
+            lease.expires_at = now + lease_ttl;
         }
     }
 }
@@ -1503,9 +1477,8 @@ mod tests {
 
     #[test]
     fn heartbeat_keeps_provider_authority_past_lease_ttl() {
-        let _ttl_guard = lock_test_lease_ttl();
-        set_test_lease_ttl_ms(200);
-        let (bridge, root, workspace) = bridge("lease-keepalive");
+        let (mut bridge, root, workspace) = bridge("lease-keepalive");
+        bridge.lease_ttl = Duration::from_millis(200);
         let _expired = bridge.register(registration(&workspace)).unwrap();
         // Without heartbeats the short TTL expires and authorize fails closed.
         std::thread::sleep(Duration::from_millis(280));
@@ -1557,8 +1530,26 @@ mod tests {
             bridge.authorize_session("ses_test").unwrap();
             assert!(caller.join().unwrap().is_ok());
         });
-        set_test_lease_ttl_ms(0);
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn short_test_lease_is_instance_local_under_parallel_bridges() {
+        let (mut short, short_root, short_workspace) = bridge("short-ttl-isolated");
+        let (normal, normal_root, normal_workspace) = bridge("normal-ttl-isolated");
+        short.lease_ttl = Duration::from_millis(10);
+        short.register(registration(&short_workspace)).unwrap();
+        normal.register(registration(&normal_workspace)).unwrap();
+
+        std::thread::sleep(Duration::from_millis(40));
+        assert_eq!(
+            short.authorize_session("ses_test").unwrap_err().code,
+            "foreground_unavailable"
+        );
+        normal.authorize_session("ses_test").unwrap();
+
+        std::fs::remove_dir_all(short_root).unwrap();
+        std::fs::remove_dir_all(normal_root).unwrap();
     }
 
     #[test]

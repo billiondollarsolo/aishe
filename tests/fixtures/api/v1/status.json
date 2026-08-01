@@ -1,0 +1,24 @@
+{
+  "schema_version": 1,
+  "model": "test-model",
+  "connection": {
+    "id": "test",
+    "label": "Test",
+    "provider": "fake",
+    "endpoint_host": "localhost",
+    "auth": "none",
+    "auth_state": "not required",
+    "selection_scope": "default"
+  },
+  "mode": "suggest",
+  "backend": { "engine": "native", "readiness": "native compatibility" },
+  "scope": "workspace",
+  "network": "deny",
+  "output": "focus",
+  "reasoning_effort": "auto",
+  "status_line": "off",
+  "budget_usd": 0.0,
+  "audit": { "enabled": false, "redact": true, "path": "/tmp/audit.jsonl" },
+  "session": null,
+  "metrics": {}
+}

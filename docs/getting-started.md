@@ -78,6 +78,12 @@ minimal generation request only when the ID was not listed. Credential,
 permission, network, and model-not-found failures stay in Setup with retry/back
 choices instead of silently accepting an unverified value.
 
+When an existing config, credential/OAuth profile, and pinned runtime are
+already available, Step 1 offers a short path directly to end-to-end validation
+and the final review. Before any live checks, Setup states that the text,
+structured, tool, and streaming probes consume tokens and may incur provider
+charges; declining never turns an unrun live check into a pass.
+
 OpenCode is entirely managed by AIShe. Setup downloads the exact version pinned
 by this AIShe build, verifies its size/checksum/version/notices, launches it with
 private HOME/XDG directories on authenticated loopback ports, and verifies the
@@ -183,14 +189,21 @@ the #1 source of “why didn’t the AI hear me?” confusion.
 | `!rm -rf build` | **Shell**, safety gate skipped (dangerous by design). |
 | `?` alone after a failed command | Ask the model to diagnose the last failure. |
 
-`# …` is the same force-NL prefix as `?` (stripped before the model runs).
+`# …` remains a deprecated compatibility spelling for force-NL and is stripped
+before the model runs. New workflows should use `?`; `aishe route -- '# …'`
+shows the migration notice and planned compatibility window.
 
-### Colors (when command highlighting is on)
+### Route highlight and non-color cue
 
 | Buffer color | Meaning |
 |--------------|---------|
 | **Green** | Routed as a **shell** command |
 | **Magenta** | Routed as **natural language** |
+
+The colors are optional accelerators, not the only signal. Press **Ctrl-X ?**
+in the zsh front end to print `agent` or `shell/local` for the current buffer,
+or run `aishe route -- '<line>'` anywhere to get the route, stable reason, and
+opposite override without submitting the input.
 
 There is no separate “NL mode” badge on the status line. Mode glyphs are still
 suggest `❯` / auto `»` / yolo `*`. Force-NL only changes **that one line**.
@@ -203,7 +216,7 @@ A force-NL key can submit the current buffer as natural language without a
 - **Default (zsh):** Meta/Alt + Return (bindkey `^[^M`)
 - **Mac:** that is **⌥ Option + Return**, but only if the terminal treats
   Option as Meta (see below)
-- **bash hook:** often Ctrl-G
+- **Bash 5.x hook:** Ctrl-G; **Bash 3.2 Tier B-:** use `?`
 - Override: `export AISHE_NL_KEY='^G'` (Ctrl-G) before starting aishe
 
 If the line is **empty**, the key does nothing. Prefer **`?`** if keys are

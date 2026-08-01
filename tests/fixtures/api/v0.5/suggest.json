@@ -1,0 +1,7 @@
+{
+  "kind": "command",
+  "command": "ls -la",
+  "explanation": "List files, including hidden entries.",
+  "risk": "safe",
+  "reason": ""
+}

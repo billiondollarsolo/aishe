@@ -9,6 +9,33 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  docs:
+    name: documentation lifecycle
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Require lifecycle labels and index entries
+        shell: bash
+        run: |
+          failed=0
+          for document in docs/design/*.md; do
+            if ! head -n 30 "$document" | grep -Eq '^> \*\*Lifecycle: (Active|Implemented|Superseded|Historical|Validation evidence)\.\*\*'; then
+              echo "Missing recognized lifecycle label: $document" >&2
+              failed=1
+            fi
+
+            filename="${document##*/}"
+            if ! grep -Fq "[$filename]($filename)" docs/design/README.md; then
+              echo "Missing from docs/design/README.md: $document" >&2
+              failed=1
+            fi
+          done
+          exit "$failed"
+
+      - name: Check internal documentation links and anchors
+        run: python3 tests/docs_contract_test.py
+
   supply-chain:
     name: dependency advisories, licenses, and sources
     runs-on: ubuntu-latest
@@ -40,7 +67,11 @@ jobs:
       # the cli tests that assert `doctor` succeeds failed only there.
       - name: Install zsh (ubuntu)
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y zsh bubblewrap
+        run: sudo apt-get update && sudo apt-get install -y zsh bubblewrap shellcheck
+
+      - name: Install shellcheck (macOS)
+        if: runner.os == 'macOS'
+        run: brew install shellcheck
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -64,6 +95,9 @@ jobs:
 
       - name: Build
         run: cargo build --verbose --locked
+
+      - name: Shellcheck and generated hook syntax
+        run: python3 tests/shell_contract.py target/debug/aishe
 
       - name: Install and live-verify pinned OpenCode runtime
         run: |
@@ -109,7 +143,7 @@ jobs:
 
       - name: Install zsh
         run: |
-          sudo apt-get update && sudo apt-get install -y zsh bubblewrap
+          sudo apt-get update && sudo apt-get install -y zsh bubblewrap tmux screen
           # GitHub images leave the zsh completion directories group-writable,
           # so compinit stops with an interactive "insecure directories …
           # continue [y] or abort [n]?" prompt. Inside a PTY test that prompt
@@ -152,6 +186,26 @@ jobs:
 
       - name: Real-model JSON/exit contract validator
         run: python3 tests/live_contract_test.py
+
+      - name: External harness binary identity helper
+        run: python3 tests/harness_identity_test.py
+
+      - name: Native Bash 5 hook declared-tier matrix
+        timeout-minutes: 5
+        run: |
+          python3 tests/bash_hook_test.py
+          python3 tests/bash_hook.py target/release/aishe \
+            --bash /bin/bash --require-family 5.x
+
+      - name: Terminal latency, tmux, and screen compatibility contract
+        timeout-minutes: 8
+        run: |
+          python3 tests/terminal_compat_test.py
+          python3 tests/terminal_compat.py target/release/aishe \
+            --capability local-latency --require-capability local-latency \
+            --capability tmux --require-capability tmux \
+            --capability screen --require-capability screen \
+            --json test-results/terminal-compat-linux.json
 
       - name: Drive real zsh through the PTY front-end
         run: python3 tests/pty_smoke.py target/release/aishe
@@ -211,3 +265,61 @@ jobs:
         run: python3 tests/real_fuzz.py target/release/aishe
       - name: Admin validation (shell pass-through + file ops; NL skipped w/o key)
         run: python3 tests/admin_validation.py target/release/aishe
+
+  pty-macos:
+    name: macOS flagship PTY gate (bounded)
+    runs-on: macos-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Isolate the managed runtime
+        shell: bash
+        run: echo "AISHE_RUNTIME_DIR=$RUNNER_TEMP/aishe-runtime" >> "$GITHUB_ENV"
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-pty-cargo-${{ hashFiles('**/Cargo.toml', 'Cargo.lock') }}
+
+      - name: Build release binary
+        timeout-minutes: 10
+        run: cargo build --release --locked
+
+      # These are CLI-owned pseudo-terminals. They need the runner's normal
+      # PTY device access only; Accessibility, Screen Recording, Automation,
+      # and Full Disk Access permissions are neither requested nor required.
+      - name: Terminal latency and resize contract
+        timeout-minutes: 4
+        run: |
+          python3 tests/terminal_compat_test.py
+          python3 tests/terminal_compat.py target/release/aishe \
+            --capability local-latency --require-capability local-latency \
+            --json test-results/terminal-compat-macos.json
+
+      - name: Routing, sigils, auto-mode, and history PTY
+        timeout-minutes: 5
+        run: python3 tests/pty_scenarios.py target/release/aishe
+
+      - name: Connection and model picker PTY
+        timeout-minutes: 5
+        run: python3 tests/model_picker_pty.py target/release/aishe
+
+      - name: Statusline placement and live metrics PTY
+        timeout-minutes: 5
+        run: python3 tests/statusline_pty.py target/release/aishe
+
+      - name: Setup state-machine PTY
+        timeout-minutes: 5
+        run: python3 tests/setup_pty.py target/release/aishe
+
+      - name: Signals, resize, and multi-line PTY
+        timeout-minutes: 5
+        run: python3 tests/pty_signals.py target/release/aishe

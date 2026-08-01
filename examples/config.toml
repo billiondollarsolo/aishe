@@ -12,7 +12,7 @@
 # about. API keys are NEVER stored here. Named connections bind a provider,
 # endpoint, model, and explicit auth method; secret values stay in private stores.
 
-version = 6
+version = 7
 
 [aishe]
 # Named setup bundle: conservative | balanced | autonomous | custom. Applying a
@@ -26,7 +26,7 @@ safety_profile = "custom"
 mode = "suggest"
 
 # Durable default connection. `/model` changes only the current shell unless
-# you press `d` or pass `--default`.
+# you confirm the follow-up default prompt or pass `--default`.
 connection = "anthropic"
 connection_fallback = "anthropic"
 
@@ -56,8 +56,8 @@ yolo_confirm_dangerous = true
 #   all       = every command
 yolo_confirm = "dangerous"
 
-# Sandbox the yolo loop's commands. Toggle live by typing `sandbox on` at the
-# aishe prompt (a prompt-only meta command, not an `aishe` subcommand).
+# Sandbox the native compatibility yolo loop's commands. Configure it through
+# `aishe settings`; `/sandbox` is a removed command with migration guidance.
 yolo_sandbox = false
 
 # How yolo_sandbox is enforced:
@@ -75,8 +75,8 @@ max_yolo_iterations = 10
 
 # Plan-first (dry run) for yolo: before running anything, the model lays out its
 # intended steps and you approve them ("Proceed with this plan? [Y/n]"). Adds one
-# planning call per request. Interactive only; off by default. Toggle live by
-# typing `plan on` at the aishe prompt (a prompt-only meta command).
+# planning call per request. Interactive only; off by default. Configure it
+# through `aishe settings`; `/plan` is a removed command.
 yolo_plan = false
 
 # Reversible yolo session: run the whole agentic loop against a throwaway copy of
@@ -162,6 +162,10 @@ reasoning_effort = "auto"
 # Print one concise recovery hint after a non-zero interactive command.
 failure_hints = true
 
+# Show bounded one-time discovery hints. Seen-state stays local and can be
+# cleared with `aishe hints reset`.
+discovery_hints = true
+
 # Print a dim per-call token+cost line after each model interaction, and a
 # one-line "aishe session: … reqs · ~$…" summary across the whole interactive
 # session when you exit the zsh front-end.
@@ -181,15 +185,15 @@ status_line_items = ["identity", "mode", "scope", "session_cost", "requests"]
 budget_usd = 0.0
 
 # Remember recent natural-language turns so follow-ups
-# ("now do the same for the other file") have context. Clear by typing `reset` at
-# the aishe prompt (a prompt-only meta command).
+# ("now do the same for the other file") have context. Clear with `/reset` in an
+# integrated shell or `aishe reset` directly.
 memory = true
 
 # Cache identical suggest-mode model responses for a short while so repeats are
 # instant and cost no tokens. The cache key includes the environment context
 # (cwd, recent commands), so running something between two requests misses it.
-# Toggle live by typing `cache on`/`off` at the aishe prompt (a prompt-only meta
-# command).
+# Configure this through `aishe settings` or this file; `/cache` is a removed
+# command with local migration guidance.
 cache = true
 cache_ttl_secs = 300
 
@@ -224,6 +228,15 @@ host_profile = true
 # after you run `aishe trust` in that repo. A project skill or `shell: true`
 # command is trusted per file: `aishe trust .aishe/skills/<name>/SKILL.md`.
 # See docs/project-config.md.
+
+# Terminal appearance and accessibility. `NO_COLOR` always disables styling;
+# per-process AISHE_THEME/AISHE_COLOR_DEPTH/AISHE_UNICODE/AISHE_MOTION values
+# override these durable defaults.
+[ui]
+theme = "auto"                 # auto | dark | light | mono | none
+color_depth = "auto"           # auto | 16 | 256 | truecolor | none
+unicode = "auto"               # auto | unicode | ascii
+motion = "auto"                # auto | live | static
 
 # ---------------------------------------------------------------------------
 # Managed agent engine. Aishe owns the exact OpenCode version and hash; those

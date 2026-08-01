@@ -9,15 +9,13 @@ all-features = true
 [advisories]
 yanked = "deny"
 ignore = [
+    # Owner: maintainers · Added: 2026-07-31 · Review by: 2026-10-31
+    # Target removal: replace the embedded dump decoder or upgrade when syntect
+    # removes the affected bincode path.
     # syntect uses bincode only to decode its own compile-time embedded,
     # version-matched syntax/theme assets. No user-controlled bytes reach it,
     # and syntect 5.3.0 has no maintained dump decoder alternative.
     { id = "RUSTSEC-2025-0141", reason = "trusted embedded syntect assets only; no untrusted deserialization path" },
-    # ureq 2.12's native-certificate adapter is the only supported path that
-    # preserves the current MSRV and API. The advisory is maintenance status,
-    # not a vulnerability; migrate as part of the separately tested ureq 3
-    # transport upgrade.
-    { id = "RUSTSEC-2025-0134", reason = "unmaintained compatibility shim with no known vulnerability; required by ureq 2 native roots" },
 ]
 
 [licenses]

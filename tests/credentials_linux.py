@@ -16,9 +16,10 @@ import sys
 import tempfile
 import threading
 
+from harness_identity import require_current_binary
 
-BINARY = os.path.abspath(
-    sys.argv[1] if len(sys.argv) > 1 else "target/release/aishe"
+BINARY = require_current_binary(
+    os.path.abspath(sys.argv[1] if len(sys.argv) > 1 else "target/release/aishe")
 )
 
 
@@ -90,6 +91,15 @@ def require(condition, message):
         raise AssertionError(message)
 
 
+def has_bearer_header(request, key):
+    """Match HTTP field names case-insensitively, as required by HTTP."""
+    for line in request.splitlines()[1:]:
+        name, separator, value = line.partition(":")
+        if separator and name.strip().lower() == "authorization":
+            return value.strip() == "Bearer " + key
+    return False
+
+
 def main():
     require(os.path.isfile(BINARY), "binary not found: " + BINARY)
     root = tempfile.mkdtemp(prefix="aishe-credentials-linux-")
@@ -133,7 +143,7 @@ def main():
         first_thread.join(timeout=5)
         require(not first_thread.is_alive(), "stored-key server did not complete")
         require(
-            "Authorization: Bearer " + stored in first_request.get("request", ""),
+            has_bearer_header(first_request.get("request", ""), stored),
             "provider did not use the stored key",
         )
 
@@ -147,7 +157,7 @@ def main():
         require(models.returncode == 0, models.stderr)
         second_thread.join(timeout=5)
         require(
-            "Authorization: Bearer " + override in second_request.get("request", ""),
+            has_bearer_header(second_request.get("request", ""), override),
             "environment did not override the stored key",
         )
         require(
@@ -157,7 +167,17 @@ def main():
 
         os.chmod(credentials, 0o644)
         doctor = run(env, "doctor", "--fix", "--json")
-        require(doctor.returncode == 0, doctor.stderr)
+        # Doctor reports the pre-repair snapshot and may remain non-zero for
+        # unrelated critical checks (for example an intentionally absent
+        # managed runtime in this isolated credential fixture).  The contract
+        # under test is the explicit repair result and the filesystem mode.
+        require(doctor.returncode in (0, 1), doctor.stdout + doctor.stderr)
+        doctor_data = json.loads(doctor.stdout)
+        repair = next(
+            (check for check in doctor_data["checks"] if check["id"] == "repair.safe"),
+            None,
+        )
+        require(repair is not None and repair["status"] == "pass", doctor.stdout)
         require(stored not in doctor.stdout + doctor.stderr, "Doctor exposed key")
         require(stat.S_IMODE(os.stat(credentials).st_mode) == 0o600, "Doctor did not repair mode")
         require(
@@ -178,7 +198,9 @@ def main():
         os.unlink(credentials)
         os.symlink(target, credentials)
         rejected = run(env, "auth", "status", "openai", "--json")
-        require(rejected.returncode == 1, "symlinked credential file was accepted")
+        require(rejected.returncode != 0, "symlinked credential file was accepted")
+        rejected_data = json.loads(rejected.stderr)
+        require(rejected_data["code"] == "auth.unavailable", rejected.stderr)
         require("symlink" in rejected.stderr.lower(), rejected.stderr)
         require("symlink-secret" not in rejected.stdout + rejected.stderr, "symlink key leaked")
 

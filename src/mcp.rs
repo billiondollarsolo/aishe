@@ -42,6 +42,10 @@ const HTTP_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 /// wait on an SSE stream for the matching response).
 const HTTP_READ_TIMEOUT: Duration = Duration::from_secs(30);
 
+/// Streamable-HTTP JSON-RPC responses share the stdio transport's message cap.
+/// The extra byte distinguishes an exactly-at-limit body from an oversized one.
+const MAX_HTTP_BODY_BYTES: u64 = 8 * 1024 * 1024;
+
 /// Ceiling on a single newline-delimited JSON-RPC message from a stdio server.
 /// Bounds the reader thread's memory against a server that never emits a
 /// newline; see [`drain_jsonrpc`] for what happens to a message this large.
@@ -208,10 +212,12 @@ struct HttpTransport {
 impl HttpTransport {
     fn new(cfg: &McpServerConfig) -> Result<Self, String> {
         let url = cfg.url.as_deref().ok_or("HTTP server has no `url`")?;
-        let agent = ureq::AgentBuilder::new()
-            .timeout_connect(HTTP_CONNECT_TIMEOUT)
-            .timeout_read(HTTP_READ_TIMEOUT)
-            .build();
+        let agent = crate::providers::external_http_agent(
+            HTTP_CONNECT_TIMEOUT,
+            None,
+            Some(HTTP_READ_TIMEOUT),
+            Some(HTTP_READ_TIMEOUT),
+        );
         Ok(HttpTransport {
             agent,
             url: url.to_string(),
@@ -223,17 +229,17 @@ impl HttpTransport {
 
     /// Build a POST request with the standard MCP headers plus any configured
     /// extras and the session id (when known).
-    fn post(&self) -> ureq::Request {
+    fn post(&self) -> ureq::RequestBuilder<ureq::typestate::WithBody> {
         let mut req = self
             .agent
             .post(&self.url)
-            .set("Content-Type", "application/json")
-            .set("Accept", "application/json, text/event-stream");
+            .header("Content-Type", "application/json")
+            .header("Accept", "application/json, text/event-stream");
         for (k, v) in &self.headers {
-            req = req.set(k, v);
+            req = req.header(k, v);
         }
         if let Some(sid) = &self.session_id {
-            req = req.set("Mcp-Session-Id", sid);
+            req = req.header("Mcp-Session-Id", sid);
         }
         req
     }
@@ -245,34 +251,58 @@ impl HttpTransport {
         let resp = self
             .post()
             .send_json(body)
-            .map_err(|e| format!("{method}: {}", http_error(e)))?;
+            .map_err(|e| format!("{method}: {e}"))?;
+        if !resp.status().is_success() {
+            return Err(format!("{method}: {}", http_response_error(resp)));
+        }
 
         // The session id is established by the initialize response; remember it.
         if self.session_id.is_none() {
-            if let Some(sid) = resp.header("Mcp-Session-Id") {
+            if let Some(sid) = resp
+                .headers()
+                .get("Mcp-Session-Id")
+                .and_then(|value| value.to_str().ok())
+            {
                 if !sid.is_empty() {
                     self.session_id = Some(sid.to_string());
                 }
             }
         }
 
-        let content_type = resp.header("Content-Type").unwrap_or("").to_string();
-        let mut reader = BufReader::new(resp.into_reader());
+        let content_type = resp
+            .headers()
+            .get("Content-Type")
+            .and_then(|value| value.to_str().ok())
+            .unwrap_or("")
+            .to_string();
+        let mut reader = BufReader::new(resp.into_body().into_reader());
         let mut text = String::new();
-        reader
+        (&mut reader)
+            .take(MAX_HTTP_BODY_BYTES + 1)
             .read_to_string(&mut text)
             .map_err(|e| format!("{method}: {e}"))?;
+        if text.len() as u64 > MAX_HTTP_BODY_BYTES {
+            return Err(format!(
+                "{method}: HTTP response exceeded the {MAX_HTTP_BODY_BYTES}-byte limit"
+            ));
+        }
         parse_response_body(method, id, &text, &content_type)
     }
 
     fn notify(&mut self, method: &str, params: Value) -> Result<(), String> {
         let body = json!({"jsonrpc": "2.0", "method": method, "params": params});
-        // A notification has no id; any 2xx (typically 202 Accepted) is success,
-        // and ureq surfaces non-2xx as an error.
-        self.post()
+        // A notification has no id; any 2xx (typically 202 Accepted) is success.
+        // The shared ureq agent deliberately leaves HTTP status handling to us
+        // so a bounded error body can be included in the diagnostic.
+        let response = self
+            .post()
             .send_json(body)
-            .map(|_| ())
-            .map_err(|e| format!("{method}: {}", http_error(e)))
+            .map_err(|e| format!("{method}: {e}"))?;
+        if response.status().is_success() {
+            Ok(())
+        } else {
+            Err(format!("{method}: {}", http_response_error(response)))
+        }
     }
 }
 
@@ -559,28 +589,29 @@ fn sse_message_for_id(body: &str, id: u64) -> Option<Value> {
     consider(&data)
 }
 
-/// Map a ureq error to a concise message, including the status and any JSON-RPC
-/// error message in the error body.
-fn http_error(e: ureq::Error) -> String {
-    match e {
-        ureq::Error::Status(status, resp) => {
-            let body = resp.into_string().unwrap_or_default();
-            let detail = serde_json::from_str::<Value>(body.trim())
-                .ok()
-                .and_then(|v| {
-                    v.get("error")
-                        .and_then(|er| er.get("message"))
-                        .and_then(|m| m.as_str())
-                        .map(|s| s.to_string())
-                })
-                .unwrap_or_else(|| body.trim().chars().take(200).collect());
-            if detail.is_empty() {
-                format!("HTTP {status}")
-            } else {
-                format!("HTTP {status}: {detail}")
-            }
-        }
-        other => other.to_string(),
+/// Render a non-success response, reading at most the MCP body ceiling and
+/// preserving a JSON-RPC error message when the server provides one.
+fn http_response_error(mut response: crate::providers::HttpResponse) -> String {
+    let status = response.status().as_u16();
+    let body = response
+        .body_mut()
+        .with_config()
+        .limit(MAX_HTTP_BODY_BYTES)
+        .read_to_string()
+        .unwrap_or_default();
+    let detail = serde_json::from_str::<Value>(body.trim())
+        .ok()
+        .and_then(|v| {
+            v.get("error")
+                .and_then(|er| er.get("message"))
+                .and_then(|m| m.as_str())
+                .map(|s| s.to_string())
+        })
+        .unwrap_or_else(|| body.trim().chars().take(200).collect());
+    if detail.is_empty() {
+        format!("HTTP {status}")
+    } else {
+        format!("HTTP {status}: {detail}")
     }
 }
 

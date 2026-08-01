@@ -28,7 +28,11 @@ import tempfile
 import datetime
 import subprocess
 
-BINARY = sys.argv[1] if len(sys.argv) > 1 else "target/release/aishe"
+from harness_identity import require_current_binary
+
+BINARY = require_current_binary(
+    sys.argv[1] if len(sys.argv) > 1 else "target/release/aishe"
+)
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 REPORT_DIR = os.path.join(REPO_ROOT, "test-results")
 TIMEOUT = 20.0

@@ -269,7 +269,7 @@ Account and model are separate surfaces so changing a model never quietly
 changes logins:
 
 ```sh
-# Switch account (this shell; d in picker = durable default)
+# Switch account (Enter is shell-local; the following prompt can save a default)
 aishe connection pick               # or /connection in the shell
 aishe connection use openai-work --default
 
@@ -282,8 +282,9 @@ aishe models --connection openai-work
 ```
 
 In an interactive terminal, Enter applies the highlighted choice only to that
-shell; `d` (or the post-Enter “make this the default?” prompt) saves it.
-Navigation is ↑/↓ or j/k. Brands on status and `/status`:
+shell; the following default-No prompt can save it as the durable default.
+Navigation is ↑/↓ or Ctrl-P/Ctrl-N, with Home/End and Page Up/Page Down for
+larger lists. Brands on status and `/status`:
 
 | Brand | Meaning |
 |-------|---------|

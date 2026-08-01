@@ -11,6 +11,11 @@ validation_report: "OPENCODE_BACKEND_VALIDATION.md"
 validation_data: "OPENCODE_BACKEND_VALIDATION.json"
 ---
 
+> **Lifecycle: Implemented.** Baseline: v0.5.0 at `b388ee3`. This remains the
+> managed-backend design record; use
+> [Managed agent backend](../managed-agent-backend.md) for current operations and
+> the [post-0.6.5 plan](NEXT_PRODUCT_UX_RELIABILITY_PLAN.md) for new work.
+
 # Aishe OpenCode Agent Backend and Enterprise Setup
 
 ## Document Authority

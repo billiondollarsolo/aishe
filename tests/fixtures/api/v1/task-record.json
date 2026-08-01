@@ -1,0 +1,19 @@
+{
+  "schema_version": 1,
+  "id": "fixture-task",
+  "name": "Compatibility fixture",
+  "created_at_ms": 1,
+  "updated_at_ms": 2,
+  "status": "interrupted",
+  "mode": "yolo",
+  "provider": "fake",
+  "model": "test-model",
+  "cwd": "/tmp/fixture-workspace",
+  "objective": "Exercise persisted task compatibility.",
+  "messages": [],
+  "completed_tools": [],
+  "pending_tool": null,
+  "usage": { "input": 10, "output": 5, "requests": 1 },
+  "last_error_kind": null,
+  "last_error": null
+}

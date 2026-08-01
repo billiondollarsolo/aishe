@@ -56,12 +56,24 @@ pub struct ApprovalRequest {
     pub title: String,
     pub detail: String,
     pub dangerous: bool,
+    /// Backend-neutral identity of the agent requesting approval, when known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent: Option<String>,
+    /// Durable task/session identity blocked on this approval, when known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub task: Option<String>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct UserQuestion {
     pub request_id: String,
     pub prompt: String,
+    /// Backend-neutral identity of the agent asking, when the adapter supplies it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent: Option<String>,
+    /// Durable task/session identity waiting for the answer, when known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub task: Option<String>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -150,4 +162,58 @@ pub enum AgentEvent {
     Failed {
         error: UserFacingError,
     },
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn legacy_waiting_events_deserialize_without_identity_fields() {
+        let question: AgentEvent = serde_json::from_value(serde_json::json!({
+            "type": "waiting_for_user",
+            "request": {"request_id": "q1", "prompt": "Choose a region"}
+        }))
+        .unwrap();
+        let AgentEvent::WaitingForUser { request } = question else {
+            panic!("expected waiting_for_user");
+        };
+        assert_eq!(request.agent, None);
+        assert_eq!(request.task, None);
+
+        let approval: AgentEvent = serde_json::from_value(serde_json::json!({
+            "type": "waiting_for_approval",
+            "request": {
+                "request_id": "a1",
+                "title": "Run it?",
+                "detail": "host action",
+                "dangerous": true
+            }
+        }))
+        .unwrap();
+        let AgentEvent::WaitingForApproval { request } = approval else {
+            panic!("expected waiting_for_approval");
+        };
+        assert_eq!(request.agent, None);
+        assert_eq!(request.task, None);
+    }
+
+    #[test]
+    fn waiting_identity_round_trips_when_present() {
+        let event = AgentEvent::WaitingForUser {
+            request: UserQuestion {
+                request_id: "q2".into(),
+                prompt: "Continue?".into(),
+                agent: Some("planner".into()),
+                task: Some("task-9".into()),
+            },
+        };
+        let encoded = serde_json::to_value(&event).unwrap();
+        assert_eq!(encoded["request"]["agent"], "planner");
+        assert_eq!(encoded["request"]["task"], "task-9");
+        assert_eq!(
+            serde_json::from_value::<AgentEvent>(encoded).unwrap(),
+            event
+        );
+    }
 }

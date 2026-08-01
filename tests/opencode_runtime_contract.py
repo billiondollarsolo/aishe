@@ -23,6 +23,7 @@ import urllib.parse
 import urllib.error
 import urllib.request
 
+from harness_identity import require_current_binary
 
 MODEL = "aishe-contract-model"
 CANARY = "sk-proj-contract-canary-0123456789abcdefghijklmnopqrstuvwxyz"
@@ -743,7 +744,7 @@ def assert_runtime_contract(binary, runtime_dir):
 def main():
     if len(sys.argv) != 2:
         raise SystemExit("usage: opencode_runtime_contract.py /path/to/aishe")
-    binary = str(pathlib.Path(sys.argv[1]).resolve())
+    binary = require_current_binary(sys.argv[1])
     runtime = os.environ.get("AISHE_RUNTIME_DIR")
     if not runtime:
         raise SystemExit("AISHE_RUNTIME_DIR must point to the installed pinned runtime")

@@ -176,15 +176,12 @@ fn connection_status(requested: Option<&str>, json: bool) -> Result<Option<u8>> 
     }
     let status = crate::connection::auth_status(connection);
     if json {
-        println!(
-            "{}",
-            serde_json::to_string_pretty(&serde_json::json!({
-                "connection_id": id,
-                "connection_label": connection.label,
-                "provider": connection.provider,
-                "auth": status,
-            }))?
-        );
+        crate::cli::json_contract::print_object(&serde_json::json!({
+            "connection_id": id,
+            "connection_label": connection.label,
+            "provider": connection.provider,
+            "auth": status,
+        }))?;
     } else {
         println!("connection: {id} ({})", connection.label);
         println!("provider: {}", connection.provider);
@@ -372,7 +369,7 @@ pub fn run(command: &AuthCommand) -> Result<u8> {
                     .parse::<crate::oauth::OAuthProvider>()?;
                 let status = crate::oauth::status_profile(provider, oauth_profile)?;
                 if *json {
-                    println!("{}", serde_json::to_string_pretty(&status)?);
+                    crate::cli::json_contract::print_object(&status)?;
                 } else {
                     println!(
                         "oauth: {}/{} ({})",
@@ -419,19 +416,16 @@ pub fn run(command: &AuthCommand) -> Result<u8> {
                 "none"
             };
             if *json {
-                println!(
-                    "{}",
-                    serde_json::to_string_pretty(&serde_json::json!({
-                        "profile": profile,
-                        "available": source.is_available() || oauth_available,
-                        "api_key_available": source.is_available(),
-                        "source": source,
-                        "oauth": oauth,
-                        "selected": selected,
-                        "usable": source.is_available() || oauth_available,
-                        "credentials_file": credentials::path(),
-                    }))?
-                );
+                crate::cli::json_contract::print_object(&serde_json::json!({
+                    "profile": profile,
+                    "available": source.is_available() || oauth_available,
+                    "api_key_available": source.is_available(),
+                    "source": source,
+                    "oauth": oauth,
+                    "selected": selected,
+                    "usable": source.is_available() || oauth_available,
+                    "credentials_file": credentials::path(),
+                }))?;
             } else {
                 println!("profile: {profile}");
                 println!("API key: {}", source.label());
@@ -519,7 +513,7 @@ pub fn run(command: &AuthCommand) -> Result<u8> {
                 })
                 .collect();
             if *json {
-                println!("{}", serde_json::to_string_pretty(&rows)?);
+                crate::cli::json_contract::print_envelope("profiles", &rows)?;
             } else if rows.is_empty() {
                 println!("no credential profiles configured");
             } else {

@@ -55,6 +55,10 @@ to the LLM route/color even if `what` is installed. It automatically gets out
 of the way when zsh-syntax-highlighting or fast-syntax-highlighting is loaded.
 Set `AISHE_COMMAND_HIGHLIGHT=0` to disable the fallback.
 
+Color is not the only route signal. Press **Ctrl-X ?** to display
+`aishe route: agent` or `aishe route: shell/local` for the current zsh buffer
+without submitting or replacing it.
+
 The branded prompt also has a configurable live status display. `right` keeps
 the current shell-like layout, `below` gives detailed metrics room in narrow
 terminals, and `off` hides it. Choose the position and ordered fields during
@@ -66,9 +70,10 @@ The router recognizes a conservative set of full-line question forms beginning
 with collision-prone commands such as `what`, `where`, and `who`. Ambiguous
 imperatives such as `find large files` or `install kubectl please` remain
 **shell** commands when the first word is a real binary (`install` is
-`/usr/bin/install`). To force any line to the AI, **start it with `?` or `#`**
-(e.g. `? install kubectl please`); the sigil is stripped before zsh sees it.
-That is the reliable path on every platform.
+`/usr/bin/install`). To force any line to the AI, **start it with `?`** (e.g.
+`? install kubectl please`); the sigil is stripped before zsh sees it. The
+zsh/Rust `#` spelling is a deprecated compatibility alias and remains an
+ordinary comment in Bash. `?` is the reliable path on every supported tier.
 
 Optional force-NL key: Meta/Alt+Return on zsh (`AISHE_NL_KEY`, default `^[^M`).
 On Mac that is **Option+Return**, only if the terminal treats Option as Meta
@@ -81,7 +86,8 @@ keys are unreliable. Details:
 When a command **fails**, press **Ctrl-X Ctrl-F** (or `AISHE_FIX_KEY`) to ask the
 model for a corrected command — it is pre-filled on your line for review, never
 run automatically. Set `AISHE_AUTODIAGNOSE=1` to also print a one-line hint after
-any failure pointing at the fix key. (Both work in the bash hook too.)
+any failure pointing at the fix key. Bash key support is version-dependent and
+must pass the [Tier-B matrix](bash-compatibility.md).
 
 ## Native zsh/bash hook
 
@@ -96,15 +102,17 @@ eval "$(aishe init zsh)"
 eval "$(aishe init bash)"
 ```
 
-This installs a not-found handler that routes anything that is not a command to
-aishe, while your shell's line editor and every native plugin stay untouched. It
-is the same hook the zsh-PTY wrapper injects, so the `?`/`#` sigils, the force-NL
-key, and the Shift-Tab mode cycle all work here too. Separate hook processes
-share one durable managed conversation through the shell/workspace mapping. The
-bash hook is the way to
-use aishe interactively without zsh. Full details, including how state changes
-persist across the subshell handoff, are in
-[Shell integration](shell-integration.md).
+The zsh hook installs the same routing contract used by the zsh-PTY wrapper.
+The Bash hook is Tier B on Bash 5.x and reduced Tier B- on Bash 3.2: `#` remains
+a Bash comment, its command-not-found and Readline facilities differ by version,
+and it must pass its declared interactive matrix before a release claims
+support. Separate
+hook processes share one durable managed conversation through the
+shell/workspace mapping. The Bash hook is the way to use AIShe interactively
+without zsh, subject to the tested version matrix. Full details, including how
+state changes persist across the subshell handoff, are in
+[Shell integration](shell-integration.md); test scope and current evidence are
+in [Native Bash hook compatibility](bash-compatibility.md).
 
 ## Non-interactive
 

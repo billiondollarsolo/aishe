@@ -25,7 +25,11 @@ import tempfile
 import termios
 import time
 
-BINARY = sys.argv[1] if len(sys.argv) > 1 else "target/release/aishe"
+from harness_identity import require_current_binary
+
+BINARY = require_current_binary(
+    sys.argv[1] if len(sys.argv) > 1 else "target/release/aishe"
+)
 TIMEOUT = 8.0
 
 

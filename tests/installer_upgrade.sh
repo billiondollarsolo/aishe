@@ -5,7 +5,7 @@
 set -eu
 
 binary="${1:-target/release/aishe}"
-repo_root="$(CDPATH= cd -- "$(dirname "$0")/.." && pwd)"
+repo_root="$(CDPATH='' cd -- "$(dirname "$0")/.." && pwd)"
 case "$binary" in
   /*) source_binary="$binary" ;;
   *) source_binary="$repo_root/$binary" ;;

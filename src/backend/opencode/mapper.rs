@@ -145,23 +145,7 @@ impl EventMapper {
                     retryable: false,
                 },
             }],
-            "question.asked" => vec![AgentEvent::WaitingForUser {
-                request: UserQuestion {
-                    request_id: properties
-                        .get("id")
-                        .and_then(Value::as_str)
-                        .unwrap_or("")
-                        .to_string(),
-                    prompt: properties
-                        .get("questions")
-                        .and_then(Value::as_array)
-                        .and_then(|items| items.first())
-                        .and_then(|item| item.get("question"))
-                        .and_then(Value::as_str)
-                        .unwrap_or("The agent needs more information.")
-                        .to_string(),
-                },
-            }],
+            "question.asked" => map_questions(properties),
             _ => Vec::new(),
         }
     }
@@ -491,6 +475,55 @@ impl EventMapper {
     }
 }
 
+fn map_questions(properties: &Value) -> Vec<AgentEvent> {
+    let base_id = properties.get("id").and_then(Value::as_str).unwrap_or("");
+    let agent = properties
+        .get("agent")
+        .or_else(|| properties.get("info").and_then(|info| info.get("agent")))
+        .and_then(Value::as_str)
+        .map(str::to_string);
+    let task = properties
+        .get("sessionID")
+        .and_then(Value::as_str)
+        .map(str::to_string);
+    let questions = properties
+        .get("questions")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    if questions.is_empty() {
+        return vec![AgentEvent::WaitingForUser {
+            request: UserQuestion {
+                request_id: base_id.to_string(),
+                prompt: "The agent needs more information.".into(),
+                agent,
+                task,
+            },
+        }];
+    }
+    let multiple = questions.len() > 1;
+    questions
+        .into_iter()
+        .enumerate()
+        .map(|(index, item)| AgentEvent::WaitingForUser {
+            request: UserQuestion {
+                request_id: if multiple {
+                    format!("{base_id}:{}", index + 1)
+                } else {
+                    base_id.to_string()
+                },
+                prompt: item
+                    .get("question")
+                    .and_then(Value::as_str)
+                    .unwrap_or("The agent needs more information.")
+                    .to_string(),
+                agent: agent.clone(),
+                task: task.clone(),
+            },
+        })
+        .collect()
+}
+
 fn usage_from(value: &Value) -> UsageDelta {
     let tokens = value.get("tokens").unwrap_or(&Value::Null);
     UsageDelta {
@@ -668,6 +701,37 @@ mod tests {
             mapper.map(&permission).as_slice(),
             [AgentEvent::Failed { error }] if error.code == "opencode_permission_escape"
         ));
+    }
+
+    #[test]
+    fn maps_every_question_with_backward_compatible_identity() {
+        let mut mapper = EventMapper::new("ses_1", "msg_user");
+        let question = envelope(
+            "question.asked",
+            serde_json::json!({
+                "sessionID":"ses_1",
+                "id":"request-7",
+                "agent":"planner",
+                "questions":[
+                    {"question":"Which region?"},
+                    {"question":"Which account?"}
+                ]
+            }),
+        );
+        let mapped = mapper.map(&question);
+        assert_eq!(mapped.len(), 2);
+        let AgentEvent::WaitingForUser { request: first } = &mapped[0] else {
+            panic!("expected first question");
+        };
+        let AgentEvent::WaitingForUser { request: second } = &mapped[1] else {
+            panic!("expected second question");
+        };
+        assert_eq!(first.request_id, "request-7:1");
+        assert_eq!(first.prompt, "Which region?");
+        assert_eq!(first.agent.as_deref(), Some("planner"));
+        assert_eq!(first.task.as_deref(), Some("ses_1"));
+        assert_eq!(second.request_id, "request-7:2");
+        assert_eq!(second.prompt, "Which account?");
     }
 
     #[test]

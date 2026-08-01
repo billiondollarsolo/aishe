@@ -172,7 +172,7 @@ fn named_connections_are_crud_safe_ambiguous_by_provider_and_audit_attributed() 
     std::fs::create_dir_all(&config_dir).unwrap();
     std::fs::write(
         config_dir.join("config.toml"),
-        r#"version = 6
+        r#"version = 7
 
 [aishe]
 mode = "suggest"
@@ -227,6 +227,10 @@ redact = true
         .assert()
         .success()
         .stdout(contains("openai-work").and(contains("openai-personal")));
+    let listed = run(&["connection", "list", "--json"]).output().unwrap();
+    let listed: serde_json::Value = serde_json::from_slice(&listed.stdout).unwrap();
+    assert_eq!(listed["schema_version"], 1);
+    assert_eq!(listed["connections"].as_array().unwrap().len(), 2);
     run(&["provider", "openai"])
         .assert()
         .failure()
@@ -235,13 +239,20 @@ redact = true
         .assert()
         .success()
         .stdout(contains("work-secret-never-log").not())
+        .stdout(contains(r#""schema_version": 1"#))
         .stdout(contains(r#""connection_id": "openai-work""#));
     run(&["settings", "--json"]).assert().success().stdout(
-        contains(r#""path": "aishe.connection""#)
+        contains(r#""schema_version": 1"#)
+            .and(contains(r#""path": "aishe.connection""#))
             .and(contains(r#""value": "openai-work""#))
             .and(contains(r#""path": "connections.openai-work.auth.type""#))
             .and(contains("work-secret-never-log").not()),
     );
+    let auth_profiles = run(&["auth", "list", "--json"]).output().unwrap();
+    assert!(auth_profiles.status.success());
+    let auth_profiles: serde_json::Value = serde_json::from_slice(&auth_profiles.stdout).unwrap();
+    assert_eq!(auth_profiles["schema_version"], 1);
+    assert!(auth_profiles["profiles"].is_array());
     run(&["status", "--json"]).assert().success().stdout(
         contains(r#""id": "openai-work""#)
             .and(contains(r#""auth": "Codex - API""#))
@@ -281,6 +292,12 @@ redact = true
         .assert()
         .success()
         .stdout(contains("Local test edited").and(contains("local-model-2")));
+    let shown = run(&["connection", "show", "local-test", "--json"])
+        .output()
+        .unwrap();
+    let shown: serde_json::Value = serde_json::from_slice(&shown.stdout).unwrap();
+    assert_eq!(shown["schema_version"], 1);
+    assert_eq!(shown["model"], "local-model-2");
     run(&["connection", "remove", "local-test", "--yes"])
         .assert()
         .success()
@@ -297,6 +314,10 @@ redact = true
     assert!(records.contains(r#""connection_label":"OpenAI work""#));
     assert!(records.contains(r#""auth_type":"api_key""#));
     assert!(records.contains(r#""auth_profile":"work-key""#));
+    assert!(records.lines().all(|line| {
+        serde_json::from_str::<serde_json::Value>(line)
+            .is_ok_and(|event| event["schema_version"] == 1)
+    }));
     assert!(!records.contains("work-secret-never-log"));
     assert!(!records.contains("personal-secret-never-log"));
     std::fs::remove_dir_all(root).ok();
@@ -414,7 +435,11 @@ fn suggest_subcommand_scripting_contract() {
         .args(["suggest", "--json", "list", "files"])
         .assert()
         .success()
-        .stdout(contains("\"command\":\"ls -la\"").and(contains("\"risk\":\"safe\"")));
+        .stdout(
+            contains("\"schema_version\":1")
+                .and(contains("\"command\":\"ls -la\""))
+                .and(contains("\"risk\":\"safe\"")),
+        );
     // Dangerous command → exit 20 (still printed for review).
     base()
         .env(
@@ -427,10 +452,15 @@ fn suggest_subcommand_scripting_contract() {
         .stdout(contains("\"risk\":\"dangerous\""));
     // Empty query → exit 1 with guidance.
     base()
-        .arg("suggest")
+        .args(["suggest", "--json"])
         .assert()
         .code(1)
-        .stderr(contains("suggest needs a request"));
+        .stdout("")
+        .stderr(
+            contains("\"schema_version\":1")
+                .and(contains("\"code\":\"cli.missing_request\""))
+                .and(contains("\u{1b}[").not()),
+        );
 }
 
 #[test]
@@ -476,7 +506,7 @@ fn explicit_suggest_is_not_cut_off_by_the_shell_hook_budget() {
 #[test]
 fn explicit_suggest_propagates_provider_failure() {
     let home = temp_config_home();
-    Command::cargo_bin("aishe")
+    let output = Command::cargo_bin("aishe")
         .unwrap()
         .env("XDG_CONFIG_HOME", &home)
         .env("XDG_DATA_HOME", home.join("data"))
@@ -486,10 +516,18 @@ fn explicit_suggest_propagates_provider_failure() {
         .env("AISHE_FAKE_LLM", "unused")
         .env("AISHE_FAKE_ERROR", "synthetic upstream failure")
         .args(["suggest", "--json", "list", "files"])
-        .assert()
-        .code(1)
-        .stdout("")
-        .stderr(contains("synthetic upstream failure").and(contains("Next:")));
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(1));
+    assert!(output.stdout.is_empty());
+    assert!(!output.stderr.contains(&0x1b));
+    let error: serde_json::Value = serde_json::from_slice(&output.stderr)
+        .expect("JSON-mode suggest failure must own stderr with one JSON document");
+    assert_eq!(error["schema_version"], 1);
+    assert_eq!(error["code"], "provider.server_unavailable");
+    assert!(error["next_action"]
+        .as_str()
+        .is_some_and(|value| !value.is_empty()));
 }
 
 #[test]
@@ -635,7 +673,39 @@ fn dash_c_runs_forced_shell_command() {
         .arg("!echo hi-from-aishe")
         .assert()
         .success()
-        .stdout(contains("hi-from-aishe"));
+        .stdout(contains("hi-from-aishe"))
+        .stderr(
+            contains("AIShe · shell override")
+                .and(contains("safety gate bypassed"))
+                .and(contains("this line only"))
+                .and(contains("\u{1b}[").not()),
+        );
+}
+
+#[test]
+fn legacy_hash_agent_prefix_warns_and_remains_non_sticky() {
+    let home = temp_config_home();
+    Command::cargo_bin("aishe")
+        .unwrap()
+        .env("XDG_CONFIG_HOME", &home)
+        .env("XDG_DATA_HOME", home.join("data"))
+        .env("AISHE_CONFIG_DIR", &home)
+        .env("AISHE_DATA_DIR", home.join("data"))
+        .env("ANTHROPIC_API_KEY", "sk-test")
+        .env(
+            "AISHE_FAKE_LLM",
+            r#"{"type":"answer","explanation":"fixture answer"}"#,
+        )
+        .arg("-c")
+        .arg("# explain this fixture")
+        .assert()
+        .success()
+        .stdout("fixture answer\n")
+        .stderr(
+            contains("# agent prefix is deprecated; use ?")
+                .and(contains("removal planned for 0.9"))
+                .and(contains("\u{1b}[").not()),
+        );
 }
 
 #[test]
@@ -793,7 +863,12 @@ auth_required = true
         .success()
         .stdout(contains("credential-test-model"));
     let first_request = first_server.join().unwrap();
-    assert!(first_request.contains(&format!("Authorization: Bearer {stored_secret}")));
+    assert!(
+        first_request
+            .to_ascii_lowercase()
+            .contains(&format!("authorization: bearer {stored_secret}")),
+        "HTTP field names are case-insensitive"
+    );
 
     let (second_endpoint, second_server) = serve_once();
     let config_text = std::fs::read_to_string(config_dir.join("config.toml"))
@@ -805,7 +880,12 @@ auth_required = true
     overridden.env("AISHE_CREDENTIAL_TEST_ENV", environment_secret);
     overridden.assert().success();
     let second_request = second_server.join().unwrap();
-    assert!(second_request.contains(&format!("Authorization: Bearer {environment_secret}")));
+    assert!(
+        second_request
+            .to_ascii_lowercase()
+            .contains(&format!("authorization: bearer {environment_secret}")),
+        "HTTP field names are case-insensitive"
+    );
     assert_eq!(
         std::fs::read(&credentials_path).unwrap(),
         credentials_before
@@ -832,6 +912,8 @@ fn schema_two_migration_adds_profile_without_importing_environment_secret() {
 
 [aishe]
 provider = "openai"
+front_end = "reedline"
+suggestion_style = "ghost_text"
 
 [providers.openai]
 base_url = "https://api.openai.com"
@@ -849,12 +931,19 @@ transport = "responses"
         .assert()
         .success();
     let migrated = std::fs::read_to_string(config_dir.join("config.toml")).unwrap();
-    assert!(migrated.contains("version = 6"));
+    assert!(migrated.contains("version = 7"));
     assert!(migrated.contains("[connections.openai]"));
     assert!(migrated.contains("[backend]"));
     assert!(migrated.contains("engine = \"opencode\""));
     assert!(migrated.contains("[sandbox]"));
+    assert!(migrated.contains("[ui]"));
+    assert!(migrated.contains("theme = \"auto\""));
+    assert!(migrated.contains("color_depth = \"auto\""));
+    assert!(migrated.contains("unicode = \"auto\""));
+    assert!(migrated.contains("motion = \"auto\""));
     assert!(migrated.contains("credential = \"openai\""));
+    assert!(!migrated.contains("front_end"));
+    assert!(!migrated.contains("suggestion_style"));
     assert!(!config_dir.join("credentials.toml").exists());
     let backups: Vec<_> = std::fs::read_dir(&config_dir)
         .unwrap()
@@ -1192,7 +1281,8 @@ fn primary_commands_and_live_status_are_discoverable() {
         .assert()
         .success()
         .stdout(
-            contains(r#""model": "session-model""#)
+            contains(r#""schema_version": 1"#)
+                .and(contains(r#""model": "session-model""#))
                 .and(contains(r#""mode": "yolo""#))
                 .and(contains(r#""scope": "host""#))
                 .and(contains(r#""output": "focus""#))
@@ -1497,6 +1587,7 @@ auth_required = false
     run(&["readiness", "--json"])
         .assert()
         .failure()
+        .stdout(contains("\"schema_version\": 1"))
         .stdout(contains("\"ready\": false"))
         .stdout(contains("\"id\": \"provider_tools\""))
         .stdout(contains("\"id\": \"sandbox\""))
@@ -1583,6 +1674,34 @@ fn log_and_usage_read_the_audit_log() {
                 .and(contains("gpt-4o"))
                 .and(contains("tool write_file")),
         );
+
+    let jsonl = Command::cargo_bin("aishe")
+        .unwrap()
+        .env("AISHE_CONFIG_DIR", dir.join("config"))
+        .env("AISHE_DATA_DIR", dir.join("data"))
+        .env("AISHE_LOG_FILE", &log)
+        .args(["log", "--json"])
+        .output()
+        .unwrap();
+    assert!(jsonl.status.success());
+    assert!(jsonl.stderr.is_empty());
+    let jsonl = String::from_utf8(jsonl.stdout).unwrap();
+    assert!(!jsonl.contains('\u{1b}'));
+    assert!(jsonl.lines().all(|line| {
+        serde_json::from_str::<serde_json::Value>(line)
+            .is_ok_and(|event| event["schema_version"] == 1)
+    }));
+
+    Command::cargo_bin("aishe")
+        .unwrap()
+        .env("AISHE_CONFIG_DIR", dir.join("config"))
+        .env("AISHE_DATA_DIR", dir.join("data"))
+        .env("AISHE_LOG_FILE", &log)
+        .args(["log", "--action", "does-not-exist", "--json"])
+        .assert()
+        .success()
+        .stdout(predicates::str::is_empty())
+        .stderr(contains("no matching audit entries"));
 
     // `aishe log --action action` filters to the command.
     Command::cargo_bin("aishe")
@@ -1977,8 +2096,15 @@ fn effective_config_and_context_json_are_structured_and_content_free() {
     let output = run(&["config", "--effective", "--json"]).output().unwrap();
     assert!(output.status.success());
     let effective: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(effective["schema_version"], 1);
     assert!(effective["config"].is_object());
     assert!(effective["provenance"]["fields"].is_array());
+
+    let output = run(&["config", "--json"]).output().unwrap();
+    assert!(output.status.success());
+    let raw_config: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(raw_config["schema_version"], 1);
+    assert!(raw_config["config"]["version"].as_u64().is_some());
 
     let request = "private request text must not be echoed";
     let output = run(&["context", "--preview", request, "--json"])
@@ -1989,6 +2115,7 @@ fn effective_config_and_context_json_are_structured_and_content_free() {
     assert!(!raw.contains(request));
     assert!(!raw.contains(fake_secret));
     let preview: serde_json::Value = serde_json::from_str(&raw).unwrap();
+    assert_eq!(preview["schema_version"], 1);
     assert!(preview["sections"].is_array());
     assert!(preview["total_estimated_tokens"].as_u64().is_some());
 
@@ -2112,15 +2239,22 @@ auth_required = false
     let output = run(&["provider", "test", "--json"]).output().unwrap();
     assert!(output.status.success(), "{:?}", output);
     let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(report["schema_version"], 2);
     assert_eq!(report["credential"]["state"], "pass");
     assert_eq!(report["credential_required"], false);
     assert_eq!(report["model_available"]["state"], "pass");
     assert_eq!(report["text"]["state"], "skipped");
 
-    run(&["models", "--provider", "openai", "--json"])
-        .assert()
-        .success()
-        .stdout(contains("local-model-a").and(contains("local-model-b")));
+    let output = run(&["models", "--provider", "openai", "--json"])
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let models: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(models["schema_version"], 1);
+    assert_eq!(
+        models["models"],
+        serde_json::json!(["local-model-a", "local-model-b"])
+    );
     server.join().unwrap();
     std::fs::remove_dir_all(dir).ok();
 }
@@ -2163,6 +2297,7 @@ fn uninstall_preview_defaults_to_replaceable_components_and_preserves_state() {
     let data_dir = dir.join("data").join("aishe");
     std::fs::create_dir_all(data_dir.join("runtime/opencode/test")).unwrap();
     std::fs::create_dir_all(data_dir.join("tasks")).unwrap();
+    std::fs::create_dir_all(data_dir.join("backend/opencode/xdg/data/opencode")).unwrap();
     std::fs::create_dir_all(&config_dir).unwrap();
     std::fs::write(
         config_dir.join("config.toml"),
@@ -2172,6 +2307,11 @@ fn uninstall_preview_defaults_to_replaceable_components_and_preserves_state() {
     std::fs::write(config_dir.join("credentials.toml"), "version = 1\n").unwrap();
     std::fs::write(data_dir.join("history.ext"), ": 1:0;echo preserved\n").unwrap();
     std::fs::write(data_dir.join("tasks/task.json"), "{}").unwrap();
+    for name in ["audit.jsonl", "audit.jsonl.1", "undo.jsonl", "undo.jsonl.1"] {
+        std::fs::write(data_dir.join(name), "{}\n").unwrap();
+    }
+    let oauth = data_dir.join("backend/opencode/xdg/data/opencode/auth.json");
+    std::fs::write(&oauth, "{\"openai\":{}}").unwrap();
 
     let run = |args: &[&str]| {
         let mut command = Command::cargo_bin("aishe").unwrap();
@@ -2192,6 +2332,7 @@ fn uninstall_preview_defaults_to_replaceable_components_and_preserves_state() {
         config_dir.join("credentials.toml"),
         data_dir.join("history.ext"),
         data_dir.join("tasks/task.json"),
+        oauth.clone(),
         data_dir.join("runtime/opencode/test"),
     ] {
         assert!(path.exists(), "{} was changed by dry-run", path.display());
@@ -2213,6 +2354,7 @@ fn uninstall_preview_defaults_to_replaceable_components_and_preserves_state() {
         config_dir.join("credentials.toml"),
         data_dir.join("history.ext"),
         data_dir.join("tasks/task.json"),
+        oauth.clone(),
     ] {
         assert!(path.exists(), "{} was not preserved", path.display());
     }
@@ -2226,5 +2368,34 @@ fn uninstall_preview_defaults_to_replaceable_components_and_preserves_state() {
                 .and(contains("AI sessions/tool journals"))
                 .and(contains("audit/undo data")),
         );
+
+    run(&["uninstall", "--sessions", "--yes"])
+        .assert()
+        .success()
+        .stdout(contains("AI sessions/tool journals"));
+    assert!(!data_dir.join("tasks").exists());
+    assert!(
+        oauth.exists(),
+        "session deletion must preserve OAuth credentials"
+    );
+
+    run(&["uninstall", "--config", "--yes"])
+        .assert()
+        .success()
+        .stdout(contains("config/credentials"));
+    assert!(
+        !oauth.exists(),
+        "credential deletion must remove managed OAuth state"
+    );
+
+    run(&["uninstall", "--audit-undo", "--yes"])
+        .assert()
+        .success()
+        .stdout(contains("audit/undo data"));
+    for name in ["audit.jsonl", "audit.jsonl.1", "undo.jsonl", "undo.jsonl.1"] {
+        let path = data_dir.join(name);
+        assert!(!path.exists(), "{} was not removed", path.display());
+    }
+
     std::fs::remove_dir_all(dir).ok();
 }

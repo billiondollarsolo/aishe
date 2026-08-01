@@ -16,8 +16,6 @@
 use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
 
-use crossterm::style::Stylize;
-
 use super::{Completion, Msg, Provider, ProviderError, ResponseFormat, ToolDef};
 use crate::usage::{Usage, UsageMeter};
 
@@ -71,13 +69,14 @@ impl FallbackProvider {
             .unwrap_or_else(|e| e.into_inner())
             .insert(next)
         {
+            let message = format!(
+                "aishe: provider '{}' failed ({reason}); falling back to '{}'",
+                self.chain[from].0, self.chain[next].0
+            );
             eprintln!(
                 "{}",
-                format!(
-                    "aishe: provider '{}' failed ({reason}); falling back to '{}'",
-                    self.chain[from].0, self.chain[next].0
-                )
-                .dim()
+                crate::ui::TerminalCapabilities::detect_stderr()
+                    .paint(crate::ui::StyleToken::Muted, &message)
             );
         }
     }

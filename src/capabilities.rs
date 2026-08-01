@@ -141,23 +141,33 @@ pub fn list_models(config: &Config, provider_name: &str) -> Result<Vec<String>, 
 
     let base = crate::provider_catalog::normalize_base_url(&provider.base_url);
     let endpoint = format!("{base}/v1/models");
-    let agent = ureq::AgentBuilder::new()
-        .timeout_connect(std::time::Duration::from_secs(3))
-        .timeout(std::time::Duration::from_secs(10))
-        .build();
+    let agent = providers::external_http_agent(
+        std::time::Duration::from_secs(3),
+        Some(std::time::Duration::from_secs(10)),
+        None,
+        None,
+    );
     let mut request = agent.get(&endpoint);
     if let Some(key) = key.as_deref() {
         request = if anthropic {
             request
-                .set("x-api-key", key)
-                .set("anthropic-version", "2023-06-01")
+                .header("x-api-key", key)
+                .header("anthropic-version", "2023-06-01")
         } else {
-            request.set("Authorization", &format!("Bearer {key}"))
+            request.header("Authorization", format!("Bearer {key}"))
         };
     }
-    let response = request.call().map_err(map_ureq_error)?;
+    let mut response = request
+        .call()
+        .map_err(|error| ProviderError::Http(error.to_string()))?;
+    if !providers::status_is_accepted(response.status()) {
+        return Err(map_http_response(response));
+    }
     let value: Value = response
-        .into_json()
+        .body_mut()
+        .with_config()
+        .limit(providers::MAX_PROVIDER_BODY_BYTES)
+        .read_json()
         .map_err(|error| ProviderError::Parse(error.to_string()))?;
     let mut models = model_ids(&value);
     models.sort();
@@ -643,23 +653,22 @@ fn result_check<T>(result: Result<T, ProviderError>) -> Check {
     }
 }
 
-fn map_ureq_error(error: ureq::Error) -> ProviderError {
-    match error {
-        ureq::Error::Status(status, response) => {
-            let message = response
-                .into_json::<Value>()
-                .ok()
-                .and_then(|value| {
-                    value
-                        .pointer("/error/message")
-                        .and_then(Value::as_str)
-                        .map(ToOwned::to_owned)
-                })
-                .unwrap_or_else(|| format!("HTTP {status}"));
-            ProviderError::Api { status, message }
-        }
-        ureq::Error::Transport(error) => ProviderError::Http(error.to_string()),
-    }
+fn map_http_response(mut response: providers::HttpResponse) -> ProviderError {
+    let status = response.status().as_u16();
+    let message = response
+        .body_mut()
+        .with_config()
+        .limit(providers::MAX_PROVIDER_BODY_BYTES)
+        .read_json::<Value>()
+        .ok()
+        .and_then(|value| {
+            value
+                .pointer("/error/message")
+                .and_then(Value::as_str)
+                .map(ToOwned::to_owned)
+        })
+        .unwrap_or_else(|| format!("HTTP {status}"));
+    ProviderError::Api { status, message }
 }
 
 pub fn cache_path(report: &Report) -> Option<PathBuf> {

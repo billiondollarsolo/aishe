@@ -8,8 +8,10 @@ minimal config is valid.
 
 Use `aishe setup` for guided configuration or `aishe settings` for the
 interactive section editor. The settings hub shows the provenance of each
-effective value and stages changes until you apply them. A few
-[meta commands](commands.md) also persist individual choices.
+effective value and stages changes until you apply them. Dedicated commands
+such as `aishe mode`, `aishe scope`, `aishe network`, and `aishe output` change
+defaults for new shells. Picker choices say “this shell” until an explicit
+post-selection `y` promotes them.
 
 ## File locations
 
@@ -61,15 +63,15 @@ brevity. Read `~/.config/aishe/...` as `<config>/...` and
 |-------|------|---------|---------|
 | `safety_profile` | string | `custom` | Named settings bundle: `conservative`, `balanced`, `autonomous`, or `custom`. |
 | `mode` | string | `suggest` | Interaction mode: `suggest`, `auto`, or `yolo`. |
-| `connection` | string | `anthropic` | Durable default named connection ID. `/connection` switches account for this shell unless `d` or `--default` is used; `/model` changes only the model on the active connection. |
+| `connection` | string | `anthropic` | Durable default named connection ID. `/connection` switches account for this shell unless the post-selection prompt or `--default` saves it; `/model` changes only the model on the active connection. |
 | `connection_fallback` | string | active connection | Named compatibility fallback connection. |
 | `provider` | string | `anthropic` | Which provider block to use: `anthropic` or `openai`. |
 | `provider_fallback` | array | `[]` | Native compatibility-provider fallback chain. Managed turns do not start a second provider request after prompt admission or any effect. |
 | `yolo_confirm_dangerous` | bool | `true` | Deprecated native compatibility behavior; managed yolo uses one per-shell scope acceptance. |
 | `yolo_confirm` | string | `dangerous` | Native compatibility confirmation tier: `never`, `dangerous`, `writes`, or `all`. Managed yolo has no per-action prompts after scope acceptance. |
-| `yolo_sandbox` | bool | `false` | Policy sandbox: refuse yolo commands that reach the network or write outside the working tree. Toggle at the aishe prompt with `sandbox on`/`off`. |
+| `yolo_sandbox` | bool | `false` | Native policy screen: refuse yolo commands that reach the network or write outside the working tree. Set directly here; a named safety profile selected through `aishe settings` may also update it. |
 | `max_yolo_iterations` | integer | `10` | Maximum tool-use steps for one yolo request. |
-| `yolo_plan` | bool | `false` | Plan-first dry run: the model shows its intended steps and you approve before the loop runs (interactive only). Toggle at the aishe prompt with `plan on`/`off`. |
+| `yolo_plan` | bool | `false` | Native plan-first dry run: the model shows its intended steps and you approve before the loop runs (interactive only). Set directly here; a named safety profile selected through `aishe settings` may also update it. |
 | `project_context` | bool | `true` | Include a per-project `.aishe/context.md` (at or above the cwd) in the model context. See [Per-project context](project-context.md). |
 | `file_tools` | bool | `true` | Offer the built-in `read_file`/`write_file`/`edit_file`/`list_dir` tools to yolo. |
 | `web_tool` | bool | `true` | Offer the built-in `fetch_url` tool to yolo (read web pages/docs; HTML stripped to text, size-capped). |
@@ -81,6 +83,7 @@ brevity. Read `~/.config/aishe/...` as `<config>/...` and
 | `hook_timeout_secs` | integer | `60` | Maximum wait (1–600 seconds) for a prompt-blocking native shell hook. Explicit `aishe suggest` calls wait through the provider's retry policy and are not signal-truncated; exhausted provider failures return exit 1. |
 | `reasoning_effort` | string | `auto` | Provider reasoning effort: `auto`, `none`, `low`, `medium`, `high`, `xhigh`, or `max`. Managed OpenCode turns receive an explicit model option unless this is `auto`; support remains model-dependent. |
 | `failure_hints` | bool | `true` | Show one concise recovery hint after an interactive command fails. |
+| `discovery_hints` | bool | `true` | Show bounded one-time discovery hints. Seen-state is local only; clear it with `aishe hints reset`. |
 | `context_exclude` | array | `[]` | Optional context section IDs to omit. Manage with `aishe context`. |
 | `show_usage` | bool | `true` | Record and display model-call usage in the interactive session. |
 | `status_line` | bool | `true` | Enable the branded prompt's live status display. |
@@ -88,16 +91,32 @@ brevity. Read `~/.config/aishe/...` as `<config>/...` and
 | `status_line_items` | array | `["identity","mode","scope","session_cost","requests"]` | Ordered fields. `identity` is the compact safe connection/provider/endpoint/auth/model/reasoning/default disclosure. Individual identity fields and `backend`, `task`, `elapsed`, `context`, `last_tokens`, `last_cost`, and `session_tokens` are also available. |
 | `budget_usd` | float | `0.0` | Stop calling the model past this session cost. `0` = unlimited. |
 | `memory` | bool | `true` | Remember recent natural-language turns so follow-ups have context. Clear at the aishe prompt with `reset`. |
-| `cache` | bool | `true` | Cache identical suggest-mode responses briefly so repeats are instant and free. Toggle at the aishe prompt with `cache on`/`off`. |
+| `cache` | bool | `true` | Cache identical native suggest-mode responses briefly so repeats are instant and free. Configure through `aishe settings` or this file. |
 | `cache_ttl_secs` | integer | `300` | How long a cached response stays valid, in seconds. |
 | `redact_secrets` | bool | `true` | Scrub likely secrets from the context block sent to the model. See [Logging and privacy](logging.md). |
 
-The toggles named "at the aishe prompt" above (`sandbox`, `plan`, `cache`,
-`details`, and `rehash`) are **prompt-only meta commands**: type them inside the
-interactive shell (bare, or with a leading `/` as `/sandbox`). `reset` works
-there too and is also a real `aishe reset` subcommand. Running `aishe sandbox`
-from a terminal fails with `error: unrecognized subcommand`. See
-[Commands: prompt-only meta commands](commands.md#prompt-only-meta-commands).
+Only the slash commands listed in the
+[command reference](commands.md#primary-slash-commands) are supported in an
+interactive shell. Use `aishe settings` for the fields it exposes and edit this
+file for other fields without a dedicated command. A field name such as
+`sandbox`, `plan`, `cache`, `stream`, or `structured` is not itself an AIShe
+command.
+
+## `[ui]` section
+
+Terminal presentation is semantic rather than hard-coded to one palette. These
+settings are available in `aishe settings` under Shell, history & statusline.
+
+| Field | Type | Default | Meaning |
+|-------|------|---------|---------|
+| `theme` | string | `auto` | `auto`, `dark`, `light`, `mono`, or `none`. `none` emits plain text. |
+| `color_depth` | string | `auto` | `auto`, `16`, `256`, `truecolor`, or `none`. |
+| `unicode` | string | `auto` | `auto`, `unicode`, or `ascii`. ASCII removes symbols, box drawing, and the half-block logo. |
+| `motion` | string | `auto` | `auto`, `live`, or `static`. Static output avoids cursor-up redraw and uses durable phase lines. |
+
+`NO_COLOR` wins over every configured value. `TERM=dumb`, redirected output,
+and JSON also force plain/static rendering. One-process overrides are
+`AISHE_THEME`, `AISHE_COLOR_DEPTH`, `AISHE_UNICODE`, and `AISHE_MOTION`.
 
 ## `[backend]` section
 
@@ -384,6 +403,11 @@ server launched from `command`. List connected tools with `aishe mcp`. See
   agent transcripts. Ctrl-O toggles `focus`/`detailed` in the interactive shell.
 - `AISHE_DETAILS_KEY`: override that zsh detail-toggle key (default `^O`,
   Ctrl-O).
+- `AISHE_THEME`: one-process theme override: `auto`, `dark`, `light`, `mono`, or `none`.
+- `AISHE_COLOR_DEPTH`: one-process color override: `auto`, `16`, `256`, `truecolor`, or `none`.
+- `AISHE_UNICODE`: one-process character override: `auto`, `unicode`, or `ascii`.
+- `AISHE_MOTION`: one-process motion override: `auto`, `live`, or `static`.
+- `NO_COLOR`: disable ANSI styling regardless of config or terminal detection.
 - `XDG_CONFIG_HOME`, `XDG_DATA_HOME`: respected for config and history locations
   **on Linux**. macOS follows the platform convention
   (`~/Library/Application Support`) and ignores them — use the two variables
@@ -427,7 +451,8 @@ silently replace it with defaults. Repair it with `aishe settings`, restore a
 `.bak` file, or use `aishe setup --restart` to discard only a setup draft.
 
 Schema upgrades are automatic and transactional: aishe writes a private backup,
-then atomically writes the migrated schema-v4 config. Backend/sandbox defaults
+then atomically writes the migrated schema-7 config. Schema 7 adds only the
+defaulted `[ui]` accessibility table; backend/sandbox defaults
 preserve or reduce authority; credentials and user state are never migrated
 into backend data. A pre-rename
 `llmsh/config.toml` in the same config directory is migrated on first run.

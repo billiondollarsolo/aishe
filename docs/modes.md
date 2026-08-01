@@ -152,28 +152,22 @@ write.
 
 ## Streaming
 
-Enable token streaming so answers render live as they arrive:
-
-Type this at the aishe prompt (`stream` is a
-[prompt-only meta command](commands.md#prompt-only-meta-commands), not an `aishe`
-subcommand):
-
-```
-~/projects/app ❯ stream on        # or stream = true in config
-```
+Enable token streaming through `aishe settings`, or set `stream = true` under
+`[aishe]` in `config.toml`. `stream` is a configuration field, not a slash or
+CLI command.
 
 In suggest and auto mode, an answer streams to the screen as it is generated.
 Once the model commits to a command instead of prose, aishe falls back to the
 normal confirm or run flow, so a command is never half-printed. When a prose
-answer finishes streaming, aishe re-renders it as markdown in place.
+answer streams, AIShe prints terminal-safe Markdown source exactly once beneath
+the `AIShe · answer` boundary. It never moves upward to rewrite scrollback.
 
 In yolo mode, the agentic loop streams the model's text live too, so long runs no
 longer look frozen: you see the reasoning and the final answer as they arrive,
 interleaved with the tool-call lines. When a turn is the final answer, aishe
-re-renders the streamed text as markdown in place once it completes, so headers,
-lists, emphasis, and code blocks look right. If the streamed answer was taller
-than the screen, the raw text is kept as-is (it cannot be safely re-rendered after
-scrolling).
+keeps that same one-pass representation. This deliberately trades live rich
+rendering for correctness across resize, scroll, tmux/screen, and SSH; buffered
+answers still use the rich Markdown renderer.
 
 Streaming works with both providers over SSE, including streamed tool calls.
 Endpoints without SSE simply deliver the whole answer at once (aishe falls back
@@ -182,11 +176,11 @@ automatically). Streaming is not used for the scriptable suggest `-c` path.
 ## Rendering and syntax highlighting
 
 Model answers are rendered as markdown: headers, lists, emphasis, tables, inline
-code, and fenced code blocks. Fenced code blocks are syntax-highlighted by
+code, and fenced code blocks. Buffered fenced code blocks are syntax-highlighted by
 language (for example ```python or ```rust), using a bundled set of syntaxes and
 a dark theme. Blocks get a subdued language label and closing rule without
-prefixing copied source lines. This applies to both native and managed OpenCode
-answers, whether streamed or buffered. Redirected output, `TERM=dumb`, and
+prefixing copied source lines. Streamed answers preserve the original Markdown
+source without a destructive final rewrite. Redirected output, `TERM=dumb`, and
 `NO_COLOR` preserve the original Markdown structure without ANSI styling.
 
 Highlighting is built in by default. To build a smaller binary without the
@@ -202,14 +196,9 @@ the schema, aishe automatically steps down to a plain JSON object, then to
 prompt-only, and always parses defensively so unrecognized output becomes a plain
 answer rather than a crash.
 
-Also a prompt-only meta command, so type it at the aishe prompt (or set
-`structured` in your config):
-
-```
-~/projects/app ❯ structured schema     # strict schema (default)
-~/projects/app ❯ structured json       # any JSON object
-~/projects/app ❯ structured prompt     # unconstrained text
-```
+Choose this through `aishe settings`, or set `structured = "schema"`, `"json"`,
+or `"prompt"` under `[aishe]` in `config.toml`. `structured` is a configuration
+field, not a slash or CLI command.
 
 yolo mode uses tool calling for the same reliability. Regardless of what the
 model returns, the deterministic [safety gate](safety.md) decides what actually

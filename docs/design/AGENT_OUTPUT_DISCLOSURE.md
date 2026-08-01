@@ -1,6 +1,9 @@
-# Agent output progressive disclosure
+> **Lifecycle: Implemented.** Baseline: v0.5.2. Retained as the delivered output
+> density contract; use the
+> [post-0.6.5 plan](NEXT_PRODUCT_UX_RELIABILITY_PLAN.md) for future response and
+> terminal UX work.
 
-Status: implemented on `feature/opencode-backend`.
+# Agent output progressive disclosure
 
 ## Problem
 

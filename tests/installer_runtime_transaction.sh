@@ -7,7 +7,7 @@ LC_ALL=C
 LANG=C
 export LC_ALL LANG
 
-repo_root="$(CDPATH= cd -- "$(dirname "$0")/.." && pwd)"
+repo_root="$(CDPATH='' cd -- "$(dirname "$0")/.." && pwd)"
 compiler=""
 for candidate in cc clang gcc; do
   if command -v "$candidate" >/dev/null 2>&1; then

@@ -50,6 +50,8 @@ def validate_suggest_result(stdout, stderr, returncode, syntax_check=shell_synta
         problems.append("JSON response is not an object")
 
     response_kind = payload.get("kind")
+    if payload.get("schema_version") != 1:
+        problems.append("unsupported suggest schema_version")
     command = payload.get("command")
     explanation = payload.get("explanation")
     risk = payload.get("risk")

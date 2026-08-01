@@ -26,7 +26,11 @@ import shutil
 import tempfile
 import subprocess
 
-BINARY = sys.argv[1] if len(sys.argv) > 1 else "target/release/aishe"
+from harness_identity import require_current_binary
+
+BINARY = require_current_binary(
+    sys.argv[1] if len(sys.argv) > 1 else "target/release/aishe"
+)
 TIMEOUT = 30.0
 
 # Strings that must never appear in the transcript: they mean a non-command was
@@ -348,6 +352,29 @@ def main():
             if not sh.reset_editor():
                 raise RuntimeError("line editor did not recover after question probe")
 
+        # Color is supplemental. The on-demand widget exposes the exact same
+        # predicate as bounded text without taking over POSTDISPLAY or prompts.
+        sh.buf = ""
+        sh.raw(b"what is the active route")
+        sh.raw(b"\x18?")
+        check(
+            sh,
+            "agent route has a non-color text cue",
+            sh.expect("aishe route: agent"),
+        )
+        if not sh.reset_editor():
+            raise RuntimeError("line editor did not recover after agent route cue")
+        sh.buf = ""
+        sh.raw(b"echo route")
+        sh.raw(b"\x18?")
+        check(
+            sh,
+            "shell route has a non-color text cue",
+            sh.expect("aishe route: shell/local"),
+        )
+        if not sh.reset_editor():
+            raise RuntimeError("line editor did not recover after shell route cue")
+
         # Bare/ordinary commands remain shell-colored even after the collision
         # grammar is enabled.
         sh.buf = ""
@@ -364,6 +391,135 @@ def main():
         check(sh, "Linux command with arguments stays green", sh.expect("AISHE_RH=0 2 fg=green"))
         if not sh.reset_editor():
             raise RuntimeError("line editor did not recover after command probe")
+
+        # Suggest mode is a two-step native editing contract. The first Enter
+        # submits natural language and stages the proposed command in BUFFER;
+        # it must not execute until a second Enter. While staged, ordinary ZLE
+        # highlighting, cursor editing, and history behavior remain available.
+        sh.send("export AISHE_MODE=suggest")
+        sh.expect_prompt()
+        staged_a = os.path.join(home, "suggestion-stage-A")
+        staged_b = os.path.join(home, "suggestion-stage-B")
+        staged_command = "touch %s" % staged_a
+        set_fake(sh, command(staged_command, "stage for native editing"))
+        sh.expect_prompt()
+        sh.buf = ""
+        sh.send("? prepare the staged file command")
+        check(
+            sh,
+            "suggest first Enter stages a native zsh buffer",
+            sh.expect(staged_command),
+        )
+        sh.settle(0.3)
+        check(
+            sh,
+            "staged suggestion does not execute on first Enter",
+            not os.path.exists(staged_a) and not os.path.exists(staged_b),
+        )
+        sh.buf = ""
+        sh.raw(b"\x18\x08")  # existing route-highlight dump widget
+        check(
+            sh,
+            "staged suggestion keeps native route highlighting",
+            sh.expect("AISHE_RH=0 5 fg=green"),
+        )
+        # Cursor remains at the end of the staged BUFFER. Edit A -> B with the
+        # native line editor, then use the second Enter to execute it.
+        sh.raw(b"\x7fB\r")
+        check(sh, "edited staged command returns to a prompt", sh.expect_prompt())
+        check(
+            sh,
+            "second Enter executes only the edited suggestion",
+            os.path.exists(staged_b) and not os.path.exists(staged_a),
+        )
+        sh.buf = ""
+        sh.raw(b"\x1b[A")
+        check(
+            sh,
+            "edited staged command enters native zsh history",
+            # Route highlighting inserts SGR bytes inside the command head;
+            # the exact edited path remains contiguous and distinguishes A/B.
+            sh.expect(staged_b),
+        )
+        if not sh.reset_editor():
+            raise RuntimeError("line editor did not recover after staged history probe")
+
+        # Native completion remains active because the proposal is real BUFFER
+        # state, not plain printed text. Complete a deliberately partial
+        # function name, then execute the completed function on Enter.
+        completion_name = "aishe-stage-completion-target"
+        completion_partial = "aishe-stage-completion-targ"
+        sh.send(
+            "%s() { print -r -- STAGED_COMPLETION_OK; }; "
+            "autoload -Uz compinit; compinit -D; print -r -- COMPLETION_READY"
+            % completion_name
+        )
+        check(sh, "native completion fixture is ready", sh.expect("COMPLETION_READY"))
+        sh.expect_prompt()
+        set_fake(sh, command(completion_partial, "complete this staged command"))
+        sh.expect_prompt()
+        sh.buf = ""
+        sh.send("? prepare a command for completion")
+        check(
+            sh,
+            "partial suggestion is staged before completion",
+            sh.expect(completion_partial),
+        )
+        sh.buf = ""
+        sh.raw(b"\t")
+        sh.settle(0.4)
+        sh.raw(b"\r")
+        check(
+            sh,
+            "native completion edits and executes a staged suggestion",
+            sh.expect("STAGED_COMPLETION_OK"),
+        )
+        sh.expect_prompt()
+
+        # A staged proposal canceled with Ctrl-C never executes and never enters
+        # zsh history. This is the safe review path for an unwanted suggestion.
+        canceled_path = os.path.join(home, "suggestion-canceled")
+        canceled_command = "touch %s" % canceled_path
+        set_fake(sh, command(canceled_command, "cancel this staged command"))
+        sh.expect_prompt()
+        sh.buf = ""
+        sh.send("? prepare a command I will cancel")
+        check(
+            sh,
+            "cancel scenario stages before Ctrl-C",
+            sh.expect(canceled_command),
+        )
+        cancel_start = len(sh.transcript)
+        sh.raw(b"\x03")
+        check(sh, "Ctrl-C cancels a staged suggestion", sh.expect_prompt())
+        sh.settle(0.3)
+        check(
+            sh,
+            "staged Ctrl-C does not emit a failure hint",
+            "aishe: exit" not in sh.transcript[cancel_start:],
+        )
+        history_text = ""
+        history_path = os.path.join(home, ".zsh_history")
+        if os.path.exists(history_path):
+            with open(history_path, encoding="utf-8", errors="replace") as history:
+                history_text = history.read()
+        history_commands = []
+        for history_line in history_text.splitlines():
+            if history_line.startswith(": ") and ";" in history_line:
+                history_line = history_line.split(";", 1)[1]
+            history_commands.append(history_line)
+        check(
+            sh,
+            "canceled suggestion is neither executed nor recorded",
+            not os.path.exists(canceled_path)
+            and canceled_command not in history_commands,
+        )
+        if not sh.wait_ready() or not sh.expect_prompt():
+            raise RuntimeError("line editor did not recover after staged Ctrl-C")
+
+        # The remaining scenarios intentionally exercise auto execution.
+        sh.send("export AISHE_MODE=auto")
+        sh.expect_prompt()
 
         # Enter uses the same grammar as highlighting. This is the regression
         # assertion: a valid `what` command must not run once the full line is a

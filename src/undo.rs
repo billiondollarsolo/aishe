@@ -24,6 +24,10 @@ use serde::{Deserialize, Serialize};
 const DIFF_CONTEXT: usize = 2;
 /// Cap on `-`/`+` lines shown per side before truncating the diff.
 const DIFF_MAX_LINES: usize = 80;
+/// Retain the active undo journal plus one previous generation. A journal is
+/// rotated before an append once it reaches this size; current file changes are
+/// never truncated because an inexact pre-image would make undo unsafe.
+pub const UNDO_ROTATE_BYTES: u64 = 128 * 1024 * 1024;
 
 /// One line in the journal: a recorded change, or a marker that a batch has been
 /// reverted (so a second `aishe undo` moves on to the prior batch).
@@ -137,6 +141,8 @@ fn append(journal: &Path, rec: &Record) -> Result<()> {
             let _ = std::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o700));
         }
     }
+    rotate_if_needed(journal, UNDO_ROTATE_BYTES)
+        .with_context(|| format!("rotating undo journal {}", journal.display()))?;
     let line = serde_json::to_string(rec).context("serializing undo record")?;
     let mut options = OpenOptions::new();
     options.create(true).append(true);
@@ -155,6 +161,29 @@ fn append(journal: &Path, rec: &Record) -> Result<()> {
     }
     writeln!(f, "{line}").context("writing undo record")?;
     Ok(())
+}
+
+fn rotated_path(path: &Path) -> PathBuf {
+    let mut value = path.as_os_str().to_os_string();
+    value.push(".1");
+    PathBuf::from(value)
+}
+
+fn rotate_if_needed(path: &Path, limit: u64) -> std::io::Result<bool> {
+    let Ok(metadata) = std::fs::symlink_metadata(path) else {
+        return Ok(false);
+    };
+    if !metadata.is_file() || metadata.len() < limit {
+        return Ok(false);
+    }
+    let rotated = rotated_path(path);
+    match std::fs::remove_file(&rotated) {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error),
+    }
+    std::fs::rename(path, rotated)?;
+    Ok(true)
 }
 
 fn read_records(journal: &Path) -> Vec<Record> {
@@ -521,6 +550,21 @@ mod tests {
         let journal = dir.join("undo.jsonl");
         assert!(undo_last_in(&journal).unwrap().is_none());
         assert!(list_in(&journal).is_empty());
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn undo_rotation_keeps_one_previous_generation() {
+        let dir = tmpdir("rotation");
+        let journal = dir.join("undo.jsonl");
+        std::fs::write(&journal, b"current-generation").unwrap();
+        std::fs::write(rotated_path(&journal), b"old-generation").unwrap();
+        assert!(rotate_if_needed(&journal, 4).unwrap());
+        assert!(!journal.exists());
+        assert_eq!(
+            std::fs::read(rotated_path(&journal)).unwrap(),
+            b"current-generation"
+        );
         std::fs::remove_dir_all(&dir).ok();
     }
 }

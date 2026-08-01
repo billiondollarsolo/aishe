@@ -107,8 +107,8 @@ Claude Code style progressive disclosure: aishe tells the model each skill's
 `use_skill` tool to pull that skill's full instructions into context, then
 proceeds. Only the descriptions are always in context; bodies load on demand.
 
-Skills apply in yolo mode (where the model drives tools). Run `aishe skills` or
-`/skills` to list what is loaded.
+Skills apply in yolo mode (where the model drives tools). Run `aishe skills` to
+list what is loaded.
 
 Locations (as with commands, a same-named project skill never replaces the
 user's — the user's wins):

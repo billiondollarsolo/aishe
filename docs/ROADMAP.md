@@ -1,3 +1,8 @@
+> **Lifecycle: Historical.** Baseline: June 2026, before the managed OpenCode
+> architecture and 0.6.x command surface. Unchecked or partial items are not a
+> current backlog; use the
+> [post-0.6.5 implementation plan](design/NEXT_PRODUCT_UX_RELIABILITY_PLAN.md).
+
 # aishe roadmap
 
 A living backlog of where aishe is headed. Grounded in a code audit (June 2026).

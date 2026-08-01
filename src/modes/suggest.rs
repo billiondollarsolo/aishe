@@ -3,7 +3,6 @@
 
 use anyhow::Result;
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyModifiers};
-use crossterm::style::Stylize;
 use crossterm::terminal;
 use serde::Deserialize;
 
@@ -13,6 +12,7 @@ use crate::context;
 use crate::executor::Executor;
 use crate::providers::{Msg, Provider, ProviderError, ResponseFormat};
 use crate::session::Session;
+use crate::ui::{StyleToken, TerminalCapabilities};
 
 /// The model's structured response.
 #[derive(Debug, Clone, PartialEq)]
@@ -94,7 +94,7 @@ pub fn run(
         match request(input, provider, executor, config, session.history()) {
             Ok(suggestion) => {
                 record_turn(session, input, &suggestion);
-                handle_suggestion(suggestion, executor, scriptable, auto)
+                handle_suggestion(suggestion, executor, config, scriptable, auto)
             }
             Err(e) => Err(e),
         }
@@ -169,9 +169,10 @@ fn run_stream(
         Ok(f) => f,
         Err(e) => {
             crate::audit::ai_error(mode, model, &e.to_string());
+            let message = format!("AIShe error: {}", crate::providers::actionable_error(&e));
             eprintln!(
                 "{}",
-                format!("aishe: {}", crate::providers::actionable_error(&e)).red()
+                TerminalCapabilities::detect_stderr().paint(StyleToken::Danger, &message)
             );
             return Ok(());
         }
@@ -205,8 +206,8 @@ fn run_stream(
             present_command(&command, &explanation, executor)
         }
     } else {
-        // A prose answer was streamed live as raw text; re-render it as markdown
-        // in place (code blocks, lists, emphasis) now that it is complete.
+        // A prose answer is emitted exactly once as safe Markdown source. The
+        // finalizer only terminates the line; it never rewrites scrollback.
         super::rerender_streamed_markdown(&full);
         record_turn(
             session,
@@ -215,6 +216,7 @@ fn run_stream(
                 explanation: full.trim().to_string(),
             },
         );
+        print_first_answer_hint(config);
         Ok(())
     }
 }
@@ -229,6 +231,8 @@ struct AnswerStreamer {
     pending: String,
     /// The full response, accumulated regardless of decision.
     full: String,
+    /// Whether the persistent assistant-authorship boundary was emitted.
+    answer_started: bool,
 }
 
 impl AnswerStreamer {
@@ -237,7 +241,17 @@ impl AnswerStreamer {
             is_command: None,
             pending: String::new(),
             full: String::new(),
+            answer_started: false,
         }
+    }
+
+    fn begin_answer<W: std::io::Write>(&mut self, out: &mut W) {
+        if self.answer_started {
+            return;
+        }
+        let capabilities = TerminalCapabilities::detect_stdout();
+        let _ = writeln!(out, "\n{}", capabilities.assistant_answer_header());
+        self.answer_started = true;
     }
 
     fn push<W: std::io::Write>(&mut self, delta: &str, out: &mut W) {
@@ -245,6 +259,7 @@ impl AnswerStreamer {
         match self.is_command {
             Some(true) => {} // command: swallow output
             Some(false) => {
+                self.begin_answer(out);
                 let _ = write!(out, "{delta}");
                 let _ = out.flush();
             }
@@ -261,6 +276,7 @@ impl AnswerStreamer {
                     // Still possibly the start of "CMD:" — keep buffering.
                 } else {
                     self.is_command = Some(false);
+                    self.begin_answer(out);
                     let _ = write!(out, "{}", self.pending);
                     let _ = out.flush();
                     self.pending.clear();
@@ -277,6 +293,7 @@ impl AnswerStreamer {
             None => {
                 let is_cmd = self.full.trim_start().starts_with("CMD:");
                 if !is_cmd && !self.pending.is_empty() {
+                    self.begin_answer(out);
                     let _ = write!(out, "{}", self.pending);
                     let _ = out.flush();
                 }
@@ -344,9 +361,13 @@ pub fn request(
     match request_strict(input, provider, executor, config, history) {
         Ok(suggestion) => Ok(suggestion),
         Err(error) => {
+            let message = format!(
+                "AIShe error: {}",
+                crate::providers::actionable_error(&error)
+            );
             eprintln!(
                 "{}",
-                format!("aishe: {}", crate::providers::actionable_error(&error)).red()
+                TerminalCapabilities::detect_stderr().paint(StyleToken::Danger, &message)
             );
             // Interactive callers keep their shell after a provider failure.
             Ok(Suggestion::Answer {
@@ -418,13 +439,23 @@ fn suggestion_summary(s: &Suggestion) -> String {
 fn handle_suggestion(
     suggestion: Suggestion,
     executor: &mut Executor,
+    config: &Config,
     scriptable: bool,
     auto: bool,
 ) -> Result<()> {
     match suggestion {
         Suggestion::Answer { explanation } => {
             if !explanation.is_empty() {
+                if !scriptable {
+                    println!(
+                        "\n{}",
+                        TerminalCapabilities::detect_stdout().assistant_answer_header()
+                    );
+                }
                 render_markdown(&explanation);
+                if !scriptable {
+                    print_first_answer_hint(config);
+                }
             }
             Ok(())
         }
@@ -445,29 +476,47 @@ fn handle_suggestion(
     }
 }
 
+fn print_first_answer_hint(config: &Config) {
+    let capabilities = TerminalCapabilities::detect_stdout();
+    if !capabilities.is_tty {
+        return;
+    }
+    let Some(hint) = crate::hints::take_first_answer_next_action(config) else {
+        return;
+    };
+    println!("{}", capabilities.paint(StyleToken::Muted, hint));
+}
+
 /// Auto mode: show the command, then run it immediately if Safe, or fall
 /// through the safety gate (which confirms) if Dangerous.
 fn auto_run(command: &str, explanation: &str, executor: &mut Executor) -> Result<()> {
+    let capabilities = TerminalCapabilities::detect_stdout();
     println!();
-    println!("  {} {}", "»".green(), command.white().bold());
-    if !explanation.is_empty() {
-        println!("  {}", explanation.dim());
+    for line in crate::ui::render::command_proposal_lines(
+        "AIShe · automatic command",
+        command,
+        explanation,
+        &capabilities,
+        false,
+    ) {
+        println!("{line}");
     }
     run_with_gate(command, executor, "auto")
 }
 
 fn present_command(command: &str, explanation: &str, executor: &mut Executor) -> Result<()> {
+    let capabilities = TerminalCapabilities::detect_stdout();
     println!();
-    println!("  {}", command.white().bold());
-    if !explanation.is_empty() {
-        println!("  {}", explanation.dim());
+    for line in crate::ui::render::command_proposal_lines(
+        "AIShe · suggested command",
+        command,
+        explanation,
+        &capabilities,
+        true,
+    ) {
+        println!("{line}");
     }
-    print!(
-        "  {}  {}  {}  ",
-        "[Enter] run".green(),
-        "[e] edit".cyan(),
-        "[n/Esc] cancel".dim()
-    );
+    print!("\n  [Enter] run now  [e] edit first  [n/Esc] cancel  ");
     use std::io::Write;
     std::io::stdout().flush().ok();
 
@@ -486,7 +535,7 @@ fn present_command(command: &str, explanation: &str, executor: &mut Executor) ->
             Ok(())
         }
         Choice::Cancel => {
-            println!("  {}", "cancelled".dim());
+            println!("  {}", capabilities.paint(StyleToken::Muted, "cancelled"));
             Ok(())
         }
     }
@@ -502,40 +551,70 @@ fn run_with_gate(command: &str, executor: &mut Executor, source: &str) -> Result
             let code = executor.run(command);
             crate::audit::action(source, command, Some(code));
             if code != 0 {
-                println!("  {}", "(type ? to ask about the error)".dim());
+                println!(
+                    "  {}",
+                    TerminalCapabilities::detect_stdout()
+                        .paint(StyleToken::Muted, "type ? to ask about the error")
+                );
             }
             Ok(())
         }
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum Choice {
     Run,
     Edit,
     Cancel,
 }
 
+struct RawModeGuard;
+
+impl RawModeGuard {
+    fn enter() -> Result<Self> {
+        terminal::enable_raw_mode()?;
+        Ok(Self)
+    }
+}
+
+impl Drop for RawModeGuard {
+    fn drop(&mut self) {
+        let _ = terminal::disable_raw_mode();
+    }
+}
+
+fn choice_for_event(event: Event) -> Option<Choice> {
+    let Event::Key(KeyEvent {
+        code, modifiers, ..
+    }) = event
+    else {
+        // Resize/focus/paste events never change the default or duplicate the
+        // proposal. The same panel remains authoritative after the event.
+        return None;
+    };
+    match code {
+        KeyCode::Enter => Some(Choice::Run),
+        KeyCode::Char('e') | KeyCode::Char('E') => Some(Choice::Edit),
+        KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => Some(Choice::Cancel),
+        KeyCode::Char('c') if modifiers.contains(KeyModifiers::CONTROL) => Some(Choice::Cancel),
+        _ => None,
+    }
+}
+
 /// Read a single keypress: Enter=run, e=edit, n/Esc=cancel. Ctrl-C cancels.
 fn read_choice() -> Result<Choice> {
-    terminal::enable_raw_mode()?;
+    let _raw_mode = RawModeGuard::enter()?;
     let result = loop {
         match event::read() {
-            Ok(Event::Key(KeyEvent {
-                code, modifiers, ..
-            })) => match code {
-                KeyCode::Enter => break Choice::Run,
-                KeyCode::Char('e') | KeyCode::Char('E') => break Choice::Edit,
-                KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => break Choice::Cancel,
-                KeyCode::Char('c') if modifiers.contains(KeyModifiers::CONTROL) => {
-                    break Choice::Cancel
+            Ok(event) => {
+                if let Some(choice) = choice_for_event(event) {
+                    break choice;
                 }
-                _ => continue,
-            },
-            Ok(_) => continue,
+            }
             Err(_) => break Choice::Cancel,
         }
     };
-    terminal::disable_raw_mode()?;
     Ok(result)
 }
 
@@ -627,7 +706,7 @@ mod tests {
     fn streams_prose_live_and_withholds_nothing() {
         let (is_cmd, printed) = drive(&["The ", "answer ", "is 42."]);
         assert!(!is_cmd);
-        assert_eq!(printed, "The answer is 42.");
+        assert_eq!(printed, "\nAIShe · answer\nThe answer is 42.");
     }
 
     #[test]
@@ -650,7 +729,48 @@ mod tests {
         // "Hi" never disambiguates from "CMD:" by prefix, so it's held until end.
         let (is_cmd, printed) = drive(&["Hi"]);
         assert!(!is_cmd);
-        assert_eq!(printed, "Hi");
+        assert_eq!(printed, "\nAIShe · answer\nHi");
+    }
+
+    #[test]
+    fn short_and_long_streams_have_one_identical_authorship_boundary_and_body() {
+        let short = drive(&["OK"]).1;
+        let long_body = (0..400)
+            .map(|index| format!("line {index}: resize-safe answer\n"))
+            .collect::<String>();
+        let split = long_body.len() / 2;
+        let long = drive(&[&long_body[..split], &long_body[split..]]).1;
+        for rendered in [&short, &long] {
+            assert_eq!(rendered.matches("AIShe · answer").count(), 1);
+            assert!(!rendered.contains("\x1b[2K"));
+            assert!(!rendered.contains("\x1b[1A"));
+        }
+        assert_eq!(short, "\nAIShe · answer\nOK");
+        assert_eq!(long, format!("\nAIShe · answer\n{long_body}"));
+        assert_eq!(long.matches("line 399: resize-safe answer").count(), 1);
+    }
+
+    #[test]
+    fn proposal_keys_fail_closed_and_resize_does_not_choose_or_rerender() {
+        assert_eq!(
+            choice_for_event(Event::Key(KeyEvent::new(
+                KeyCode::Enter,
+                KeyModifiers::NONE
+            ))),
+            Some(Choice::Run)
+        );
+        assert_eq!(
+            choice_for_event(Event::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE))),
+            Some(Choice::Cancel)
+        );
+        assert_eq!(
+            choice_for_event(Event::Key(KeyEvent::new(
+                KeyCode::Char('c'),
+                KeyModifiers::CONTROL
+            ))),
+            Some(Choice::Cancel)
+        );
+        assert_eq!(choice_for_event(Event::Resize(120, 40)), None);
     }
 
     #[test]

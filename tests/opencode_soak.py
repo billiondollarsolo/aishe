@@ -21,16 +21,15 @@ import os
 import pathlib
 import statistics
 import subprocess
-import sys
 import tempfile
 import threading
 import time
 import urllib.error
 import urllib.request
 
+from harness_identity import require_current_binary
 from opencode_runtime_contract import (
     CANARY,
-    MODEL,
     ProviderHandler,
     STATE,
     write_config,
@@ -201,12 +200,17 @@ def stop_and_assert_reaped(binary, env, workspace, state=None, data_home=None):
             raise AssertionError("managed backend left stale supervisor state")
 
 
-def write_report(report):
+def write_report(report, output=None):
     output_dir = pathlib.Path(__file__).resolve().parent.parent / "test-results"
     output_dir.mkdir(exist_ok=True)
-    stamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    json_path = output_dir / f"opencode-soak-{stamp}.json"
-    markdown_path = output_dir / f"opencode-soak-{stamp}.md"
+    if output:
+        json_path = pathlib.Path(output).resolve()
+        json_path.parent.mkdir(parents=True, exist_ok=True)
+        markdown_path = json_path.with_suffix(".md")
+    else:
+        stamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        json_path = output_dir / f"opencode-soak-{stamp}.json"
+        markdown_path = output_dir / f"opencode-soak-{stamp}.md"
     json_path.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
     markdown_path.write_text(
         "\n".join(
@@ -240,7 +244,11 @@ def write_report(report):
         ),
         encoding="utf-8",
     )
-    print(f"report: {markdown_path.relative_to(output_dir.parent)}")
+    try:
+        display_path = markdown_path.relative_to(output_dir.parent)
+    except ValueError:
+        display_path = markdown_path
+    print(f"report: {display_path}")
 
 
 def qualify(binary, runtime_dir, args):
@@ -424,6 +432,8 @@ def qualify(binary, runtime_dir, args):
             warm_index = min(len(opencode_rss) - 1, max(0, args.reconnect_every - 1))
             rss_growth = opencode_rss[-1] - opencode_rss[warm_index]
             report = {
+                "schema_version": 1,
+                "kind": "aishe_backend_performance",
                 "date": datetime.datetime.now(datetime.timezone.utc).isoformat(),
                 "result": "PASS",
                 "runtime_version": runtime_version,
@@ -445,6 +455,16 @@ def qualify(binary, runtime_dir, args):
                 "opencode_rss_max_kib": max(opencode_rss),
                 "opencode_rss_growth_kib": rss_growth,
             }
+            report["thresholds"] = {
+                "cold_ready_p95_ms": {
+                    "classification": "enforced",
+                    "operator": "<=",
+                    "value_ms": 2500,
+                    "pass": report["cold_ready_p95_ms"] <= 2500,
+                },
+                "warm_health_p95_ms": {"classification": "informational"},
+                "resident_set": {"classification": "informational"},
+            }
             # Operational cold readiness excludes first-time runtime/plugin
             # installation and must satisfy the documented local target.
             if report["cold_ready_p95_ms"] > 2500:
@@ -452,7 +472,7 @@ def qualify(binary, runtime_dir, args):
                     f"cold backend p95 exceeded 2500ms: "
                     f"{report['cold_ready_p95_ms']:.1f}ms"
                 )
-            write_report(report)
+            write_report(report, args.output)
             print(
                 f"PASS: {args.turns} managed turns, {reconnects} reconnects; "
                 f"cold p95 {report['cold_ready_p95_ms']:.1f}ms; "
@@ -481,6 +501,7 @@ def main():
     parser.add_argument("--reconnect-every", type=int, default=20)
     parser.add_argument("--lifecycle-hours", type=float, default=0)
     parser.add_argument("--lifecycle-interval", type=float, default=60)
+    parser.add_argument("--output", type=pathlib.Path)
     args = parser.parse_args()
     for name in ("turns", "cold_cycles", "warm_probes"):
         if getattr(args, name) < 1:
@@ -495,7 +516,7 @@ def main():
     if not runtime:
         raise SystemExit("AISHE_RUNTIME_DIR must point to the installed pinned runtime")
     qualify(
-        str(pathlib.Path(args.binary).resolve()),
+        require_current_binary(args.binary),
         pathlib.Path(runtime).resolve(),
         args,
     )

@@ -3,101 +3,335 @@
 //! Keep this module the single source of truth for “how do I use AIShe?” so the
 //! shell help surface and the model skill cannot drift apart.
 
+use std::fmt::Write as _;
+
+use crate::command_surface::{
+    ArgumentPolicy, CommandSpec, Lifecycle, ShellLocalRequirement, SideEffectClass, Surface,
+    SurfaceSupport, COMMANDS,
+};
 use crate::skills::Skill;
+
+pub const COMMAND_REFERENCE_BEGIN: &str = "<!-- BEGIN GENERATED COMMAND SURFACE -->";
+pub const COMMAND_REFERENCE_END: &str = "<!-- END GENERATED COMMAND SURFACE -->";
 
 /// Print task-oriented help. `topic` is optional (`accounts`, `models`, …).
 pub fn print_help(topic: Option<&str>) {
-    match topic.map(|t| t.trim().to_ascii_lowercase()).as_deref() {
-        None | Some("") | Some("help") | Some("all") => print_overview(),
+    print!("{}", render_help(topic));
+}
+
+/// Build task-oriented help. The prose remains task-first; command rows come
+/// from the authoritative registry so aliases cannot silently drift.
+pub fn render_help(topic: Option<&str>) -> String {
+    let normalized = topic.map(|value| value.trim().to_ascii_lowercase());
+    match normalized.as_deref() {
+        None | Some("") | Some("help") | Some("all") => render_overview(),
         Some("accounts" | "account" | "connection" | "connections" | "auth" | "login") => {
-            print_accounts()
+            render_accounts()
         }
-        Some("models" | "model") => print_models(),
-        Some("session" | "status" | "keys") => print_session(),
-        Some("config" | "setup" | "settings" | "doctor") => print_config(),
-        Some(other) => {
-            println!("unknown help topic '{other}'");
-            println!("topics: accounts · models · session · config  (or bare /help)");
-        }
+        Some("models" | "model") => render_models(),
+        Some("session" | "status" | "keys") => render_session(),
+        Some("config" | "setup" | "settings" | "doctor") => render_config(),
+        Some("routing" | "route" | "input") => render_routing(),
+        Some("migration" | "removed" | "legacy") => render_migration(),
+        Some(other) => format!(
+            "unknown help topic '{other}'\n\
+             topics: accounts · models · session · config · routing · migration  (or bare /help)\n"
+        ),
     }
 }
 
-fn print_overview() {
-    println!("AIShe (AI Shell) — what do you want to do?\n");
-    println!("  /connection · /model     switch account · model on *current* account");
-    println!("  /status · /usage · /reset · /reasoning · /details");
-    println!("  /settings · /auth");
-    println!("  Shift-Tab mode · Ctrl-O details");
-    println!("  Add account:  aishe setup  ·  aishe auth login openai|xai --profile work");
-    println!("  Health:       aishe doctor [--live]  ·  aishe tour\n");
-    println!("Topics:  /help accounts · models · session · config");
-    println!("Ask:     how do I add a Codex OAuth account?");
-    println!("CLI:     aishe --help");
+fn render_overview() -> String {
+    let mut out = String::from(
+        "AIShe (AI Shell) — what do you want to do?\n\n\
+           Switch account/model:  /connection · /model\n\
+           Inspect this session:  /status · /usage · /log\n\
+           Change this session:   /mode · /reasoning · /details · /reset\n\
+           Configure AIShe:       /settings · /scope · /network · /output\n\
+           Add an account:        aishe setup\n\
+           Diagnose health:       aishe doctor --live\n\
+           Explain input routing: /help routing\n\n\
+         Keys: Shift-Tab mode · Ctrl-O details · Alt-Enter natural language\n\n\
+         Topics: /help accounts · models · session · config · routing · migration\n\
+         Ask:   how do I add a Codex OAuth account?\n\
+         CLI:   aishe --help\n\n\
+         Slash commands\n",
+    );
+    append_terminal_commands(&mut out, None);
+    out
 }
 
-fn print_accounts() {
-    println!("Accounts & authentication\n");
-    println!("Labels");
-    println!("  Codex - API              OpenAI API key");
-    println!("  Codex - OAuth · work     ChatGPT/Codex subscription (profile work)");
-    println!("  Grok - API               xAI API key");
-    println!("  Grok - OAuth · work      SuperGrok subscription\n");
-    println!("Switch account (this shell)");
-    println!("  /connection              interactive picker");
-    println!("  /connection ID           select by id or label");
-    println!("  d in the picker          save as durable default\n");
-    println!("Add a new account");
-    println!("  aishe setup              guided setup (includes OAuth shortcuts)");
-    println!("  aishe settings           Provider section → new connection");
-    println!("  aishe connection add my-codex --provider openai \\");
-    println!("      --auth oauth --profile work --label \"Codex - OAuth · work\"");
-    println!("  aishe connection add my-api --provider openai --auth api-key\n");
-    println!("Sign in");
-    println!("  aishe auth login openai --profile work     # Codex OAuth");
-    println!("  aishe auth login xai --profile work        # Grok OAuth");
-    println!("  aishe auth set openai                      # API key (hidden prompt)");
-    println!("  aishe auth status                          # what is selected");
-    println!("  After login, a connection is created if missing so /connection lists it.\n");
-    println!("Inspect");
-    println!("  aishe connection list|show");
-    println!("  /auth                    active connection auth state");
-    println!("  /status                  connection + model + health summary");
+fn render_accounts() -> String {
+    let mut out = String::from(
+        "Accounts & authentication\n\n\
+         Labels\n\
+           Codex - API              OpenAI API key\n\
+           Codex - OAuth · work     ChatGPT/Codex subscription (profile work)\n\
+           Grok - API               xAI API key\n\
+           Grok - OAuth · work      SuperGrok subscription\n\n\
+         Switch account\n\
+           /connection              interactive picker for this shell\n\
+           /connection ID           select by id or label\n\
+           Enter, then y            make default for new shells\n\n\
+         Add or sign in\n\
+           aishe setup\n\
+           aishe connection add my-codex --provider openai --auth oauth --profile work\n\
+           aishe auth login openai --profile work     # Codex OAuth\n\
+           aishe auth login xai --profile work        # Grok OAuth\n\
+           aishe auth set openai                      # hidden API-key prompt\n\
+           Successful OAuth login creates a selectable connection when needed.\n\n\
+         Inspect\n\
+           aishe connection list|show\n\n\
+         Related commands\n",
+    );
+    append_terminal_commands(&mut out, Some("accounts"));
+    out
 }
 
-fn print_models() {
-    println!("Models\n");
-    println!("  /model                   list models for the *active* connection");
-    println!("  /model NAME              set model for this shell");
-    println!("  d in the picker          save model as default on this connection\n");
-    println!("  Codex/Grok OAuth: models come from managed OpenCode");
-    println!("  (subscription catalog), not public GET /v1/models.");
-    println!("  API-key connections: endpoint GET /v1/models.\n");
-    println!("  List without picker:     aishe models");
-    println!("  Scripting:               aishe model gpt-5.5");
-    println!("                           aishe model --connection ID NAME");
+fn render_models() -> String {
+    let mut out = String::from(
+        "Models\n\n\
+           /model                   list models for the active connection\n\
+           /model NAME              set model for this shell\n\
+           Enter, then y            make default for new shells\n\n\
+           OAuth catalogs come from managed OpenCode, not public GET /v1/models.\n\
+           API-key catalogs come from the configured endpoint.\n\n\
+           aishe models\n\
+           aishe model gpt-5.5\n\
+           aishe model --connection ID NAME\n\n\
+         Related commands\n",
+    );
+    append_terminal_commands(&mut out, Some("models"));
+    out
 }
 
-fn print_session() {
-    println!("Session controls\n");
-    println!("  /status                  connection, model, mode, spend, audit");
-    println!("  /usage                   live token/cost totals for this shell");
-    println!("  /log                     recent audit events");
-    println!("  /reset                   fresh conversation (same account/model)");
-    println!("  /reasoning [LEVEL]       auto|none|low|medium|high|xhigh|max");
-    println!("  /details                 transcript density for agent turns");
-    println!("  Shift-Tab                cycle suggest / auto / yolo");
-    println!("  Ctrl-O                   focus ↔ detailed agent output");
+fn render_session() -> String {
+    let mut out = String::from(
+        "Session controls\n\n\
+           Shift-Tab                cycle suggest / auto / yolo\n\
+           Ctrl-O                   focus ↔ detailed agent output\n\
+           Alt-Enter                force this buffer to the agent (zsh)\n\
+           Ctrl-X ?                 show a non-color route cue for the zsh buffer\n\
+           Ctrl-X Ctrl-F            stage a reviewed fix for the last failure\n\
+           Ctrl-X Ctrl-R            semantic recall; Bash recalls last suggestion\n\
+           suggest mode             first Enter stages; edit; second Enter runs\n\
+           Ctrl-C                   cancel a staged suggestion without running it\n\
+           picker                   arrows/Ctrl-P/N · Page Up/Down · Home/End\n\
+                                    Enter accepts · Esc/Ctrl-C cancels\n\
+           /connection and /model   this shell unless promoted for new shells\n\
+           /scope                   durable; the hook refreshes this shell\n\
+           /network                 durable workspace-agent policy\n\
+           /reset                   new retained conversation\n\n\
+         Key conflicts\n\
+           Option/Alt must send Meta/Esc; `?` is the portable force-agent path.\n\
+           Rebind with AISHE_NL_KEY, AISHE_MODE_KEY, AISHE_FIX_KEY, or\n\
+           AISHE_RECALL_KEY. `aishe doctor` reports duplicate configured keys.\n\n\
+         Related commands\n",
+    );
+    append_terminal_commands(&mut out, Some("session"));
+    out
 }
 
-fn print_config() {
-    println!("Config & health\n");
-    println!("  /settings                interactive section hub (draft until apply)");
-    println!("  aishe setup              resumable first-run / reconfigure");
-    println!("  aishe setup --verify     check current config only");
-    println!("  aishe doctor [--live]    environment + backend + provider checks");
-    println!("  aishe tour               guided first-session tour");
-    println!("  aishe config             print active configuration");
-    println!("  aishe backend status     managed OpenCode runtime");
+fn render_config() -> String {
+    let mut out = String::from(
+        "Config & health\n\n\
+           /settings                transactional section hub\n\
+           aishe setup              resumable first-run / reconfigure\n\
+           aishe setup --verify     check current config only\n\
+           aishe doctor --live      environment, backend, provider checks\n\
+           aishe tour               guided first-session tour\n\
+           aishe backend status     managed OpenCode runtime\n\n\
+         Related commands\n",
+    );
+    append_terminal_commands(&mut out, Some("config"));
+    out
+}
+
+fn render_routing() -> String {
+    String::from(
+        "Input routing\n\n\
+           executable or path       runs as a shell command\n\
+           ! line                   force shell-command routing\n\
+           ? question               force natural-language routing\n\
+           Alt-Enter                force the current line to natural language\n\
+           Ctrl-X ?                 show shell/agent route as text in zsh\n\
+           /name                    local built-in command (listed by /help)\n\
+           other text               classified for the active interaction mode\n\n\
+         Explain without executing\n\
+           aishe route -- 'git status'\n\
+           aishe route --json -- 'summarize this repository'\n\n\
+         Paths and executable names win over natural-language heuristics. Use ! or ?\n\
+         whenever you want an explicit route.\n",
+    )
+}
+
+fn render_migration() -> String {
+    let mut out = String::from(
+        "Removed slash commands\n\n\
+         These names are reserved tombstones. They fail locally and are never sent to a model.\n",
+    );
+    for spec in COMMANDS
+        .iter()
+        .filter(|spec| matches!(spec.lifecycle, Lifecycle::Tombstone { .. }))
+    {
+        let Lifecycle::Tombstone {
+            recognized_since,
+            guidance,
+        } = spec.lifecycle
+        else {
+            unreachable!()
+        };
+        let _ = writeln!(
+            out,
+            "  {:<18} removed in {recognized_since}; {guidance}",
+            slash_names(spec)
+        );
+    }
+    out
+}
+
+fn argument_suffix(policy: ArgumentPolicy) -> String {
+    match policy {
+        ArgumentPolicy::None => String::new(),
+        ArgumentPolicy::OptionalValue(label) => format!(" [{label}]"),
+        ArgumentPolicy::PassThrough(label) => format!(" [{label}…]"),
+    }
+}
+
+fn slash_names(spec: &CommandSpec) -> String {
+    spec.slash_aliases
+        .iter()
+        .map(|alias| format!("/{alias}"))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+fn slash_usage(spec: &CommandSpec) -> String {
+    let mut usage = slash_names(spec);
+    usage.push_str(&argument_suffix(spec.arguments));
+    usage
+}
+
+fn cli_usage(spec: &CommandSpec) -> String {
+    let Some(invocation) = spec.cli else {
+        return String::new();
+    };
+    let mut usage = format!("aishe {}", invocation.command);
+    for argument in invocation.prefix_args {
+        usage.push(' ');
+        usage.push_str(argument);
+    }
+    usage.push_str(&argument_suffix(spec.arguments));
+    usage
+}
+
+fn command_usage(spec: &CommandSpec) -> String {
+    if spec.slash_aliases.is_empty() {
+        cli_usage(spec)
+    } else {
+        slash_usage(spec)
+    }
+}
+
+fn effect_label(spec: &CommandSpec) -> &'static str {
+    match (spec.side_effects, spec.shell_local) {
+        (SideEffectClass::ReadOnly, _) => "read-only",
+        (SideEffectClass::ShellState, _) => "this shell",
+        (SideEffectClass::ConversationState, _) => "session",
+        (SideEffectClass::Credentials, _) => "credentials",
+        (SideEffectClass::PersistentConfig, ShellLocalRequirement::OptionalHandoff) => {
+            "durable; refreshes this shell"
+        }
+        (SideEffectClass::PersistentConfig, _) => "durable setting",
+        (SideEffectClass::Mixed, ShellLocalRequirement::OptionalHandoff) => "this shell by default",
+        (SideEffectClass::Mixed, _) => "may change state",
+        (SideEffectClass::None, _) => "no effect",
+    }
+}
+
+fn append_terminal_commands(out: &mut String, topic: Option<&str>) {
+    for spec in COMMANDS.iter().filter(|spec| {
+        spec.is_active()
+            && topic.is_none_or(|topic| spec.help_topic == topic)
+            && (!matches!(
+                spec.support(Surface::ZshHook),
+                SurfaceSupport::Unavailable(_)
+            ) || (spec.slash_aliases.is_empty() && spec.support(Surface::Cli).is_supported()))
+    }) {
+        let _ = writeln!(
+            out,
+            "  {:<30} {} [{}]",
+            command_usage(spec),
+            spec.summary,
+            effect_label(spec)
+        );
+    }
+}
+
+fn markdown_escape(value: &str) -> String {
+    value.replace('|', "\\|")
+}
+
+/// Generate the documentation block for one interactive surface. The checked
+/// in Markdown is guarded by an exact-conformance test.
+pub fn markdown_command_reference(surface: Surface) -> String {
+    let mut out = String::new();
+    let _ = writeln!(out, "{COMMAND_REFERENCE_BEGIN}");
+    out.push_str("| Slash command | Purpose | State/effect |\n");
+    out.push_str("|---|---|---|\n");
+    for spec in COMMANDS.iter().filter(|spec| {
+        spec.is_active()
+            && !spec.slash_aliases.is_empty()
+            && !matches!(spec.support(surface), SurfaceSupport::Unavailable(_))
+    }) {
+        let _ = writeln!(
+            out,
+            "| `{}` | {} | {} |",
+            markdown_escape(&slash_usage(spec)),
+            markdown_escape(spec.summary),
+            effect_label(spec)
+        );
+    }
+    let cli_only = COMMANDS
+        .iter()
+        .filter(|spec| {
+            spec.is_active()
+                && spec.slash_aliases.is_empty()
+                && spec.support(Surface::Cli).is_supported()
+        })
+        .collect::<Vec<_>>();
+    if !cli_only.is_empty() {
+        out.push_str("\nTop-level CLI-only commands (no slash or hook form):\n\n");
+        out.push_str("| CLI command | Purpose | State/effect |\n");
+        out.push_str("|---|---|---|\n");
+        for spec in cli_only {
+            let _ = writeln!(
+                out,
+                "| `{}` | {} | {} |",
+                markdown_escape(&cli_usage(spec)),
+                markdown_escape(spec.summary),
+                effect_label(spec)
+            );
+        }
+    }
+    out.push_str("\nRemoved names remain reserved for one compatibility window:\n\n");
+    out.push_str("| Removed slash command | Local guidance |\n");
+    out.push_str("|---|---|\n");
+    for spec in COMMANDS.iter().filter(|spec| {
+        matches!(spec.lifecycle, Lifecycle::Tombstone { .. })
+            && !matches!(spec.support(surface), SurfaceSupport::Unavailable(_))
+    }) {
+        let Lifecycle::Tombstone { guidance, .. } = spec.lifecycle else {
+            unreachable!()
+        };
+        let _ = writeln!(
+            out,
+            "| `{}` | {} |",
+            markdown_escape(&slash_usage(spec)),
+            markdown_escape(guidance)
+        );
+    }
+    let _ = writeln!(out, "{COMMAND_REFERENCE_END}");
+    out
 }
 
 /// Condensed product truth always safe to inject into suggest/yolo system prompts.
@@ -166,7 +400,7 @@ aishe auth set openai
 
 ## Switch account vs model
 ```sh
-/connection          # pick existing account (this shell; d = default)
+/connection          # pick existing account (Enter: this shell; then y: new-shell default)
 /model               # models for *current* account only
 aishe models         # list without picker
 aishe model gpt-5.5  # set model on current connection
@@ -303,6 +537,91 @@ mod tests {
         // The real skill still carries the long recipes for yolo.
         assert!(product_skill_body().contains("# AIShe product help"));
         assert!(product_skill_body().contains("## Mental model"));
+    }
+
+    #[test]
+    fn overview_and_topics_cover_the_active_registry_exactly() {
+        crate::command_surface::validate_registry().unwrap();
+        let overview = render_help(None);
+        for spec in COMMANDS.iter().filter(|spec| spec.is_active()) {
+            for alias in spec.slash_aliases {
+                assert!(
+                    overview.contains(&format!("/{alias}")),
+                    "overview omitted /{alias} ({})",
+                    spec.id
+                );
+            }
+            let topic = render_help(Some(spec.help_topic));
+            assert!(
+                topic.contains(&command_usage(spec)),
+                "topic {} omitted exact usage for {}",
+                spec.help_topic,
+                spec.id
+            );
+        }
+    }
+
+    #[test]
+    fn migration_help_contains_every_tombstone_and_exact_guidance() {
+        let migration = render_help(Some("migration"));
+        assert!(migration.contains("never sent to a model"));
+        for spec in COMMANDS
+            .iter()
+            .filter(|spec| matches!(spec.lifecycle, Lifecycle::Tombstone { .. }))
+        {
+            let Lifecycle::Tombstone { guidance, .. } = spec.lifecycle else {
+                unreachable!()
+            };
+            assert!(migration.contains(&slash_names(spec)));
+            assert!(migration.contains(guidance));
+        }
+    }
+
+    #[test]
+    fn commands_markdown_matches_the_generated_registry_block() {
+        let docs = include_str!("../docs/commands.md");
+        let start = docs
+            .find(COMMAND_REFERENCE_BEGIN)
+            .expect("commands docs have generated block start");
+        let from_start = &docs[start..];
+        let end = from_start
+            .find(COMMAND_REFERENCE_END)
+            .expect("commands docs have generated block end")
+            + COMMAND_REFERENCE_END.len();
+        let checked_in = &from_start[..end];
+        let generated = markdown_command_reference(Surface::ZshHook);
+        assert_eq!(checked_in.trim(), generated.trim());
+    }
+
+    #[test]
+    fn routing_help_documents_explicit_and_diagnostic_routes() {
+        let routing = render_help(Some("routing"));
+        assert!(routing.contains("! line"));
+        assert!(routing.contains("? question"));
+        assert!(routing.contains("Ctrl-X ?"));
+        assert!(routing.contains("route as text"));
+        assert!(routing.contains("aishe route -- 'git status'"));
+        assert!(routing.contains("without executing"));
+    }
+
+    #[test]
+    fn session_help_explains_native_suggest_staging_and_cancel() {
+        let session = render_help(Some("session"));
+        assert!(session.contains("first Enter stages; edit; second Enter runs"));
+        assert!(session.contains("cancel a staged suggestion without running it"));
+        for key in [
+            "Alt-Enter",
+            "Ctrl-X ?",
+            "Ctrl-X Ctrl-F",
+            "Ctrl-X Ctrl-R",
+            "Page Up/Down",
+            "Home/End",
+            "Esc/Ctrl-C",
+        ] {
+            assert!(session.contains(key), "session help omitted {key}");
+        }
+        assert!(session.contains("AISHE_NL_KEY"));
+        assert!(session.contains("aishe doctor"));
     }
 
     #[test]

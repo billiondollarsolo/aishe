@@ -12,6 +12,7 @@ import tempfile
 import threading
 import time
 
+from harness_identity import require_current_binary
 from opencode_runtime_contract import chunk, find_persisted_secret
 
 
@@ -99,7 +100,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
 def write_config(path, endpoint):
     path.parent.mkdir(parents=True)
     path.write_text(
-        f'''version = 6
+        f'''version = 7
 
 [aishe]
 mode = "suggest"
@@ -184,7 +185,7 @@ def main():
     runtime = os.environ.get("AISHE_RUNTIME_DIR")
     if not runtime:
         raise SystemExit("AISHE_RUNTIME_DIR must point to the installed pinned runtime")
-    binary = str(pathlib.Path(sys.argv[1]).resolve())
+    binary = require_current_binary(sys.argv[1])
     server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()

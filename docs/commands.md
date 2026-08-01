@@ -43,7 +43,10 @@ aishe price list|set|remove         manage exact model price overrides
 aishe config                        print the active configuration
 aishe mcp                           list the MCP tools offered to yolo
 aishe commands                      list primary and custom slash-commands
+aishe route [--json] -- '<line>'    explain input routing without executing it
 aishe status [--json]               show active session settings and spend
+aishe hints status [--json]         show local discovery-hint seen-state
+aishe hints reset                   clear discovery seen-state only
 aishe skills                        list model-invoked skills
 aishe undo [--list]                 revert the most recent AI file change
 aishe log [filters]                 show the audit log of AI calls and actions
@@ -150,24 +153,62 @@ is **task-first** (not a raw dump of every flag). Topics:
 /help models       models for the active connection only
 /help session      status, usage, reset, reasoning, mode keys
 /help config       setup, settings, doctor, tour, backend
+/help routing      explain shell-command vs natural-language routing
+/help migration    removed names and their exact replacements
 ```
 
 `aishe commands` and `/commands` share the same help surface.
 
-```text
-/connection   switch account (provider + auth + endpoint)
-/model        list/set models for the *active* connection only
-/provider     alias for /connection
-/auth         active connection authentication state and remediation
-/status       connection, model, mode, scope, spend/plan, audit
-/usage        live token and cost totals for this shell
-/log          last 20 audit events and tool actions
-/reasoning [LEVEL]  show or set shell-local reasoning effort
-/details      expand/shrink agent work for following turns
-/settings     interactive settings editor
-/reset        fresh conversation; old session is retained
-/commands     same as /help
-```
+The following block is rendered from the same command registry as zsh/bash
+dispatch and the top-level CLI, and is guarded by an exact-conformance test.
+“This shell by default” means the interactive picker or slash form is local
+unless its save/default flow is used.
+
+<!-- BEGIN GENERATED COMMAND SURFACE -->
+| Slash command | Purpose | State/effect |
+|---|---|---|
+| `/help, /commands [TOPIC]` | Show task-oriented AIShe help | read-only |
+| `/connection, /provider [ID_OR_LABEL]` | Inspect or switch the active account connection | this shell by default |
+| `/auth` | Show authentication state for the active connection | read-only |
+| `/model [MODEL]` | Inspect or select a model on the active connection | this shell by default |
+| `/mode [MODE]` | Inspect or select suggest, auto, or yolo mode | this shell by default |
+| `/scope [SCOPE]` | Inspect or select workspace or host agent scope | durable; refreshes this shell |
+| `/network [allow\|deny]` | Inspect or select workspace-agent network policy | durable setting |
+| `/reasoning [LEVEL]` | Inspect or select reasoning effort | this shell by default |
+| `/details` | Toggle focused and detailed agent output for this shell | this shell |
+| `/status` | Show the effective connection, model, mode, scope, and usage | read-only |
+| `/usage` | Show token and estimated-cost usage | read-only |
+| `/log` | Show recent audit events and agent actions | read-only |
+| `/reset` | Start a fresh conversation without deleting the prior session | session |
+| `/settings` | Open the transactional settings editor | durable setting |
+| `/output [DENSITY]` | Inspect or save persistent agent transcript density | durable setting |
+| `/config` | Print the active AIShe configuration | read-only |
+| `/skills` | List model-invoked skills | read-only |
+| `/mcp` | List configured MCP tools and prompts | read-only |
+| `/trust [PATH]` | Trust a project AIShe configuration, command, or skill | durable setting |
+| `/untrust [PATH]` | Remove trust from a project AIShe file | durable setting |
+
+Top-level CLI-only commands (no slash or hook form):
+
+| CLI command | Purpose | State/effect |
+|---|---|---|
+| `aishe hints [status [--json] \| reset]` | Inspect or reset local discovery-hint seen-state | may change state |
+
+Removed names remain reserved for one compatibility window:
+
+| Removed slash command | Local guidance |
+|---|---|
+| `/editor [ARGS…]` | AIShe now uses native shell line editing; configure zsh or bash directly |
+| `/frontend [ARGS…]` | use `aishe zsh` for the full PTY front end or `aishe init bash` for the bash hook |
+| `/stream [ARGS…]` | streaming is selected automatically by the active backend |
+| `/structured [ARGS…]` | structured output is negotiated internally; use command-specific `--json` for automation |
+| `/theme [ARGS…]` | use the terminal palette or set `NO_COLOR=1` for plain output |
+| `/rehash` | use bare `rehash` for zsh's executable cache; AIShe discovers commands automatically |
+| `/ghost [ARGS…]` | use suggest mode with `aishe mode suggest` |
+| `/plan [ARGS…]` | use `aishe dry-run 'COMMAND'` to preview a command's file changes |
+| `/sandbox [ARGS…]` | use `aishe scope workspace` and `aishe network deny`, then verify with `aishe readiness` |
+| `/cache [ARGS…]` | the legacy suggest-response cache was removed and has no direct replacement |
+<!-- END GENERATED COMMAND SURFACE -->
 
 ### `/connection` vs `/model`
 
@@ -186,11 +227,12 @@ so `/connection` lists it immediately.
 Both `/connection` and `/model` use the same filterable picker when run on a
 TTY:
 
-- **↑ / ↓** or **j / k** — move selection
-- type to filter
-- **Enter** — apply for this shell only
-- **d** (or the post-Enter “make this the default?” prompt when the choice
-  differs from config) — save as durable default
+- **↑ / ↓** or **Ctrl-P / Ctrl-N** — move selection
+- **Home / End** — jump to the first or last match
+- **Page Up / Page Down** — move by one visible page
+- type any printable character to filter, including `d`, `j`, and `k`
+- **Enter** — apply for this shell; when the choice differs from config, the
+  following `[y/N]` prompt offers to make it the default for new shells
 - **Esc** — cancel
 
 Direct forms: `/connection ID`, `/model NAME`,
@@ -205,29 +247,19 @@ Ctrl-O is the keyboard equivalent of `/details`; Shift-Tab cycles
 `suggest -> auto -> yolo`. Ask product how-to questions in natural language
 (“how do I add a Codex OAuth account?”) — answers use the built-in
 `aishe-product` skill.
-## Prompt-only meta commands
+## This shell versus defaults for new shells
 
-A few settings are toggled by **meta commands at the aishe prompt**. Type them
-inside the interactive shell, bare or with a leading `/`:
+The active slash commands in the generated table are the supported interactive
+surface. Removed names in its compatibility table are recognized locally only:
+they print migration guidance and never become natural-language model input.
+Configuration field names not present in either table do not automatically
+become prompt commands.
 
-```
-~/projects/app ❯ rehash            # or /rehash — rebuild the command cache
-~/projects/app ❯ sandbox on        # yolo_sandbox
-~/projects/app ❯ plan on           # yolo_plan (plan-first dry run)
-~/projects/app ❯ cache off         # suggest-response cache
-~/projects/app ❯ reset             # fresh conversation; old session is retained
-~/projects/app ❯ details           # toggle focus/detailed output for this shell
-```
-
-Others in the same family: `editor`, `frontend`, `stream`, `structured`,
-`theme`, `ghost`, `help`. `mode`, `model`, `provider`, `config`, `mcp`,
-`commands`, `skills`, `usage`, `trust`, and `untrust` are *both* — real
-subcommands and meta commands — so those work in either place.
-
-`reset` is also a real `aishe reset` subcommand. Neither `/details` nor Ctrl-O
-changes the saved `output` preference. The toggle affects following turns; an
-inline shell cannot safely erase and redraw arbitrary historical scrollback.
-Use `aishe output focus|compact|detailed` for a persistent choice.
+Use `aishe settings` for the fields it exposes, or edit `config.toml` for other
+fields without a dedicated CLI command. `reset`/`/reset` and `aishe reset` start
+a fresh retained conversation. `details`/`/details` and Ctrl-O change transcript
+density for following turns in the current shell; use
+`aishe output focus|compact|detailed` to change the default for new shells.
 
 ## Reversible AI file edits
 
@@ -250,8 +282,9 @@ to its original state. The journal lives at `undo.jsonl` in aishe's
 
 `aishe mode`, `aishe scope`, `aishe network`, `aishe output`, and legacy
 `aishe provider` show or save durable settings. Account and model selection is
-shell-local by default and is saved only with `d`, `--default`, or
-`aishe connection use ID --default`. Reasoning follows the same rule inside an
+shell-local by default and is saved only through the post-selection default
+prompt, `--default`, or `aishe connection use ID --default`. Reasoning follows
+the same rule inside an
 AIShe shell: `/reasoning high` is local and `aishe reasoning high --default`
 saves it for the selected connection. The durable file is
 `~/.config/aishe/config.toml` on Linux and `~/Library/Application
@@ -308,7 +341,9 @@ These are not commands; they control routing of a single line, and work in the
 interactive shell and in `-c`:
 
 - `?<text>` forces natural-language. Use it when your request starts with a real
-  command name, for example `?find the largest files`.
+  command name, for example `?find the largest files`. This is canonical on
+  every front-end; the legacy `#` alias is deprecated and planned for removal
+  in AIShe 0.9.
 - `!<cmd>` forces shell and bypasses the safety gate, for example `!rm -rf build`.
 
 After a command fails, type `?` alone on the next line to ask the model to

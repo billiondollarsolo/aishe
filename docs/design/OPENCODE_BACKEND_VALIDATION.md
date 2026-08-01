@@ -7,6 +7,11 @@ opencode_version: "1.18.9"
 status: "deterministic-qualification-pass-release-holds-pending"
 ---
 
+> **Lifecycle: Validation evidence.** Baseline: the v0.5.0 candidate at
+> `b388ee3`. This report preserves candidate-specific evidence and release holds;
+> it does not describe the current checkout. See
+> [Managed agent backend](../managed-agent-backend.md) for current behavior.
+
 # Aishe 0.5.0 Managed OpenCode Backend Validation
 
 ## Verdict

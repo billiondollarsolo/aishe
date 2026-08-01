@@ -35,9 +35,10 @@ import tempfile
 import time
 
 from live_contract import validate_suggest_result
+from harness_identity import require_current_binary
 
-BINARY = os.path.abspath(
-    sys.argv[1] if len(sys.argv) > 1 else "target/release/aishe"
+BINARY = require_current_binary(
+    os.path.abspath(sys.argv[1] if len(sys.argv) > 1 else "target/release/aishe")
 )
 SCALE = int(sys.argv[2]) if len(sys.argv) > 2 else 3
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))

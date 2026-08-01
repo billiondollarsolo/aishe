@@ -1,6 +1,9 @@
-# AWS-style credentials and configuration
+> **Lifecycle: Implemented.** Baseline: v0.4.0. Retained as the credential-store
+> design record; use [Commands](../commands.md),
+> [Configuration](../configuration.md), and
+> [Providers](../providers.md) for current behavior.
 
-Status: implemented and validated on `main`; awaiting a versioned release.
+# AWS-style credentials and configuration
 
 ## 1. Outcome
 

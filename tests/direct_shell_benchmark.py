@@ -18,6 +18,8 @@ import subprocess
 import tempfile
 import time
 
+from harness_identity import require_current_binary
+
 
 def percentile(values, rank):
     ordered = sorted(values)
@@ -55,7 +57,7 @@ def write_config(root):
     config = root / "config" / "aishe" / "config.toml"
     config.parent.mkdir(parents=True)
     config.write_text(
-        """version = 6
+        """version = 7
 
 [aishe]
 mode = "suggest"
@@ -98,6 +100,11 @@ def main():
     parser.add_argument("--commands", type=int, default=1000)
     parser.add_argument("--warmup", type=int, default=20)
     parser.add_argument(
+        "--output",
+        type=pathlib.Path,
+        help="write the versioned JSON report to this exact path",
+    )
+    parser.add_argument(
         "--no-enforce-slo",
         action="store_true",
         help="record timing without failing the source-of-truth p95 regression SLO",
@@ -106,9 +113,7 @@ def main():
     if args.commands < 20 or args.warmup < 0:
         raise SystemExit("--commands must be >= 20 and --warmup must be >= 0")
 
-    binary = pathlib.Path(args.binary).resolve()
-    if not binary.is_file():
-        raise SystemExit(f"binary not found: {binary}")
+    binary = pathlib.Path(require_current_binary(args.binary))
     zsh = shutil.which("zsh")
     if not zsh:
         raise SystemExit("zsh is required")
@@ -171,6 +176,7 @@ def main():
     allowed = max(10.0, raw_p95 * 0.10)
     report = {
         "schema_version": 1,
+        "kind": "aishe_direct_shell_performance",
         "generated_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
         "binary": str(binary),
         "commands": args.commands,
@@ -188,10 +194,14 @@ def main():
         "backend_started": False,
         "slo_pass": regression <= allowed,
     }
-    results = pathlib.Path("test-results")
-    results.mkdir(exist_ok=True)
-    stamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    output = results / f"direct-shell-benchmark-{stamp}.json"
+    if args.output:
+        output = args.output.resolve()
+        output.parent.mkdir(parents=True, exist_ok=True)
+    else:
+        results = pathlib.Path("test-results")
+        results.mkdir(exist_ok=True)
+        stamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        output = results / f"direct-shell-benchmark-{stamp}.json"
     output.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
     print(json.dumps(report, indent=2))
     print(f"report: {output}")

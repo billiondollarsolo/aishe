@@ -10,8 +10,10 @@ import tempfile
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-BINARY = os.path.abspath(
-    sys.argv[1] if len(sys.argv) > 1 else "target/release/aishe"
+from harness_identity import require_current_binary
+
+BINARY = require_current_binary(
+    os.path.abspath(sys.argv[1] if len(sys.argv) > 1 else "target/release/aishe")
 )
 
 
@@ -34,8 +36,6 @@ class ModelsHandler(BaseHTTPRequestHandler):
 
 
 def main():
-    if not os.path.exists(BINARY):
-        raise SystemExit("FAIL: binary not found: " + BINARY)
     root = tempfile.mkdtemp(prefix="aishe-provider-local-")
     server = ThreadingHTTPServer(("127.0.0.1", 0), ModelsHandler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
@@ -83,7 +83,9 @@ def main():
         )
         if listed.returncode != 0:
             raise AssertionError(listed.stderr or listed.stdout)
-        assert json.loads(listed.stdout) == ["local-model-a", "local-model-b"]
+        listing = json.loads(listed.stdout)
+        assert listing["schema_version"] == 1
+        assert listing["models"] == ["local-model-a", "local-model-b"]
         print("PASS: unauthenticated loopback provider needs no dummy API key")
     finally:
         server.shutdown()

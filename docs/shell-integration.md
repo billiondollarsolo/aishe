@@ -16,10 +16,11 @@ eval "$(aishe init zsh)"
 eval "$(aishe init bash)"
 ```
 
-This installs a `command_not_found_handler` (zsh) or `command_not_found_handle`
-(bash) that routes anything that is not a command to aishe. Your shell's line
-editor is untouched, so every native plugin works exactly as before. Set the mode
-with:
+This installs a `command_not_found_handler` (zsh) or
+`command_not_found_handle` (Bash). The zsh handler routes unknown input to
+AIShe. Bash routing depends on the qualified version and has explicit Tier-B
+limitations; merely sourcing the generated function is not evidence that the
+shell invokes it. Your native line editor remains in place. Set the mode with:
 
 ```sh
 export AISHE_MODE=suggest    # suggest | auto | yolo
@@ -32,17 +33,25 @@ and other glob syntax normally.
 
 If the account has no syntax-highlighting plugin, the hook provides a
 route-aware fallback over the whole edit buffer. Complete command-shaped input
-is green and natural-language questions are magenta. It deliberately
+uses the shell-route style and natural-language questions use the agent-route
+style. It deliberately
 distinguishes collisions such as `what --version` (command) from `what is my IP
 address?` (LLM), rather than permanently coloring by the first token. Full
 syntax highlighting remains the job of zsh-syntax-highlighting or
 fast-syntax-highlighting, and either plugin automatically takes precedence. Set
 `AISHE_COMMAND_HIGHLIGHT=0` to turn the fallback off.
 
+Color is supplemental. In zsh, press **Ctrl-X ?** to show a bounded text cue
+for the current buffer: `aishe route: agent` or
+`aishe route: shell/local`. The cue uses the same routing predicate as Enter
+and leaves the buffer editable. It is useful with `NO_COLOR`, color-vision
+differences, or themes whose colors are hard to distinguish.
+
 ### Behavior by mode
 
-- **suggest**: zsh pre-fills your next prompt so you can confirm or edit; bash
-  prints the suggestion (recall it with `Ctrl-X Ctrl-R`).
+- **suggest**: zsh pre-fills your next prompt so you can confirm or edit; Bash
+  prints the suggestion. Ctrl-X Ctrl-R recall is part of the Tier-B test matrix,
+  not an unconditional claim across Bash versions.
 - **auto**: a command the safety gate deems safe runs in your real shell, so `cd`
   and `export` persist and it lands in your history. A dangerous command is
   offered for review instead.
@@ -56,7 +65,7 @@ Inside an AIShe zsh session, `/help` is task-first (`/help accounts`,
 **separate**:
 
 - **`/connection`** (alias **`/provider`**) — switch named account for this
-  shell; Enter is shell-local, `d` (or the post-Enter default prompt) saves the
+  shell; Enter is shell-local and the following default-No prompt can save the
   durable default. Footer explains how to add accounts (`aishe setup`,
   `connection add`, `auth login`).
 - **`/model`** — models for the **active** connection only. Never changes login.
@@ -65,7 +74,8 @@ Inside an AIShe zsh session, `/help` is task-first (`/help accounts`,
 - **`/status`** — identity (including **Codex - API** / **Codex - OAuth · …** /
   **Grok - …** brands), backend readiness, usage, spend/plan.
 
-Picker navigation: ↑/↓ or j/k, type to filter, Esc cancels. Full reference:
+Picker navigation: ↑/↓ or Ctrl-P/Ctrl-N, Home/End, and Page Up/Page Down; every
+printable character filters, and Esc cancels. Full reference:
 [Commands](commands.md#primary-slash-commands). The shell handoff writes
 connection, model, and reasoning together; a main-shell prompt hook applies it
 even when the branded AIShe prompt is disabled.
@@ -81,10 +91,11 @@ install kubectl please     # shell: /usr/bin/install …
 
 | Prefix / key | Effect |
 |--------------|--------|
-| **`?…` or `#…`** | Force natural language (stripped before the model) |
+| **`?…`** | Force natural language in zsh or a qualified Bash hook; zsh strips the sigil |
+| **`#…`** | Force natural language in zsh; Bash treats it as a comment |
 | **`!…`** | Force shell, skip safety gate |
 | **Meta/Alt+Return** (zsh default `^[^M`) | Force-NL the current buffer and submit |
-| **Ctrl-G** (bash hook default) | Force-NL on bash |
+| **Ctrl-G** (Bash 5.x hook default) | Force-NL the Bash edit buffer; Bash 3.2 Tier B- uses `?` instead |
 
 **Mac:** Meta/Alt is **⌥ Option**. Option+Return only works if the terminal
 sends Option as Meta:
@@ -99,8 +110,9 @@ If Meta is awkward, **use `?`** — it always works. Override the zsh key:
 export AISHE_NL_KEY='^G'   # Ctrl-G
 ```
 
-Buffer colors (when highlighting is on): **green** = shell, **magenta** =
-natural language. Empty buffer + force-NL key does nothing. See
+Buffer styling (when highlighting is on) is supplemental: the shell and agent
+routes use different semantic palettes, while **Ctrl-X ?** supplies the
+authoritative textual cue. Empty buffer + force-NL key does nothing. See
 [Getting started §6](getting-started.md#6-force-a-route-when-needed).
 
 ### mode-cycle keybinding
@@ -118,6 +130,12 @@ export AISHE_MODE_KEY='^[[Z'   # zsh bindkey sequence (default Shift-Tab)
 ```
 
 (bash binds the same to `\e[Z`; re-bind with `bind -x` if you need a different key.)
+
+The Bash hook is Tier B on Bash 5.x and reduced Tier B- on Bash 3.2; the two do
+not expose identical command-not-found or Readline behavior. See
+[Native Bash hook compatibility](bash-compatibility.md) for the declared matrix,
+known baseline failures, and the deterministic qualification command. A key is
+documented as supported only when that matrix passes for the claimed version.
 
 ### fix-the-last-command keybinding
 
@@ -146,8 +164,14 @@ it leaves the line untouched and shows a brief message. Override the key:
 export AISHE_RECALL_KEY='^X^R'   # zsh bindkey sequence (default Ctrl-X Ctrl-R)
 ```
 
-(In bash, suggest mode can't pre-fill the line, so `Ctrl-X Ctrl-R` there recalls
-the last printed AI suggestion instead — same "recall" mnemonic, per shell.)
+Keep the four configurable sequences distinct. `aishe doctor` reports a
+`shell.keybindings` warning when two configured AIShe actions use the same
+sequence; a collision is never resolved by silently dropping one action.
+
+(In Bash, suggest mode cannot pre-fill from `PROMPT_COMMAND`; the intended
+Ctrl-X Ctrl-R behavior is to recall the last printed AI suggestion. Treat it as
+supported only on versions where the
+[Tier-B matrix](bash-compatibility.md) passes.)
 
 ### How it works
 

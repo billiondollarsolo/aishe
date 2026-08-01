@@ -1,3 +1,8 @@
+> **Lifecycle: Implemented.** Baseline: the v0.2.x feature series. All ten
+> proposals shipped a v1; remaining notes are historical follow-ups, not the
+> current backlog. Use the
+> [post-0.6.5 implementation plan](design/NEXT_PRODUCT_UX_RELIABILITY_PLAN.md).
+
 # aishe — Feature Proposals
 
 Detailed, self-contained engineering specs for the next wave of aishe features.

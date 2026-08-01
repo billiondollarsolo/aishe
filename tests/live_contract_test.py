@@ -16,6 +16,7 @@ class ContractTests(unittest.TestCase):
 
     def test_answer_contract(self):
         payload = {
+            "schema_version": 1,
             "kind": "answer",
             "command": "",
             "explanation": "Paris.",
@@ -32,6 +33,7 @@ class ContractTests(unittest.TestCase):
 
     def test_command_contract(self):
         payload = {
+            "schema_version": 1,
             "kind": "command",
             "command": "ls -la",
             "explanation": "List files.",

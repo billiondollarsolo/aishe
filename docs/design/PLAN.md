@@ -1,8 +1,13 @@
+> **Lifecycle: Superseded.** Baseline: June 2026 and the pre-managed-backend
+> architecture. The OpenCode design supersedes its backend assumptions; the
+> [post-0.6.5 plan](NEXT_PRODUCT_UX_RELIABILITY_PLAN.md) supersedes its remaining
+> forward-looking backlog.
+
 # aishe master plan
 
 A detailed, forward-looking plan for taking aishe from a feature-rich pre-1.0
 tool to a stable, installable, trustworthy "AI shell". This is the long-form
-companion to [ROADMAP.md](ROADMAP.md): the roadmap is the checklist, this is the
+companion to [ROADMAP.md](../ROADMAP.md): the roadmap is the checklist, this is the
 reasoning, sequencing, and acceptance criteria behind it.
 
 > **Current agent architecture:** the managed OpenCode milestone is specified
@@ -170,7 +175,7 @@ Get to a confidently installable, documented 0.2 / 0.3.
   (provider/endpoint, `[mcp_servers]`, logging, safety toggles, `mode = "yolo"`)
   apply only after `aishe trust`. `aishe doctor` shows the active layer + trust
   state. Unit + E2E tested; documented in
-  [docs/project-config.md](project-config.md).
+  [docs/project-config.md](../project-config.md).
 
 **A3. Response + embedding cache on disk.**
 - Goal: persist the suggest-mode cache (currently in-memory only) across
@@ -408,7 +413,7 @@ per-project profiles.
 
 **I3. Architecture doc** for contributors: dispatcher decision order, the two
 front-ends, the provider/tool/MCP layering, the harness.
-- Effort: M. Priority: P1. Status: DONE. [docs/architecture.md](architecture.md)
+- Effort: M. Priority: P1. Status: DONE. [docs/architecture.md](../architecture.md)
   covers the design principles, crate/module map, the routing decision order +
   command cache, the zsh-PTY hook handoff, the
   provider/`ResponseFormat`/step-down layer, modes/safety/sandbox, tools/MCP/skills,
