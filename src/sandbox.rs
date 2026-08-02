@@ -98,6 +98,16 @@ pub fn agent_bwrap_argv(
     cwd: &std::path::Path,
     network: crate::agent::NetworkPolicy,
 ) -> anyhow::Result<Vec<String>> {
+    let home = dirs::home_dir();
+    agent_bwrap_argv_for_home(workspace, cwd, network, home.as_deref())
+}
+
+fn agent_bwrap_argv_for_home(
+    workspace: &std::path::Path,
+    cwd: &std::path::Path,
+    network: crate::agent::NetworkPolicy,
+    home: Option<&std::path::Path>,
+) -> anyhow::Result<Vec<String>> {
     let workspace = workspace
         .canonicalize()
         .map_err(|error| anyhow::anyhow!("invalid sandbox workspace: {error}"))?;
@@ -107,7 +117,7 @@ pub fn agent_bwrap_argv(
     if !cwd.starts_with(&workspace) {
         anyhow::bail!("sandbox cwd escapes the workspace");
     }
-    let home = dirs::home_dir()
+    let home = home
         .and_then(|path| path.canonicalize().ok())
         .filter(|path| path != std::path::Path::new("/"));
     if home
@@ -141,23 +151,18 @@ pub fn agent_bwrap_argv(
     if let Some(home) = home {
         let home = home.display().to_string();
         if std::path::Path::new(&workspace).starts_with(&home) {
-            // Keep a private reference to the real project before masking the
-            // entire home directory, then remount only that project at its
-            // original path. Credentials and sibling files remain invisible.
+            // Bubblewrap opens bind sources from the host before applying the
+            // namespace mounts, so the original workspace remains a valid
+            // source after masking home. A path created by an earlier bwrap
+            // argument cannot be reused as a later source: all sources are
+            // resolved before namespace construction begins.
             args.extend([
-                "--tmpfs".into(),
-                "/run/aishe".into(),
-                "--dir".into(),
-                "/run/aishe/workspace".into(),
-                "--bind".into(),
-                workspace.clone(),
-                "/run/aishe/workspace".into(),
                 "--tmpfs".into(),
                 home,
                 "--dir".into(),
                 workspace.clone(),
                 "--bind".into(),
-                "/run/aishe/workspace".into(),
+                workspace.clone(),
                 workspace.clone(),
             ]);
         } else {
@@ -692,6 +697,37 @@ mod tests {
         std::fs::remove_dir_all(workspace).unwrap();
     }
 
+    #[test]
+    fn agent_bwrap_profile_directly_rebinds_workspace_nested_under_home() {
+        let root = std::env::temp_dir().join(format!(
+            "aishe-agent-bwrap-home-test-{}-{}",
+            std::process::id(),
+            rand::random::<u64>()
+        ));
+        let home = root.join("home");
+        let workspace = home.join("project");
+        std::fs::create_dir_all(&workspace).unwrap();
+
+        let argv = agent_bwrap_argv_for_home(
+            &workspace,
+            &workspace,
+            crate::agent::NetworkPolicy::Deny,
+            Some(&home),
+        )
+        .unwrap();
+        let home = home.canonicalize().unwrap().display().to_string();
+        let workspace = workspace.canonicalize().unwrap().display().to_string();
+        assert!(argv
+            .windows(2)
+            .any(|values| values == ["--tmpfs", home.as_str()]));
+        assert!(argv
+            .windows(3)
+            .any(|values| { values == ["--bind", workspace.as_str(), workspace.as_str()] }));
+        assert!(!argv.iter().any(|value| value == "/run/aishe/workspace"));
+
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
     #[cfg(target_os = "linux")]
     #[test]
     fn functional_agent_bwrap_profile_enforces_workspace_and_network() {
@@ -790,6 +826,41 @@ if printf 'escape\n' > "$AISHE_TEST_WORKSPACE/escape/owned" 2>/dev/null; then ex
             "network-denied profile reached the host loopback listener"
         );
         drop(denied_listener);
+
+        // A temporary HOME containing the workspace is the layout used by the
+        // paid-live isolation harness and by many real installations. Mask the
+        // home directory while keeping only this project writable.
+        let nested_home = root.join("isolated-home");
+        let nested_workspace = nested_home.join("project");
+        let hidden_sibling = nested_home.join(".ssh");
+        std::fs::create_dir_all(&nested_workspace).unwrap();
+        std::fs::create_dir_all(&hidden_sibling).unwrap();
+        std::fs::write(hidden_sibling.join("sentinel"), b"hidden").unwrap();
+        let mut argv = agent_bwrap_argv_for_home(
+            &nested_workspace,
+            &nested_workspace,
+            crate::agent::NetworkPolicy::Deny,
+            Some(&nested_home),
+        )
+        .unwrap();
+        let program = argv.remove(0);
+        let nested = std::process::Command::new(program)
+            .args(argv)
+            .arg("/bin/sh")
+            .arg("-c")
+            .arg("printf nested-ok > marker && test ! -e \"$HOME/.ssh/sentinel\"")
+            .env("HOME", &nested_home)
+            .output()
+            .unwrap();
+        assert!(
+            nested.status.success(),
+            "nested-home profile failed: {}",
+            String::from_utf8_lossy(&nested.stderr)
+        );
+        assert_eq!(
+            std::fs::read_to_string(nested_workspace.join("marker")).unwrap(),
+            "nested-ok"
+        );
         std::fs::remove_dir_all(root).unwrap();
     }
 
