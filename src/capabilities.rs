@@ -524,7 +524,7 @@ fn run_managed_live_checks(config: &Config) -> Result<(Check, Check, Check, Chec
 
     let suggest_events = run(
         Mode::Suggest,
-        "This is setup validation. Answer with the single word setup-ok; do not propose a command.",
+        "This is setup validation. Return the required AIShe JSON object with type answer, an empty command, and explanation setup-ok. Do not return plain text or Markdown.",
     )
     .context("managed text/structured/streaming turn")?;
     ensure_managed_turn_completed(&suggest_events)?;
@@ -544,21 +544,27 @@ fn run_managed_live_checks(config: &Config) -> Result<(Check, Check, Check, Chec
     } else {
         Check::pass("managed OpenCode text and authoritative usage accepted")
     };
-    let structured = match crate::modes::extract_json(&answer)
-        .and_then(|json| serde_json::from_str::<Value>(&json).ok())
-    {
-        Some(value)
-            if matches!(
-                value.get("type").and_then(Value::as_str),
-                Some("answer" | "command")
-            ) && value.get("explanation").and_then(Value::as_str).is_some() =>
-        {
-            Check::pass("managed suggest contract returned valid structured output")
+    let structured = if managed_suggest_contract_valid(&answer) {
+        Check::pass("managed suggest contract returned valid structured output")
+    } else {
+        // The managed adapter cannot use OpenCode 1.18.9's broken durable
+        // json_schema format, so it enforces the trusted JSON protocol in the
+        // agent prompt. Model output can still be stochastic: make one bounded,
+        // explicit retry before classifying a supported transport as failed.
+        let retry_events = run(
+            Mode::Suggest,
+            "Setup validation retry. Return only the required AIShe JSON object: type answer, command empty, explanation setup-ok. Do not return plain text, Markdown, or a code fence.",
+        )
+        .context("managed structured-output retry")?;
+        ensure_managed_turn_completed(&retry_events)?;
+        if managed_suggest_contract_valid(&completed_text(&retry_events)) {
+            Check::pass("managed suggest contract accepted after one bounded retry")
+        } else {
+            Check::fail(
+                "managed suggest response did not satisfy AIShe's structured contract after one bounded retry",
+                Some(ErrorKind::UnsupportedFormat),
+            )
         }
-        _ => Check::fail(
-            "managed suggest response did not satisfy AIShe's structured contract",
-            Some(ErrorKind::UnsupportedFormat),
-        ),
     };
     let streaming = if suggest_events
         .iter()
@@ -619,6 +625,17 @@ fn completed_text(events: &[crate::agent::AgentEvent]) -> String {
         })
         .collect::<Vec<_>>()
         .join("\n")
+}
+
+fn managed_suggest_contract_valid(answer: &str) -> bool {
+    crate::modes::extract_json(answer)
+        .and_then(|json| serde_json::from_str::<Value>(&json).ok())
+        .is_some_and(|value| {
+            matches!(
+                value.get("type").and_then(Value::as_str),
+                Some("answer" | "command")
+            ) && value.get("explanation").and_then(Value::as_str).is_some()
+        })
 }
 
 fn ensure_managed_turn_completed(events: &[crate::agent::AgentEvent]) -> Result<()> {
@@ -1039,5 +1056,19 @@ mod tests {
                 .and_then(|value| value.get("explanation").cloned()),
             Some(Value::String("setup-ok".into()))
         );
+    }
+
+    #[test]
+    fn managed_validation_structured_contract_is_explicit_and_fence_tolerant() {
+        assert!(managed_suggest_contract_valid(
+            r#"{"type":"answer","command":"","explanation":"setup-ok"}"#
+        ));
+        assert!(managed_suggest_contract_valid(
+            "```json\n{\"type\":\"command\",\"command\":\"pwd\",\"explanation\":\"cwd\"}\n```"
+        ));
+        assert!(!managed_suggest_contract_valid("setup-ok"));
+        assert!(!managed_suggest_contract_valid(
+            r#"{"type":"answer","command":""}"#
+        ));
     }
 }
