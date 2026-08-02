@@ -14,6 +14,7 @@ _VERSION = re.compile(
     r"^aishe\s+(?P<version>\S+)\s+\((?P<commit>[^,\s]+),\s*(?P<date>[^)]+)\)$"
 )
 _CARGO_VERSION = re.compile(r'(?m)^version\s*=\s*"(?P<version>[^"]+)"\s*$')
+_GIT_PREFIX = re.compile(r"^[0-9a-f]{7,40}$")
 
 
 def parse_binary_identity(output: str) -> dict[str, str]:
@@ -43,9 +44,15 @@ def identity_problems(
         problems.append(
             f"binary version {identity['version']} != checkout version {expected_version}"
         )
-    if expected_commit and identity["commit"] != expected_commit:
+    binary_commit = identity["commit"]
+    commit_matches = (
+        expected_commit
+        and _GIT_PREFIX.fullmatch(binary_commit)
+        and expected_commit.startswith(binary_commit)
+    )
+    if expected_commit and not commit_matches:
         problems.append(
-            f"binary commit {identity['commit']} != checkout commit {expected_commit}"
+            f"binary commit {binary_commit} != checkout commit {expected_commit}"
         )
     return problems
 
@@ -55,7 +62,7 @@ def _git_commit(root: pathlib.Path) -> str | None:
         return None
     try:
         result = subprocess.run(
-            ["git", "rev-parse", "--short=7", "HEAD"],
+            ["git", "rev-parse", "HEAD"],
             cwd=root,
             capture_output=True,
             text=True,

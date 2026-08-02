@@ -42,6 +42,28 @@ version = "not-the-package"
         )
         self.assertEqual(identity_problems(identity, "0.6.3", None), [])
 
+    def test_accepts_any_unambiguous_binary_prefix_of_full_checkout_commit(self):
+        expected = "a6173470eac292ae1241d4d156ba53d82a82fae2"
+        for prefix in ("a617347", "a6173470", expected):
+            with self.subTest(prefix=prefix):
+                identity = {
+                    "version": "0.6.5",
+                    "commit": prefix,
+                    "date": "2026-08-02",
+                }
+                self.assertEqual(identity_problems(identity, "0.6.5", expected), [])
+
+    def test_rejects_invalid_or_incorrect_binary_commit_prefix(self):
+        expected = "a6173470eac292ae1241d4d156ba53d82a82fae2"
+        for prefix in ("a61734", "a6173471", "unknown", "A6173470"):
+            with self.subTest(prefix=prefix):
+                identity = {
+                    "version": "0.6.5",
+                    "commit": prefix,
+                    "date": "2026-08-02",
+                }
+                self.assertEqual(len(identity_problems(identity, "0.6.5", expected)), 1)
+
 
 if __name__ == "__main__":
     unittest.main()
