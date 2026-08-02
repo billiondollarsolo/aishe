@@ -78,15 +78,7 @@ jobs:
           name: ${{ steps.ver.outputs.tag }}
           draft: true
           append_body: false
-          body: |
-            aishe ${{ steps.ver.outputs.tag }}
-
-            Prebuilt binaries (Linux x86_64/aarch64 in gnu and static musl;
-            macOS arm64/x86_64) and Linux packages (.deb / .rpm for amd64 and
-            arm64) are attached below, each with a .sha256 checksum.
-
-            Install guide: https://github.com/billiondollarsolo/aishe/blob/main/docs/installation.md
-            Changelog: https://github.com/billiondollarsolo/aishe/blob/main/CHANGELOG.md
+          body_path: docs/releases/v${{ steps.ver.outputs.version }}.md
 
   build:
     name: build ${{ matrix.target }}

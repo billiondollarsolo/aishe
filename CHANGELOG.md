@@ -6,6 +6,12 @@ breaking changes can land in any release.
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-08-02
+
+Full release notes, migration guidance, qualification evidence, compatibility
+boundaries, and known alpha limitations are in
+[docs/releases/v0.7.0.md](docs/releases/v0.7.0.md).
+
 ### Added
 - A versioned, reason-bearing route contract with `aishe route [--json] --
   <line>`, cross-surface routing corpora, conservative one-time typo assistance,
@@ -67,6 +73,16 @@ breaking changes can land in any release.
 - Local harnesses reject stale release binaries and stale product spelling;
   shell scripts are syntax-checked and ShellCheck-clean, and Python cache/output
   directories are ignored.
+- Managed structured-capability detection now uses one unambiguous JSON
+  contract and one bounded malformed-output retry, improving compatibility with
+  real providers without silently weakening capability checks.
+- Linux bubblewrap execution now supports workspaces nested beneath the user's
+  home directory while continuing to mask sibling credentials and home state.
+- Native Bash provider calls isolate child job-control state and return staged
+  suggestions through private files, closing real Bash 5.x EIO and monitor-mode
+  races without regressing the documented Bash 3.2 path.
+- Qualification accepts Git's legitimate variable-length abbreviated commit
+  identities while still rejecting malformed, stale, or mismatched binaries.
 
 ### Security
 - Forced-shell routing carries a non-color, one-line warning that the AI safety

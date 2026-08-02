@@ -362,7 +362,7 @@ Startup aliases for delegated commands: `~/.aishrc` (portable) — see
 | Logging | [docs/logging.md](docs/logging.md) |
 | Troubleshooting | [docs/troubleshooting.md](docs/troubleshooting.md) |
 | Architecture | [docs/architecture.md](docs/architecture.md) |
-| Product plan | [post-0.6.5 implementation plan](docs/design/NEXT_PRODUCT_UX_RELIABILITY_PLAN.md) · [design lifecycle index](docs/design/README.md) |
+| Product plan | [v0.7.0 release record](docs/releases/v0.7.0.md) · [implementation evidence and next queue](docs/design/NEXT_PRODUCT_UX_RELIABILITY_PLAN.md) · [design lifecycle index](docs/design/README.md) |
 | **Index** | **[docs/README.md](docs/README.md)** |
 
 ## Development

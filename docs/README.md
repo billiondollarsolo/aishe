@@ -48,8 +48,9 @@ live in the [root README](../README.md).
   `aishe doctor`, …)
 - [Development](development.md) — building, testing, and the validation harness
 - [Release readiness and rollback](release-readiness.md) — required evidence, holds, state compatibility, and failed-rollout response
+- [v0.7.0 release record](releases/v0.7.0.md) — complete change summary, migration notes, qualification evidence, and accepted alpha risks
 - [Legacy compatibility lifecycle](legacy-compatibility.md) — removed front-end tombstones, migration windows, and retained native/task fields
-- [Active product plan](design/NEXT_PRODUCT_UX_RELIABILITY_PLAN.md) — post-0.6.5 UX, routing, compatibility, and reliability work
+- [Active product plan](design/NEXT_PRODUCT_UX_RELIABILITY_PLAN.md) — v0.7.0 implementation evidence and post-qualification work queue
 - [Design lifecycle index](design/README.md) — authoritative inventory of active, implemented, superseded, historical, and validation documents
 - [OpenCode backend implementation](design/OPENCODE_BACKEND_IMPLEMENTATION_PLAN.md) — implemented backend design record
 

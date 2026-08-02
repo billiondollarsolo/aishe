@@ -1,6 +1,6 @@
 [package]
 name = "aishe"
-version = "0.6.5"
+version = "0.7.0"
 edition = "2021"
 rust-version = "1.88"
 description = "AIShe (AI Shell): natural-language-aware shell that runs real zsh for commands and an agent for everything else"
