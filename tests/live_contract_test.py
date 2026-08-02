@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 """Deterministic tests for the real-model JSON/exit contract validator."""
 
+import os
+import tempfile
 import unittest
 
-from live_contract import validate_suggest_result
+from live_contract import create_workspace_acceptance, validate_suggest_result
 
 
 class ContractTests(unittest.TestCase):
@@ -55,6 +57,30 @@ class ContractTests(unittest.TestCase):
         self.assertIn("invalid JSON contract", problems)
         _, problems = validate_suggest_result("{", "parse error", 1)
         self.assertIn("parse/eval leak", problems)
+
+    def test_workspace_acceptance_is_exact_private_and_unique(self):
+        first_id, first_path = create_workspace_acceptance("livecontract")
+        second_id, second_path = create_workspace_acceptance("livecontract")
+        try:
+            self.assertNotEqual(first_id, second_id)
+            self.assertNotEqual(first_path, second_path)
+            for shell_id, path in ((first_id, first_path), (second_id, second_path)):
+                self.assertEqual(
+                    os.path.basename(path), "aishe-yolo-accept-" + shell_id
+                )
+                self.assertEqual(
+                    os.path.realpath(os.path.dirname(path)),
+                    os.path.realpath(tempfile.gettempdir()),
+                )
+                self.assertEqual(os.stat(path).st_mode & 0o777, 0o600)
+                with open(path, encoding="utf-8") as file:
+                    self.assertEqual(file.read(), "workspace\n")
+        finally:
+            for path in (first_path, second_path):
+                try:
+                    os.unlink(path)
+                except FileNotFoundError:
+                    pass
 
 
 if __name__ == "__main__":

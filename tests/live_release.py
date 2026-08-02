@@ -18,7 +18,7 @@ import sys
 import tempfile
 import time
 
-from live_contract import validate_suggest_result
+from live_contract import create_workspace_acceptance, validate_suggest_result
 from harness_identity import require_current_binary
 
 BINARY = require_current_binary(
@@ -85,7 +85,7 @@ def write_config(root):
     return config_root, data_root
 
 
-def isolated_env(root, config_root, data_root):
+def isolated_env(root, config_root, data_root, shell_id, acceptance_path):
     env = dict(os.environ)
     env.update(
         {
@@ -96,6 +96,8 @@ def isolated_env(root, config_root, data_root):
             "XDG_DATA_HOME": data_root,
             "AISHE_REALTEST_KEY": KEY,
             "OPENAI_API_KEY": KEY,
+            "AISHE_SHELL_ID": shell_id,
+            "AISHE_ACCEPTANCE_FILE": acceptance_path,
         }
     )
     return env
@@ -215,6 +217,7 @@ def main():
     require(FUZZ_SCALE > 0, "fuzz scale must be positive")
 
     root = tempfile.mkdtemp(prefix="aishe-live-release-")
+    acceptance_path = None
     started = time.monotonic()
     checks = []
     transcript = []
@@ -222,7 +225,10 @@ def main():
         config_root, data_root = write_config(root)
         work = os.path.join(root, "work")
         os.makedirs(work)
-        env = isolated_env(root, config_root, data_root)
+        shell_id, acceptance_path = create_workspace_acceptance()
+        env = isolated_env(
+            root, config_root, data_root, shell_id, acceptance_path
+        )
 
         transcript.append(
             check_capabilities(
@@ -295,6 +301,11 @@ def main():
         return 1
     finally:
         shutil.rmtree(root, ignore_errors=True)
+        if acceptance_path:
+            try:
+                os.unlink(acceptance_path)
+            except FileNotFoundError:
+                pass
 
 
 if __name__ == "__main__":

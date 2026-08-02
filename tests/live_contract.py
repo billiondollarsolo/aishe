@@ -2,7 +2,31 @@
 """Validation helpers shared by opt-in real-model test harnesses."""
 
 import json
+import os
 import subprocess
+import tempfile
+import time
+
+
+def create_workspace_acceptance(prefix="liverelease"):
+    """Create a private exact-shell marker for noninteractive yolo tests."""
+    shell_id = "%s%016d%020d" % (prefix, os.getpid(), time.time_ns())
+    path = os.path.join(tempfile.gettempdir(), "aishe-yolo-accept-" + shell_id)
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    descriptor = os.open(path, flags, 0o600)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as file:
+            descriptor = -1
+            file.write("workspace\n")
+            file.flush()
+            os.fsync(file.fileno())
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+    os.chmod(path, 0o600)
+    return shell_id, path
 
 
 def shell_syntax_ok(command):
