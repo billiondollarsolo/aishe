@@ -1,7 +1,11 @@
-> **Lifecycle: Active.** Baseline: AIShe v0.6.5 (`4a2c7e4`). The implementation
-> and clean deterministic macOS/Linux candidate qualification are complete at
-> functional commit `35297d0`; ONB-001's actual new-user observation and the
-> separate hosted-CI/paid-live release disposition remain open. See the
+> **Lifecycle: Active.** Baseline: AIShe v0.6.5 (`4a2c7e4`). The original
+> implementation milestone is complete, and the current clean paid-live Linux
+> candidate `a1b4f4cb` passed 41/41 gates against `gpt-5.6-luna`. Paid testing
+> exposed and closed sandbox, capability, authorization-harness, managed-tool,
+> and Git-identity defects. Section 23 is the active post-qualification queue;
+> AGENT-001 completion truth, LLM-001 repeated action/answer consistency, a
+> fresh current-commit macOS release profile, hosted CI/package provenance, and
+> ONB-001 disposition remain open. See the
 > [implementation report](NEXT_PRODUCT_UX_RELIABILITY_IMPLEMENTATION_REPORT.md).
 
 [PRD]
@@ -10,7 +14,7 @@
 
 | Field | Value |
 | --- | --- |
-| Status | Implemented and clean deterministic candidate-qualified; ONB-001 research and external release disposition remain open |
+| Status | Original milestone implemented; paid Linux candidate passed 41/41; post-qualification truth/consistency hardening and external release evidence remain open |
 | Baseline | AIShe 0.6.5, commit 4a2c7e4 |
 | Audit date | 2026-07-31, America/New_York |
 | Scope | Post-0.6.5 product quality, UX, routing, terminal compatibility, maintainability, and release confidence |
@@ -130,10 +134,11 @@ single source of truth.
 
 ### 3.3 What was not claimed
 
-This review did not make paid provider calls, perform a literal 24-hour soak,
-qualify Linux bubblewrap on the current macOS host, test every terminal emulator,
-or add Windows support. Existing deterministic loopback and CI evidence was
-reviewed, but those omissions remain explicit release gates where relevant.
+The original baseline review did not make paid provider calls, perform a literal
+24-hour soak, qualify Linux bubblewrap on the macOS host, test every terminal
+emulator, or add Windows support. Paid Linux closure was later completed at
+`a1b4f4cb` and is recorded in Section 23 and the implementation report; the
+other omissions remain explicit release inputs where relevant.
 
 ### 3.4 External UX lens
 
@@ -2273,5 +2278,373 @@ The audit found these foundations strong and worth preserving:
 
 The next version becomes better by making those systems coherent, visible, and
 maintainable—not by replacing them.
+
+## 23. Active post-qualification queue
+
+This section supersedes Section 21 as the execution queue. Section 21 records
+the order used to implement the original milestone; those stories are not new
+work. The queue below is based on the clean paid-live run completed on
+2026-08-02 at `a1b4f4cb` and on the negative runs retained while reaching it.
+
+### 23.1 Evidence that drives this queue
+
+| Evidence | Observed result | Planning consequence |
+| --- | --- | --- |
+| Full Linux paid-live profile | 41 pass, 0 fail, 0 skip in 2,495,559 ms | Paid-live is no longer a release hold for this model/candidate/host. |
+| Labelled model run A | 19/20, zero contract breaches | Current-machine-state action intent is not fully stable. |
+| Labelled model run B | 20/20, zero contract breaches | The miss is probabilistic, not a deterministic local-router defect. |
+| Standalone live fuzz | 84/84, seed 1234, scale 3 | Current structured parsing, safety classification, and output invariants are strong at sample scale. |
+| Release live fuzz | 280/280, seed 1234, scale 10 | Release-scale behavior passed, but one model/endpoint is not universal proof. |
+| Real YOLO command after sandbox fix | Marker created with exact expected contents inside isolated workspace | Managed proxy selection, foreground lease, bubblewrap, tool execution, and continuation work end to end. |
+| Failed YOLO command during diagnosis | Model replied `done`; focus renderer called it one “recovered attempt”; requested marker did not exist | Completion truth currently trusts turn completion more than effect completion. This is the top open product defect. |
+| Nested-home bubblewrap failure | `bwrap: Can't find source path /run/aishe/workspace` | Home/workspace topology must be a first-class compatibility dimension. |
+| Short-SHA collision | Binary emitted eight characters while harness forced seven | Artifact identity must compare a validated prefix to the full commit, never assume a fixed abbreviation length. |
+
+The first labelled miss does **not** mean the local shell-versus-natural-language
+router sent a real command to the model. “what is my current working directory”
+is natural language in both runs. The unstable decision happened afterward,
+when the suggest agent chose between returning a command (`pwd`) and answering
+with machine-state prose. Those contracts need separate names, corpora, and
+metrics so future reports cannot blur them.
+
+### 23.2 AGENT-001 — Make completion status effect-truthful
+
+**Status:** open. **Priority:** P0. **Effort:** M. **Release disposition:** must
+be fixed or explicitly accepted by the maintainer before publishing this
+candidate.
+
+**Problem:** the normalized renderer currently treats failed tool calls as
+“recovered attempts” whenever the backend later emits a final assistant
+message. A final message proves only that generation ended. It does not prove
+that a failed command was retried, that a requested file exists, or that the
+user's objective was completed. In the paid diagnostic trace the only action
+failed, the model said `done`, and the marker was absent.
+
+**Work:**
+
+1. Add an explicit turn outcome model shared by the controller, renderer, task
+   journal, and shell-hook return path. At minimum distinguish:
+   `completed_clean`, `completed_with_failed_actions`, `failed`, `interrupted`,
+   and `outcome_unknown`.
+2. Track successful and failed tool calls independently. Do not derive
+   “recovered” from the presence of final prose. A later successful action may
+   be shown as “later action succeeded,” but should not claim the original
+   effect was recovered unless AIShe has explicit verification evidence.
+3. Preserve the final answer body even for degraded completion, but change its
+   semantic boundary to something such as `AIShe · incomplete` and include one
+   bounded non-color summary of the unresolved failure.
+4. In focus mode, show the first safe/redacted failure reason and the details
+   affordance. Detailed mode may show every bounded attempt. Piped/machine
+   output must remain ANSI-free and versioned.
+5. Decide and document noninteractive exit behavior. The recommended contract
+   is nonzero when a YOLO turn ends with one or more failed actions and no later
+   successful action, even if the model emits prose. Preserve compatibility for
+   interactive shell hooks by handling that code explicitly rather than
+   silently discarding it.
+6. Persist enough outcome metadata for durable resume to know that an effect is
+   unresolved, without persisting secrets or unbounded model/tool output.
+
+**Automated acceptance:**
+
+- Deterministic event fixtures cover: fail→final prose, fail→different success,
+  fail→retry success, success→final, interrupted tool, reconnect after unknown
+  outcome, and multiple mixed actions.
+- Fail→`done` renders `incomplete` and never contains `recovered`; its
+  noninteractive exit is nonzero under the chosen contract.
+- A genuine verified retry can be labelled recovered only when the verification
+  source is explicit in the normalized event/task state.
+- Focus, compact, detailed, NO_COLOR, TERM=dumb, 20/40/80/200-column, redirected,
+  zsh-hook, and Bash-hook snapshots preserve a clear textual distinction.
+- Task schema migration reads old records conservatively: legacy failed-tool
+  history must never be upgraded to verified recovery.
+- Redaction and maximum-length tests cover the surfaced failure cause.
+
+**Live validation:** add one opt-in paid case whose first command deliberately
+fails and whose second command creates a unique marker. Require a successful
+marker and truthful action counts. Add a second case where every command fails;
+require degraded completion and no success claim. The marker, not model prose,
+is authoritative.
+
+**Dependencies:** agent event schema, renderer, task journal, CLI error/exit
+contracts. **Likely files:** `src/agent/events.rs`, `src/agent/controller.rs`,
+`src/agent/renderer.rs`, `src/tasks.rs`, `src/cli/runtime.rs`,
+`tests/agent_ui_acceptance.rs`, runtime fixtures, and `tests/live_release.py`.
+
+### 23.3 LLM-001 — Stabilize action-versus-answer intent
+
+**Status:** open. **Priority:** P1. **Effort:** M.
+
+**Problem:** the live model returned a direct answer for “what is my current
+working directory” in one run and `pwd` in another. Both are plausible English
+responses, but only the command is grounded in the current machine at execution
+time and matches the declared test intent. Similar ambiguity exists for “what
+is my IP,” “which branch am I on,” “how much disk space do I have,” and “is the
+service running.”
+
+**Work:**
+
+1. Name the two independent decisions in code/docs/reports:
+   `shell_route` (local shell versus natural language) and `response_intent`
+   (grounded machine action versus informational answer).
+2. Add a versioned response-intent corpus with categories:
+   current machine state, current workspace state, factual knowledge,
+   explanation of a command, imperative mutation, safe inspection, dangerous
+   action, ambiguous pronouns, follow-ups, and explicit user requests for prose
+   versus a command.
+3. Strengthen the managed suggest prompt: requests about “my/current/here/on
+   this machine” state should produce a command unless the user explicitly asks
+   for a conceptual explanation. Never invent machine-state facts.
+4. Evaluate a bounded deterministic post-validator or one repair attempt for a
+   critical current-state request returned as an ungrounded answer. Do not add a
+   provider call to the local shell fast path.
+5. Report local route accuracy and model response-intent accuracy separately.
+   A response-intent miss must not be described as a shell routing miss.
+6. Keep the explicit `?` force-agent and `!` force-shell affordances unchanged;
+   they govern local routing, not the command/answer shape inside suggest mode.
+
+**Corpus acceptance:**
+
+- Critical local routing retains zero false-shell execution for natural
+  language and zero backend starts for known direct shell commands.
+- Every current-state critical response either returns a syntactically valid,
+  safety-assessed command or an explicit structured refusal/error; it never
+  fabricates current state as prose.
+- Informational questions such as “what does chmod do” remain answers, not
+  commands or `man` substitutions.
+- Dangerous action requests remain answers/refusals or commands classified
+  dangerous with the existing nonzero review code; none become safe commands.
+- Structured contract breaches remain zero.
+
+**Paid acceptance:** run at least five independent trials of every critical
+ambiguity case against the release model. Require 100% of current-state critical
+cases to satisfy the grounded-action rule, zero contract breaches, and the
+existing dangerous-action invariant. Record per-case/per-trial outcomes, model,
+endpoint, seed/order, duration, and token/cost data when available. If the model
+alone cannot meet the criterion, implement the bounded policy repair rather than
+lowering the critical threshold silently.
+
+**Dependencies:** managed suggest prompt and validation contract. **Likely
+files:** `src/backend/opencode/config.rs`, `src/capabilities.rs`,
+`src/modes/suggest.rs`, a new versioned fixture under `tests/fixtures/`,
+`tests/real_model.py`, and qualification report metadata.
+
+### 23.4 CAP-001 — Align managed capability probes with real output contracts
+
+**Status:** completed at `46d29a2`, carried into `a1b4f4cb`. **Priority:** P0
+closure.
+
+The previous live structured probe asked for a single plain word while the
+managed suggest agent required JSON. It now requests one explicit JSON object,
+validates the same strict contract used by the product, and allows one bounded
+JSON-only retry solely after malformed structured output. It never retries an
+admitted tool effect or an arbitrary provider failure.
+
+**Regression acceptance:** focused unit tests reject plain text and missing
+required explanation, accept raw/fenced valid JSON, and prove the retry bound.
+Both `provider test --live` and `doctor --live` must report pass for credential,
+reachability, model, text, structured, tools, and streaming. The final paid
+profile satisfied this acceptance.
+
+### 23.5 SANDBOX-001 — Preserve nested-home workspaces in bubblewrap
+
+**Status:** completed at `a617347`, carried into `a1b4f4cb`. **Priority:** P0
+closure.
+
+Bubblewrap opens bind sources from the host before applying namespace mounts.
+The old profile created `/run/aishe/workspace` inside the future namespace and
+then attempted to reuse it as a bind source, which cannot work. The corrected
+profile masks home, creates the destination, and binds the original host
+workspace directly at its original path.
+
+**Regression acceptance:**
+
+- Argument tests require a direct workspace→workspace bind and forbid the
+  invalid `/run/aishe/workspace` source.
+- The Linux functional test writes inside a workspace nested under an isolated
+  home, reads ordinary system files, cannot write outside the workspace, cannot
+  see a sibling `.ssh` sentinel, and enforces the network policy.
+- The paid YOLO test creates and verifies a unique marker in the isolated work
+  directory.
+- Future refactors must test canonical/symlink paths and homes under `/home`,
+  `/root`, and temporary directories.
+
+### 23.6 QA-004 — Keep live harness authority and tool names faithful
+
+**Status:** core closure completed at `be1abae` and `675b25d`; follow-up
+diagnostic work remains. **Priority:** P1. **Effort:** S.
+
+**Completed:** live release fixtures now create a private exact-shell workspace
+acceptance marker, use the managed `aishe_run_command` proxy name, verify the
+requested filesystem effect, and include a sanitized transcript when the effect
+is absent. They never treat model prose as proof of tool execution.
+
+**Remaining work:**
+
+1. Add an opt-in `AISHE_KEEP_FAILED_FIXTURE=1` diagnostic mode that retains only
+   redacted config/state/transcripts after failure, prints the exact retained
+   path, and defaults to deletion. Never retain the provider key or inherited
+   credential variables.
+2. Add a static contract that every live prompt names tools from the generated
+   managed tool registry rather than hand-maintained strings.
+3. Make each live effect use an unpredictable exact path and content, created
+   outside the model prompt only as an expected value; reject effects in the
+   repository or another workspace.
+4. Add a harness self-test that deliberately omits acceptance and expects the
+   product to fail closed, proving the positive fixture has not bypassed policy.
+5. Preserve failed qualification JSON as negative evidence while keeping the
+   repository checkout clean.
+
+**Acceptance:** 100% Python unit coverage of marker name/ownership/mode, shell
+identity mismatch, symlink refusal, cleanup, retained-fixture redaction, stale
+tool-name rejection, and secret-prefix artifact scan.
+
+### 23.7 REL-003 — Make paid evidence reproducible, cost-visible, and tiered
+
+**Status:** open. **Priority:** P1. **Effort:** M.
+
+The successful full profile took about 41.6 minutes and intentionally repeated
+labelled/fuzz work inside the end-to-end release gate. Repetition produced useful
+stochastic evidence (19/20 then 20/20), but the report should make request count,
+duplication, token use, cost, and retry reasons explicit.
+
+**Work:**
+
+1. Define three credentialed tiers:
+   `paid-smoke` (capabilities, Doctor, one answer, one command, one real tool),
+   `paid-sample` (labelled corpus plus 28-case fuzz), and `paid-release` (full
+   deterministic profile plus independent labelled repeat and 280-case fuzz).
+2. Record exact model/endpoint/transport, case IDs, corpus digests, order/seed,
+   request counts, retries by reason, input/output tokens, known/unknown cost,
+   rate-limit waits, and wall time. Unknown pricing must remain `null`/`n/a`, not
+   `$0.0000`.
+3. State whether repeated corpora are independent evidence or accidental
+   duplication. Preserve independence in release mode; avoid it in PR smoke.
+4. Emit a top-level artifact manifest linking qualification JSON and child
+   reports by digest. Child reports must not be the sole release authority.
+5. Add stable failure taxonomy: credential, reachability, model unavailable,
+   structured contract, response intent, safety, tool selection, tool effect,
+   sandbox, timeout, rate limit, and harness integrity.
+6. Scan every retained artifact for configured secret patterns before reporting
+   pass. A scan failure is a required gate failure and the artifact is not
+   uploaded.
+
+**Acceptance:** deterministic unit tests validate schema, totals, child digests,
+unknown-cost semantics, retry accounting, and redaction. One paid-smoke and one
+paid-release run produce self-contained reports whose total requests/tokens and
+case counts reconcile exactly.
+
+### 23.8 COMP-006 — Broaden Linux sandbox topology evidence
+
+**Status:** open research/qualification. **Priority:** P1 before broad Linux
+sandbox claims; P2 if claims remain limited to the tested host. **Effort:** L.
+
+The current paid host was accessed as root. Bubblewrap succeeded and the
+functional boundary tests passed, but root on one kernel/distribution does not
+prove ordinary non-root desktop/server behavior or MAC-policy compatibility.
+
+**Matrix:**
+
+- non-root and root where supported;
+- Ubuntu LTS, Debian stable, and Fedora or another SELinux-enforcing family;
+- user namespaces enabled and disabled;
+- workspace under `/home/user`, `/root`, `/tmp`, and outside home;
+- symlinked cwd/workspace, nested cwd, non-ASCII path, spaces, and long path;
+- AppArmor/SELinux enforcing where available;
+- network deny/allow, missing bubblewrap, unusable bubblewrap, and host scope;
+- SSH, tmux, screen, and direct terminal launch.
+
+**Acceptance:** every claimed supported row records pass/fail/limitation with
+kernel, distribution, architecture, user ID class, bubblewrap version/probe,
+mount topology, and exact binary commit. Workspace mode must fail closed when a
+functional OS boundary is required but unavailable. A limitation must never be
+serialized as pass.
+
+### 23.9 SEC-006 — Use a dedicated secret-delivery path for paid tests
+
+**Status:** open operational hardening. **Priority:** P1. **Effort:** S.
+
+The harness correctly reads `AISHE_REALTEST_KEY` only from process environment,
+writes no key, unsets it after the SSH process, and produced clean reports. The
+credential used for this audit was nevertheless pasted into a conversation and
+should be rotated. Future qualification should not require a secret in chat,
+shell history, command arguments, or repository files.
+
+**Work and acceptance:**
+
+- Use a dedicated revocable test-project key with the minimum useful budget and
+  no production authority; rotate it after ad hoc testing.
+- Deliver it from the local secret manager/CI secret store through a
+  non-echoing inherited environment or already-open file descriptor. Do not add
+  a `--key` command-line flag.
+- Ensure child processes receive only the one configured provider variable and
+  the tool sandbox strips it before model-requested commands.
+- Scan process arguments, generated configs, logs, support bundles, task
+  journals, audit files, qualification JSON, and Markdown artifacts in tests.
+- Document incident response: revoke, identify artifact scope, delete leaked
+  artifacts, and rerun with a fresh key. Never print the value while verifying
+  revocation.
+
+### 23.10 REL-004 — Close current-candidate external release evidence
+
+**Status:** open. **Priority:** P0 for publication, not for continued local
+development. **Effort:** M plus external runtime.
+
+**Required sequence:**
+
+1. Freeze the final functional commit after AGENT-001 disposition and rebuild
+   from clean macOS and Linux checkouts.
+2. Run the clean macOS release profile on that exact commit. The local
+   all-feature/no-default matrices at `a1b4f4cb` are changed-surface evidence,
+   not a release artifact.
+3. Run hosted Linux/macOS CI, package smoke, checksums, SBOM, and provenance on
+   the same source identity. Record job URLs/IDs and artifact digests in the
+   release evidence store.
+4. Rerun `paid-smoke` if documentation-only commits changed nothing functional;
+   rerun `paid-release` after any provider, prompt, agent, renderer, sandbox,
+   runtime, or qualification change.
+5. Complete the ONB-001 new-user walkthrough or record an explicit owner,
+   rationale, accepted risk, and follow-up date.
+6. Execute named terminal-emulator rows only if the release makes
+   emulator-specific claims; otherwise retain their `not_run` status.
+7. Produce one signed human decision listing pass, `not_run`, waiver, and hold
+   rows. No configured workflow or prior candidate is evidence for the final
+   artifact by itself.
+
+**Acceptance:** the release decision references one exact full commit; source,
+binary, packages, qualification reports, runtime/plugin, SBOM, provenance, and
+checksums reconcile by digest; there are no required skips or ambiguous holds.
+
+### 23.11 Execution order and post-qualification Definition of Done
+
+~~~text
+Wave 6A — truth before polish
+  AGENT-001
+      |
+      +-- QA-004 diagnostic completion
+      +-- paid-smoke failure/recovery cases
+
+Wave 6B — response consistency and evidence quality
+  LLM-001 ---------> paid repeated-trial corpus
+  REL-003 ---------> tiered, cost-visible reports
+  SEC-006 ---------> secret-manager delivery and artifact scans
+
+Wave 6C — breadth and release closure
+  COMP-006
+  REL-004 (fresh macOS + hosted CI/package/provenance + ONB disposition)
+~~~
+
+The post-qualification queue is done only when:
+
+- a failed tool followed by unsupported final prose cannot render as recovered
+  or return clean noninteractive success;
+- current-machine-state requests satisfy the repeated grounded-action contract
+  without weakening the local shell fast path;
+- paid reports reconcile cases, requests, retries, tokens/cost, child digests,
+  and secret scans;
+- Linux sandbox claims match the tested root/non-root and distribution topology;
+- the final release commit has fresh clean macOS/Linux, hosted package/provenance,
+  and explicit onboarding/emulator dispositions;
+- the credential used for ad hoc qualification has been rotated and no retained
+  artifact contains it.
 
 [/PRD]
