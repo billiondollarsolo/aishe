@@ -154,14 +154,17 @@ def check_suggest(env, prompt, expected_kind, contains=None):
 def check_yolo_tool(env, work):
     marker = os.path.join(work, "live-tool-marker.txt")
     prompt = (
-        "Use the run_command tool exactly once. Its command must be exactly "
+        "Use the aishe_run_command proxy tool exactly once. Its command must be exactly "
         "`printf LIVE_TOOL_OK > live-tool-marker.txt`. After the tool result, "
         "reply exactly `done`. Do not use another tool."
     )
     result = run([BINARY, "--yolo-line", prompt], env, cwd=work, timeout=600)
     combined = result.stdout + result.stderr
     require(result.returncode == 0, "yolo function-tool request failed: " + combined)
-    require(os.path.isfile(marker), "yolo did not create its isolated marker")
+    require(
+        os.path.isfile(marker),
+        "yolo did not create its isolated marker; transcript: " + combined,
+    )
     with open(marker, encoding="utf-8") as file:
         require(file.read() == "LIVE_TOOL_OK", "yolo marker content was wrong")
     require(
