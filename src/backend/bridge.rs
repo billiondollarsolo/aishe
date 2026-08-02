@@ -1414,6 +1414,28 @@ mod tests {
         }
     }
 
+    fn set_lease_expiry(bridge: &Bridge, session_id: &str, expires_at: Instant) {
+        bridge
+            .state
+            .lock()
+            .unwrap()
+            .leases
+            .get_mut(session_id)
+            .unwrap()
+            .expires_at = expires_at;
+    }
+
+    fn lease_expiry(bridge: &Bridge, session_id: &str) -> Instant {
+        bridge
+            .state
+            .lock()
+            .unwrap()
+            .leases
+            .get(session_id)
+            .unwrap()
+            .expires_at
+    }
+
     #[test]
     fn run_command_interactive_flag_is_strictly_boolean() {
         assert!(validate_tool_args(
@@ -1478,18 +1500,27 @@ mod tests {
     #[test]
     fn heartbeat_keeps_provider_authority_past_lease_ttl() {
         let (mut bridge, root, workspace) = bridge("lease-keepalive");
-        bridge.lease_ttl = Duration::from_millis(200);
+        // Exercise expiry and renewal by controlling the private deadline
+        // directly. Sub-second sleeps made this unit test depend on hosted
+        // runner scheduling even though production leases last 120 seconds.
+        bridge.lease_ttl = Duration::from_secs(60);
         let _expired = bridge.register(registration(&workspace)).unwrap();
-        // Without heartbeats the short TTL expires and authorize fails closed.
-        std::thread::sleep(Duration::from_millis(280));
+        set_lease_expiry(
+            &bridge,
+            "ses_test",
+            Instant::now().checked_sub(Duration::from_secs(1)).unwrap(),
+        );
         let dead = bridge.authorize_session("ses_test").unwrap_err();
         assert_eq!(dead.code, "foreground_unavailable");
 
         let lease = bridge.register(registration(&workspace)).unwrap();
-        // Keepalive every ~80ms while TTL is 200ms — mirrors production worker.
+        // Repeated keepalives extend a live lease from an intentionally
+        // shortened deadline without relying on elapsed wall-clock time.
         for _ in 0..6 {
-            std::thread::sleep(Duration::from_millis(80));
+            let shortened = Instant::now() + Duration::from_secs(30);
+            set_lease_expiry(&bridge, "ses_test", shortened);
             bridge.heartbeat(&lease).unwrap();
+            assert!(lease_expiry(&bridge, "ses_test") > shortened);
         }
         bridge.authorize_session("ses_test").unwrap();
 
@@ -1508,13 +1539,16 @@ mod tests {
                     call_id: work.call_id.clone(),
                 })
                 .unwrap();
-            // Simulate a long host command: keepalive heartbeats (worker thread)
-            // while the tool runs past several TTL windows.
+            // The worker heartbeat remains authoritative throughout a tool.
             for _ in 0..4 {
-                std::thread::sleep(Duration::from_millis(100));
+                let shortened = Instant::now() + Duration::from_secs(30);
+                set_lease_expiry(&bridge, "ses_test", shortened);
                 bridge.heartbeat(&lease).unwrap();
+                assert!(lease_expiry(&bridge, "ses_test") > shortened);
             }
             bridge.authorize_session("ses_test").unwrap();
+            let shortened = Instant::now() + Duration::from_secs(30);
+            set_lease_expiry(&bridge, "ses_test", shortened);
             bridge
                 .complete(ToolCompletion {
                     lease_id: lease.lease_id.clone(),
@@ -1527,6 +1561,7 @@ mod tests {
                 })
                 .unwrap();
             // complete renews; next model authorize still works.
+            assert!(lease_expiry(&bridge, "ses_test") > shortened);
             bridge.authorize_session("ses_test").unwrap();
             assert!(caller.join().unwrap().is_ok());
         });

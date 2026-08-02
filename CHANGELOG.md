@@ -83,6 +83,9 @@ boundaries, and known alpha limitations are in
   races without regressing the documented Bash 3.2 path.
 - Qualification accepts Git's legitimate variable-length abbreviated commit
   identities while still rejecting malformed, stale, or mismatched binaries.
+- Lease-heartbeat unit coverage now controls expiration deadlines directly
+  instead of depending on a 200 ms wall-clock window that could expire when a
+  loaded hosted runner descheduled the test process.
 
 ### Security
 - Forced-shell routing carries a non-color, one-line warning that the AI safety
