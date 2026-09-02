@@ -14,7 +14,7 @@ use crate::config::Config;
 use crate::dispatcher::{self, CommandCache, Dispatch};
 use crate::executor::Executor;
 use crate::modes;
-use crate::providers::Provider;
+use crate::providers::{Msg, Provider, ResponseFormat};
 use crate::safety::{self, Risk};
 use crate::session::Session;
 use crate::skills::SkillRegistry;
@@ -623,6 +623,16 @@ pub fn suggest_line(
     provider: Option<&dyn Provider>,
     config: &Config,
 ) -> Result<u8> {
+    let line = crate::attachments::expand(line, executor.cwd(), config)?.prompt;
+    suggest_line_raw(&line, executor, provider, config)
+}
+
+fn suggest_line_raw(
+    line: &str,
+    executor: &mut Executor,
+    provider: Option<&dyn Provider>,
+    config: &Config,
+) -> Result<u8> {
     if config.backend.engine == "opencode" {
         arm_hook_budget(config);
         let managed = managed_turn(config, line, AgentMode::Suggest, false);
@@ -744,8 +754,18 @@ pub fn fix_line(
     config: &Config,
 ) -> Result<u8> {
     let exit = std::env::var("AISHE_LAST_EXIT").unwrap_or_else(|_| "unknown".to_string());
+    fix_command(cmd, &exit, executor, provider, config)
+}
+
+pub fn fix_command(
+    cmd: &str,
+    exit: &str,
+    executor: &mut Executor,
+    provider: Option<&dyn Provider>,
+    config: &Config,
+) -> Result<u8> {
     let ctx = crate::fix::error_context(cmd, config.aishe.fix_capture_stderr);
-    let prompt = crate::fix::build_prompt(cmd, &exit, ctx.as_deref());
+    let prompt = crate::fix::build_prompt(cmd, exit, ctx.as_deref());
 
     if config.backend.engine == "opencode" {
         arm_hook_budget(config);
@@ -805,6 +825,74 @@ pub fn fix_line(
     Ok(0)
 }
 
+/// Rewrite the current ZLE buffer through the strict suggestion contract. The
+/// caller owns buffer replacement; this helper never executes the result.
+pub fn edit_line(
+    line: &str,
+    executor: &mut Executor,
+    provider: Option<&dyn Provider>,
+    config: &Config,
+) -> Result<u8> {
+    if line.trim().is_empty() {
+        return Ok(0);
+    }
+    let prompt = format!(
+        "Rewrite the shell command below to be correct, clear, and idiomatic. \
+Return exactly one runnable shell command using the command response shape. \
+Preserve the user's intent and do not execute it.\n\nCurrent command:\n{line}"
+    );
+    suggest_line_raw(&prompt, executor, provider, config)
+}
+
+/// Generate a command and hand it to the active shell's existing private
+/// staging channel. The parent ZLE hook owns insertion; this never executes.
+pub fn ask_insert(
+    request: &str,
+    executor: &mut Executor,
+    provider: Option<&dyn Provider>,
+    config: &Config,
+) -> Result<u8> {
+    if request.trim().is_empty() {
+        return Ok(1);
+    }
+    let prompt = format!(
+        "Create exactly one runnable shell command for this request. Do not execute it.\nRequest: {request}"
+    );
+    let suggestion = if config.backend.engine == "opencode" {
+        match managed_turn(config, &prompt, AgentMode::Suggest, false) {
+            Ok(Some(outcome)) => modes::suggest::parse_suggestion(&outcome.text),
+            Ok(None) => {
+                let Some(provider) = provider else {
+                    print_llm_unavailable(config);
+                    return Ok(1);
+                };
+                modes::suggest::request(&prompt, provider, executor, config, Vec::new())?
+            }
+            Err(error) => {
+                print_managed_hook_failure("ask_insert_managed", &error);
+                return Ok(1);
+            }
+        }
+    } else {
+        let Some(provider) = provider else {
+            print_llm_unavailable(config);
+            return Ok(1);
+        };
+        modes::suggest::request(&prompt, provider, executor, config, Vec::new())?
+    };
+    let modes::suggest::Suggestion::Command { command, .. } = suggestion else {
+        anyhow::bail!("the model returned an answer instead of a shell command");
+    };
+    if !shell_syntax_ok(executor, &command) {
+        anyhow::bail!("the generated command is not valid shell syntax");
+    }
+    if !stage_hook_command("fill", &command)? {
+        anyhow::bail!("--insert requires an active AIShe shell");
+    }
+    eprintln!("aishe: command staged for review; press Enter to run or edit it first");
+    Ok(0)
+}
+
 /// Shell-hook helper: run the yolo loop directly for a natural-language line.
 pub fn yolo_line(
     line: &str,
@@ -814,8 +902,9 @@ pub fn yolo_line(
     skills: &SkillRegistry,
     mcp: &crate::mcp::McpRegistry,
 ) -> Result<u8> {
+    let line = crate::attachments::expand(line, executor.cwd(), config)?.prompt;
     if config.backend.engine == "opencode" {
-        match managed_turn(config, line, AgentMode::Yolo, true) {
+        match managed_turn(config, &line, AgentMode::Yolo, true) {
             Ok(Some(_)) => return Ok(0),
             Ok(None) => {}
             Err(error) => {
@@ -834,7 +923,7 @@ pub fn yolo_line(
         None => Session::new(false),
     };
     modes::yolo::run(
-        line,
+        &line,
         p,
         executor,
         config,
@@ -867,8 +956,9 @@ pub fn auto_line(
     provider: Option<&dyn Provider>,
     config: &Config,
 ) -> Result<u8> {
+    let line = crate::attachments::expand(line, executor.cwd(), config)?.prompt;
     if config.backend.engine == "opencode" {
-        match managed_turn(config, line, AgentMode::Auto, true) {
+        match managed_turn(config, &line, AgentMode::Auto, true) {
             Ok(Some(_)) => return Ok(0),
             Ok(None) => {}
             Err(error) => {
@@ -888,7 +978,7 @@ pub fn auto_line(
         Some(path) => Session::load_persisted(path),
         None => Session::new(false),
     };
-    let suggestion = modes::suggest::request(line, p, executor, config, session.history())?;
+    let suggestion = modes::suggest::request(&line, p, executor, config, session.history())?;
     // The blocking network work is done; let the rest run unbounded.
     cancel_hook_budget();
     let answer = suggestion_is_answer(&suggestion, executor);
@@ -953,7 +1043,7 @@ pub fn auto_line(
         }
     };
     if let Some(path) = &mem {
-        session.record_user(line);
+        session.record_user(&line);
         session.record_assistant(&reply);
         session.save_persisted(path);
     }
@@ -1112,6 +1202,196 @@ pub fn suggest_command(
         eprintln!("{explanation}");
     }
     Ok(code)
+}
+
+/// Non-executing answer command with a stable stdout contract. `--schema`
+/// accepts the deliberately small, provider-portable JSON Schema subset used by
+/// AIShe itself: type, properties, required, items, enum, and
+/// additionalProperties=false.
+pub fn ask_command(
+    query: &str,
+    json_output: bool,
+    schema_path: Option<&std::path::Path>,
+    executor: &Executor,
+    provider: Option<&dyn Provider>,
+    config: &Config,
+) -> Result<u8> {
+    if query.trim().is_empty() {
+        anyhow::bail!("`aishe ask` needs a request");
+    }
+    let query = crate::attachments::expand(query, executor.cwd(), config)?.prompt;
+    let schema = schema_path.map(read_answer_schema).transpose()?;
+    let schema_instruction = schema.as_ref().map_or_else(String::new, |value| {
+        format!(
+            " Return only JSON matching this schema, without markdown fences: {}",
+            value
+        )
+    });
+    let prompt = format!(
+        "Answer the request directly. Do not run commands or request tools. Be concise and factual.{schema_instruction}\n\n{query}"
+    );
+    let answer = if config.backend.engine == "opencode" {
+        match managed_turn(config, &prompt, AgentMode::Suggest, false)? {
+            Some(outcome) => answer_from_suggestion(&outcome.text),
+            None => native_answer(&prompt, schema.as_ref(), executor, provider, config)?,
+        }
+    } else {
+        native_answer(&prompt, schema.as_ref(), executor, provider, config)?
+    };
+    let answer = crate::commands::display_safe(answer.trim());
+
+    if let Some(schema) = &schema {
+        let value = parse_answer_json(&answer)?;
+        validate_answer_schema(schema, &value, "$")?;
+        println!(
+            "{}",
+            serde_json::to_string(&serde_json::json!({
+                "schema_version": 1,
+                "result": value,
+            }))?
+        );
+    } else if json_output {
+        println!(
+            "{}",
+            serde_json::to_string(&serde_json::json!({
+                "schema_version": 1,
+                "answer": answer,
+            }))?
+        );
+    } else {
+        println!("{answer}");
+    }
+    Ok(0)
+}
+
+fn native_answer(
+    prompt: &str,
+    schema: Option<&serde_json::Value>,
+    executor: &Executor,
+    provider: Option<&dyn Provider>,
+    config: &Config,
+) -> Result<String> {
+    let provider = provider.context("no model provider is configured; run `aishe setup`")?;
+    let format = schema.map_or(ResponseFormat::Text, |schema| ResponseFormat::JsonSchema {
+        name: "aishe_answer".into(),
+        schema: schema.clone(),
+    });
+    let message = format!(
+        "{}\nUser request: {prompt}",
+        crate::context::build(executor, config)
+    );
+    provider
+        .complete(
+            "You are AIShe, a non-executing command-line assistant. Answer directly and never claim to have run anything.",
+            &[Msg::User(message)],
+            &format,
+        )
+        .map_err(|error| anyhow::anyhow!(crate::providers::actionable_error(&error)))
+}
+
+fn answer_from_suggestion(raw: &str) -> String {
+    match modes::suggest::parse_suggestion(raw) {
+        modes::suggest::Suggestion::Answer { explanation } => explanation,
+        modes::suggest::Suggestion::Command {
+            command,
+            explanation,
+        } => {
+            if explanation.is_empty() {
+                command
+            } else {
+                explanation
+            }
+        }
+    }
+}
+
+fn read_answer_schema(path: &std::path::Path) -> Result<serde_json::Value> {
+    const MAX_SCHEMA_BYTES: u64 = 1024 * 1024;
+    let metadata = std::fs::symlink_metadata(path)
+        .with_context(|| format!("reading schema metadata {}", path.display()))?;
+    if !metadata.file_type().is_file() || metadata.len() > MAX_SCHEMA_BYTES {
+        anyhow::bail!("schema must be a regular file no larger than 1 MiB");
+    }
+    let schema: serde_json::Value = serde_json::from_slice(&std::fs::read(path)?)?;
+    if !schema.is_object() {
+        anyhow::bail!("schema root must be an object");
+    }
+    Ok(schema)
+}
+
+fn parse_answer_json(text: &str) -> Result<serde_json::Value> {
+    let trimmed = text.trim();
+    let trimmed = trimmed
+        .strip_prefix("```json")
+        .or_else(|| trimmed.strip_prefix("```"))
+        .unwrap_or(trimmed)
+        .strip_suffix("```")
+        .unwrap_or(trimmed)
+        .trim();
+    serde_json::from_str(trimmed).context("provider answer was not valid JSON")
+}
+
+fn validate_answer_schema(
+    schema: &serde_json::Value,
+    value: &serde_json::Value,
+    path: &str,
+) -> Result<()> {
+    if let Some(expected) = schema.get("type").and_then(serde_json::Value::as_str) {
+        let matches = match expected {
+            "object" => value.is_object(),
+            "array" => value.is_array(),
+            "string" => value.is_string(),
+            "number" => value.is_number(),
+            "integer" => value.as_i64().is_some() || value.as_u64().is_some(),
+            "boolean" => value.is_boolean(),
+            "null" => value.is_null(),
+            other => anyhow::bail!("unsupported schema type {other:?} at {path}"),
+        };
+        if !matches {
+            anyhow::bail!("answer does not match schema type {expected:?} at {path}");
+        }
+    }
+    if let Some(options) = schema.get("enum").and_then(serde_json::Value::as_array) {
+        if !options.contains(value) {
+            anyhow::bail!("answer is not one of the allowed enum values at {path}");
+        }
+    }
+    if let Some(object) = value.as_object() {
+        let properties = schema
+            .get("properties")
+            .and_then(serde_json::Value::as_object);
+        if let Some(required) = schema.get("required").and_then(serde_json::Value::as_array) {
+            for key in required.iter().filter_map(serde_json::Value::as_str) {
+                if !object.contains_key(key) {
+                    anyhow::bail!("answer is missing required property {path}.{key}");
+                }
+            }
+        }
+        if schema
+            .get("additionalProperties")
+            .and_then(serde_json::Value::as_bool)
+            == Some(false)
+        {
+            for key in object.keys() {
+                if !properties.is_some_and(|values| values.contains_key(key)) {
+                    anyhow::bail!("answer contains unexpected property {path}.{key}");
+                }
+            }
+        }
+        if let Some(properties) = properties {
+            for (key, child_schema) in properties {
+                if let Some(child) = object.get(key) {
+                    validate_answer_schema(child_schema, child, &format!("{path}.{key}"))?;
+                }
+            }
+        }
+    }
+    if let (Some(items), Some(values)) = (schema.get("items"), value.as_array()) {
+        for (index, child) in values.iter().enumerate() {
+            validate_answer_schema(items, child, &format!("{path}[{index}]"))?;
+        }
+    }
+    Ok(())
 }
 
 /// `suggest` keeps its pre-1.0 aggregate failure status of 1. The structured
@@ -1309,6 +1589,7 @@ pub fn one_shot(
             Ok(executor.run_builtin(&tokens) as u8)
         }
         Dispatch::NaturalLanguage(nl) => {
+            let nl = crate::attachments::expand(&nl, executor.cwd(), config)?.prompt;
             let agent_mode = AgentMode::parse(&config.aishe.mode).unwrap_or(AgentMode::Suggest);
             if config.backend.engine == "opencode" {
                 let render = agent_mode != AgentMode::Suggest;
@@ -1527,10 +1808,11 @@ fn run_nl(
     mcp: &crate::mcp::McpRegistry,
     session: &mut Session,
 ) -> Result<()> {
+    let nl = crate::attachments::expand(nl, executor.cwd(), config)?.prompt;
     let agent_mode = AgentMode::parse(mode).unwrap_or(AgentMode::Suggest);
     if config.backend.engine == "opencode" {
         let render = agent_mode != AgentMode::Suggest;
-        if let Some(outcome) = managed_turn(config, nl, agent_mode, render)? {
+        if let Some(outcome) = managed_turn(config, &nl, agent_mode, render)? {
             if agent_mode == AgentMode::Suggest {
                 emit_suggest_hook(&modes::suggest::parse_suggestion(&outcome.text), executor);
             }
@@ -1542,9 +1824,9 @@ fn run_nl(
         return Ok(());
     };
     match mode {
-        "yolo" => modes::yolo::run(nl, p, executor, config, &INTERRUPTED, skills, mcp, session)?,
-        "auto" => modes::suggest::run(nl, p, executor, config, false, true, session)?,
-        _ => modes::suggest::run(nl, p, executor, config, false, false, session)?,
+        "yolo" => modes::yolo::run(&nl, p, executor, config, &INTERRUPTED, skills, mcp, session)?,
+        "auto" => modes::suggest::run(&nl, p, executor, config, false, true, session)?,
+        _ => modes::suggest::run(&nl, p, executor, config, false, false, session)?,
     }
     Ok(())
 }

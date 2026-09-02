@@ -55,6 +55,10 @@ pub fn command(config: &Config, json: bool) -> u8 {
         std::env::var("AISHE_LOG_FILE").ok().as_deref(),
     );
     let audit_path = crate::cli::history::audit_log_path(config);
+    let environment = crate::environment::inspect(
+        config,
+        &std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")),
+    );
 
     if json {
         println!(
@@ -89,6 +93,7 @@ pub fn command(config: &Config, json: bool) -> u8 {
                 },
                 "session": session,
                 "metrics": metrics,
+                "environment": environment,
             }))
             .expect("serializing a serde_json::Value to String cannot fail")
         );
@@ -123,6 +128,20 @@ pub fn command(config: &Config, json: bool) -> u8 {
         crate::commands::display_safe(&output),
         crate::commands::display_safe(&reasoning),
         crate::commands::display_safe(status_position),
+    );
+    println!(
+        "  environment: {}{}{}",
+        crate::commands::display_safe(&environment.label()),
+        environment
+            .git_head
+            .as_deref()
+            .map(|head| format!(" @ {head}"))
+            .unwrap_or_default(),
+        if environment.marker().is_empty() {
+            String::new()
+        } else {
+            format!(" · {}", environment.marker())
+        }
     );
     println!(
         "  audit: {} · redaction: {} · {}",
@@ -204,6 +223,7 @@ fn live_status_metrics() -> std::collections::BTreeMap<String, String> {
         "requests",
         "network",
         "sandbox",
+        "tasks",
     ];
     let Some(path) = std::env::var_os("AISHE_STATUS_FILE").filter(|value| !value.is_empty()) else {
         return std::collections::BTreeMap::new();

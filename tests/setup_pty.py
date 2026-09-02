@@ -488,7 +488,7 @@ def complete_setup(root, env, endpoint):
         shell.expect("Agent transcript density")
         shell.menu(1)  # focus
         shell.expect("Live status-line placement")
-        shell.menu(2)  # below
+        shell.menu(1)  # below
         shell.expect("Status-line contents")
         shell.menu(2)  # detailed
         shell.expect("preview (below)")
@@ -609,8 +609,8 @@ def settings_are_transactional(root, env, config, endpoint):
         apply.expect("Shell, history & statusline")
         apply.menu(6)  # placement
         apply.expect("Statusline placement")
-        apply.menu(1)  # right
-        apply.expect("preview (right)")
+        apply.menu(1)  # below
+        apply.expect("preview (below)")
         apply.expect("Shell, history & statusline")
         apply.menu(8)  # transcript density
         apply.expect("Agent transcript density")
@@ -627,7 +627,7 @@ def settings_are_transactional(root, env, config, endpoint):
     finally:
         apply.close()
     text = open(config, encoding="utf-8").read()
-    if 'status_line_position = "right"' not in text:
+    if 'status_line_position = "below"' not in text:
         raise AssertionError("settings did not apply selected placement")
     if "hook_timeout_secs = 75" not in text:
         raise AssertionError("settings did not apply selected hook timeout")
@@ -788,7 +788,7 @@ def hidden_auth_and_staged_setup_are_secret_safe(runtime_root):
             resumed.expect("Agent transcript density")
             resumed.menu(1)
             resumed.expect("Live status-line placement")
-            resumed.menu(3)
+            resumed.menu(2)
             resumed.expect("Enable the private redacted audit log?")
             resumed.line("n")
             resumed.expect(

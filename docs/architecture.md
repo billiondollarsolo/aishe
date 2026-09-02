@@ -288,7 +288,7 @@ form, honors color/redirected output, and keeps OpenCode implementation details
 out of the default UI. The foreground tool worker streams child output only in
 detailed mode; focus/compact consume captured results through normalized events.
 `usagelog` merges authoritative usage, backend/scope/network, task, elapsed time,
-and context-token state into the right/below/off statusline and `aishe status`.
+and context-token state into the below-input statusline and `aishe status`.
 
 ### Provider and native compatibility layer
 
@@ -331,7 +331,7 @@ AIShe never falls through to native or starts a second provider request.
   deduplicates it, reserves estimated cost before provider turns, caps output,
   expires abandoned reservations, and denies the next call before budget
   overrun. `usagelog.rs` combines short-lived PTY child results into ordered
-  live right/below status metrics.
+  live status metrics below the editable command.
 - **Audit and redaction.** Off by default. When on, bounded prompts, visible
   responses, provider-exposed reasoning, managed tool calls/results/approvals,
   file changes, lifecycle events, usage, and cost are written as JSONL with

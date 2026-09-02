@@ -171,10 +171,10 @@ discovery_hints = true
 # session when you exit the zsh front-end.
 show_usage = true
 
-# Live branded-prompt status: right | below | off. Detailed fields are easier to
-# read below the prompt on narrow terminals.
+# Live status below the editable command, or off. `right` is accepted as a
+# legacy alias for `below`.
 status_line = true
-status_line_position = "right"
+status_line_position = "below"
 status_line_items = ["identity", "mode", "scope", "session_cost", "requests"]
 # Other fields: connection, provider, endpoint, auth, selection, model,
 # reasoning, backend, task, elapsed, context, last_tokens, last_cost,

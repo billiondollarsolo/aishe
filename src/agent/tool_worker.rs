@@ -145,6 +145,10 @@ impl ToolWorker {
                 let skills = crate::skills::SkillRegistry::load();
                 let mcp = crate::mcp::McpRegistry::connect(&config.mcp_servers);
                 let mut approvals = HashSet::new();
+                let max_tool_calls = env_limit("AISHE_TASK_MAX_TOOL_CALLS");
+                let max_network_calls = env_limit("AISHE_TASK_MAX_NETWORK_CALLS");
+                let mut tool_calls = 0u32;
+                let mut network_calls = 0u32;
                 while !worker_stop.load(Ordering::SeqCst) {
                     match worker_client.next(&worker_identity) {
                         Ok(Some(work)) => {
@@ -163,18 +167,28 @@ impl ToolWorker {
                                 );
                                 break;
                             }
-                            let result = execute(
-                                &work,
-                                &skills,
-                                &mcp,
-                                &mut approvals,
-                                &ExecutionContext {
-                                    cancel: &cancel,
-                                    denied_environment: &denied_environment,
-                                    stream_output,
-                                    audit: &audit,
-                                },
-                            );
+                            tool_calls = tool_calls.saturating_add(1);
+                            if tool_uses_network(&work) {
+                                network_calls = network_calls.saturating_add(1);
+                            }
+                            let result = if max_tool_calls.is_some_and(|max| tool_calls > max) {
+                                failure("Background task tool-call budget is exhausted.")
+                            } else if max_network_calls.is_some_and(|max| network_calls > max) {
+                                failure("Background task network-call budget is exhausted.")
+                            } else {
+                                execute(
+                                    &work,
+                                    &skills,
+                                    &mcp,
+                                    &mut approvals,
+                                    &ExecutionContext {
+                                        cancel: &cancel,
+                                        denied_environment: &denied_environment,
+                                        stream_output,
+                                        audit: &audit,
+                                    },
+                                )
+                            };
                             let completion = ToolCompletion {
                                 lease_id: worker_identity.lease_id.clone(),
                                 session_id: work.session_id,
@@ -239,6 +253,22 @@ impl ToolWorker {
             finish_worker_thread(thread);
         }
     }
+}
+
+fn env_limit(name: &str) -> Option<u32> {
+    std::env::var(name)
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .filter(|value| *value > 0)
+}
+
+fn tool_uses_network(work: &ToolWork) -> bool {
+    matches!(work.tool.as_str(), "fetch_url" | "mcp_call")
+        || work
+            .args
+            .get("command")
+            .and_then(Value::as_str)
+            .is_some_and(crate::sandbox::is_network_command)
 }
 
 impl Drop for ToolWorker {
@@ -1300,7 +1330,7 @@ fn agent_executor(
 }
 
 fn sensitive_environment_names(config: &Config) -> HashSet<String> {
-    [
+    let mut names: HashSet<String> = [
         config.providers.openai.api_key_env.as_str(),
         config.providers.anthropic.api_key_env.as_str(),
         "AISHE_PROVIDER_API_KEY",
@@ -1310,7 +1340,44 @@ fn sensitive_environment_names(config: &Config) -> HashSet<String> {
     .into_iter()
     .filter(|name| !name.is_empty())
     .map(|name| name.to_ascii_uppercase())
-    .collect()
+    .collect();
+    for connection in config.connections.values() {
+        if !connection.settings.api_key_env.is_empty() {
+            names.insert(connection.settings.api_key_env.to_ascii_uppercase());
+        }
+        if let crate::config::ConnectionAuth::ApiKey {
+            api_key_env: Some(name),
+            ..
+        } = &connection.auth
+        {
+            names.insert(name.to_ascii_uppercase());
+        }
+    }
+    for server in config.mcp_servers.values() {
+        for reference in server.env.values().chain(server.headers.values()) {
+            if let Some(name) = reference.strip_prefix("env:") {
+                names.insert(name.to_ascii_uppercase());
+            }
+        }
+    }
+    for (name, _) in std::env::vars_os() {
+        let upper = name.to_string_lossy().to_ascii_uppercase();
+        if [
+            "TOKEN",
+            "SECRET",
+            "PASSWORD",
+            "PASSWD",
+            "API_KEY",
+            "PRIVATE_KEY",
+            "CREDENTIAL",
+        ]
+        .iter()
+        .any(|marker| upper.contains(marker))
+        {
+            names.insert(upper);
+        }
+    }
+    names
 }
 
 fn shell_quote(value: &str) -> String {

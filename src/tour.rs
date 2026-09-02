@@ -148,9 +148,7 @@ fn print_lesson(index: usize, workspace: &Path) -> Result<()> {
             println!(
                 "     The statusline can show connection/auth/model identity, selection scope, context tokens, call cost, and connection cost."
             );
-            println!(
-                "     Customize its fields and right/below/off placement in `aishe settings`."
-            );
+            println!("     Customize its fields or turn it off in `aishe settings`.");
         }
         3 => {
             println!("\n  4. Recover from failures");

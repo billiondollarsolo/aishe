@@ -232,6 +232,7 @@ pub struct Outcome {
 }
 
 pub fn run(options: Options) -> Result<Outcome> {
+    validate_mode_options(&options).map_err(|error| classified(EXIT_INPUT, error))?;
     if options.verify_only {
         let mut config = Config::load_quiet()?
             .context("no config exists; run `aishe setup` first")
@@ -268,6 +269,16 @@ pub fn run(options: Options) -> Result<Outcome> {
         anyhow::bail!("setup needs an interactive terminal; use `aishe setup --non-interactive`");
     }
     run_interactive(options)
+}
+
+fn validate_mode_options(options: &Options) -> Result<()> {
+    if options.live && !options.verify_only && !options.non_interactive {
+        anyhow::bail!("--live requires --verify or --non-interactive");
+    }
+    if options.json && !options.verify_only && !options.non_interactive {
+        anyhow::bail!("--json requires --verify or --non-interactive");
+    }
+    Ok(())
 }
 
 fn run_non_interactive(options: Options) -> Result<Outcome> {
@@ -1351,31 +1362,25 @@ fn run_interactive(options: Options) -> Result<Outcome> {
                     MenuResult::Selected(_) => unreachable!(),
                 }
                 let positions = vec![
-                    "Right prompt — compact and persistent".into(),
-                    "Below — Codex-style secondary prompt line".into(),
+                    "Below the prompt — Codex-style status line".into(),
                     "Off — keep only per-call/exit summaries".into(),
                 ];
-                let position_default = match draft.config.aishe.status_line_position.as_str() {
-                    "below" => 1,
-                    "off" => 2,
-                    _ => 0,
-                };
+                let position_default = usize::from(!draft.config.aishe.status_line);
                 match promptui::menu(
                     "Live status-line placement",
                     &positions,
                     position_default,
                     true,
-                    "Right is best for wide terminals; Below has room for more metrics.",
+                    "The status line stays below the editable command so it never collides with input.",
                 )? {
-                    MenuResult::Selected(2) => {
+                    MenuResult::Selected(1) => {
                         draft.config.aishe.status_line = false;
                         draft.config.aishe.status_line_position = "off".into();
                         println!("  preview: (status line off)");
                     }
-                    MenuResult::Selected(position) => {
+                    MenuResult::Selected(0) => {
                         draft.config.aishe.status_line = true;
-                        draft.config.aishe.status_line_position =
-                            if position == 1 { "below" } else { "right" }.into();
+                        draft.config.aishe.status_line_position = "below".into();
                         if !choose_status_items(&mut draft)? {
                             continue;
                         }
@@ -1386,6 +1391,7 @@ fn run_interactive(options: Options) -> Result<Outcome> {
                         continue;
                     }
                     MenuResult::Cancel => return cancel(draft),
+                    MenuResult::Selected(_) => unreachable!(),
                 }
                 let audit_required = crate::policy::load()?
                     .as_ref()
@@ -2233,6 +2239,9 @@ fn validate_status_items(items: &[String]) -> Result<()> {
         "mode",
         "backend",
         "scope",
+        "branch",
+        "environment",
+        "tasks",
         "task",
         "elapsed",
         "context",
@@ -2939,6 +2948,22 @@ mod tests {
         assert!(validate_noninteractive_options(&Options {
             install_backend: true,
             runtime_base_url: Some("https://mirror.example/runtime".into()),
+            ..Options::default()
+        })
+        .is_ok());
+    }
+
+    #[test]
+    fn setup_machine_output_flags_require_a_machine_mode() {
+        assert!(validate_mode_options(&Options {
+            json: true,
+            ..Options::default()
+        })
+        .is_err());
+        assert!(validate_mode_options(&Options {
+            verify_only: true,
+            live: true,
+            json: true,
             ..Options::default()
         })
         .is_ok());

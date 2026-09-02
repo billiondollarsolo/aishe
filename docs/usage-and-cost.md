@@ -4,11 +4,10 @@ aishe meters every model call so you can see what a session costs and cap it.
 
 ## What you see
 
-The interactive shell keeps a live status display. By default it appears in the
-right prompt and shows the safe connection identity, mode, scope, active
-connection cost, and request count. You can
-place it under the prompt or turn it off, and choose its ordered fields during
-setup or in `aishe settings`.
+The interactive shell keeps a live status display below the editable command.
+It shows the safe connection identity, mode, scope, active connection cost, and
+request count. You can turn it off and choose its ordered fields during setup or
+in `aishe settings`.
 
 ```
   436 in · 119 out · 1 req · ~$0.0001
@@ -27,9 +26,8 @@ OpenAI work (openai-work) · openai@api.openai.com · OAuth work · gpt-5.6-luna
 last 1,697/374 tok · session cost ~$0.0112 · 2 reqs
 ```
 
-The display refreshes after each call. `right` preserves the compact shell-like
-layout; `below` is better for narrow terminals or detailed metrics; `off` hides
-it. `show_usage = false` disables usage output, while
+The display refreshes after each call. `off` hides it. `show_usage = false`
+disables usage output, while
 `status_line_position = "off"` hides only the live prompt line.
 
 ```toml

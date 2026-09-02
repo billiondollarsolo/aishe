@@ -619,6 +619,10 @@ fn shell_keybinding_check() -> Check {
             std::env::var("AISHE_FIX_KEY").unwrap_or_else(|_| "^X^F".into()),
         ),
         (
+            "edit-buffer",
+            std::env::var("AISHE_EDIT_KEY").unwrap_or_else(|_| "^X^A".into()),
+        ),
+        (
             "semantic-recall",
             std::env::var("AISHE_RECALL_KEY").unwrap_or_else(|_| "^X^R".into()),
         ),
@@ -630,7 +634,7 @@ fn shell_keybinding_check() -> Check {
             Status::Pass,
             Severity::Info,
             "AIShe keybindings: distinct",
-            "force-agent, mode-cycle, fix-last, and semantic-recall use distinct configured sequences",
+            "force-agent, mode-cycle, fix-last, edit-buffer, and semantic-recall use distinct configured sequences",
         )
     } else {
         Check::new(
@@ -639,7 +643,7 @@ fn shell_keybinding_check() -> Check {
             Severity::Warning,
             "AIShe keybindings: configured conflict",
             format!(
-                "{}; rebind AISHE_NL_KEY, AISHE_MODE_KEY, AISHE_FIX_KEY, or AISHE_RECALL_KEY",
+                "{}; rebind AISHE_NL_KEY, AISHE_MODE_KEY, AISHE_FIX_KEY, AISHE_EDIT_KEY, or AISHE_RECALL_KEY",
                 collisions.join("; ")
             ),
         )

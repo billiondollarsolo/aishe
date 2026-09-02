@@ -40,8 +40,12 @@ binary. Linux uses the fully-static musl build, so there are no glibc
 requirements:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/billiondollarsolo/aishe/main/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/billiondollarsolo/aishe/main/install.sh | sh -s -- --setup
 ```
+
+This opens guided setup after installation; setup handles API-key or subscription
+OAuth sign-in. Omit `-s -- --setup` for an upgrade or a binary/runtime-only
+install.
 
 Checksum verification is mandatory for both artifacts. If the runtime cannot be
 downloaded, extracted, version-checked, or live-verified, an existing AIShe
@@ -60,17 +64,29 @@ offers a consent-gated install and functional self-test. For scripted
 provisioning, `AISHE_INSTALL_SYSTEM_DEPS=1` explicitly authorizes supported
 system dependency installation.
 
-Pass `--setup` to start guided setup after installation:
-
-```sh
-curl -fsSL https://raw.githubusercontent.com/billiondollarsolo/aishe/main/install.sh | sh -s -- --setup
-```
-
 An update replaces the binary and, when required, adds a new verified runtime
 version. It inventories the existing config and data locations before and after
 activation. Configuration, credentials, history, durable sessions/tasks, tool
 journals, audit logs, undo journals, and trust data are never used as installer
 scratch and remain untouched.
+
+An existing release can also update itself without piping a second installer:
+
+```sh
+aishe update check
+aishe update apply       # shows version/path and asks before activation
+aishe update rollback    # restores the one previous verified binary
+```
+
+The updater accepts only HTTPS release downloads (loopback HTTP exists for
+tests), bounds both responses, verifies the release SHA-256, rejects archives
+that contain anything except one `aishe` regular file, checks the platform
+binary format, runs `aishe --version`, and activates with an atomic rename in
+the installed binary's directory. Use `--yes` only after a noninteractive job
+has independently reviewed the printed version and path. Profile portability is
+separate: `aishe profile export PATH` excludes credentials, while
+`aishe profile import PATH` preserves the private credential stores and backs
+up the current config.
 
 It installs to `/usr/local/bin` when writable, otherwise `~/.local/bin`. Override
 with environment variables:
@@ -116,8 +132,8 @@ Fedora / RHEL / openSUSE:
 ```sh
 version=X.Y.Z
 arch=x86_64  # or aarch64
-curl -fsSL -O "https://github.com/billiondollarsolo/aishe/releases/latest/download/aishe-${version}.${arch}.rpm"
-sudo dnf install "./aishe-${version}.${arch}.rpm"
+curl -fsSL -O "https://github.com/billiondollarsolo/aishe/releases/latest/download/aishe-${version}-1.${arch}.rpm"
+sudo dnf install "./aishe-${version}-1.${arch}.rpm"
 ```
 
 (Substitute the release version for `X.Y.Z`.)
@@ -155,9 +171,9 @@ tar -xzf "aishe-$target.tar.gz"
 sudo install -m 0755 aishe /usr/local/bin/aishe
 ```
 
-A [Homebrew formula](../packaging/aishe.rb) is provided (point a tap at it, or
-`brew install --formula ./packaging/aishe.rb` once the release shas are filled
-in). It also installs shell completions.
+The repository contains a [Homebrew formula template](../packaging/aishe.rb) for
+maintainers. It is not a supported install path until published in a tap with
+release checksums.
 
 ## Shell completions
 
@@ -288,6 +304,9 @@ table and the `AISHE_CONFIG_DIR` / `AISHE_DATA_DIR` overrides.
   continuation data; support bundles never include task contents.
 - `capabilities/` caches endpoint/model feature checks.
 - `setup-draft.json` exists only while a resumable setup is in progress.
+- `background-tasks/`, `repo-index/`, `failures/`, and `updates/` contain the
+  bounded daily-driver task, retrieval, recovery, and rollback stores described
+  in [Daily-driver agent workflows](daily-driver.md).
 
 Next: [Getting started](getting-started.md).
 For runtime lifecycle and security details, see

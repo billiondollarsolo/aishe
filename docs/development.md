@@ -28,7 +28,7 @@ python3 tests/shell_contract.py target/debug/aishe
     feature suites write Markdown reports under `test-results/`.
   - `tests/setup_pty.py`, `tests/statusline_pty.py`, and
     `tests/model_picker_pty.py`, and `tests/durable_task_resume.py`: real-PTY setup/settings transactions,
-    right/below/off live status, and kill/resume without duplicate tool
+    below/off live status, and kill/resume without duplicate tool
     execution. The model picker suite covers two concurrent shells, filtering,
     shell-local selection, save-default, cancellation, rollback, and plain
     no-emoji output.

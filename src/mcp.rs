@@ -132,7 +132,7 @@ impl StdioTransport {
             .stdout(Stdio::piped())
             .stderr(Stdio::null());
         for (k, v) in &cfg.env {
-            cmd.env(k, v);
+            cmd.env(k, resolve_secret_reference(v)?);
         }
         let mut child = cmd.spawn().map_err(|e| format!("spawn `{command}`: {e}"))?;
         let stdin = child.stdin.take().ok_or("no stdin")?;
@@ -221,7 +221,11 @@ impl HttpTransport {
         Ok(HttpTransport {
             agent,
             url: url.to_string(),
-            headers: cfg.headers.clone(),
+            headers: cfg
+                .headers
+                .iter()
+                .map(|(name, value)| Ok((name.clone(), resolve_secret_reference(value)?)))
+                .collect::<Result<_, String>>()?,
             session_id: None,
             next_id: 1,
         })
@@ -304,6 +308,25 @@ impl HttpTransport {
             Err(format!("{method}: {}", http_response_error(response)))
         }
     }
+}
+
+/// CLI-managed MCP definitions store only `env:VARIABLE` references. Legacy
+/// literal values remain readable for compatibility, but are never produced by
+/// the management commands or printed by the runtime.
+fn resolve_secret_reference(value: &str) -> Result<String, String> {
+    let Some(name) = value.strip_prefix("env:") else {
+        return Ok(value.to_string());
+    };
+    if name.is_empty()
+        || !name.bytes().enumerate().all(|(index, byte)| {
+            byte == b'_'
+                || byte.is_ascii_alphanumeric() && (index > 0 || byte.is_ascii_alphabetic())
+        })
+    {
+        return Err("invalid MCP environment reference".into());
+    }
+    std::env::var(name)
+        .map_err(|_| format!("required MCP environment variable {name} is unavailable"))
 }
 
 /// The per-server transport. Both variants present the same request/notify API to

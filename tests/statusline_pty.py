@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Real-zsh PTY tests for right/below/off live statusline placement."""
+"""Real-zsh PTY tests for the below-input/off live statusline."""
 
 import fcntl
 import os
@@ -158,10 +158,13 @@ def environment(position):
             "AISHE_FAKE_USAGE": "123,45",
         }
     )
+    if position == "off":
+        env["AISHE_UNICODE"] = "ascii"
     return home, env, model
 
 
-def run_case(position, cols):
+def run_case(position, cols, expected_position=None):
+    expected_position = expected_position or position
     home, env, model = environment(position)
     shell = Pty(env, cols)
     try:
@@ -171,15 +174,29 @@ def run_case(position, cols):
         if position == "off":
             if model in shell.transcript:
                 raise AssertionError("off statusline rendered the model")
+            if "▄▄▄" in shell.transcript or "AI Shell" not in shell.transcript:
+                raise AssertionError("ASCII mode rendered a font-dependent logo")
+            if not re.search(r"\x1b\[[^\n]*m>{1,2}\x1b", shell.transcript):
+                raise AssertionError("ASCII mode did not render an ASCII prompt glyph")
         elif model not in shell.transcript or "auto" not in shell.transcript:
             raise AssertionError(
                 "%s statusline did not render identity:\n%s"
                 % (position, shell.transcript[-2500:])
             )
+        elif not re.search(
+            r"[❯»*] [^\n]*\n[^\n]*" + re.escape(model),
+            CSI.sub("", shell.transcript),
+        ):
+            raise AssertionError(
+                "%s statusline was not below the editable prompt:\n%s"
+                % (position, shell.transcript[-2500:])
+            )
 
         shell.send("print -r -- POSITION=$AISHE_STATUS_POSITION")
-        if not shell.expect("POSITION=" + position):
-            raise AssertionError("%s placement was not passed to zsh" % position)
+        if not shell.expect("POSITION=" + expected_position):
+            raise AssertionError(
+                "%s resolved to the wrong placement" % position
+            )
         submitted = "? print the status test marker"
         submitted_start = len(shell.transcript)
         shell.send(submitted)
@@ -250,10 +267,9 @@ def main():
         return
     if not os.path.exists(BINARY):
         raise SystemExit("FAIL: binary not found: " + BINARY)
-    # A detailed right prompt intentionally follows native zsh behavior and is
-    # hidden when it would collide with the input prompt, so exercise it wide.
-    # The below/off cases cover narrow-terminal behavior.
-    run_case("right", 180)
+    # Existing `right` configs migrate at load time; every enabled statusline is
+    # rendered below the editable command line.
+    run_case("right", 180, "below")
     run_case("below", 60)
     run_case("off", 42)
     prompt_substitution_is_inert()

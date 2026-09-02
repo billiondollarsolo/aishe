@@ -12,7 +12,7 @@ use std::io::IsTerminal;
 use std::process::ExitCode;
 use std::sync::Arc;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use clap::Parser;
 
 use aishe::commands::CommandRegistry;
@@ -49,6 +49,17 @@ fn run() -> Result<u8> {
 
     if matches!(args.cmd, Some(Cmd::BackendSupervisor)) {
         return aishe::backend::supervisor::run_supervisor();
+    }
+    if let Some(command) = args.record_failure.as_deref() {
+        return aishe::failure::record_from_env(command);
+    }
+    if let Some(Cmd::Last { cmd }) = &args.cmd {
+        match cmd {
+            LastCmd::Show { json } => return aishe::failure::show(*json),
+            LastCmd::Retry { execute } => return aishe::failure::retry(*execute),
+            LastCmd::Clear => return aishe::failure::clear(),
+            LastCmd::Explain | LastCmd::Fix => {}
+        }
     }
 
     // Route inspection is deliberately resolved before config, policy,
@@ -201,6 +212,13 @@ fn run() -> Result<u8> {
 
     if let Some(Cmd::Backend { cmd }) = &args.cmd {
         return aishe::cli::backend::command(&backend_action(cmd));
+    }
+    if let Some(Cmd::Update { cmd }) = &args.cmd {
+        return match cmd {
+            UpdateCmd::Check { json } => aishe::lifecycle::update_check(*json),
+            UpdateCmd::Apply { yes } => aishe::lifecycle::update_apply(*yes),
+            UpdateCmd::Rollback { yes } => aishe::lifecycle::update_rollback(*yes),
+        };
     }
 
     // `completions <shell>` prints a completion script and exits.
@@ -363,9 +381,58 @@ fn run() -> Result<u8> {
         args.connection.as_deref(),
         args.model.as_deref(),
     )?;
+    let request_role = if args.edit_line.is_some()
+        || args.suggest_line.is_some()
+        || args.auto_line.is_some()
+        || args.fix_line.is_some()
+        || matches!(
+            args.cmd,
+            Some(Cmd::Suggest { .. }) | Some(Cmd::Last { cmd: LastCmd::Fix })
+        ) {
+        Some("compose")
+    } else if matches!(
+        args.cmd,
+        Some(Cmd::Ask { .. })
+            | Some(Cmd::Last {
+                cmd: LastCmd::Explain
+            })
+    ) {
+        Some("answer")
+    } else if args.yolo_line.is_some() || args.background_task.is_some() {
+        Some("build")
+    } else {
+        None
+    };
+    let active_role = aishe::roles::apply(
+        &mut config,
+        request_role,
+        args.connection.is_some(),
+        args.model.is_some(),
+    )?;
+    if let Some(role) = active_role {
+        std::env::set_var("AISHE_ROLE", role);
+    }
     // Administrator policy is the final, read-only constraint layer. It can
     // reduce authority or reject a provider/model, never inject credentials.
     aishe::policy::constrain(&mut config)?;
+    let background_request = if let Some(id) = args.background_task.as_deref() {
+        let (objective, budget) = aishe::background::request(id)?;
+        config.aishe.max_yolo_iterations = config
+            .aishe
+            .max_yolo_iterations
+            .min(budget.max_provider_turns);
+        if budget.max_cost_usd > 0.0 {
+            config.aishe.budget_usd = if config.aishe.budget_usd > 0.0 {
+                config.aishe.budget_usd.min(budget.max_cost_usd)
+            } else {
+                budget.max_cost_usd
+            };
+        }
+        aishe::background::arm_deadline(budget.max_minutes);
+        Some((id.to_string(), objective))
+    } else {
+        None
+    };
     aishe::ui::configure(&config.ui);
     if args.accept_yolo {
         aishe::cli::history::init_audit(&config);
@@ -405,15 +472,34 @@ fn run() -> Result<u8> {
             }
             return Ok(0);
         }
-        Some(Cmd::Mcp) => {
-            aishe::cli::runtime::print_mcp_listing(&aishe::mcp::McpRegistry::connect(
-                &config.mcp_servers,
-            ));
-            return Ok(0);
+        Some(Cmd::Mcp { cmd }) => {
+            return match cmd {
+                None => {
+                    aishe::cli::runtime::print_mcp_listing(&aishe::mcp::McpRegistry::connect(
+                        &config.mcp_servers,
+                    ));
+                    Ok(0)
+                }
+                Some(McpCmd::List { json }) => aishe::mcp_config::list(&config, *json),
+                Some(McpCmd::Show { name, json }) => aishe::mcp_config::show(&config, name, *json),
+                Some(McpCmd::Add { name, input }) => {
+                    aishe::mcp_config::put(name, mcp_input(input), false, false)
+                }
+                Some(McpCmd::Edit { name, input }) => {
+                    aishe::mcp_config::put(name, mcp_input(input), true, true)
+                }
+                Some(McpCmd::Remove { name }) => aishe::mcp_config::remove(name),
+                Some(McpCmd::Enable { name }) => aishe::mcp_config::enable(name, true),
+                Some(McpCmd::Disable { name }) => aishe::mcp_config::enable(name, false),
+                Some(McpCmd::Test { name, json }) => aishe::mcp_config::test(&config, name, *json),
+            };
         }
         Some(Cmd::Commands { topic }) => {
             aishe::cli::runtime::print_help_command(topic.as_deref());
             return Ok(0);
+        }
+        Some(Cmd::Palette { query, json }) => {
+            return aishe::palette::command(&config, query.as_deref(), *json);
         }
         Some(Cmd::Status { json }) => return Ok(aishe::cli::status::command(&config, *json)),
         Some(Cmd::Hints { cmd }) => {
@@ -438,6 +524,52 @@ fn run() -> Result<u8> {
             }
             aishe::cli::runtime::warn_untrusted_skills(&skills);
             return Ok(0);
+        }
+        Some(Cmd::Task { cmd }) => {
+            return aishe::background::command(&config, background_task_action(cmd));
+        }
+        Some(Cmd::Role { cmd }) => {
+            return match cmd {
+                RoleCmd::List { json } => aishe::roles::list(&config, *json),
+                RoleCmd::Set {
+                    name,
+                    connection,
+                    model,
+                    reasoning,
+                } => aishe::roles::set(
+                    name,
+                    aishe::roles::RoleConfig {
+                        connection: connection.clone(),
+                        model: model.clone(),
+                        reasoning: reasoning.clone(),
+                    },
+                ),
+                RoleCmd::Remove { name } => aishe::roles::remove(name),
+            };
+        }
+        Some(Cmd::Index {
+            rebuild,
+            status,
+            query,
+            limit,
+            json,
+        }) => {
+            let cwd = std::env::current_dir()?;
+            let action = if *status {
+                aishe::repo_index::Action::Status { json: *json }
+            } else if let Some(query) = query {
+                aishe::repo_index::Action::Search {
+                    query,
+                    limit: *limit,
+                    json: *json,
+                }
+            } else {
+                aishe::repo_index::Action::Build {
+                    rebuild: *rebuild,
+                    json: *json,
+                }
+            };
+            return aishe::repo_index::command(&cwd, action);
         }
         Some(Cmd::Mode { value }) => {
             return Ok(aishe::cli::connection::set_or_show(
@@ -539,8 +671,20 @@ fn run() -> Result<u8> {
                 *json,
             ));
         }
-        Some(Cmd::Profile { value }) => {
-            return Ok(aishe::cli::settings::profile(&config, value.as_deref()));
+        Some(Cmd::Profile { action, path, yes }) => {
+            return match action.as_deref() {
+                Some("export") => aishe::lifecycle::profile_export(
+                    path.as_deref().context("profile export requires PATH")?,
+                ),
+                Some("import") => aishe::lifecycle::profile_import(
+                    path.as_deref().context("profile import requires PATH")?,
+                    *yes,
+                ),
+                _ if path.is_some() || *yes => {
+                    anyhow::bail!("profile PATH/--yes are valid only with export or import")
+                }
+                _ => Ok(aishe::cli::settings::profile(&config, action.as_deref())),
+            };
         }
         Some(Cmd::Readiness { json }) => {
             let report = aishe::profiles::readiness(&config);
@@ -620,6 +764,9 @@ fn run() -> Result<u8> {
         && args.yolo_line.is_none()
         && args.auto_line.is_none()
         && args.fix_line.is_none()
+        && args.edit_line.is_none()
+        && args.background_task.is_none()
+        && args.record_failure.is_none()
         && !args.accept_yolo
         && std::io::stdin().is_terminal();
     if interactive_entry {
@@ -637,8 +784,11 @@ fn run() -> Result<u8> {
         || args.yolo_line.is_some()
         || args.auto_line.is_some()
         || args.fix_line.is_some()
+        || args.edit_line.is_some()
+        || args.background_task.is_some()
+        || args.record_failure.is_some()
         || args.accept_yolo
-        || matches!(args.cmd, Some(Cmd::Suggest { .. }));
+        || matches!(args.cmd, Some(Cmd::Suggest { .. } | Cmd::Ask { .. }));
 
     // The interactive shell is the zsh-PTY front-end: it drives the user's real
     // zsh, with the AI injected via a command_not_found hook, so zsh is required.
@@ -704,6 +854,21 @@ fn run() -> Result<u8> {
     // MCP servers (extra yolo tools). Empty/instant unless `[mcp_servers]` is set.
     let mcp = aishe::mcp::McpRegistry::connect(&config.mcp_servers);
 
+    if let Some((id, objective)) = background_request {
+        let result = aishe::cli::runtime::one_shot(
+            &format!("? {objective}"),
+            &mut executor,
+            &mut provider,
+            &config,
+            &cache,
+            &commands,
+            &skills,
+            &mcp,
+        );
+        aishe::background::finish(&id, &result);
+        return result;
+    }
+
     // Public scripting interface: `aishe suggest "<nl>" [--json]`.
     if let Some(Cmd::Suggest { query, json }) = &args.cmd {
         let q = query.join(" ");
@@ -714,6 +879,59 @@ fn run() -> Result<u8> {
             provider.as_deref(),
             &config,
         )?;
+        aishe::cli::status::record_session_usage(provider.as_deref(), &config);
+        return Ok(code);
+    }
+    if let Some(Cmd::Ask {
+        query,
+        json,
+        schema,
+        insert,
+    }) = &args.cmd
+    {
+        let code = if *insert {
+            aishe::cli::runtime::ask_insert(
+                &query.join(" "),
+                &mut executor,
+                provider.as_deref(),
+                &config,
+            )?
+        } else {
+            aishe::cli::runtime::ask_command(
+                &query.join(" "),
+                *json,
+                schema.as_deref(),
+                &executor,
+                provider.as_deref(),
+                &config,
+            )?
+        };
+        aishe::cli::status::record_session_usage(provider.as_deref(), &config);
+        return Ok(code);
+    }
+    if let Some(Cmd::Last { cmd }) = &args.cmd {
+        let capsule = aishe::failure::current()?;
+        let code = match cmd {
+            LastCmd::Explain => aishe::cli::runtime::ask_command(
+                &format!(
+                    "Explain why this shell command failed with exit status {} and suggest safe next steps. Do not execute anything.\nCommand: {}",
+                    capsule.exit_status, capsule.command
+                ),
+                false,
+                None,
+                &executor,
+                provider.as_deref(),
+                &config,
+            )?,
+            LastCmd::Fix => aishe::cli::runtime::fix_command(
+                &capsule.command,
+                &capsule.exit_status.to_string(),
+                &mut executor,
+                provider.as_deref(),
+                &config,
+            )?,
+            _ => unreachable!("handled before config load"),
+        };
         aishe::cli::status::record_session_usage(provider.as_deref(), &config);
         return Ok(code);
     }
@@ -749,6 +967,12 @@ fn run() -> Result<u8> {
     if let Some(cmd) = args.fix_line {
         let code =
             aishe::cli::runtime::fix_line(&cmd, &mut executor, provider.as_deref(), &config)?;
+        aishe::cli::status::record_session_usage(provider.as_deref(), &config);
+        return Ok(code);
+    }
+    if let Some(line) = args.edit_line {
+        let code =
+            aishe::cli::runtime::edit_line(&line, &mut executor, provider.as_deref(), &config)?;
         aishe::cli::status::record_session_usage(provider.as_deref(), &config);
         return Ok(code);
     }

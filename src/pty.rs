@@ -96,6 +96,13 @@ fn run_zsh_inner(config: &Config, history_log: &std::path::Path, shell_id: Strin
     cmd.env("AISHE_REAL_ZDOTDIR", &real_zdotdir);
     cmd.env("AISHE_SHELL_ID", &shell_id);
     cmd.env("AISHE_MODE", &config.aishe.mode);
+    cmd.env(
+        "AISHE_UNICODE",
+        match crate::ui::TerminalCapabilities::detect_stdout().unicode {
+            crate::ui::UnicodePolicy::Unicode => "unicode",
+            crate::ui::UnicodePolicy::Ascii => "ascii",
+        },
+    );
     cmd.env("AISHE_SCOPE", &config.backend.default_scope);
     cmd.env("AISHE_BACKEND", &config.backend.engine);
     cmd.env("AISHE_AGENT_OUTPUT", &config.backend.output);
@@ -198,12 +205,21 @@ fn run_zsh_inner(config: &Config, history_log: &std::path::Path, shell_id: Strin
     cmd.env(
         "AISHE_STATUS_POSITION",
         if config.aishe.status_line {
-            config.aishe.status_line_position.as_str()
+            "below"
         } else {
             "off"
         },
     );
     cmd.env("AISHE_STATUS_ITEMS", status_items.join(","));
+    let identity = crate::environment::inspect(
+        config,
+        &std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")),
+    );
+    cmd.env("AISHE_ENVIRONMENT", identity.marker());
+    cmd.env(
+        "AISHE_PROTECTED_PATTERNS",
+        config.sandbox.protected_environment_patterns.join(":"),
+    );
     let oauth_plan = config.active_connection().and_then(|connection| {
         let crate::config::ConnectionAuth::OAuth { profile } = &connection.auth else {
             return None;

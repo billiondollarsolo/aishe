@@ -26,6 +26,10 @@ pub struct Config {
     /// migrated without losing information.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub connections: BTreeMap<String, ConnectionConfig>,
+    /// Optional workload-specific overrides; absent fields retain the active
+    /// connection/model/reasoning selection.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub roles: BTreeMap<String, crate::roles::RoleConfig>,
     #[serde(default)]
     pub logging: LoggingConfig,
     /// Terminal presentation and accessibility preferences. Environment
@@ -159,6 +163,10 @@ pub struct SandboxConfig {
     /// Administrators can disable the explicit host-yolo scope.
     #[serde(default = "default_true")]
     pub allow_host_yolo: bool,
+    /// Case-insensitive token/glob patterns that mark host, branch, Kubernetes,
+    /// or cloud identifiers as protected (for example `prod` or `production-*`).
+    #[serde(default = "default_protected_environment_patterns")]
+    pub protected_environment_patterns: Vec<String>,
 }
 
 impl Default for LoggingConfig {
@@ -368,10 +376,10 @@ pub struct AisheConfig {
     /// Print a dim per-session token/cost line after each model interaction.
     #[serde(default = "default_true")]
     pub show_usage: bool,
-    /// Show a live right-prompt status line in the zsh PTY front end.
+    /// Show a live status line below the zsh editing buffer.
     #[serde(default = "default_true")]
     pub status_line: bool,
-    /// Placement of the live shell status: `right`, `below`, or `off`.
+    /// Status placement. `right` remains a legacy input alias for `below`.
     #[serde(default = "default_status_line_position")]
     pub status_line_position: String,
     /// Ordered fields rendered in the status line, including the active safe
@@ -692,15 +700,22 @@ fn default_hook_timeout_secs() -> u32 {
 }
 fn default_status_line_items() -> Vec<String> {
     vec![
-        "identity".to_string(),
+        "connection".to_string(),
+        "model".to_string(),
         "mode".to_string(),
         "scope".to_string(),
+        "branch".to_string(),
+        "environment".to_string(),
         "session_cost".to_string(),
         "requests".to_string(),
+        "tasks".to_string(),
     ]
 }
+fn default_protected_environment_patterns() -> Vec<String> {
+    vec!["prod".to_string(), "production".to_string()]
+}
 fn default_status_line_position() -> String {
-    "right".to_string()
+    "below".to_string()
 }
 fn default_transport() -> String {
     "auto".to_string()
@@ -839,6 +854,7 @@ impl Default for SandboxConfig {
             require_functional: false,
             workspace_roots: Vec::new(),
             allow_host_yolo: true,
+            protected_environment_patterns: default_protected_environment_patterns(),
         }
     }
 }
@@ -858,6 +874,7 @@ impl Default for Config {
             aishe: AisheConfig::default(),
             providers,
             connections,
+            roles: std::collections::BTreeMap::new(),
             logging: LoggingConfig::default(),
             ui: UiConfig::default(),
             backend: BackendConfig::default(),
@@ -1080,6 +1097,9 @@ impl Config {
             .with_context(|| format!("reading config at {}", path.display()))?;
         match toml::from_str::<Config>(&text) {
             Ok(mut cfg) => {
+                if cfg.aishe.status_line_position == "right" {
+                    cfg.aishe.status_line_position = "below".into();
+                }
                 let source_version = source_schema_version(&text)?;
                 if source_version > CONFIG_SCHEMA_VERSION {
                     anyhow::bail!(

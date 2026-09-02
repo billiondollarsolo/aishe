@@ -62,6 +62,210 @@ fn long_help_mentions_connection_vs_model_and_aishe_brand() {
 }
 
 #[test]
+fn repository_index_is_incremental_searchable_and_machine_readable() {
+    let root = temp_root("repo-index");
+    let config = temp_config_home();
+    let data = root.join("data");
+    std::fs::create_dir_all(root.join("src")).unwrap();
+    std::fs::write(
+        root.join("src/auth.rs"),
+        "fn validate_token(token: &str) { assert!(!token.is_empty()); }\n",
+    )
+    .unwrap();
+    std::fs::write(root.join("ignored.bin"), [0, 1, 2]).unwrap();
+    for args in [
+        &["init", "-q"][..],
+        &["config", "user.email", "aishe@example.invalid"],
+        &["config", "user.name", "AIShe Test"],
+        &["add", "."],
+        &["commit", "-qm", "base"],
+    ] {
+        assert!(std::process::Command::new("git")
+            .args(args)
+            .current_dir(&root)
+            .status()
+            .unwrap()
+            .success());
+    }
+    let run = |args: &[&str]| {
+        let mut command = Command::cargo_bin("aishe").unwrap();
+        command
+            .current_dir(&root)
+            .env("AISHE_CONFIG_DIR", &config)
+            .env("AISHE_DATA_DIR", &data)
+            .args(args);
+        command
+    };
+    let built = run(&["index", "--json"]).output().unwrap();
+    assert!(
+        built.status.success(),
+        "{}",
+        String::from_utf8_lossy(&built.stderr)
+    );
+    let value: serde_json::Value = serde_json::from_slice(&built.stdout).unwrap();
+    assert_eq!(value["schema_version"], 1);
+    assert_eq!(value["index"]["files"], 1);
+    assert_eq!(value["changed_files"], 1);
+
+    let unchanged = run(&["index", "--json"]).output().unwrap();
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&unchanged.stdout).unwrap()["changed_files"],
+        0
+    );
+    run(&["index", "--query", "validate token", "--json"])
+        .assert()
+        .success()
+        .stdout(contains("src/auth.rs").and(contains("validate_token")));
+    run(&["index", "--status", "--json"])
+        .assert()
+        .success()
+        .stdout(contains("\"schema_version\": 1"));
+    std::fs::remove_dir_all(root).ok();
+    std::fs::remove_dir_all(config).ok();
+}
+
+#[test]
+fn failure_capsule_is_private_redacted_and_never_retries_effectful_commands() {
+    let root = temp_root("failure-capsule");
+    let data = root.join("data");
+    let marker = root.join("must-not-exist");
+    let shell = "shell-test-12345678";
+    let command_text = "touch must-not-exist";
+    let run = |args: &[&str]| {
+        let mut command = Command::cargo_bin("aishe").unwrap();
+        command
+            .current_dir(&root)
+            .env("AISHE_DATA_DIR", &data)
+            .env("AISHE_SHELL_ID", shell)
+            .args(args);
+        command
+    };
+    run(&["--record-failure", command_text])
+        .env("AISHE_LAST_EXIT", "1")
+        .env("AISHE_LAST_DURATION_MS", "42")
+        .assert()
+        .success();
+    let shown = run(&["last", "show", "--json"]).output().unwrap();
+    assert!(shown.status.success());
+    let capsule: serde_json::Value = serde_json::from_slice(&shown.stdout).unwrap();
+    assert_eq!(capsule["schema_version"], 1);
+    assert_eq!(capsule["duration_ms"], 42);
+    run(&["last", "retry", "--execute"])
+        .assert()
+        .code(20)
+        .stdout(contains("touch"));
+    assert!(!marker.exists());
+    let stored = std::fs::read_dir(data.join("aishe/failures"))
+        .unwrap()
+        .next()
+        .unwrap()
+        .unwrap()
+        .path();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        assert_eq!(
+            std::fs::metadata(stored).unwrap().permissions().mode() & 0o077,
+            0
+        );
+    }
+    run(&["last", "clear"]).assert().success();
+    run(&["last", "show"]).assert().failure();
+    std::fs::remove_dir_all(root).ok();
+}
+
+#[test]
+fn roles_mcp_and_profile_management_are_secret_reference_safe() {
+    let config = temp_config_home();
+    let data = config.join("data");
+    let profile = config.join("portable.toml");
+    let run = |args: &[&str]| {
+        let mut command = Command::cargo_bin("aishe").unwrap();
+        command
+            .env("AISHE_CONFIG_DIR", &config)
+            .env("AISHE_DATA_DIR", &data)
+            .args(args);
+        command
+    };
+    run(&[
+        "role",
+        "set",
+        "compose",
+        "--model",
+        "fast-compose-model",
+        "--reasoning",
+        "low",
+    ])
+    .assert()
+    .success();
+    run(&["role", "list", "--json"])
+        .assert()
+        .success()
+        .stdout(contains("fast-compose-model"));
+    run(&[
+        "mcp",
+        "add",
+        "local",
+        "--command",
+        "mcp-test-server",
+        "--arg",
+        "-y",
+        "--arg",
+        "serve",
+        "--env",
+        "ACCESS_TOKEN=SAFE_SOURCE_NAME",
+    ])
+    .assert()
+    .success();
+    run(&["mcp", "show", "local", "--json"])
+        .assert()
+        .success()
+        .stdout(contains("env:SAFE_SOURCE_NAME"));
+    run(&["mcp", "disable", "local"]).assert().success();
+    run(&["profile", "export", profile.to_str().unwrap()])
+        .assert()
+        .success();
+    let exported = std::fs::read_to_string(&profile).unwrap();
+    assert!(exported.contains("fast-compose-model"));
+    assert!(exported.contains("env:SAFE_SOURCE_NAME"));
+    assert!(!exported.contains("sk-"));
+    run(&["profile", "import", profile.to_str().unwrap(), "--yes"])
+        .assert()
+        .success()
+        .stdout(contains("credentials: preserved separately"));
+    run(&["mcp", "remove", "local"]).assert().success();
+    run(&["role", "remove", "compose"]).assert().success();
+    std::fs::remove_dir_all(config).ok();
+}
+
+#[test]
+fn setup_rejects_conflicting_or_ignored_options() {
+    for (args, message) in [
+        (
+            &["setup", "--resume", "--restart"][..],
+            "cannot be used with",
+        ),
+        (
+            &["setup", "--service", "openai"][..],
+            "required arguments were not provided",
+        ),
+    ] {
+        Command::cargo_bin("aishe")
+            .unwrap()
+            .args(args)
+            .assert()
+            .failure()
+            .stderr(contains(message));
+    }
+    Command::cargo_bin("aishe")
+        .unwrap()
+        .args(["setup", "--json"])
+        .assert()
+        .failure()
+        .stdout(contains("--json requires --verify or --non-interactive"));
+}
+
+#[test]
 fn oauth_commands_are_discoverable_and_status_never_exposes_tokens() {
     Command::cargo_bin("aishe")
         .unwrap()
@@ -461,6 +665,191 @@ fn suggest_subcommand_scripting_contract() {
                 .and(contains("\"code\":\"cli.missing_request\""))
                 .and(contains("\u{1b}[").not()),
         );
+}
+
+#[test]
+fn ask_supports_plain_json_and_schema_validated_output() {
+    let home = temp_config_home();
+    let data = temp_root("ask-data");
+    let base = || {
+        let mut command = Command::cargo_bin("aishe").unwrap();
+        command
+            .env("XDG_CONFIG_HOME", &home)
+            .env("XDG_DATA_HOME", &data)
+            .env("AISHE_CONFIG_DIR", &home)
+            .env("AISHE_DATA_DIR", &data)
+            .env("ANTHROPIC_API_KEY", "sk-test");
+        command
+    };
+    base()
+        .env("AISHE_FAKE_LLM", "plain answer")
+        .args(["ask", "what", "changed?"])
+        .assert()
+        .success()
+        .stdout("plain answer\n");
+    base()
+        .env("AISHE_FAKE_LLM", "plain answer")
+        .args(["ask", "--json", "what", "changed?"])
+        .assert()
+        .success()
+        .stdout(contains("\"schema_version\":1").and(contains("\"answer\":\"plain answer\"")));
+
+    let schema = data.join("answer.schema.json");
+    std::fs::write(
+        &schema,
+        r#"{"type":"object","additionalProperties":false,"properties":{"ok":{"type":"boolean"}},"required":["ok"]}"#,
+    )
+    .unwrap();
+    base()
+        .env("AISHE_FAKE_LLM", r#"{"ok":true}"#)
+        .arg("ask")
+        .arg("--schema")
+        .arg(&schema)
+        .arg("report")
+        .assert()
+        .success()
+        .stdout(contains("\"result\":{\"ok\":true}"));
+    base()
+        .env("AISHE_FAKE_LLM", r#"{"wrong":true}"#)
+        .arg("ask")
+        .arg("--schema")
+        .arg(&schema)
+        .arg("report")
+        .assert()
+        .failure()
+        .stdout("")
+        .stderr(contains("missing required property"));
+}
+
+#[test]
+fn ask_insert_uses_private_shell_handoff_and_never_executes() {
+    let home = temp_config_home();
+    let data = temp_root("ask-insert-data");
+    let pending = data.join("pending");
+    let marker = data.join("must-not-exist");
+    Command::cargo_bin("aishe")
+        .unwrap()
+        .current_dir(&data)
+        .env("XDG_CONFIG_HOME", &home)
+        .env("XDG_DATA_HOME", &data)
+        .env("AISHE_CONFIG_DIR", &home)
+        .env("AISHE_DATA_DIR", &data)
+        .env("AISHE_PENDING_FILE", &pending)
+        .env("ANTHROPIC_API_KEY", "sk-test")
+        .env(
+            "AISHE_FAKE_LLM",
+            r#"{"type":"command","command":"touch must-not-exist","explanation":"test"}"#,
+        )
+        .args(["ask", "--insert", "make", "a", "marker"])
+        .assert()
+        .success()
+        .stdout("");
+    assert_eq!(
+        std::fs::read_to_string(&pending).unwrap(),
+        "fill\ntouch must-not-exist\n"
+    );
+    assert!(!marker.exists());
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        assert_eq!(
+            std::fs::metadata(&pending).unwrap().permissions().mode() & 0o077,
+            0
+        );
+    }
+    std::fs::remove_dir_all(home).ok();
+    std::fs::remove_dir_all(data).ok();
+}
+
+#[test]
+fn background_task_isolates_reviews_applies_and_discards() {
+    let home = temp_config_home();
+    let data = temp_root("background-data");
+    let repo = temp_root("background-repo");
+    let git = |args: &[&str]| {
+        let status = std::process::Command::new("git")
+            .args(args)
+            .current_dir(&repo)
+            .status()
+            .unwrap();
+        assert!(status.success(), "git command failed: {args:?}");
+    };
+    git(&["init", "-q"]);
+    git(&["config", "user.email", "aishe@example.test"]);
+    git(&["config", "user.name", "AIShe Test"]);
+    std::fs::write(repo.join("tracked.txt"), "original\n").unwrap();
+    git(&["add", "tracked.txt"]);
+    git(&["commit", "-qm", "base"]);
+
+    let base = || {
+        let mut command = Command::cargo_bin("aishe").unwrap();
+        command
+            .current_dir(&repo)
+            .env("XDG_CONFIG_HOME", &home)
+            .env("XDG_DATA_HOME", &data)
+            .env("AISHE_CONFIG_DIR", &home)
+            .env("AISHE_DATA_DIR", &data)
+            .env("ANTHROPIC_API_KEY", "sk-test")
+            .env("AISHE_FAKE_LLM", "task complete")
+            .env("AISHE_FAKE_TOOL", "printf 'changed\\n' > tracked.txt");
+        command
+    };
+    let output = base()
+        .args(["task", "start", "update", "the", "tracked", "file"])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    let id = stdout
+        .lines()
+        .find_map(|line| line.strip_prefix("started task "))
+        .expect("task id")
+        .to_string();
+
+    let mut state = String::new();
+    for _ in 0..100 {
+        let shown = base()
+            .env_remove("AISHE_FAKE_TOOL")
+            .args(["task", "show", &id, "--json"])
+            .output()
+            .unwrap();
+        assert!(shown.status.success());
+        state = String::from_utf8(shown.stdout).unwrap();
+        if state.contains("\"state\": \"completed\"") {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    assert!(state.contains("\"state\": \"completed\""), "{state}");
+    assert_eq!(
+        std::fs::read_to_string(repo.join("tracked.txt")).unwrap(),
+        "original\n"
+    );
+
+    base()
+        .env_remove("AISHE_FAKE_TOOL")
+        .args(["task", "review", &id])
+        .assert()
+        .success()
+        .stdout(contains("+changed"));
+    base()
+        .env_remove("AISHE_FAKE_TOOL")
+        .args(["task", "apply", &id])
+        .assert()
+        .success();
+    assert_eq!(
+        std::fs::read_to_string(repo.join("tracked.txt")).unwrap(),
+        "changed\n"
+    );
+    base()
+        .env_remove("AISHE_FAKE_TOOL")
+        .args(["task", "discard", &id])
+        .assert()
+        .success();
 }
 
 #[test]

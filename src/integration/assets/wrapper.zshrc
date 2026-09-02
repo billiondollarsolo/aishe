@@ -25,7 +25,12 @@ fi
 # __AISHE_TEMPLATE_ZSH_HOOK__
 # __AISHE_TEMPLATE_PTY_PROMPT__
 if [[ -z "${AISHE_COMMAND_HINT_SHOWN:-}" ]]; then
-  print -r -- '__AISHE_TEMPLATE_ASCII_LOGO__'
+  if [[ "${AISHE_UNICODE:-unicode}" == ascii ]]; then
+    print -r -- 'AIShe
+AI Shell'
+  else
+    print -r -- '__AISHE_TEMPLATE_ASCII_LOGO__'
+  fi
   print -P "%F{244}aishe: /help · /connection · /model · Shift-Tab mode · Ctrl-O details · ask \"how do I…\"%f"
   export AISHE_COMMAND_HINT_SHOWN=1
 fi

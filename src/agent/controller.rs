@@ -42,6 +42,10 @@ impl TurnOptions {
         if scope == ExecutionScope::Host && !config.sandbox.allow_host_yolo && mode == Mode::Yolo {
             anyhow::bail!("organization configuration disables yolo host scope");
         }
+        if scope == ExecutionScope::Host && mode == Mode::Yolo {
+            let cwd = std::env::current_dir().context("resolving protected environment")?;
+            crate::environment::confirm_protected_host(config, &cwd)?;
+        }
         let network = if scope == ExecutionScope::Host {
             NetworkPolicy::Allow
         } else {

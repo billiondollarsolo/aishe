@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::agent::{BackendSession, ExecutionScope, Mode, NetworkPolicy};
 
-const STORE_SCHEMA_VERSION: u32 = 2;
+const STORE_SCHEMA_VERSION: u32 = 3;
 const AUTHORITY_CONTEXT_REVISION: u32 = 1;
 const MAX_RECORDS: usize = 10_000;
 
@@ -34,6 +34,12 @@ pub struct SessionMapping {
     pub connection_id: String,
     #[serde(default)]
     pub model_id: String,
+    #[serde(default)]
+    pub repository_id: Option<PathBuf>,
+    #[serde(default)]
+    pub branch: Option<String>,
+    #[serde(default)]
+    pub head: Option<String>,
     pub mode: Mode,
     pub scope: ExecutionScope,
     #[serde(default = "default_network_policy")]
@@ -134,6 +140,7 @@ impl SessionStore {
     ) -> Result<Option<SessionMapping>> {
         validate_shell_id(shell_id)?;
         let workspace = Self::resolve_workspace(workspace)?;
+        let repo = repository_identity(&workspace);
         self.with_index(false, |index| {
             Ok(index
                 .records
@@ -144,6 +151,7 @@ impl SessionStore {
                         && record.backend == "opencode"
                         && record.connection_id == connection_id
                         && record.model_id == model_id
+                        && same_conversation_branch(record, &repo)
                 })
                 .cloned())
         })
@@ -158,6 +166,7 @@ impl SessionStore {
         validate_shell_id(shell_id)?;
         validate_backend_id(&session.id)?;
         let workspace = Self::resolve_workspace(&session.workspace)?;
+        let repo = repository_identity(&workspace);
         self.with_index(true, |index| {
             let now = unix_millis();
             if let Some(record) = index.records.iter_mut().find(|record| {
@@ -166,10 +175,14 @@ impl SessionStore {
                     && record.backend == "opencode"
                     && record.connection_id == binding.connection_id
                     && record.model_id == binding.model_id
+                    && same_conversation_branch(record, &repo)
             }) {
                 record.backend_session_id.clone_from(&session.id);
                 record.connection_id = binding.connection_id.to_string();
                 record.model_id = binding.model_id.to_string();
+                record.repository_id = repo.repository.clone();
+                record.branch = repo.branch.clone();
+                record.head = repo.head.clone();
                 record.mode = binding.mode;
                 record.scope = binding.scope;
                 record.network = binding.network;
@@ -189,6 +202,9 @@ impl SessionStore {
                 backend_session_id: session.id.clone(),
                 connection_id: binding.connection_id.to_string(),
                 model_id: binding.model_id.to_string(),
+                repository_id: repo.repository,
+                branch: repo.branch,
+                head: repo.head,
                 mode: binding.mode,
                 scope: binding.scope,
                 network: binding.network,
@@ -229,6 +245,7 @@ impl SessionStore {
     ) -> Result<Option<SessionMapping>> {
         validate_shell_id(shell_id)?;
         let workspace = Self::resolve_workspace(workspace)?;
+        let repo = repository_identity(&workspace);
         self.with_index(true, |index| {
             let position = index.records.iter().position(|record| {
                 record.aishe_shell_id == shell_id
@@ -236,6 +253,7 @@ impl SessionStore {
                     && record.backend == "opencode"
                     && record.connection_id == connection_id
                     && record.model_id == model_id
+                    && same_conversation_branch(record, &repo)
             });
             Ok(position.map(|position| index.records.remove(position)))
         })
@@ -305,7 +323,7 @@ impl SessionStore {
                 records: Vec::new(),
             }
         };
-        if index.schema_version == 1 {
+        if matches!(index.schema_version, 1 | 2) {
             index.schema_version = STORE_SCHEMA_VERSION;
             for record in &mut index.records {
                 record.schema_version = STORE_SCHEMA_VERSION;
@@ -327,6 +345,54 @@ impl SessionStore {
         }
         FileExt::unlock(&lock).context("unlocking session mappings")?;
         Ok(result)
+    }
+}
+
+#[derive(Default)]
+struct RepositoryIdentity {
+    repository: Option<PathBuf>,
+    branch: Option<String>,
+    head: Option<String>,
+}
+
+fn repository_identity(workspace: &Path) -> RepositoryIdentity {
+    let git = |args: &[&str]| {
+        let output = std::process::Command::new("git")
+            .args(args)
+            .current_dir(workspace)
+            .output()
+            .ok()?;
+        output
+            .status
+            .success()
+            .then(|| String::from_utf8_lossy(&output.stdout).trim().to_string())
+            .filter(|value| !value.is_empty())
+    };
+    let repository = git(&["rev-parse", "--git-common-dir"]).and_then(|value| {
+        let path = PathBuf::from(value);
+        let path = if path.is_absolute() {
+            path
+        } else {
+            workspace.join(path)
+        };
+        path.canonicalize().ok()
+    });
+    RepositoryIdentity {
+        repository,
+        branch: git(&["symbolic-ref", "--short", "-q", "HEAD"]),
+        head: git(&["rev-parse", "HEAD"]),
+    }
+}
+
+fn same_conversation_branch(record: &SessionMapping, current: &RepositoryIdentity) -> bool {
+    if record.repository_id != current.repository {
+        return false;
+    }
+    match (&record.branch, &current.branch) {
+        (Some(old), Some(new)) => old == new,
+        (None, None) if current.repository.is_some() => record.head == current.head,
+        (None, None) => true,
+        _ => false,
     }
 }
 
@@ -584,6 +650,72 @@ mod tests {
                 .unwrap()
                 .backend_session_id,
             "ses_personal"
+        );
+        fs::remove_dir_all(&store.root).unwrap();
+    }
+
+    #[test]
+    fn schema_two_migrates_and_branch_switches_keep_separate_sessions() {
+        let store = temp_store("branch-migration");
+        let workspace = store.root.join("workspace");
+        fs::create_dir_all(&workspace).unwrap();
+        let git = |args: &[&str]| {
+            assert!(std::process::Command::new("git")
+                .args(args)
+                .current_dir(&workspace)
+                .status()
+                .unwrap()
+                .success());
+        };
+        git(&["init", "-q", "-b", "main"]);
+        git(&["config", "user.email", "aishe@example.invalid"]);
+        git(&["config", "user.name", "AIShe Test"]);
+        fs::write(workspace.join("tracked"), "base\n").unwrap();
+        git(&["add", "tracked"]);
+        git(&["commit", "-qm", "base"]);
+
+        let bind = |id: &str| {
+            store
+                .bind(
+                    "0123456789abcdef",
+                    &BackendSession {
+                        id: id.into(),
+                        workspace: workspace.clone(),
+                        backend: "opencode".into(),
+                    },
+                    SessionBinding::new(
+                        "openai-work",
+                        "gpt-test",
+                        Mode::Auto,
+                        ExecutionScope::Workspace,
+                        NetworkPolicy::Deny,
+                    ),
+                )
+                .unwrap();
+        };
+        bind("ses_main");
+
+        let path = store.root.join("mappings.json");
+        let legacy = fs::read_to_string(&path)
+            .unwrap()
+            .replace("\"schema_version\": 3", "\"schema_version\": 2");
+        fs::write(&path, legacy).unwrap();
+        assert_eq!(store.records(None).unwrap().len(), 1);
+
+        git(&["switch", "-qc", "feature"]);
+        assert!(store
+            .find("0123456789abcdef", &workspace, "openai-work", "gpt-test")
+            .unwrap()
+            .is_none());
+        bind("ses_feature");
+        git(&["switch", "-q", "main"]);
+        assert_eq!(
+            store
+                .find("0123456789abcdef", &workspace, "openai-work", "gpt-test")
+                .unwrap()
+                .unwrap()
+                .backend_session_id,
+            "ses_main"
         );
         fs::remove_dir_all(&store.root).unwrap();
     }

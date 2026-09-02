@@ -37,25 +37,15 @@ AI-driven systems shell — not a chatbot parked next to a terminal.
 ## Get productive in 60 seconds
 
 ```sh
-# 1. Install (Linux/macOS; downloads the right prebuilt binary + verifies it)
-curl -fsSL https://raw.githubusercontent.com/billiondollarsolo/aishe/main/install.sh | sh
+# 1. Install + guided setup (includes API-key or subscription OAuth sign-in)
+curl -fsSL https://raw.githubusercontent.com/billiondollarsolo/aishe/main/install.sh | sh -s -- --setup
 
-# 2. Authenticate — API key or subscription OAuth
-aishe auth set anthropic                   # hidden API-key prompt
-aishe auth login openai --profile work     # ChatGPT / Codex OAuth
-# aishe auth login xai --profile work      # SuperGrok OAuth
-
-# 3. Configure, validate, optional guided tour
-aishe setup
-aishe doctor --probe
-aishe tour
-
-# 4. Use it — no shell hook required
+# 2. Use it — no shell hook required
 aishe                                      # real zsh with aishe active
 aishe -c "turn the logs directory into a tarball"
 aishe suggest --json "list files by size" | jq -r .command
 
-# 5. (Optional) make every new terminal AI-aware
+# 3. (Optional) make every new terminal AI-aware
 echo 'eval "$(aishe init zsh)"' >> ~/.zshrc   # or: aishe init bash
 ```
 
@@ -116,8 +106,17 @@ Full routing, Option/Alt+Return, and Mac terminal Meta settings:
   or **Ctrl-X Ctrl-R**). Works fully offline with Ollama embeddings.
 - **Fix the last command.** **Ctrl-X Ctrl-F** asks the model for a correction
   after a failure.
+- **Edit without leaving the prompt.** **Ctrl-X Ctrl-A** improves the current
+  buffer and **Ctrl-X Space** opens a generated command palette; both fill the
+  line for review and never press Enter for you.
+- **Isolated background agents.** `aishe task start '…'` runs long work in a
+  detached git worktree with finite time/tool/network/change budgets, durable
+  state, cancellation/resume, numbered hunk review, and three-way apply.
+- **Explicit context and automation.** Agent-only `@file`, `@dir`, `@diff`, and
+  `@clipboard` attachments are bounded; `aishe index` searches tracked code
+  locally; `aishe ask --json|--schema` produces validated machine output.
 - **Cost-aware.** Per-call and session metering, optional hard budget, status
-  line (right or below prompt). OAuth status prefers a `plan` marker over fake
+  line below the editable command. OAuth status prefers a `plan` marker over fake
   dollar spend when prices are subscription-based.
 - **Durable AI tasks.** Checkpointed agent sessions; `aishe sessions` /
   `aishe resume` recover interrupted work without blind re-execution.
@@ -144,11 +143,11 @@ host scope only when the task truly needs unrestricted system access.
 
 ## Install
 
-**One line on Linux or macOS** (binary + exact managed agent runtime; ensures
-`zsh` is present when needed):
+**One line on Linux or macOS** (binary, exact managed agent runtime, and guided
+setup; ensures `zsh` is present when needed):
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/billiondollarsolo/aishe/main/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/billiondollarsolo/aishe/main/install.sh | sh -s -- --setup
 ```
 
 <details>
@@ -157,15 +156,13 @@ curl -fsSL https://raw.githubusercontent.com/billiondollarsolo/aishe/main/instal
 ```sh
 cargo binstall aishe                       # prebuilt binary via cargo-binstall
 sudo apt install ./aishe_<ver>_amd64.deb   # Debian/Ubuntu (.deb from the release)
-sudo dnf install ./aishe-<ver>.x86_64.rpm  # Fedora/RHEL  (.rpm from the release)
-brew install --formula ./packaging/aishe.rb
+sudo dnf install ./aishe-<ver>-1.x86_64.rpm # Fedora/RHEL (.rpm from the release)
 cargo install --path .                     # from a checkout (needs Rust 1.88+)
 ```
 
 Every tagged release attaches per-platform tarballs (`aishe-<target>.tar.gz` +
 `.sha256`) for Linux x86_64/arm64 (gnu and static musl) and macOS arm64/x86_64,
-plus `.deb`/`.rpm` packages and the Homebrew formula in
-[`packaging/`](packaging/aishe.rb). Full guide: [docs/installation.md](docs/installation.md).
+plus `.deb`/`.rpm` packages. Full guide: [docs/installation.md](docs/installation.md).
 </details>
 
 **Requirements:** `zsh` on `PATH` for the interactive shell (installer can add
@@ -177,10 +174,7 @@ separate OpenCode install required.
 ## Quickstart
 
 ```sh
-aishe auth set anthropic                    # API key; hidden and saved privately
-# or: aishe auth login openai --profile work   # Codex OAuth
-# or: aishe auth login xai --profile work      # Grok OAuth
-aishe setup                                 # guided, resumable configuration
+aishe setup                                 # guided setup includes authentication
 aishe                                       # launch real zsh with aishe active
 ```
 
@@ -257,12 +251,14 @@ aishe doctor           diagnostics (--probe / --live / --json / --fix / --bundle
 aishe backend ...      managed OpenCode install/verify/repair/rollback/logs
 aishe model [NAME]     shell-local model on active (or --connection) account
 aishe models           list models for a connection
-aishe mode|scope|network|output|reasoning|status|config|mcp|…
-aishe sessions|resume|reset|undo|log|usage|history|runbook|…
+aishe mode|scope|network|output|reasoning|status|config|mcp|role|…
+aishe task|last|index|palette|ask|sessions|resume|reset|undo|usage|update|…
 ```
 
 `aishe --help` and `man aishe` list the full surface. Complete reference:
 **[docs/commands.md](docs/commands.md)**.
+Daily-driver examples and safety boundaries:
+**[docs/daily-driver.md](docs/daily-driver.md)**.
 
 ### In-shell slash commands
 

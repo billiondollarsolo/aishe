@@ -19,6 +19,8 @@ live in the [root README](../README.md).
 - [Getting started](getting-started.md) — guided setup, first requests, and
   [forcing natural language (`?`)](getting-started.md#6-force-a-route-when-needed)
   when a line starts with a real binary (`install`, `find`, …)
+- [Daily-driver agent workflows](daily-driver.md) — buffer AI, attachments,
+  isolated background tasks, failure recovery, roles, MCP, updates, and status
 - [Commands and slash-commands](commands.md) — CLI surface, `/help`, `/connection` vs `/model`
 - [Route overrides](route-prefixes.md) — canonical `?`, one-line shell `!`, and the deprecated `#` alias
 - [Providers](providers.md) — Anthropic, OpenAI/Codex, xAI/Grok, Groq, Ollama, OAuth
@@ -48,6 +50,7 @@ live in the [root README](../README.md).
   `aishe doctor`, …)
 - [Development](development.md) — building, testing, and the validation harness
 - [Release readiness and rollback](release-readiness.md) — required evidence, holds, state compatibility, and failed-rollout response
+- [Daily-driver agentic shell plan](design/DAILY_DRIVER_AGENTIC_SHELL_PLAN.md) — implementation contract for buffer AI, background agents, isolation, context, trust, and lifecycle
 - [v0.7.0 release record](releases/v0.7.0.md) — complete change summary, migration notes, qualification evidence, and accepted alpha risks
 - [Legacy compatibility lifecycle](legacy-compatibility.md) — removed front-end tombstones, migration windows, and retained native/task fields
 - [Active product plan](design/NEXT_PRODUCT_UX_RELIABILITY_PLAN.md) — v0.7.0 implementation evidence and post-qualification work queue

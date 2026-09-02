@@ -45,6 +45,10 @@ Inside them:
 - Tool idempotency/usage journal: `<data>/backend/journal/tool-calls.json`
 - Provider capability cache: `<data>/capabilities/*.json`
 - Resumable setup draft: `<data>/setup-draft.json`
+- Background agent tasks/worktrees: `<data>/background-tasks/`
+- Tracked repository indexes: `<data>/repo-index/`
+- Per-shell failure capsules: `<data>/failures/`
+- Binary rollback slot: `<data>/updates/previous-aishe`
 
 **Run `aishe doctor` to see the paths actually resolved on your machine** — it
 prints the config and history locations rather than leaving you to guess.
@@ -87,8 +91,8 @@ brevity. Read `~/.config/aishe/...` as `<config>/...` and
 | `context_exclude` | array | `[]` | Optional context section IDs to omit. Manage with `aishe context`. |
 | `show_usage` | bool | `true` | Record and display model-call usage in the interactive session. |
 | `status_line` | bool | `true` | Enable the branded prompt's live status display. |
-| `status_line_position` | string | `right` | Status placement: `right`, `below`, or `off`. |
-| `status_line_items` | array | `["identity","mode","scope","session_cost","requests"]` | Ordered fields. `identity` is the compact safe connection/provider/endpoint/auth/model/reasoning/default disclosure. Individual identity fields and `backend`, `task`, `elapsed`, `context`, `last_tokens`, `last_cost`, and `session_tokens` are also available. |
+| `status_line_position` | string | `below` | Status placement: `below` or `off`; legacy `right` values load as `below`. |
+| `status_line_items` | array | `["connection","model","mode","scope","branch","environment","session_cost","requests","tasks"]` | Ordered fields. `identity` is the compact safe connection/provider/endpoint/auth/model/reasoning/default disclosure. Individual identity fields plus `backend`, `branch`, `environment`, `task`, `tasks`, `elapsed`, `context`, token/cost, requests, network, sandbox, and plan are available. |
 | `budget_usd` | float | `0.0` | Stop calling the model past this session cost. `0` = unlimited. |
 | `memory` | bool | `true` | Remember recent natural-language turns so follow-ups have context. Clear at the aishe prompt with `reset`. |
 | `cache` | bool | `true` | Cache identical native suggest-mode responses briefly so repeats are instant and free. Configure through `aishe settings` or this file. |
@@ -160,6 +164,7 @@ linux_backend = "bwrap"
 require_functional = false
 workspace_roots = []
 allow_host_yolo = true
+protected_environment_patterns = ["prod", "production"]
 ```
 
 | Field | Type | Default | Meaning |
@@ -168,9 +173,29 @@ allow_host_yolo = true
 | `require_functional` | bool | `false` | Fail setup/use instead of degrading when bubblewrap cannot pass its namespace self-test. |
 | `workspace_roots` | array | `[]` | Additional canonical roots permitted in workspace scope. |
 | `allow_host_yolo` | bool | `true` | Whether a user may explicitly accept host-wide yolo scope. Organization policy can only narrow this. |
+| `protected_environment_patterns` | array | `["prod","production"]` | Case-insensitive token/glob matches against hostname, branch, Kubernetes context, and common cloud profile. Protected host-scope yolo requires fresh typed confirmation and fails closed noninteractively. |
 
 On macOS, `linux_backend` cannot create an OS sandbox; Setup and Doctor report
 policy-only behavior.
+
+## `[roles.<name>]` sections (optional)
+
+Workload roles (`compose`, `answer`, `build`, `review`, and `embed`) may override
+an existing connection, model, or reasoning effort. Unspecified fields retain
+the active selection; explicit CLI connection/model flags win.
+
+```toml
+[roles.compose]
+model = "fast-model"
+reasoning = "low"
+
+[roles.build]
+connection = "openai-work"
+model = "deep-model"
+reasoning = "high"
+```
+
+Manage them with `aishe role list|set|remove`.
 
 ## `[named_dirs]` section (optional)
 

@@ -1,5 +1,7 @@
 //! Configuration, context, trust, profile, pricing, and undo commands.
 
+use std::io::IsTerminal;
+
 use anyhow::{Context, Result};
 
 use crate::config::Config;
@@ -160,6 +162,16 @@ pub fn context(
     let mut executor = Executor::new()?;
     executor.set_history_log(crate::cli::history::history_paths(&effective).1);
     context::init(executor.shell());
+    if !explain
+        && request.is_none()
+        && !json_output
+        && excludes.is_empty()
+        && includes.is_empty()
+        && std::io::stdin().is_terminal()
+        && std::io::stdout().is_terminal()
+    {
+        return context_cockpit(effective, &executor);
+    }
     if !explain && request.is_none() && !json_output && excludes.is_empty() && includes.is_empty() {
         print!("{}", context::build(&executor, &effective));
         return Ok(0);
@@ -208,6 +220,62 @@ pub fn context(
         );
     }
     Ok(0)
+}
+
+fn context_cockpit(mut config: Config, executor: &Executor) -> Result<u8> {
+    loop {
+        let report = context::preview(executor, &config, None);
+        println!(
+            "context · ~{} tokens · {} redaction{}",
+            report.total_estimated_tokens,
+            report.total_redactions,
+            if report.total_redactions == 1 {
+                ""
+            } else {
+                "s"
+            }
+        );
+        let optional = report
+            .sections
+            .iter()
+            .filter(|section| !section.required)
+            .collect::<Vec<_>>();
+        let mut options = optional
+            .iter()
+            .map(|section| {
+                format!(
+                    "{} {} · ~{} tok · {}",
+                    if section.included { "[on] " } else { "[off]" },
+                    section.id,
+                    section.estimated_tokens,
+                    section.source
+                )
+            })
+            .collect::<Vec<_>>();
+        options.push("Done".into());
+        let crate::promptui::PickerResult::Use(index) =
+            crate::promptui::filter_picker("Context cockpit", &options, options.len() - 1)?
+        else {
+            return Ok(0);
+        };
+        if index >= optional.len() {
+            return Ok(0);
+        }
+        let section = optional[index].id.as_str();
+        if config
+            .aishe
+            .context_exclude
+            .iter()
+            .any(|item| item == section)
+        {
+            config.aishe.context_exclude.retain(|item| item != section);
+        } else {
+            config.aishe.context_exclude.push(section.into());
+        }
+        let mut persisted = Config::load_quiet()?.context("no config exists; run `aishe setup`")?;
+        persisted.aishe.context_exclude = config.aishe.context_exclude.clone();
+        persisted.save()?;
+    }
 }
 
 pub fn profile(effective: &Config, value: Option<&str>) -> u8 {

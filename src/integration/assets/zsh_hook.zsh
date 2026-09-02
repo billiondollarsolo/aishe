@@ -196,12 +196,27 @@ aishe-nl-widget() {
 # can ask the model to correct a command that just failed. _aishe_capture_exit is
 # moved to the FRONT of precmd_functions (below) so it sees $? before a prompt
 # theme resets it; _aishe_capture_cmd records the command via preexec.
-_aishe_capture_exit() { AISHE_LAST_EXIT=$?; }
+_aishe_capture_exit() {
+  AISHE_LAST_EXIT=$?
+  if [[ "$AISHE_LAST_EXIT" != 0 && "$AISHE_LAST_EXIT" != 130 && -n "$AISHE_LAST_CMD" ]]; then
+    local elapsed=""
+    if [[ -n "${_AISHE_COMMAND_STARTED:-}" && -n "${EPOCHREALTIME:-}" ]]; then
+      elapsed=$(( (EPOCHREALTIME - _AISHE_COMMAND_STARTED) * 1000 ))
+      elapsed=${elapsed%.*}
+    fi
+    AISHE_LAST_DURATION_MS="$elapsed" command aishe --record-failure "$AISHE_LAST_CMD" >/dev/null 2>&1
+    typeset -g _AISHE_FAILURE_ACTIVE=1
+  elif [[ "${_AISHE_FAILURE_ACTIVE:-0}" == 1 ]]; then
+    command aishe last clear >/dev/null 2>&1
+    typeset -g _AISHE_FAILURE_ACTIVE=""
+  fi
+}
 _aishe_capture_cmd() {
   # Any preexec proves the user accepted the staged buffer (possibly edited),
   # so a real failure should retain the ordinary recovery hint.
   typeset -g _AISHE_STAGED_SUGGESTION=""
   AISHE_LAST_CMD="$1"
+  typeset -g _AISHE_COMMAND_STARTED="${EPOCHREALTIME:-}"
   # Persist each interactive command to aishe's timestamped history log (zsh
   # EXTENDED_HISTORY format) so `aishe history` and semantic search have data;
   # the PTY's commands run in real zsh, not through aishe's executor. Newlines
@@ -229,15 +244,52 @@ aishe-fix-command() {
   fi
   zle -M "aishe: asking for a fix…"
   local fix
-  # --fix-line builds the correction prompt (and, with fix_capture_stderr, re-runs
-  # a read-only failed command to capture its real error output). Pass the exit
-  # status through the environment.
-  fix="$(AISHE_LAST_EXIT="$AISHE_LAST_EXIT" command aishe --fix-line "$AISHE_LAST_CMD" 2>/dev/null)"
+  # Prefer the durable capsule. If it was unavailable (for example a transient
+  # state-write failure), retain the established in-memory hook fallback.
+  if ! fix="$(command aishe last fix 2>/dev/null)"; then
+    fix="$(AISHE_LAST_EXIT="$AISHE_LAST_EXIT" command aishe --fix-line "$AISHE_LAST_CMD" 2>/dev/null)"
+  fi
   if [[ -n "$fix" ]]; then
     BUFFER="$fix"
     CURSOR=${#BUFFER}
   else
     zle -M "aishe: no fix available"
+  fi
+}
+
+# Current-buffer copilot (default Ctrl-X Ctrl-A; override AISHE_EDIT_KEY).
+# Rewrites the current command in place for review and never executes it.
+aishe-edit-command() {
+  emulate -L zsh
+  if [[ -z "$BUFFER" ]]; then
+    zle -M "aishe: type a command to improve"
+    return
+  fi
+  local original="$BUFFER" edited
+  zle -M "aishe: improving command…"
+  edited="$(command aishe --edit-line "$original" 2> /dev/tty)"
+  if [[ -n "$edited" ]]; then
+    BUFFER="$edited"
+    CURSOR=${#BUFFER}
+  else
+    BUFFER="$original"
+    zle -M "aishe: command unchanged"
+  fi
+}
+
+# Generated command palette (default Ctrl-X Space). Selection only fills the
+# current ZLE buffer; Enter remains a separate user decision.
+aishe-command-palette() {
+  emulate -L zsh
+  local handoff="${TMPDIR:-/tmp}/aishe-palette-${AISHE_SHELL_ID}"
+  command rm -f "$handoff"
+  AISHE_PALETTE_FILE="$handoff" command aishe palette < /dev/tty > /dev/tty 2>&1
+  if [[ -r "$handoff" ]]; then
+    BUFFER="$(<"$handoff")"
+    CURSOR=${#BUFFER}
+    command rm -f "$handoff"
+  else
+    zle -M "aishe: palette cancelled"
   fi
 }
 
@@ -527,6 +579,10 @@ if [[ -o interactive ]]; then
   bindkey "${AISHE_DETAILS_KEY:-^O}" aishe-toggle-agent-details
   zle -N aishe-fix-command
   bindkey "${AISHE_FIX_KEY:-^X^F}" aishe-fix-command
+  zle -N aishe-edit-command
+  bindkey "${AISHE_EDIT_KEY:-^X^A}" aishe-edit-command
+  zle -N aishe-command-palette
+  bindkey "${AISHE_PALETTE_KEY:-^X }" aishe-command-palette
   zle -N aishe-recall
   bindkey "${AISHE_RECALL_KEY:-^X^R}" aishe-recall
   zle -N aishe-show-route

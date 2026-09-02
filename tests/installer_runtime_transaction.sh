@@ -227,4 +227,36 @@ grep -q 'installer-fixture' "$test_bin/aishe"
   exit 1
 }
 
+# The documented curl-pipe form still has a controlling terminal even though
+# the installer's stdin is the script pipe. Prove --setup reaches the binary.
+if command -v python3 >/dev/null 2>&1; then
+  : > "$backend_log"
+  HOME="$test_home" AISHE_BIN_DIR="$test_bin" \
+  AISHE_CONFIG_DIR="$config_root" AISHE_DATA_DIR="$data_root" \
+  AISHE_RELEASE_BASE_URL="file://$work/releases" \
+  AISHE_RUNTIME_FILE="$runtime_file" AISHE_SKIP_ZSH=1 \
+  AISHE_TEST_BACKEND_LOG="$backend_log" \
+  AISHE_TEST_INSTALLER="$repo_root/install.sh" AISHE_TEST_OUTPUT="$work/setup-pipe.out" \
+  python3 - <<'PY'
+import os
+import pty
+
+pid, fd = pty.fork()
+if pid == 0:
+    os.execl("/bin/sh", "sh", "-c", 'cat "$AISHE_TEST_INSTALLER" | sh -s -- --setup')
+with open(os.environ["AISHE_TEST_OUTPUT"], "wb") as output:
+    while True:
+        try:
+            chunk = os.read(fd, 8192)
+        except OSError:
+            break
+        if not chunk:
+            break
+        output.write(chunk)
+_, status = os.waitpid(pid, 0)
+raise SystemExit(os.waitstatus_to_exitcode(status))
+PY
+  grep -Fx 'setup' "$backend_log"
+fi
+
 printf 'PASS: runtime staging, live verification, extraction, activation, exact argv, and state preservation\n'

@@ -268,7 +268,10 @@ state_inventory "config after install (preserved)" "$config_state"
 state_inventory "data after install (user state preserved; runtime may be added)" "$data_state"
 case ":$PATH:" in
   *":$bindir:"*) : ;;
-  *) printf 'aishe-install: note: %s is not on your PATH\n' "$bindir" >&2 ;;
+  *)
+    note "$bindir is not on your PATH"
+    note "run: export PATH=\"$bindir:\$PATH\""
+    ;;
 esac
 
 # Best-effort man page: `aishe man` emits a roff page; install it if a standard
@@ -303,14 +306,19 @@ fi
 
 if [ "$existing" = 1 ]; then
   note "Run \`aishe doctor\` to verify the upgraded installation."
+elif [ "$RUN_SETUP" = 1 ]; then
+  note "starting guided setup"
 else
   note "Run \`aishe setup\`"
 fi
 
 if [ "$RUN_SETUP" = 1 ]; then
-  if [ -t 0 ] && [ -t 1 ]; then
-    "$bindir/aishe" setup
+  # `curl ... | sh -s -- --setup` makes stdin the script pipe even when the
+  # user is in a terminal. Read the wizard from the controlling terminal after
+  # the pipe reaches EOF.
+  if [ -t 1 ] && [ -r /dev/tty ] && [ -w /dev/tty ]; then
+    "$bindir/aishe" setup </dev/tty
   else
-    err "--setup requires interactive stdin and stdout; install completed, run 'aishe setup' in a terminal"
+    err "--setup requires a terminal; install completed, run '$bindir/aishe setup' in a terminal"
   fi
 fi

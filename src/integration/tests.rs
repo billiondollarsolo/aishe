@@ -12,6 +12,9 @@ fn zsh_script_has_handler_and_print_z() {
     assert!(s.contains("/dev/urandom"));
     assert!(s.contains("aishe-toggle-agent-details"));
     assert!(s.contains("${AISHE_DETAILS_KEY:-^O}"));
+    assert!(s.contains("${AISHE_EDIT_KEY:-^X^A}"));
+    assert!(s.contains("zle -N aishe-command-palette"));
+    assert!(s.contains("${AISHE_PALETTE_KEY:-^X }"));
     assert!(s.contains(r#"_aishe_slash_id "$BUFFER" > /dev/null"#));
     assert!(s.contains("/help|/commands"));
     assert!(s.contains("command aishe status"));
@@ -93,7 +96,7 @@ fn generated_shell_artifacts_match_the_reviewed_byte_snapshots() {
         (
             "zsh init",
             zsh_script(),
-            "34186ce48e82943c015543a73af8b95cd77946c53631b7d5daa17371ea9e581f",
+            "bc73ee0ba0d4e75d34bda29c23d13a8bf5cc1b06814cb0fff8ae83b9076a36a9",
         ),
         (
             "bash init",
@@ -108,7 +111,7 @@ fn generated_shell_artifacts_match_the_reviewed_byte_snapshots() {
         (
             "wrapper zshrc",
             wrapper_zshrc(),
-            "409228bc1186082b498c08deebd8ddab09b57a0a263cd7bf51b1297a3cc08366",
+            "811677bc08dddaa11e85b2074ee49c70233ba08ec1f76fcd040846e683c919f7",
         ),
     ] {
         assert_eq!(digest(&rendered), expected, "unexpected {name} byte drift");
@@ -293,7 +296,8 @@ fn zsh_script_has_fix_command_key() {
     let s = script("zsh").unwrap();
     // Capture the last command + exit status, with the exit capture pulled to
     // the front of precmd_functions (so a prompt theme can't reset $? first).
-    assert!(s.contains("_aishe_capture_exit() { AISHE_LAST_EXIT=$?; }"));
+    assert!(s.contains("_aishe_capture_exit()"));
+    assert!(s.contains("--record-failure"));
     assert!(s.contains("_aishe_capture_cmd()"));
     assert!(s.contains("AISHE_LAST_CMD=\"$1\""));
     // It also persists each command to the aishe history log when set.
@@ -306,8 +310,8 @@ fn zsh_script_has_fix_command_key() {
     assert!(s.contains("aishe-fix-command"));
     assert!(s.contains("zle -N aishe-fix-command"));
     assert!(s.contains("${AISHE_FIX_KEY:-^X^F}"));
-    // The fix widget delegates to the `--fix-line` hook helper.
-    assert!(s.contains("--fix-line"));
+    // The fix widget delegates to the durable capsule helper.
+    assert!(s.contains("aishe last fix"));
     // Opt-in ambient hint after a failure.
     assert!(s.contains("AISHE_AUTODIAGNOSE"));
     assert!(s.contains("AISHE_FAILURE_HINTS"));

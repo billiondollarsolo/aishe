@@ -39,6 +39,7 @@ The current authority/successor column says where to look next.
 | Document | Lifecycle | Baseline | Current authority or successor |
 | --- | --- | --- | --- |
 | [README.md](README.md) | Active | v0.6.5 | This lifecycle catalog |
+| [DAILY_DRIVER_AGENTIC_SHELL_PLAN.md](DAILY_DRIVER_AGENTIC_SHELL_PLAN.md) | Active | v0.7.0 (`f26ee09`) | Implementation contract and branch record for daily-driver agent workflows |
 | [NEXT_PRODUCT_UX_RELIABILITY_PLAN.md](NEXT_PRODUCT_UX_RELIABILITY_PLAN.md) | Active | v0.6.5 (`4a2c7e4`) | Implemented and clean deterministic candidate-qualified at `35297d0`; ONB-001 research and external release disposition remain open |
 | [NEXT_PRODUCT_UX_RELIABILITY_IMPLEMENTATION_REPORT.md](NEXT_PRODUCT_UX_RELIABILITY_IMPLEMENTATION_REPORT.md) | Validation evidence | v0.6.5 functional candidate (`35297d0`) | Story-by-story and Definition-of-Done implementation/evidence audit; candidate-specific and not a release decision |
 | [FISH_INTEGRATION_DECISION.md](FISH_INTEGRATION_DECISION.md) | Active | v0.6.5 (`4a2c7e4`) | No native Fish hook in the current milestone; Fish completions remain distinct |

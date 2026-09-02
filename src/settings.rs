@@ -678,16 +678,8 @@ fn choose_hook_timeout(config: &mut Config) -> Result<()> {
 }
 
 fn choose_status_position(config: &mut Config) -> Result<()> {
-    let choices = vec![
-        "Right prompt".into(),
-        "Below (Codex-style)".into(),
-        "Off".into(),
-    ];
-    let default = match config.aishe.status_line_position.as_str() {
-        "below" => 1,
-        "off" => 2,
-        _ => 0,
-    };
+    let choices = vec!["Below the prompt (Codex-style)".into(), "Off".into()];
+    let default = usize::from(!config.aishe.status_line);
     if let MenuResult::Selected(index) = promptui::menu(
         "Statusline placement",
         &choices,
@@ -695,8 +687,8 @@ fn choose_status_position(config: &mut Config) -> Result<()> {
         true,
         "Preview is shown after selection.",
     )? {
-        config.aishe.status_line = index != 2;
-        config.aishe.status_line_position = ["right", "below", "off"][index].into();
+        config.aishe.status_line = index == 0;
+        config.aishe.status_line_position = ["below", "off"][index].into();
         print_status_preview(config);
     }
     Ok(())
@@ -715,6 +707,9 @@ fn choose_status_items(config: &mut Config) -> Result<()> {
         "mode",
         "backend",
         "scope",
+        "branch",
+        "environment",
+        "tasks",
         "task",
         "elapsed",
         "context",

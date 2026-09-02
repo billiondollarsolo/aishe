@@ -6,6 +6,29 @@ breaking changes can land in any release.
 
 ## [Unreleased]
 
+### Added
+- Daily-driver agent workflows: current-buffer editing, a generated command
+  palette, explicit bounded attachments, durable failure recovery, structured
+  `ask`, local repository indexing, workload model roles, transactional MCP
+  management, and protected-environment identity.
+- Isolated background agent tasks with durable lifecycle controls, finite
+  resource budgets, checkpoint plans, detached git worktrees, numbered hunk
+  review, and three-way patch application.
+- Verified binary update/check/rollback plus non-secret profile export/import.
+
+### Changed
+- The live status is always rendered below the editable zsh prompt, wraps into
+  width-bounded rows on narrow terminals, includes branch/environment/task
+  state, and has a complete ASCII fallback without requiring a patched font.
+- The curl-pipe installer can launch guided setup through the controlling
+  terminal, and setup rejects options that would otherwise be silently ignored.
+
+### Security
+- Background children inherit only required runtime/configured credential
+  references; agent-spawned commands strip credential-bearing variables.
+- Branch-aware managed-session mappings prevent context reuse across branches,
+  with compatible migration from schema 1 and 2.
+
 ## [0.7.0] - 2026-08-02
 
 Full release notes, migration guidance, qualification evidence, compatibility
