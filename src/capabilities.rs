@@ -97,17 +97,10 @@ pub struct Report {
 
 impl Report {
     pub fn verified(&self) -> bool {
-        [
-            &self.credential,
-            &self.reachability,
-            &self.model_available,
-            &self.text,
-            &self.structured,
-            &self.tools,
-            &self.streaming,
-        ]
-        .iter()
-        .all(|check| check.state == State::Pass)
+        self.credential.state == State::Pass
+            && self.reachability.state != State::Fail
+            && self.model_available.state == State::Pass
+            && self.live_verified()
     }
 
     pub fn live_verified(&self) -> bool {
@@ -975,6 +968,8 @@ mod tests {
             tools: check.clone(),
             streaming: check,
         };
+        assert!(report.verified());
+        report.reachability = Check::skipped("validated by managed live requests");
         assert!(report.verified());
         report.tools = Check::fail("no", Some(ErrorKind::UnsupportedTools));
         assert!(!report.verified());

@@ -1229,6 +1229,18 @@ fn append_retention_checks(checks: &mut Vec<Check>, paths: &Paths, config: &Conf
         .filter(|value| !value.is_empty())
         .map(PathBuf::from)
         .unwrap_or_else(|| paths.data_dir.join("runtime"));
+    let config_paths = if paths.config_dir == paths.data_dir {
+        vec![
+            paths.config.clone(),
+            paths.credentials.clone(),
+            paths.config_dir.join("aishrc"),
+            paths.config_dir.join("commands"),
+            paths.config_dir.join("skills"),
+            open_code_credentials,
+        ]
+    } else {
+        vec![paths.config_dir.clone(), open_code_credentials]
+    };
 
     let audit_rotated = with_suffix(&audit_path, ".1");
     for specification in [
@@ -1276,7 +1288,7 @@ fn append_retention_checks(checks: &mut Vec<Check>, paths: &Paths, config: &Conf
         RetentionSpec {
             id: "state.size.config",
             label: "configuration and credentials",
-            paths: vec![paths.config_dir.clone(), open_code_credentials],
+            paths: config_paths,
             warn_bytes: CONFIG_WARN_BYTES,
             per_file_warn_bytes: None,
             cleanup: "aishe uninstall --config --dry-run",
@@ -1819,6 +1831,35 @@ mod tests {
         assert!(check.summary.contains("4.0 KiB"));
         assert!(check.detail.contains("aishe cleanup --dry-run"));
         std::fs::remove_file(path).ok();
+    }
+
+    #[test]
+    fn shared_macos_root_does_not_count_runtime_as_configuration() {
+        let root = std::env::temp_dir().join(format!(
+            "aishe-shared-state-root-{}-{}",
+            std::process::id(),
+            std::thread::current().name().unwrap_or("test")
+        ));
+        std::fs::remove_dir_all(&root).ok();
+        std::fs::create_dir_all(root.join("runtime")).unwrap();
+        std::fs::write(root.join("config.toml"), [0_u8; 17]).unwrap();
+        std::fs::write(root.join("runtime/blob"), [0_u8; 127]).unwrap();
+        let paths = Paths {
+            config: root.join("config.toml"),
+            credentials: root.join("credentials.toml"),
+            config_dir: root.clone(),
+            history: root.join("history.ext"),
+            capability_dir: root.join("capabilities"),
+            data_dir: root.clone(),
+        };
+        let mut checks = Vec::new();
+        append_retention_checks(&mut checks, &paths, &Config::default());
+        let config = checks
+            .iter()
+            .find(|check| check.id == "state.size.config")
+            .unwrap();
+        assert!(config.summary.contains("17 B"), "{}", config.summary);
+        std::fs::remove_dir_all(root).ok();
     }
 
     #[cfg(unix)]
