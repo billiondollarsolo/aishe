@@ -15,6 +15,10 @@ breaking changes can land in any release.
   resource budgets, checkpoint plans, detached git worktrees, numbered hunk
   review, and three-way patch application.
 - Verified binary update/check/rollback plus non-secret profile export/import.
+- A universal exact-`/` palette, unified foreground/background `aishe agent`
+  launcher, agent inbox, interactive patch review/rework, managed session
+  browser/forking, exact context inspection, evidence-bearing plans, safe demo,
+  capability evidence, and offline/paid `aishe test` modes.
 
 ### Changed
 - The live status is always rendered below the editable zsh prompt, wraps into
@@ -22,6 +26,8 @@ breaking changes can land in any release.
   state, and has a complete ASCII fallback without requiring a patched font.
 - The curl-pipe installer can launch guided setup through the controlling
   terminal, and setup rejects options that would otherwise be silently ignored.
+- The managed OpenCode compatibility pin is now 1.18.27, with refreshed
+  six-platform archive digests and real runtime/session-fork coverage.
 
 ### Security
 - Background children inherit only required runtime/configured credential

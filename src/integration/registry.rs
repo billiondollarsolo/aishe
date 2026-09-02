@@ -105,7 +105,7 @@ fn close_no_argument_guard() -> &'static str {
     "      fi\n"
 }
 
-fn render_cli_hook(spec: &crate::command_surface::CommandSpec) -> String {
+fn render_cli_hook(spec: &crate::command_surface::CommandSpec, shell: HookShell) -> String {
     let command = cli_words(spec).expect("validated CLI-backed hook command");
     let redirect = " < /dev/tty > /dev/tty 2>&1";
     match spec.arguments {
@@ -117,15 +117,21 @@ fn render_cli_hook(spec: &crate::command_surface::CommandSpec) -> String {
         ArgumentPolicy::OptionalValue(_) => format!(
             "      if [[ -n \"$_aishe_arg\" ]]; then\n        {command} \"$_aishe_arg\"{redirect}\n      else\n        {command}{redirect}\n      fi\n"
         ),
-        ArgumentPolicy::PassThrough(_) => format!(
-            "      if [[ -n \"$_aishe_arg\" ]]; then\n        {command} \"$_aishe_arg\"{redirect}\n      else\n        {command}{redirect}\n      fi\n"
-        ),
+        ArgumentPolicy::PassThrough(_) => match shell {
+            HookShell::Zsh => format!(
+                "      if [[ -n \"$_aishe_arg\" ]]; then\n        local -a _aishe_args\n        _aishe_args=(\"${{(z)_aishe_arg}}\") 2>/dev/null || {{ printf 'aishe: invalid slash-command arguments\\n' >&2; return 2; }}\n        {command} \"${{_aishe_args[@]}}\"{redirect}\n      else\n        {command}{redirect}\n      fi\n"
+            ),
+            HookShell::Bash => format!(
+                "      command aishe --hook-cli {} \"$_aishe_arg\"{redirect}\n",
+                shell_single_quote(spec.id)
+            ),
+        },
     }
 }
 
 fn render_hook_action(spec: &crate::command_surface::CommandSpec, shell: HookShell) -> String {
     match spec.hook_action() {
-        ShellHookAction::Cli => render_cli_hook(spec),
+        ShellHookAction::Cli => render_cli_hook(spec, shell),
         ShellHookAction::OneShot => format!(
             "{}        command aishe -c \"$_aishe_line\" < /dev/tty > /dev/tty 2>&1\n{}",
             no_argument_guard(),

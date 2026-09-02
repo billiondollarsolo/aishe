@@ -42,7 +42,7 @@ class RepositoryFixture:
         (self.root / "Cargo.lock").write_text("# lock\n", encoding="utf-8")
         manifest = self.root / "assets/backend/opencode/runtime-manifest.json"
         manifest.parent.mkdir(parents=True)
-        manifest.write_text('{"runtime":"opencode","version":"1.18.9"}\n', encoding="utf-8")
+        manifest.write_text('{"runtime":"opencode","version":"1.18.27"}\n', encoding="utf-8")
         (manifest.parent / "aishe-plugin.mjs").write_text("export const fixture = true;\n", encoding="utf-8")
         (self.root / "SECURITY.md").write_text(
             "Threat-model version: 2026-07-31.1\n", encoding="utf-8"
@@ -54,8 +54,8 @@ class RepositoryFixture:
             "tests/boundary_fuzz.rs": "// deterministic boundary seeds\n",
             "tests/real_model.py": "CORPUS = []\n",
             "tests/real_fuzz.py": "# fuzz\n",
-            "tests/fixtures/opencode/v1.18.9/events.jsonl": "{}\n",
-            "tests/fixtures/opencode/v1.18.9/openapi-contract.json": "{}\n",
+            "tests/fixtures/opencode/v1.18.27/events.jsonl": "{}\n",
+            "tests/fixtures/opencode/v1.18.27/openapi-contract.json": "{}\n",
         }
         for relative, contents in fixtures.items():
             path = self.root / relative
@@ -109,7 +109,7 @@ class QualificationTests(unittest.TestCase):
         self.assertTrue(all(isinstance(command, tuple) for command in runner.commands))
         self.assertEqual(report["binary"]["identity"]["commit"], "4a2c7e4")
         self.assertTrue(report["binary"]["verified_against_checkout"])
-        self.assertEqual(report["runtime"]["pinned_version"], "1.18.9")
+        self.assertEqual(report["runtime"]["pinned_version"], "1.18.27")
         self.assertEqual(report["security"]["threat_model_version"], "2026-07-31.1")
         self.assertEqual(report["security"]["safety_matcher_role"], "defense_in_depth")
         self.assertEqual(len(report["security"]["known_limitations"]), 4)

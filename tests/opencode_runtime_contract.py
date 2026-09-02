@@ -183,7 +183,7 @@ def assert_dependency_free_layout(data_home):
             .get("dependencies", {})
             .get("@opencode-ai/plugin")
         )
-        if pinned != "1.18.9":
+        if pinned != "1.18.27":
             raise AssertionError(f"offline loader pin mismatch in {lock_path}: {pinned}")
         installed = root / "node_modules" / "@opencode-ai" / "plugin"
         if installed.exists():
@@ -555,6 +555,25 @@ def assert_runtime_contract(binary, runtime_dir):
                 or managed[0].get("scope") != "host"
             ):
                 raise AssertionError(f"managed session identity mismatch: {managed[0]}")
+            source_session = managed[0].get("backend_session_id")
+            forked = run(
+                binary,
+                env,
+                workspace,
+                "session",
+                "fork",
+                source_session,
+            )
+            if "forked " not in forked.stdout or " → " not in forked.stdout:
+                raise AssertionError(f"managed session fork failed: {forked}")
+            after_fork = json.loads(
+                run(binary, env, workspace, "sessions", "--json").stdout
+            ).get("managed", [])
+            if (
+                len(after_fork) != 1
+                or after_fork[0].get("backend_session_id") == source_session
+            ):
+                raise AssertionError(f"managed session fork was not rebound: {after_fork}")
 
             rows = usage_path.read_text(encoding="utf-8").splitlines()
             parsed = [row.split("\t") for row in rows]

@@ -57,7 +57,7 @@ python3 tests/shell_contract.py target/debug/aishe
   - `tests/reboot_persistence.py`: two-phase disposable-node gate that hashes
     config/history/session state before a real reboot, then verifies the bytes,
     managed-session identity, and prior provider context after reconnect.
-  - `tests/fixtures/opencode/v1.18.9/`: frozen OpenAPI endpoint and normalized
+  - `tests/fixtures/opencode/v1.18.27/`: frozen OpenAPI endpoint and normalized
     event fixtures for the supported compatibility surface.
   - `tests/provider_unauthenticated.py`: real local HTTP endpoint proving
     loopback providers can list/validate models with no dummy API key.

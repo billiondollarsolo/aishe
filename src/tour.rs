@@ -11,7 +11,7 @@ use crate::config::Config;
 use crate::promptui::{self, MenuResult};
 
 const TOUR_SCHEMA_VERSION: u32 = 1;
-const LESSON_COUNT: usize = 7;
+const LESSON_COUNT: usize = 8;
 
 #[derive(Clone, Debug, Default)]
 pub struct Options {
@@ -212,6 +212,15 @@ fn print_lesson(index: usize, workspace: &Path) -> Result<()> {
             println!(
                 "     `aishe doctor` verifies the complete installation without exposing secrets."
             );
+        }
+        7 => {
+            println!("\n  8. Your daily agent workflow");
+            println!("     Enter `/` on an empty prompt to search every AIShe action.");
+            println!("     `/ask QUESTION` answers without tools; ordinary questions can propose commands.");
+            println!("     `/agent` chooses an objective, model role, scope, budget, and foreground/background execution.");
+            println!("     `/inbox` reviews background work; `/sessions` resumes or forks conversations.");
+            println!("     `/context --show --preview REQUEST` reveals the redacted local payload before spending.");
+            println!("     `/test` is offline; `/test --live` explicitly runs the small paid model/tool suite.");
         }
         _ => {}
     }

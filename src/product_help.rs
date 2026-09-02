@@ -30,12 +30,13 @@ pub fn render_help(topic: Option<&str>) -> String {
         }
         Some("models" | "model") => render_models(),
         Some("session" | "status" | "keys") => render_session(),
+        Some("agent" | "agents" | "task" | "tasks") => render_agent(),
         Some("config" | "setup" | "settings" | "doctor") => render_config(),
         Some("routing" | "route" | "input") => render_routing(),
         Some("migration" | "removed" | "legacy") => render_migration(),
         Some(other) => format!(
             "unknown help topic '{other}'\n\
-             topics: accounts · models · session · config · routing · migration  (or bare /help)\n"
+             topics: accounts · models · agent · session · config · routing · migration  (or bare /help)\n"
         ),
     }
 }
@@ -51,12 +52,28 @@ fn render_overview() -> String {
            Diagnose health:       aishe doctor --live\n\
            Explain input routing: /help routing\n\n\
          Keys: Shift-Tab mode · Ctrl-O details · Alt-Enter natural language\n\n\
-         Topics: /help accounts · models · session · config · routing · migration\n\
+         Topics: /help accounts · models · agent · session · config · routing · migration\n\
          Ask:   how do I add a Codex OAuth account?\n\
          CLI:   aishe --help\n\n\
          Slash commands\n",
     );
     append_terminal_commands(&mut out, None);
+    out
+}
+
+fn render_agent() -> String {
+    let mut out = String::from(
+        "Agent work\n\n\
+           /                         searchable action palette\n\
+           /agent                    guided foreground/background launcher\n\
+           /inbox                    active and reviewable background work\n\
+           /sessions                 resume, inspect, or fork conversations\n\
+           /plan · /replan           durable task checklists and evidence\n\
+           /context --show           exact redacted local model context\n\
+           /test --live              paid text/structured/tool/stream validation\n\n\
+         Related commands\n",
+    );
+    append_terminal_commands(&mut out, Some("agent"));
     out
 }
 

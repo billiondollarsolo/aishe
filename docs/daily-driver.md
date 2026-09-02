@@ -17,6 +17,13 @@ Inside `aishe` or the zsh integration:
 | Force natural language | `? request` or Alt/Option-Enter | Sends the line to the agent without executing the request as shell. |
 | Toggle agent detail | `Ctrl-O` | Changes transcript density without changing authority. |
 
+Press Enter on an exact `/` to open the same palette without remembering a key
+binding. It includes commands plus configured roles, connections, cached models,
+MCP servers, sessions, background tasks, and review-ready work. A selection is
+inserted into the editable buffer for review; it is never executed automatically.
+Quoted slash-command arguments remain data on both zsh and Bash; AIShe never
+uses shell `eval` to reinterpret them.
+
 Override the three new bindings with `AISHE_EDIT_KEY`, `AISHE_FIX_KEY`, and
 `AISHE_PALETTE_KEY`. AIShe reports conflicts in `aishe doctor`; it does not
 replace Tab, Enter, history, completion, job control, or your plugin manager.
@@ -24,6 +31,30 @@ replace Tab, Enter, history, completion, job control, or your plugin manager.
 `aishe ask --insert "request"` is the scriptable equivalent of a command
 composer when invoked from an active AIShe shell. It writes through that
 shell's private handoff and leaves Enter to the user.
+
+## Launch one capable agent
+
+Use one launcher instead of assembling role, account, scope, context, and task
+commands yourself:
+
+```sh
+aishe agent                                      # guided launcher
+aishe agent 'review this branch and run tests'   # foreground managed session
+aishe agent --background --role build \
+  --file Cargo.toml --dir src --diff \
+  --max-minutes 25 --max-turns 30 --max-cost 1.50 \
+  'finish the parser change and validate it'
+```
+
+Foreground agents use AIShe's existing managed conversation, tools, audit, and
+undo. Background agents use the isolated task controller below. `--scope
+workspace` is the default; `--scope host` requests broader policy authority but
+does not bypass policy or protected-environment confirmation. Explicit
+`--connection` and `--model` win over the selected workload role.
+
+Before real work, inspect cached evidence with `aishe capabilities`. Run `aishe
+test` for local/offline checks. Only `aishe test --live` makes the small paid
+text, structured-output, tool, and streaming probes.
 
 ## Attach exact context
 
@@ -98,7 +129,12 @@ aishe task resume TASK_ID
 aishe task plan TASK_ID 'inspect parser' 'edit parser' 'run tests'
 aishe task step TASK_ID 1 completed
 aishe task replan TASK_ID 'inspect parser' 'edit parser' 'run focused tests'
+aishe task step TASK_ID 3 completed --evidence 'cargo test: 586 passed'
 ```
+
+`aishe plan [TASK_ID]` and `aishe replan [TASK_ID]` provide the compact
+interactive equivalents. Replanning retains completion and evidence only when
+the step text is unchanged.
 
 Before keeping work, review the exact patch:
 
@@ -109,9 +145,37 @@ aishe task apply TASK_ID --hunk 2 --hunk 5
 aishe task discard TASK_ID               # validates the owned worktree first
 ```
 
+`aishe inbox` is the daily attention queue. It refreshes task state and offers
+tail, cancel, review, resume, show, or rework. `aishe inbox --json` is stable for
+scripts. The interactive review panel can apply everything, toggle selected
+hunks, send bounded rework instructions, reject/discard, or leave the isolated
+workspace untouched.
+
 Review numbers every text hunk; binary and mode-only changes remain file-level.
 An exceeded changed-file/byte budget blocks apply. Conflicts fail without
 silently resolving or deleting the isolated worktree.
+
+## Browse and fork conversations
+
+`aishe sessions` opens a workspace-aware session browser in a terminal and
+retains machine-readable listing behavior with `--json`. Resume the current or
+named conversation with `/resume` or `aishe resume ID`. Fork the current managed
+conversation with `/fork` or `aishe session fork [SESSION_ID]`; the fork keeps
+history and becomes this shell's active conversation. AIShe refuses a managed
+fork when the selected connection/model does not match the source session.
+
+## See exactly what the model sees
+
+```sh
+aishe context --explain
+aishe context --preview 'review @file:src/main.rs' --json
+aishe context --show --preview 'review @file:src/main.rs @diff'
+```
+
+`--show` uses the real request attachment expansion and prints the exact local
+context only after redaction. It does not contact the provider. The metadata
+forms show sources, include/exclude decisions, redaction counts, token estimates,
+and estimated input cost without revealing content.
 
 ## Recover from command failures
 

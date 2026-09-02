@@ -261,7 +261,7 @@ impl SessionStore {
 
     /// Serialize the narrow find/create/bind window across AIShe processes.
     ///
-    /// OpenCode 1.18.9 can reject a large cold burst of simultaneous
+    /// OpenCode 1.18.27 can reject a large cold burst of simultaneous
     /// `POST /session` requests. This separate advisory lock also prevents two
     /// hooks for the same new shell/workspace from both creating a conversation
     /// before either mapping is durable. Mapping reads/writes use their own lock,

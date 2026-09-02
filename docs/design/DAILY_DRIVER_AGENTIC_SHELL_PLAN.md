@@ -644,3 +644,279 @@ The limits above are intentional product boundaries, not silent claims of a
 stronger sandbox. Revisit them only when usage evidence justifies the added
 state or dependency. User operation and exact ceilings are documented in
 [`docs/daily-driver.md`](../daily-driver.md).
+
+## 14. Agent-native command center extension
+
+The second implementation pass closes the gap between a capable shell with AI
+features and an agent product a developer can operate all day. It does not add
+a second TUI or an orchestration framework. It makes the durable primitives
+above discoverable and composable from one keyboard-first command surface.
+
+### E21 — Universal slash palette
+
+Pressing Enter on an exact `/` opens the same fuzzy palette as `Ctrl-X Space`.
+The palette is generated from the canonical command registry, then enriched at
+runtime with configured connections, workload roles, cached models, MCP
+servers, managed sessions, background tasks, and review-ready patches.
+
+Acceptance:
+
+- `/` never reaches a provider and never executes a selected action.
+- Selection writes one safely shell-quoted invocation into the current buffer.
+- Dynamic labels escape terminal controls and unavailable capability-dependent
+  actions explain the exact validation command.
+- zsh splits slash arguments natively; Bash delegates pass-through argument
+  parsing to AIShe's bounded stdlib lexer. Neither uses `eval`, and quoted
+  multiword values survive as one argument.
+- direct CLI and machine output retain the canonical registry as their source.
+
+### E22 — Unified agent launcher
+
+`aishe agent` provides a guided launcher; supplying an objective makes it
+scriptable. One surface selects foreground/background execution, role,
+connection, model, workspace/host scope, explicit context attachments, and
+finite time/turn/cost limits. Foreground work enters the existing managed agent
+loop. Background work enters the existing isolated task controller.
+
+Acceptance:
+
+- no objective in a TTY opens a short guided flow; cancellation is clean.
+- no objective outside a TTY fails with actionable usage.
+- `--file`, `--dir`, `--diff`, and `--clipboard` compile to the established
+  attachment grammar rather than creating another context path.
+- role selection happens before explicit connection/model overrides.
+- a background child receives the resolved connection, model, role, scope, and
+  bounded task budget without inheriting unrelated credentials.
+- writable background work defaults to a detached git worktree; bypass is
+  explicit with `--no-isolation`.
+
+### E23 — Interactive patch review
+
+`aishe task review ID` becomes the human checkpoint for completed autonomous
+work. It shows objective, checkpoint states and evidence, a display-safe patch,
+then offers apply-all, selective hunks, rework, reject/discard, or leave.
+
+Acceptance:
+
+- non-TTY review remains deterministic text and never applies changes.
+- selective review can toggle several numbered hunks before confirmation.
+- apply continues through the existing three-way patch and budget checks.
+- rework appends bounded private instructions and resumes the owned workspace.
+- rejection uses the existing ownership/containment checks before cleanup.
+- an unresolved apply leaves the isolated workspace recoverable.
+
+### E24 — Session browser and forking
+
+`aishe sessions` is a picker in a TTY and a stable list in scripts. Managed
+sessions can be resumed, inspected, or forked; legacy task records remain
+visible and resumable. `/resume` and `/fork` expose the common paths directly.
+
+Acceptance:
+
+- the current repository/workspace binding is the default selection.
+- a fork calls the compatibility-pinned backend endpoint and sends an explicit
+  empty JSON body, then binds the returned session to this shell.
+- account/model mismatches fail before the backend call.
+- absent or stale session IDs produce a user-facing recovery action.
+- JSON listing behavior is unchanged by adding the interactive browser.
+
+### E25 — Exact context inspector
+
+`aishe context --show [--preview TEXT]` prints the exact redacted local context
+and expanded explicit attachments used for a request. Existing preview and JSON
+modes continue to provide section sources, inclusion decisions, token estimates,
+redaction counts, and estimated input cost without exposing content.
+
+Acceptance:
+
+- local-context and attachment secret redaction occurs before stdout; the
+  caller-supplied request remains authoritative and is terminal-escaped.
+- attachment scope, type, depth, count, and byte ceilings are identical to a
+  real request because the same expansion function is used.
+- binary files are described, not emitted.
+- metadata distinguishes required, configured, excluded, and request-attached
+  sources.
+- inspecting context does not contact a provider.
+
+### E26 — Evidence-bearing plans
+
+Plans remain part of background-task records instead of becoming a separate
+project-management store. `aishe plan`, `aishe replan`, and their slash forms
+open a compact editor. `aishe task step ID N STATE --evidence TEXT` records why
+a checkpoint is complete or blocked.
+
+Acceptance:
+
+- every edit increments the task's plan revision and uses atomic private state.
+- replan preserves completed states and evidence only for identical step text.
+- removing or changing a step cannot accidentally inherit old evidence.
+- task show, inbox, and review expose plan state and evidence.
+- provider prose alone never marks a step completed.
+
+### E27 — Background agent inbox
+
+`aishe inbox` is the attention queue: running, interrupted, failed, completed,
+and reviewable tasks are visible together. The TTY surface routes to tail,
+cancel, review, resume, show, or rework; `--json` is automation-safe.
+
+Acceptance:
+
+- process identity is refreshed before state is displayed.
+- no action is inferred from task state; the user makes the transition.
+- applying and discarding retain their existing confirmation and ownership
+  boundaries.
+- objectives and errors are redacted and terminal-safe.
+- an empty inbox explains how to start work.
+
+### E28 — First-run demo
+
+`aishe demo` reuses the safe interactive tour and adds one concise daily-agent
+lesson. It demonstrates routing and commands but makes no paid call and executes
+no generated shell command.
+
+Acceptance:
+
+- it works before provider setup.
+- narrow, ASCII, no-color, and static terminals remain readable.
+- users learn `/`, `/ask`, `/agent`, `/inbox`, `/sessions`, context inspection,
+  and the difference between offline and paid testing.
+- cancellation leaves configuration and repositories untouched.
+
+### E29 — Capability-aware operation
+
+Capability evidence is cached per active connection/model and presented through
+`aishe capabilities`. Agent launch entries visibly distinguish metadata-only
+support from end-to-end verification. The source of truth remains the existing
+capability probe and cache.
+
+Acceptance:
+
+- text, structured output, tools, and streaming are reported separately.
+- switching connection or model cannot reuse another identity's evidence.
+- absent evidence is shown as unknown, never silently upgraded to supported.
+- the palette blocks capability-dependent launch entries until live validation;
+  direct commands still produce their normal precise runtime error.
+
+### E30 — One-command installation and model test
+
+`aishe test` validates configuration parsing, redaction posture, below-prompt
+status configuration, sandbox policy, terminal glyph mode, and cached/provider
+metadata without spending money. `aishe test --live` deliberately performs the
+minimum paid text, structured-output, tool-call, and streaming probes through
+the selected account and model.
+
+Acceptance:
+
+- offline is the default and labels its evidence limits.
+- live mode is explicit in help, output, and documentation.
+- `--json` emits one schema-versioned document and diagnostics stay off stdout.
+- failures return nonzero and identify the failed capability.
+- provider secrets never appear in output, argv, logs, or the capability cache.
+
+## 15. Command and state flow
+
+```text
+exact / or Ctrl-X Space
+        |
+        v
+canonical registry + local contextual entries
+        |
+        v
+safe invocation staged in shell buffer (never auto-run)
+
+aishe agent
+        |
+        +-- foreground --> existing managed controller/session/audit/undo
+        |
+        `-- background --> private task record --> isolated worktree
+                                  |                    |
+                                  v                    v
+                            plan + evidence       bounded child agent
+                                  |                    |
+                                  `------> inbox/review/apply/rework
+```
+
+No daemon, database, alternative shell parser, custom patch engine, or second
+provider client is introduced. The launcher, inbox, and browser are views over
+the same state used by their direct commands.
+
+## 16. Agent-native validation matrix
+
+In addition to Section 8, the extension requires:
+
+| Area | Deterministic validation | Live/release validation |
+|---|---|---|
+| Slash palette | registry contract, generated-hook syntax, argv splitting, exact `/` interception, shell quoting | real zsh buffer handoff with common plugin stacks |
+| Agent launcher | clap parsing, cancellation, attachment translation, precedence, finite budgets | one foreground and one isolated paid task |
+| Review/inbox | synthetic task records, patch numbering, selective apply, rework state, non-TTY output | conflict and interrupted-process walkthrough |
+| Sessions | schema migration, current-workspace resolution, pinned fork HTTP fixture | resume/fork with the bundled backend |
+| Context | snapshot metadata, secret canaries, attachment bounds, binary/symlink cases | compare inspector input to one captured request |
+| Plans | revision, identical-step preservation, evidence clearing, invalid index/state | resume after process interruption |
+| Demo | PTY widths, ASCII, no-color, cancellation | fresh-machine setup rehearsal |
+| Capabilities/test | cache identity, JSON contract, offline no-network guarantee, redaction | minimal paid probe on every flagship provider |
+| Statusline | zsh syntax, POSTDISPLAY ownership, resize/wrap/static behavior | macOS Terminal, iTerm2, tmux, SSH |
+
+All deterministic commands run with disposable `AISHE_CONFIG_DIR` and
+`AISHE_DATA_DIR`. This is mandatory because setup, credentials, sessions,
+tasks, and capability probes otherwise share the user's real state.
+
+## 17. Visual design and font decision
+
+The visual hierarchy is prompt first, status second, transcript third. The
+editable `>`/prompt row never has status content above it. AIShe owns only its
+marked `POSTDISPLAY` segment, removes that segment before refresh, and restores
+the status below without erasing submitted-line or plugin content owned by
+another widget.
+
+Native Unicode provides bullets, checks, arrows, and mode marks; the ASCII path
+has equivalent words and punctuation. A patched/Nerd Font is optional and not
+shipped. Bundling a font cannot configure the user's terminal, tmux, SSH host,
+or editor consistently and would add licensing and update surface. If future
+user research identifies a recognizable brand face, ship it as an optional
+theme package, never as an installation or correctness dependency.
+
+## 18. Failure and recovery table
+
+| Failure | Safe behavior | Recovery |
+|---|---|---|
+| no configured provider | local surfaces work; agent launch fails before spend | `aishe setup` |
+| stale/absent capability cache | launch entry is marked unavailable | `aishe test --live` |
+| non-git background cwd | writable task is refused | initialize git or pass `--no-isolation` knowingly |
+| background child dies | identity refresh changes task to interrupted/failed | `aishe task resume ID` or `/inbox` |
+| patch conflicts | source checkout is not silently rewritten | resolve manually or leave isolated task intact |
+| original session model differs | fork/resume refuses cross-identity binding | select its connection/model first |
+| attachment escapes scope | request fails before provider contact | choose an in-scope path or explicit host scope |
+| redaction disabled | `aishe test` returns nonzero | enable redaction in settings |
+| sandbox disabled | test reports `off` without claiming protection | enable yolo sandbox or stay in approval mode |
+| narrow/non-Unicode terminal | compact ASCII rendering | no install action required |
+
+## 19. Extension definition of done
+
+E21–E30 are done when their human and JSON surfaces are documented; generated
+command docs match the registry; dynamic shell text is quoted and display-safe;
+the status appears strictly below the editable prompt; foreground/background
+launcher precedence and task limits survive process boundaries; context and
+capability inspection never overstate evidence; the offline self-test performs
+no paid call; the live test is explicit; all unit, integration, shell syntax,
+PTY, formatting, lint, release-build, and qualification checks pass from
+isolated state; and any unrun paid-provider check is reported as unverified,
+not described as passing.
+
+## 20. Managed runtime compatibility update
+
+This branch advances the exact managed OpenCode pin from 1.18.9 to 1.18.27.
+The update is intentionally part of the agent-native work because session
+forking is a compatibility-sensitive backend operation.
+
+- Pin all six supported GNU, musl, macOS arm64, and macOS x86-64 archives by
+  official release size and SHA-256; never resolve `latest` at install time.
+- Freeze the 1.18.27 API subset and representative event stream consumed by
+  the adapter, including the current session-create model shape and fork route.
+- Keep prior public AIShe JSON fixtures unchanged; they prove backward-readable
+  output and do not select the runtime.
+- Exercise download, archive verification, executable identity, authenticated
+  loopback health, provider translation, proxy tools, credential/egress
+  isolation, usage, durable sessions, and a real fork/rebind against 1.18.27.
+- Treat the v0.5.0 `OPENCODE_BACKEND_VALIDATION` report as immutable historical
+  evidence, as its lifecycle banner already states; new qualification output
+  belongs to this branch/candidate.

@@ -5,7 +5,7 @@ runtime. OpenCode is an independent project distributed under the MIT license.
 It is not linked into the Aishe binary.
 
 - Project: <https://github.com/anomalyco/opencode>
-- Pinned compatibility version: `1.18.9`
+- Pinned compatibility version: `1.18.27`
 - Upstream license: `assets/backend/opencode/LICENSE`
 - Runtime manifest and archive digests:
   `assets/backend/opencode/runtime-manifest.json`

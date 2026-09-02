@@ -15,6 +15,7 @@ pub enum Action {
     Show { id: String, json: bool },
     Rename { id: String, name: String },
     Delete { id: String },
+    Fork { id: Option<String> },
 }
 
 /// Persistent conversation-memory file for shell-hook front ends.
@@ -86,6 +87,83 @@ pub fn list(json_output: bool) -> u8 {
     0
 }
 
+pub fn browse(config: &Config, json_output: bool) -> Result<u8> {
+    if json_output || !std::io::stdin().is_terminal() || !std::io::stdout().is_terminal() {
+        return Ok(list(json_output));
+    }
+    let managed =
+        crate::backend::opencode::session::SessionStore::from_default_root()?.records(None)?;
+    let legacy = crate::tasks::list();
+    if managed.is_empty() && legacy.is_empty() {
+        println!("no AI sessions");
+        return Ok(0);
+    }
+    let mut labels = managed
+        .iter()
+        .map(|record| {
+            format!(
+                "managed · {} · {} · {}",
+                record.backend_session_id,
+                record.model_id,
+                record.workspace.display()
+            )
+        })
+        .collect::<Vec<_>>();
+    labels.extend(legacy.iter().map(|record| {
+        format!(
+            "legacy · {} · {:?} · {}",
+            record.id,
+            record.status,
+            record.name.as_deref().unwrap_or(&record.objective)
+        )
+    }));
+    let crate::promptui::PickerResult::Use(index) =
+        crate::promptui::filter_picker("AI sessions", &labels, labels.len() - 1)?
+    else {
+        return Ok(0);
+    };
+    if let Some(record) = managed.get(index) {
+        let choices = vec![
+            "Resume in this shell".into(),
+            "Fork and switch to the copy".into(),
+            "Show metadata".into(),
+            "Leave".into(),
+        ];
+        let crate::promptui::PickerResult::Use(choice) =
+            crate::promptui::filter_picker("Managed session", &choices, 0)?
+        else {
+            return Ok(0);
+        };
+        return match choice {
+            0 => resume_managed(config, &record.backend_session_id, None),
+            1 => fork_managed(config, Some(&record.backend_session_id)),
+            2 => {
+                println!("{}", serde_json::to_string_pretty(record)?);
+                Ok(0)
+            }
+            _ => Ok(0),
+        };
+    }
+    let record = &legacy[index - managed.len()];
+    let choices = vec!["Resume task".into(), "Show details".into(), "Leave".into()];
+    let crate::promptui::PickerResult::Use(choice) =
+        crate::promptui::filter_picker("Legacy session", &choices, 0)?
+    else {
+        return Ok(0);
+    };
+    match choice {
+        0 => resume(config, Some(&record.id), None),
+        1 => command(
+            config,
+            &Action::Show {
+                id: record.id.clone(),
+                json: false,
+            },
+        ),
+        _ => Ok(0),
+    }
+}
+
 pub fn reset(config: &Config) -> Result<u8> {
     if std::env::var_os("AISHE_SHELL_ID").is_none() {
         anyhow::bail!("`aishe reset` must run inside an active AIShe shell");
@@ -128,7 +206,7 @@ pub fn reset(config: &Config) -> Result<u8> {
     Ok(0)
 }
 
-pub fn command(command: &Action) -> Result<u8> {
+pub fn command(config: &Config, command: &Action) -> Result<u8> {
     match command {
         Action::Show { id, json } => {
             let record = crate::tasks::load(id)?;
@@ -184,7 +262,68 @@ pub fn command(command: &Action) -> Result<u8> {
             println!("deleted task {id} (the task record cannot be recovered)");
             Ok(0)
         }
+        Action::Fork { id } => fork_managed(config, id.as_deref()),
     }
+}
+
+fn fork_managed(config: &Config, id: Option<&str>) -> Result<u8> {
+    if std::env::var_os("AISHE_SHELL_ID").is_none() {
+        anyhow::bail!("`aishe session fork` must run inside an active AIShe shell");
+    }
+    let shell_id = crate::agent::controller::current_shell_id()?;
+    let cwd = crate::backend::opencode::session::SessionStore::resolve_workspace(
+        &std::env::current_dir()?,
+    )?;
+    let mapping = crate::backend::opencode::session::SessionStore::from_default_root()?
+        .records(id.is_none().then_some(shell_id.as_str()))?
+        .into_iter()
+        .filter(|record| {
+            id.is_some_and(|id| record.backend_session_id == id)
+                || (id.is_none() && record.workspace == cwd)
+        })
+        .max_by_key(|record| record.updated_at)
+        .with_context(|| {
+            id.map_or_else(
+                || "this shell has no active managed session to fork".into(),
+                |id| format!("managed session '{id}' was not found"),
+            )
+        })?;
+    if mapping.connection_id != config.active_connection_id()
+        || mapping.model_id != config.active_model()
+    {
+        anyhow::bail!(
+            "session uses {}/{}; switch to that connection/model before forking",
+            mapping.connection_id,
+            mapping.model_id
+        );
+    }
+    let state = crate::backend::supervisor::ensure_running(config)?;
+    let control = crate::backend::control::SupervisorClient::new(state)?;
+    let client = crate::backend::opencode::OpenCodeClient::new(
+        control.opencode_connection(),
+        control.provider_id(),
+        control.model_id(),
+    )?;
+    let source = crate::agent::BackendSession {
+        id: mapping.backend_session_id.clone(),
+        workspace: mapping.workspace.clone(),
+        backend: "opencode".into(),
+    };
+    let fork = client.fork_session(&source)?;
+    crate::backend::opencode::session::SessionStore::from_default_root()?.bind(
+        &shell_id,
+        &fork,
+        crate::backend::opencode::session::SessionBinding::new(
+            config.active_connection_id(),
+            config.active_model(),
+            mapping.mode,
+            mapping.scope,
+            mapping.network,
+        ),
+    )?;
+    println!("forked {} → {}", mapping.backend_session_id, fork.id);
+    println!("The next natural-language turn in this shell continues the fork.");
+    Ok(0)
 }
 
 pub fn resume(

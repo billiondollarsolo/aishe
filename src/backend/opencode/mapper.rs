@@ -798,7 +798,7 @@ mod tests {
     fn pinned_event_fixture_maps_the_supported_runtime_surface() {
         let mut mapper = EventMapper::new("ses_fixture", "msg_user");
         let mut mapped = Vec::new();
-        for line in include_str!("../../../tests/fixtures/opencode/v1.18.9/events.jsonl").lines() {
+        for line in include_str!("../../../tests/fixtures/opencode/v1.18.27/events.jsonl").lines() {
             mapped.extend(mapper.map(&serde_json::from_str(line).unwrap()));
         }
         assert!(mapped

@@ -540,7 +540,7 @@ fn run_managed_live_checks(config: &Config) -> Result<(Check, Check, Check, Chec
     let structured = if managed_suggest_contract_valid(&answer) {
         Check::pass("managed suggest contract returned valid structured output")
     } else {
-        // The managed adapter cannot use OpenCode 1.18.9's broken durable
+        // The managed adapter cannot use OpenCode 1.18.27's broken durable
         // json_schema format, so it enforces the trusted JSON protocol in the
         // agent prompt. Model output can still be stochastic: make one bounded,
         // explicit retry before classifying a supported transport as failed.

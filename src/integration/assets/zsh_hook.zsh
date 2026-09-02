@@ -487,7 +487,10 @@ aishe-show-route() {
 # through the previously installed accept-line widget.
 aishe-accept-line() {
   emulate -L zsh
-  if [[ "$BUFFER" == "reset" ]]; then
+  if [[ "$BUFFER" == "/" ]]; then
+    aishe-command-palette
+    return
+  elif [[ "$BUFFER" == "reset" ]]; then
     local submitted="$BUFFER"
     print -s -- "$submitted"
     command aishe reset < /dev/tty > /dev/tty 2>&1

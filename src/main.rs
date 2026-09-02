@@ -47,6 +47,10 @@ fn run() -> Result<u8> {
     let args = Args::parse();
     aishe::ui::set_machine_output(args.machine_output());
 
+    if let Some(values) = args.hook_cli.as_deref() {
+        return aishe::integration::dispatch_hook_cli(&values[0], &values[1]);
+    }
+
     if matches!(args.cmd, Some(Cmd::BackendSupervisor)) {
         return aishe::backend::supervisor::run_supervisor();
     }
@@ -166,10 +170,16 @@ fn run() -> Result<u8> {
         return aishe::auth::run(cmd);
     }
 
-    if let Some(Cmd::Tour {
-        restart,
-        non_interactive,
-    }) = &args.cmd
+    if let Some(
+        Cmd::Tour {
+            restart,
+            non_interactive,
+        }
+        | Cmd::Demo {
+            restart,
+            non_interactive,
+        },
+    ) = &args.cmd
     {
         aishe::tour::run(aishe::tour::Options {
             restart: *restart,
@@ -273,13 +283,6 @@ fn run() -> Result<u8> {
         return Ok(aishe::cli::settings::untrust(*all, path.as_deref()));
     }
 
-    if let Some(Cmd::Sessions { json }) = &args.cmd {
-        return Ok(aishe::cli::session::list(*json));
-    }
-    if let Some(Cmd::Session { cmd }) = &args.cmd {
-        return aishe::cli::session::command(&session_action(cmd));
-    }
-
     // `undo` reverts AI file changes from the journal; no config or provider.
     if let Some(Cmd::Undo { list }) = &args.cmd {
         return Ok(aishe::cli::settings::undo(*list));
@@ -381,6 +384,18 @@ fn run() -> Result<u8> {
         args.connection.as_deref(),
         args.model.as_deref(),
     )?;
+    let agent_request = match &args.cmd {
+        Some(Cmd::Agent(options)) => match resolve_agent(options, &config)? {
+            Some(request) => Some(request),
+            None => return Ok(0),
+        },
+        _ => None,
+    };
+    let background_role = args
+        .background_task
+        .as_ref()
+        .and_then(|_| std::env::var("AISHE_TASK_ROLE").ok())
+        .filter(|role| aishe::roles::NAMES.contains(&role.as_str()));
     let request_role = if args.edit_line.is_some()
         || args.suggest_line.is_some()
         || args.auto_line.is_some()
@@ -398,19 +413,52 @@ fn run() -> Result<u8> {
             })
     ) {
         Some("answer")
-    } else if args.yolo_line.is_some() || args.background_task.is_some() {
+    } else if let Some(request) = &agent_request {
+        Some(request.role.as_str())
+    } else if args.yolo_line.is_some()
+        || matches!(
+            &args.cmd,
+            Some(Cmd::Task {
+                cmd: BackgroundTaskCmd::Start { .. }
+            })
+        )
+    {
         Some("build")
+    } else if args.background_task.is_some() {
+        background_role.as_deref().or(Some("build"))
     } else {
         None
     };
     let active_role = aishe::roles::apply(
         &mut config,
         request_role,
-        args.connection.is_some(),
-        args.model.is_some(),
+        args.connection.is_some()
+            || agent_request
+                .as_ref()
+                .is_some_and(|request| request.connection.is_some()),
+        args.model.is_some()
+            || agent_request
+                .as_ref()
+                .is_some_and(|request| request.model.is_some()),
     )?;
     if let Some(role) = active_role {
         std::env::set_var("AISHE_ROLE", role);
+    }
+    if let Some(request) = &agent_request {
+        aishe::cli::connection::apply_flag(
+            &mut config,
+            request.connection.as_deref(),
+            request.model.as_deref(),
+        )?;
+        config.backend.default_scope.clone_from(&request.scope);
+        config.aishe.mode = "yolo".into();
+        if let Some(cap) = request.max_cost {
+            config.aishe.budget_usd = if config.aishe.budget_usd > 0.0 {
+                config.aishe.budget_usd.min(cap)
+            } else {
+                cap
+            };
+        }
     }
     // Administrator policy is the final, read-only constraint layer. It can
     // reduce authority or reject a provider/model, never inject credentials.
@@ -429,6 +477,11 @@ fn run() -> Result<u8> {
             };
         }
         aishe::background::arm_deadline(budget.max_minutes);
+        if let Ok(scope) = std::env::var("AISHE_TASK_SCOPE") {
+            if matches!(scope.as_str(), "workspace" | "host") {
+                config.backend.default_scope = scope;
+            }
+        }
         Some((id.to_string(), objective))
     } else {
         None
@@ -501,6 +554,12 @@ fn run() -> Result<u8> {
         Some(Cmd::Palette { query, json }) => {
             return aishe::palette::command(&config, query.as_deref(), *json);
         }
+        Some(Cmd::Capabilities { json }) => {
+            return aishe::cli::settings::capabilities(&config, *json);
+        }
+        Some(Cmd::Test { live, json }) => {
+            return aishe::cli::settings::self_test(&config, *live, *json);
+        }
         Some(Cmd::Status { json }) => return Ok(aishe::cli::status::command(&config, *json)),
         Some(Cmd::Hints { cmd }) => {
             let action = match cmd {
@@ -527,6 +586,34 @@ fn run() -> Result<u8> {
         }
         Some(Cmd::Task { cmd }) => {
             return aishe::background::command(&config, background_task_action(cmd));
+        }
+        Some(Cmd::Inbox { json }) => return aishe::background::inbox(&config, *json),
+        Some(Cmd::Plan { id }) => return aishe::background::edit_plan(id.as_deref(), false),
+        Some(Cmd::Replan { id }) => return aishe::background::edit_plan(id.as_deref(), true),
+        Some(Cmd::Sessions { json }) => return aishe::cli::session::browse(&config, *json),
+        Some(Cmd::Session { cmd }) => {
+            return aishe::cli::session::command(&config, &session_action(cmd));
+        }
+        Some(Cmd::Agent(_))
+            if agent_request
+                .as_ref()
+                .is_some_and(|request| request.background) =>
+        {
+            let request = agent_request.as_ref().expect("resolved agent request");
+            return aishe::background::command(
+                &config,
+                aishe::background::Action::Start {
+                    objective: request.objective.clone(),
+                    no_isolation: request.no_isolation,
+                    max_minutes: request.max_minutes,
+                    max_turns: request.max_turns,
+                    max_cost: request.max_cost,
+                    max_tool_calls: 200,
+                    max_changed_files: 100,
+                    max_changed_bytes: 10_485_760,
+                    max_network_calls: 50,
+                },
+            );
         }
         Some(Cmd::Role { cmd }) => {
             return match cmd {
@@ -725,6 +812,7 @@ fn run() -> Result<u8> {
             json,
             exclude,
             include,
+            show,
         }) => {
             return aishe::cli::settings::context(
                 config,
@@ -733,6 +821,7 @@ fn run() -> Result<u8> {
                 *json,
                 exclude,
                 include,
+                *show,
             );
         }
         Some(Cmd::History { cmd }) => {
@@ -745,8 +834,7 @@ fn run() -> Result<u8> {
             Cmd::Setup(_)
             | Cmd::Settings { .. }
             | Cmd::Tour { .. }
-            | Cmd::Sessions { .. }
-            | Cmd::Session { .. }
+            | Cmd::Demo { .. }
             | Cmd::Log { .. }
             | Cmd::Usage { .. }
             | Cmd::Runbook { .. }
@@ -788,7 +876,10 @@ fn run() -> Result<u8> {
         || args.background_task.is_some()
         || args.record_failure.is_some()
         || args.accept_yolo
-        || matches!(args.cmd, Some(Cmd::Suggest { .. } | Cmd::Ask { .. }));
+        || matches!(
+            args.cmd,
+            Some(Cmd::Suggest { .. } | Cmd::Ask { .. } | Cmd::Agent(_))
+        );
 
     // The interactive shell is the zsh-PTY front-end: it drives the user's real
     // zsh, with the AI injected via a command_not_found hook, so zsh is required.
@@ -866,6 +957,24 @@ fn run() -> Result<u8> {
             &mcp,
         );
         aishe::background::finish(&id, &result);
+        return result;
+    }
+
+    if matches!(args.cmd, Some(Cmd::Agent(_))) {
+        let request = agent_request
+            .as_ref()
+            .context("agent request was not resolved")?;
+        let result = aishe::cli::runtime::one_shot(
+            &format!("? {}", request.objective),
+            &mut executor,
+            &mut provider,
+            &config,
+            &cache,
+            &commands,
+            &skills,
+            &mcp,
+        );
+        aishe::cli::status::record_session_usage(provider.as_deref(), &config);
         return result;
     }
 
@@ -1025,4 +1134,152 @@ fn run() -> Result<u8> {
     // Every interactive session is handled by the zsh-PTY branch above, and every
     // non-interactive path (hooks, `-c`, piped stdin) returns before here.
     Ok(0)
+}
+
+#[derive(Clone, Debug)]
+struct ResolvedAgent {
+    objective: String,
+    background: bool,
+    role: String,
+    connection: Option<String>,
+    model: Option<String>,
+    scope: String,
+    no_isolation: bool,
+    max_minutes: u32,
+    max_turns: u32,
+    max_cost: Option<f64>,
+}
+
+fn resolve_agent(options: &AgentArgs, config: &Config) -> Result<Option<ResolvedAgent>> {
+    let guided = options.objective.is_empty();
+    let objective = if guided {
+        if !std::io::stdin().is_terminal() || !std::io::stdout().is_terminal() {
+            anyhow::bail!("agent objective is required outside an interactive terminal");
+        }
+        aishe::promptui::header(
+            "launch an AIShe agent",
+            "Choose the work, authority, model role, and execution style in one place.",
+            "Workspace scope and isolated background worktrees are the safe defaults.",
+        );
+        let Some(value) = aishe::promptui::text(
+            "Objective",
+            "inspect this repository and recommend the next improvement",
+            |value| {
+                if value.trim().is_empty() || value.len() > 64 * 1024 {
+                    anyhow::bail!("objective must contain 1..=65536 bytes")
+                }
+                Ok(())
+            },
+        )?
+        else {
+            return Ok(None);
+        };
+        if value == ":back" {
+            return Ok(None);
+        }
+        value
+    } else {
+        options.objective.join(" ")
+    };
+    let background = if guided {
+        let choices = vec![
+            "Foreground · stream progress in this terminal".into(),
+            "Background · isolated git worktree and inbox".into(),
+        ];
+        let aishe::promptui::PickerResult::Use(index) =
+            aishe::promptui::filter_picker("Execution", &choices, usize::from(options.background))?
+        else {
+            return Ok(None);
+        };
+        index == 1
+    } else {
+        options.background
+    };
+    let role = if guided && options.role.is_none() {
+        let choices = aishe::roles::NAMES
+            .iter()
+            .map(|role| format!("{role} · workload-specific connection/model/reasoning"))
+            .collect::<Vec<_>>();
+        let default = aishe::roles::NAMES
+            .iter()
+            .position(|role| *role == "build")
+            .unwrap_or(0);
+        let aishe::promptui::PickerResult::Use(index) =
+            aishe::promptui::filter_picker("Model role", &choices, default)?
+        else {
+            return Ok(None);
+        };
+        aishe::roles::NAMES[index].to_string()
+    } else {
+        options.role.clone().unwrap_or_else(|| "build".into())
+    };
+    let scope = if guided && options.scope.is_none() {
+        let choices = vec![
+            "workspace · project-bound authority".into(),
+            "host · explicit whole-machine authority".into(),
+        ];
+        let default = usize::from(config.backend.default_scope == "host");
+        let aishe::promptui::PickerResult::Use(index) =
+            aishe::promptui::filter_picker("Authority", &choices, default)?
+        else {
+            return Ok(None);
+        };
+        if index == 1 {
+            "host".into()
+        } else {
+            "workspace".into()
+        }
+    } else {
+        options
+            .scope
+            .clone()
+            .unwrap_or_else(|| config.backend.default_scope.clone())
+    };
+    if options
+        .max_cost
+        .is_some_and(|value| !value.is_finite() || value < 0.0)
+    {
+        anyhow::bail!("--max-cost must be a finite non-negative number");
+    }
+    let mut objective = objective.trim().to_string();
+    for path in &options.file {
+        objective.push(' ');
+        objective.push_str(&attachment_reference("file", path)?);
+    }
+    for path in &options.dir {
+        objective.push(' ');
+        objective.push_str(&attachment_reference("dir", path)?);
+    }
+    if options.diff {
+        objective.push_str(" @diff");
+    }
+    if options.clipboard {
+        objective.push_str(" @clipboard");
+    }
+    Ok(Some(ResolvedAgent {
+        objective,
+        background,
+        role,
+        connection: options.connection.clone(),
+        model: options.model.clone(),
+        scope,
+        no_isolation: options.no_isolation,
+        max_minutes: options.max_minutes,
+        max_turns: options.max_turns,
+        max_cost: options.max_cost,
+    }))
+}
+
+fn attachment_reference(kind: &str, path: &std::path::Path) -> Result<String> {
+    let value = path.to_str().context("attachment path is not UTF-8")?;
+    if value.is_empty() || value.chars().any(char::is_control) {
+        anyhow::bail!("attachment path is empty or contains control characters");
+    }
+    if !value.contains('"') {
+        Ok(format!("@{kind}:\"{value}\""))
+    } else if !value.contains('\'') {
+        Ok(format!("@{kind}:'{value}'"))
+    } else {
+        anyhow::bail!("attachment paths containing both quote styles are not supported")
+    }
 }

@@ -2,11 +2,11 @@
   "openapi": "3.1.0",
   "info": {
     "title": "Aishe narrow OpenCode contract",
-    "version": "1.18.9",
-    "description": "Reviewed subset of anomalyco/opencode v1.18.9 used by Aishe. Unknown response fields remain additive."
+    "version": "1.18.27",
+    "description": "Reviewed subset of anomalyco/opencode v1.18.27 used by Aishe. Unknown response fields remain additive."
   },
   "x-aishe-source": {
-    "tag": "v1.18.9",
+    "tag": "v1.18.27",
     "repository": "https://github.com/anomalyco/opencode",
     "upstream_file": "packages/sdk/openapi.json"
   },
@@ -92,7 +92,10 @@
                     "type": "string"
                   },
                   "model": {
-                    "$ref": "#/components/schemas/Model"
+                    "$ref": "#/components/schemas/SessionModel"
+                  },
+                  "metadata": {
+                    "type": "object"
                   }
                 },
                 "additionalProperties": true
@@ -240,14 +243,48 @@
         ],
         "responses": {
           "204": {
-            "description": "Abort requested"
+            "description": "Abort requested (the adapter accepts any successful status)"
+          }
+        }
+      }
+    },
+    "/session/{sessionID}/fork": {
+      "post": {
+        "operationId": "session.fork",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/SessionID"
+          },
+          {
+            "$ref": "#/components/parameters/Directory"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "messageID": {
+                    "type": "string"
+                  }
+                },
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/Json"
           }
         }
       }
     },
     "/experimental/tool/ids": {
       "get": {
-        "operationId": "experimental.tool.ids",
+        "operationId": "tool.ids",
         "parameters": [
           {
             "$ref": "#/components/parameters/Directory"
@@ -292,6 +329,22 @@
       }
     },
     "schemas": {
+      "SessionModel": {
+        "type": "object",
+        "required": [
+          "id",
+          "providerID"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "providerID": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": true
+      },
       "Model": {
         "type": "object",
         "required": [

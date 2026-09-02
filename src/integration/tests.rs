@@ -14,6 +14,7 @@ fn zsh_script_has_handler_and_print_z() {
     assert!(s.contains("${AISHE_DETAILS_KEY:-^O}"));
     assert!(s.contains("${AISHE_EDIT_KEY:-^X^A}"));
     assert!(s.contains("zle -N aishe-command-palette"));
+    assert!(s.contains(r#"if [[ "$BUFFER" == "/" ]]; then"#));
     assert!(s.contains("${AISHE_PALETTE_KEY:-^X }"));
     assert!(s.contains(r#"_aishe_slash_id "$BUFFER" > /dev/null"#));
     assert!(s.contains("/help|/commands"));
@@ -96,12 +97,12 @@ fn generated_shell_artifacts_match_the_reviewed_byte_snapshots() {
         (
             "zsh init",
             zsh_script(),
-            "bc73ee0ba0d4e75d34bda29c23d13a8bf5cc1b06814cb0fff8ae83b9076a36a9",
+            "1bfcda5ae6f42489a2e4954b6e2934f069decc35a31a85c24bc0335df1bec66d",
         ),
         (
             "bash init",
             bash_script(),
-            "6daa6c81b8a4945b800bc5217d76a38bf8367b349f204e90ba483cbc8a186d4b",
+            "116f2d3f3e16bbd753cb0611f75bf87e4bb945d24c3750ea8d9f494e5a0962e0",
         ),
         (
             "wrapper zshenv",
@@ -111,7 +112,7 @@ fn generated_shell_artifacts_match_the_reviewed_byte_snapshots() {
         (
             "wrapper zshrc",
             wrapper_zshrc(),
-            "fde47e711d63e33462e065c52d8118e981a34070d7cf9264646c3fa9098903e4",
+            "a5081e637eced5dd9bd701ecf71eb8ffd621d63c699e6ded5b0c22504e5f661b",
         ),
     ] {
         assert_eq!(digest(&rendered), expected, "unexpected {name} byte drift");
@@ -642,6 +643,28 @@ fn bash_script_has_handle_and_force_nl() {
     assert!(s.contains("suggest)\n      if __aishe_capture_suggestion"));
     assert!(!s.contains("$(set +m; command aishe --suggest-line"));
     assert!(s.matches("set +m").count() >= 5);
+}
+
+#[test]
+fn bash_pass_through_arguments_are_quote_aware_without_eval() {
+    let words =
+        split_hook_words(r#"--role build 'two words' plain\ value "" $(inert) "C:\temp""#).unwrap();
+    assert_eq!(
+        words,
+        [
+            "--role",
+            "build",
+            "two words",
+            "plain value",
+            "",
+            "$(inert)",
+            r"C:\temp"
+        ]
+    );
+    assert!(split_hook_words("'unterminated").is_err());
+    let hook = bash_script();
+    assert!(hook.contains("--hook-cli 'agent' \"$_aishe_arg\""));
+    assert!(!hook.contains("eval \"$_aishe_arg\""));
 }
 
 #[test]

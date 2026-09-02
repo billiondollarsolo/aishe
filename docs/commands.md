@@ -185,6 +185,24 @@ unless its save/default flow is used.
 | `/config` | Print the active AIShe configuration | read-only |
 | `/skills` | List model-invoked skills | read-only |
 | `/mcp` | List configured MCP tools and prompts | read-only |
+| `/palette` | Search every built-in and contextual AIShe action | read-only |
+| `/agent [OPTIONS OBJECTIVE…]` | Launch a controlled foreground or background agent | may change state |
+| `/inbox` | Review agent work that needs attention | may change state |
+| `/sessions` | Browse, resume, inspect, or fork AI sessions | session |
+| `/resume [ID]` | Resume the latest interrupted task or a session by ID | session |
+| `/fork [SESSION_ID]` | Fork a managed conversation and switch this shell to it | session |
+| `/task [ACTION OPTIONS…]` | Start and manage isolated background agent tasks | may change state |
+| `/plan [TASK_ID]` | Inspect or edit a durable agent checklist | session |
+| `/replan [TASK_ID]` | Revise a checklist while retaining completed evidence | session |
+| `/context [OPTIONS…]` | Inspect exact model-visible local context and token estimates | may change state |
+| `/last [ACTION…]` | Explain, fix, retry, or clear the last shell failure | may change state |
+| `/role [ACTION OPTIONS…]` | Inspect or configure workload model roles | durable setting |
+| `/ask [OPTIONS QUESTION…]` | Ask a non-executing question with optional structured output | no effect |
+| `/index [OPTIONS…]` | Build or search the bounded repository index | may change state |
+| `/capabilities` | Show capability evidence for the active model | read-only |
+| `/test [--live]` | Validate local UX or run paid live model/tool checks | read-only |
+| `/demo` | Run the safe guided first-session demonstration | session |
+| `/undo` | Undo the most recent journaled AI file change | may change state |
 | `/trust [PATH]` | Trust a project AIShe configuration, command, or skill | durable setting |
 | `/untrust [PATH]` | Remove trust from a project AIShe file | durable setting |
 
@@ -205,7 +223,6 @@ Removed names remain reserved for one compatibility window:
 | `/theme [ARGS…]` | use the terminal palette or set `NO_COLOR=1` for plain output |
 | `/rehash` | use bare `rehash` for zsh's executable cache; AIShe discovers commands automatically |
 | `/ghost [ARGS…]` | use suggest mode with `aishe mode suggest` |
-| `/plan [ARGS…]` | use `aishe dry-run 'COMMAND'` to preview a command's file changes |
 | `/sandbox [ARGS…]` | use `aishe scope workspace` and `aishe network deny`, then verify with `aishe readiness` |
 | `/cache [ARGS…]` | the legacy suggest-response cache was removed and has no direct replacement |
 <!-- END GENERATED COMMAND SURFACE -->

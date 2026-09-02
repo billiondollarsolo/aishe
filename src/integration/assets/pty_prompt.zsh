@@ -2,6 +2,7 @@
 if [[ -o interactive && "${AISHE_PTY_PROMPT:-1}" == 1 ]]; then
   autoload -Uz add-zsh-hook
   typeset -g _AISHE_STATUS_TEXT=""
+  typeset -g _AISHE_STATUS_POSTDISPLAY=""
   autoload -Uz vcs_info
   zstyle ':vcs_info:git:*' formats '%b'
   aishe_set_prompt() {
@@ -141,8 +142,13 @@ if [[ -o interactive && "${AISHE_PTY_PROMPT:-1}" == 1 ]]; then
   autoload -Uz add-zle-hook-widget
   _aishe_status_below() {
     emulate -L zsh
+    if [[ -n "$_AISHE_STATUS_POSTDISPLAY" && "$POSTDISPLAY" == "$_AISHE_STATUS_POSTDISPLAY" ]]; then
+      POSTDISPLAY=""
+    fi
+    _AISHE_STATUS_POSTDISPLAY=""
     if [[ "${AISHE_STATUS_POSITION:-below}" != off && -n "$_AISHE_STATUS_TEXT" && -z "${POSTDISPLAY:-}" ]]; then
-      POSTDISPLAY=$'\n'"$_AISHE_STATUS_TEXT"
+      _AISHE_STATUS_POSTDISPLAY=$'\n'"$_AISHE_STATUS_TEXT"
+      POSTDISPLAY="$_AISHE_STATUS_POSTDISPLAY"
     fi
   }
   add-zle-hook-widget line-init _aishe_status_below

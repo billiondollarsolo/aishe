@@ -231,7 +231,7 @@ session, compaction, usage, error, and idle events into `AgentEvent`.
 Early part events are buffered until the assistant ID is proven; stale idle and
 unrelated-session events are ignored. A disconnect is repaired with bounded
 message/session snapshots rather than assuming replay. Prompt abort is a
-first-class backend operation. The fixture suite freezes the v1.18.9 endpoints
+first-class backend operation. The fixture suite freezes the v1.18.27 endpoints
 and every normalized event class.
 
 `backend::opencode::session` atomically maps `(aishe shell ID, canonical
@@ -355,13 +355,13 @@ See [development.md](development.md) for commands. The shape:
   `tests/durable_task_resume.py`. These prove setup cancellation, route-aware
   highlighting, prompt status, and interrupted-task recovery through real PTYs.
 - **Pinned OpenCode runtime contract:** `tests/opencode_runtime_contract.py`
-  launches the exact v1.18.9 runtime with a deterministic local provider and the
+  launches the exact v1.18.27 runtime with a deterministic local provider and the
   real trusted plugin/bridge. It proves two-turn session continuity,
   suggest-tool absence, AIShe-only auto tools, foreground command execution,
   provider credential isolation, exact usage, durable journals, secret
   non-persistence, dependency-free plugin startup, and zero install/catalog
   egress.
-- **Frozen OpenCode fixtures:** `tests/fixtures/opencode/v1.18.9/` locks the
+- **Frozen OpenCode fixtures:** `tests/fixtures/opencode/v1.18.27/` locks the
   supported OpenAPI endpoints and representative text/reasoning/tool/todo/diff/
   compaction/usage/idle event mapping.
 - **Opt-in real-model suite:** `tests/real_model.py` runs a classification corpus

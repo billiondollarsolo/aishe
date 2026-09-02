@@ -1,7 +1,7 @@
 //! Background agent jobs and their git-isolated change lifecycle.
 
 use std::fs::{self, File, OpenOptions};
-use std::io::{Read, Write};
+use std::io::{IsTerminal, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -43,6 +43,8 @@ pub struct PlanStep {
     pub id: u32,
     pub text: String,
     pub state: StepState,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub evidence: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -125,6 +127,10 @@ pub enum Action {
     Review {
         id: String,
     },
+    Rework {
+        id: String,
+        instructions: String,
+    },
     Apply {
         id: String,
         hunks: Vec<usize>,
@@ -144,6 +150,7 @@ pub enum Action {
         id: String,
         step: u32,
         state: StepState,
+        evidence: Option<String>,
     },
 }
 
@@ -178,12 +185,18 @@ pub fn command(config: &Config, action: Action) -> Result<u8> {
         Action::Tail { id, lines } => tail(&id, lines.clamp(1, 10_000)),
         Action::Cancel { id } => cancel(&id),
         Action::Resume { id } => resume(config, &id),
-        Action::Review { id } => review(&id),
+        Action::Review { id } => review(config, &id),
+        Action::Rework { id, instructions } => rework(config, &id, &instructions),
         Action::Apply { id, hunks } => apply(&id, &hunks),
         Action::Discard { id } => discard(&id),
         Action::Plan { id, steps } => set_plan(&id, steps, false),
         Action::Replan { id, steps } => set_plan(&id, steps, true),
-        Action::Step { id, step, state } => set_step(&id, step, state),
+        Action::Step {
+            id,
+            step,
+            state,
+            evidence,
+        } => set_step(&id, step, state, evidence.as_deref()),
     };
     refresh_status();
     result
@@ -268,12 +281,26 @@ fn start(config: &Config, objective: &str, no_isolation: bool, budget: Budget) -
     let mut child = Command::new(std::env::current_exe()?);
     restrict_background_environment(&mut child, config);
     child
-        .args(["--mode", "yolo", "--background-task", &id])
+        .args([
+            "--connection",
+            config.active_connection_id(),
+            "--model",
+            config.active_model(),
+            "--mode",
+            "yolo",
+            "--background-task",
+            &id,
+        ])
         .current_dir(&run_cwd)
         .stdin(Stdio::null())
         .stdout(Stdio::from(log))
         .stderr(Stdio::from(stderr))
         .env("AISHE_SHELL_ID", format!("task-{id}"))
+        .env(
+            "AISHE_TASK_ROLE",
+            std::env::var("AISHE_ROLE").unwrap_or_else(|_| "build".into()),
+        )
+        .env("AISHE_TASK_SCOPE", &config.backend.default_scope)
         .env(
             "AISHE_TASK_MAX_TOOL_CALLS",
             record.budget.max_tool_calls.to_string(),
@@ -418,6 +445,157 @@ fn list(json: bool) -> Result<u8> {
     Ok(0)
 }
 
+pub fn inbox(config: &Config, json: bool) -> Result<u8> {
+    let mut attention = records()?
+        .into_iter()
+        .filter(|record| !matches!(record.state, State::Applied | State::Discarded))
+        .collect::<Vec<_>>();
+    for record in &mut attention {
+        reconcile(record)?;
+    }
+    attention.sort_by_key(|record| std::cmp::Reverse(record.updated_at_ms));
+    if json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::json!({
+                "schema_version": 1,
+                "items": attention,
+            }))?
+        );
+        return Ok(0);
+    }
+    if attention.is_empty() {
+        println!("inbox zero · no active or reviewable agent tasks");
+        return Ok(0);
+    }
+    if !std::io::stdin().is_terminal() || !std::io::stdout().is_terminal() {
+        for record in attention {
+            println!("{}  {:?}  {}", record.id, record.state, record.objective);
+        }
+        return Ok(0);
+    }
+    let labels = attention
+        .iter()
+        .map(|record| format!("{:?} · {} · {}", record.state, record.id, record.objective))
+        .collect::<Vec<_>>();
+    let crate::promptui::PickerResult::Use(index) =
+        crate::promptui::filter_picker("Agent inbox", &labels, 0)?
+    else {
+        return Ok(0);
+    };
+    let record = &attention[index];
+    match record.state {
+        State::Starting | State::Running => {
+            let choices = vec!["Tail activity".into(), "Cancel task".into(), "Leave".into()];
+            let crate::promptui::PickerResult::Use(choice) =
+                crate::promptui::filter_picker("Running task", &choices, 0)?
+            else {
+                return Ok(0);
+            };
+            match choice {
+                0 => tail(&record.id, 100),
+                1 => cancel(&record.id),
+                _ => Ok(0),
+            }
+        }
+        State::Completed => review(config, &record.id),
+        State::Failed | State::Interrupted | State::Cancelled => {
+            let choices = vec![
+                "Review changes".into(),
+                "Resume task".into(),
+                "Show details".into(),
+                "Leave".into(),
+            ];
+            let crate::promptui::PickerResult::Use(choice) =
+                crate::promptui::filter_picker("Task needs attention", &choices, 0)?
+            else {
+                return Ok(0);
+            };
+            match choice {
+                0 => review(config, &record.id),
+                1 => resume(config, &record.id),
+                2 => show(&record.id, false),
+                _ => Ok(0),
+            }
+        }
+        State::Applied | State::Discarded => Ok(0),
+    }
+}
+
+pub fn palette_summaries() -> Vec<(String, State, String)> {
+    records()
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|record| !matches!(record.state, State::Applied | State::Discarded))
+        .map(|record| (record.id, record.state, record.objective))
+        .collect()
+}
+
+pub fn edit_plan(id: Option<&str>, preserve_completed: bool) -> Result<u8> {
+    let records = records()?
+        .into_iter()
+        .filter(|record| !matches!(record.state, State::Applied | State::Discarded))
+        .collect::<Vec<_>>();
+    let id = match id {
+        Some(id) => id.to_string(),
+        None => {
+            if records.is_empty() {
+                anyhow::bail!(
+                    "no background task is available; start one with `aishe agent --background`"
+                );
+            }
+            let labels = records
+                .iter()
+                .map(|record| format!("{:?} · {} · {}", record.state, record.id, record.objective))
+                .collect::<Vec<_>>();
+            let crate::promptui::PickerResult::Use(index) =
+                crate::promptui::filter_picker("Choose task plan", &labels, labels.len() - 1)?
+            else {
+                return Ok(0);
+            };
+            records[index].id.clone()
+        }
+    };
+    let record = load(&id)?;
+    if !std::io::stdin().is_terminal() || !std::io::stdout().is_terminal() {
+        return show(&id, false);
+    }
+    let default = if record.plan.is_empty() {
+        "inspect; implement; run focused tests".into()
+    } else {
+        record
+            .plan
+            .iter()
+            .map(|step| step.text.as_str())
+            .collect::<Vec<_>>()
+            .join("; ")
+    };
+    let Some(value) =
+        crate::promptui::text("Plan steps (separate with semicolons)", &default, |value| {
+            let count = value
+                .split(';')
+                .filter(|step| !step.trim().is_empty())
+                .count();
+            if !(1..=100).contains(&count) {
+                anyhow::bail!("enter 1..=100 non-empty steps")
+            }
+            Ok(())
+        })?
+    else {
+        return Ok(0);
+    };
+    if value == ":back" {
+        return Ok(0);
+    }
+    let steps = value
+        .split(';')
+        .map(str::trim)
+        .filter(|step| !step.is_empty())
+        .map(ToOwned::to_owned)
+        .collect();
+    set_plan(&id, steps, preserve_completed)
+}
+
 fn show(id: &str, json: bool) -> Result<u8> {
     let mut record = load(id)?;
     reconcile(&mut record)?;
@@ -451,6 +629,9 @@ fn show(id: &str, json: bool) -> Result<u8> {
             println!("plan:");
             for step in &record.plan {
                 println!("  {}  {:?}  {}", step.id, step.state, step.text);
+                if let Some(evidence) = &step.evidence {
+                    println!("       evidence: {evidence}");
+                }
             }
         }
         if let Some(error) = record.error {
@@ -528,12 +709,26 @@ fn resume(config: &Config, id: &str) -> Result<u8> {
     let mut child = Command::new(std::env::current_exe()?);
     restrict_background_environment(&mut child, config);
     child
-        .args(["--mode", "yolo", "--background-task", id])
+        .args([
+            "--connection",
+            config.active_connection_id(),
+            "--model",
+            config.active_model(),
+            "--mode",
+            "yolo",
+            "--background-task",
+            id,
+        ])
         .current_dir(&record.run_cwd)
         .stdin(Stdio::null())
         .stdout(Stdio::from(log))
         .stderr(Stdio::from(stderr))
         .env("AISHE_SHELL_ID", format!("task-{id}"))
+        .env(
+            "AISHE_TASK_ROLE",
+            std::env::var("AISHE_ROLE").unwrap_or_else(|_| "build".into()),
+        )
+        .env("AISHE_TASK_SCOPE", &config.backend.default_scope)
         .env(
             "AISHE_TASK_MAX_TOOL_CALLS",
             record.budget.max_tool_calls.to_string(),
@@ -559,19 +754,165 @@ fn resume(config: &Config, id: &str) -> Result<u8> {
     Ok(0)
 }
 
-fn review(id: &str) -> Result<u8> {
+fn review(config: &Config, id: &str) -> Result<u8> {
     let record = load(id)?;
     let patch = patch(&record)?;
     if patch.is_empty() {
         println!("task {id} has no file changes");
-    } else {
-        let (numbered, count) = numbered_review(&patch)?;
-        print!("{}", crate::commands::display_safe(&numbered));
-        if count > 0 {
-            eprintln!("aishe: {count} selectable hunk(s); use `aishe task apply {id} --hunk N`");
+        return Ok(0);
+    }
+    let (numbered, count) = numbered_review(&patch)?;
+    print_colored_patch(&numbered);
+    println!("objective: {}", record.objective);
+    if !record.plan.is_empty() {
+        println!(
+            "plan: {}",
+            record
+                .plan
+                .iter()
+                .map(|step| format!("{}:{:?}", step.id, step.state))
+                .collect::<Vec<_>>()
+                .join(" · ")
+        );
+    }
+    if !std::io::stdin().is_terminal() || !std::io::stdout().is_terminal() {
+        eprintln!("aishe: {count} selectable hunk(s); use `aishe task apply {id} --hunk N`");
+        return Ok(0);
+    }
+    let choices = vec![
+        "Apply all changes".into(),
+        format!("Select from {count} hunks"),
+        "Ask agent to rework".into(),
+        "Reject and discard worktree".into(),
+        "Leave for later".into(),
+    ];
+    let crate::promptui::PickerResult::Use(choice) =
+        crate::promptui::filter_picker("Review task changes", &choices, 4)?
+    else {
+        return Ok(0);
+    };
+    match choice {
+        0 => apply(id, &[]),
+        1 => select_hunks_interactive(id, &patch),
+        2 => {
+            let Some(instructions) = crate::promptui::text(
+                "Rework instructions",
+                "address the review feedback and rerun focused tests",
+                |value| {
+                    if value.trim().is_empty() {
+                        anyhow::bail!("instructions cannot be empty")
+                    }
+                    Ok(())
+                },
+            )?
+            else {
+                return Ok(0);
+            };
+            if instructions == ":back" {
+                return Ok(0);
+            }
+            rework(config, id, &instructions)
+        }
+        3 => discard(id),
+        _ => Ok(0),
+    }
+}
+
+fn print_colored_patch(patch: &str) {
+    let capabilities = crate::ui::TerminalCapabilities::detect_stdout();
+    for line in patch.lines() {
+        let token = if line.starts_with('+') && !line.starts_with("+++") {
+            crate::ui::StyleToken::DiffAdd
+        } else if line.starts_with('-') && !line.starts_with("---") {
+            crate::ui::StyleToken::DiffRemove
+        } else if line.starts_with("diff --git") || line.starts_with("# aishe hunk") {
+            crate::ui::StyleToken::Accent
+        } else {
+            crate::ui::StyleToken::Muted
+        };
+        println!(
+            "{}",
+            capabilities.paint(token, &crate::commands::display_safe(line))
+        );
+    }
+}
+
+fn select_hunks_interactive(id: &str, patch: &[u8]) -> Result<u8> {
+    let files = parse_file_patches(patch)?;
+    let labels = files
+        .iter()
+        .flat_map(|file| {
+            file.hunks
+                .iter()
+                .map(|hunk| hunk.lines().next().unwrap_or("file change").to_string())
+        })
+        .collect::<Vec<_>>();
+    let mut selected = std::collections::BTreeSet::new();
+    loop {
+        let mut options = labels
+            .iter()
+            .enumerate()
+            .map(|(index, label)| {
+                format!(
+                    "[{}] hunk {} · {label}",
+                    if selected.contains(&(index + 1)) {
+                        "x"
+                    } else {
+                        " "
+                    },
+                    index + 1
+                )
+            })
+            .collect::<Vec<_>>();
+        options.push(format!("Apply {} selected hunk(s)", selected.len()));
+        options.push("Back without applying".into());
+        let crate::promptui::PickerResult::Use(choice) =
+            crate::promptui::filter_picker("Select review hunks", &options, options.len() - 2)?
+        else {
+            return Ok(0);
+        };
+        if choice < labels.len() {
+            if !selected.insert(choice + 1) {
+                selected.remove(&(choice + 1));
+            }
+        } else if choice == labels.len() {
+            if selected.is_empty() {
+                continue;
+            }
+            return apply(id, &selected.into_iter().collect::<Vec<_>>());
+        } else {
+            return Ok(0);
         }
     }
-    Ok(0)
+}
+
+fn rework(config: &Config, id: &str, instructions: &str) -> Result<u8> {
+    let instructions = instructions.trim();
+    if instructions.is_empty() || instructions.len() > MAX_OBJECTIVE_BYTES / 2 {
+        anyhow::bail!(
+            "rework instructions must contain 1..={} bytes",
+            MAX_OBJECTIVE_BYTES / 2
+        );
+    }
+    update(id, |record| {
+        if matches!(
+            record.state,
+            State::Running | State::Starting | State::Applied | State::Discarded
+        ) {
+            anyhow::bail!("task {id} cannot be reworked from state {:?}", record.state);
+        }
+        let mut request = fs::read_to_string(request_path(id)?)?;
+        request.push_str("\n\nRework request:\n");
+        request.push_str(instructions);
+        if request.len() > MAX_OBJECTIVE_BYTES {
+            anyhow::bail!("combined task request exceeds {MAX_OBJECTIVE_BYTES} bytes");
+        }
+        write_private(&request_path(id)?, request.as_bytes())?;
+        record.state = State::Interrupted;
+        record.error = None;
+        Ok(())
+    })?;
+    resume(config, id)
 }
 
 fn apply(id: &str, hunks: &[usize]) -> Result<u8> {
@@ -783,25 +1124,7 @@ fn set_plan(id: &str, steps: Vec<String>, preserve_completed: bool) -> Result<u8
         anyhow::bail!("a task plan needs 1..=100 steps");
     }
     update(id, |record| {
-        let completed = record
-            .plan
-            .iter()
-            .filter(|step| step.state == StepState::Completed)
-            .map(|step| step.text.clone())
-            .collect::<std::collections::HashSet<_>>();
-        record.plan = steps
-            .iter()
-            .enumerate()
-            .map(|(index, text)| PlanStep {
-                id: index as u32 + 1,
-                text: crate::redact::redact(text.trim()),
-                state: if preserve_completed && completed.contains(text.trim()) {
-                    StepState::Completed
-                } else {
-                    StepState::Pending
-                },
-            })
-            .collect();
+        record.plan = build_plan(&record.plan, &steps, preserve_completed);
         record.plan_revision = record.plan_revision.saturating_add(1);
         Ok(())
     })?;
@@ -809,7 +1132,40 @@ fn set_plan(id: &str, steps: Vec<String>, preserve_completed: bool) -> Result<u8
     Ok(0)
 }
 
-fn set_step(id: &str, step: u32, state: StepState) -> Result<u8> {
+fn build_plan(existing: &[PlanStep], steps: &[String], preserve_completed: bool) -> Vec<PlanStep> {
+    let mut completed = existing
+        .iter()
+        .filter(|step| step.state == StepState::Completed)
+        .map(|step| (step.text.clone(), step.evidence.clone()))
+        .collect::<Vec<_>>();
+    steps
+        .iter()
+        .enumerate()
+        .map(|(index, text)| {
+            let text = crate::redact::redact(text.trim());
+            let preserved = preserve_completed
+                .then(|| {
+                    completed
+                        .iter()
+                        .position(|(old, _)| old == &text)
+                        .map(|matched| completed.remove(matched).1)
+                })
+                .flatten();
+            PlanStep {
+                id: index as u32 + 1,
+                text,
+                state: if preserved.is_some() {
+                    StepState::Completed
+                } else {
+                    StepState::Pending
+                },
+                evidence: preserved.flatten(),
+            }
+        })
+        .collect()
+}
+
+fn set_step(id: &str, step: u32, state: StepState, evidence: Option<&str>) -> Result<u8> {
     update(id, |record| {
         let target = record
             .plan
@@ -817,6 +1173,11 @@ fn set_step(id: &str, step: u32, state: StepState) -> Result<u8> {
             .find(|value| value.id == step)
             .with_context(|| format!("task {id} has no plan step {step}"))?;
         target.state = state;
+        if let Some(evidence) = evidence.map(str::trim).filter(|value| !value.is_empty()) {
+            target.evidence = Some(crate::redact::redact(evidence));
+        } else if state != StepState::Completed {
+            target.evidence = None;
+        }
         Ok(())
     })?;
     println!("task {id} step {step}: {state:?}");
@@ -1239,5 +1600,25 @@ mod tests {
         assert_eq!(selected.matches("diff --git").count(), 2);
         assert!(select_hunks(patch, &[4]).is_err());
         assert!(select_hunks(patch, &[1, 1]).is_err());
+    }
+
+    #[test]
+    fn replan_preserves_each_identical_completed_step_once() {
+        let existing = vec![PlanStep {
+            id: 1,
+            text: "test".into(),
+            state: StepState::Completed,
+            evidence: Some("587 passed".into()),
+        }];
+        let plan = build_plan(
+            &existing,
+            &["test".into(), "test".into(), "ship".into()],
+            true,
+        );
+        assert_eq!(plan[0].state, StepState::Completed);
+        assert_eq!(plan[0].evidence.as_deref(), Some("587 passed"));
+        assert_eq!(plan[1].state, StepState::Pending);
+        assert_eq!(plan[1].evidence, None);
+        assert_eq!(plan[2].id, 3);
     }
 }

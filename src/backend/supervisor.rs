@@ -105,7 +105,7 @@ pub fn prepare_layout() -> Result<PreparedRuntime> {
         }
     }
 
-    // OpenCode 1.18.9 starts a background SDK installation for every config
+    // OpenCode 1.18.27 starts a background SDK installation for every config
     // directory even when a local plugin has no imports. The trusted AIShe
     // bridge deliberately uses its pinned JSON-Schema compatibility path and
     // needs no SDK. Seed the exact lock shape inspected by that pinned loader,
@@ -1265,10 +1265,10 @@ mod tests {
             b"legacy disposable SDK",
         )
         .unwrap();
-        let first_changes = seed_dependency_free_plugin_loader(&root, "1.18.9").unwrap();
+        let first_changes = seed_dependency_free_plugin_loader(&root, "1.18.27").unwrap();
         assert!(!first_changes.is_empty());
         let first = fs::read(root.join("package-lock.json")).unwrap();
-        let second_changes = seed_dependency_free_plugin_loader(&root, "1.18.9").unwrap();
+        let second_changes = seed_dependency_free_plugin_loader(&root, "1.18.27").unwrap();
         assert!(
             second_changes.is_empty(),
             "idempotent layout preparation reported changes: {second_changes:?}"
@@ -1283,7 +1283,7 @@ mod tests {
         let lock: serde_json::Value = serde_json::from_slice(&first).unwrap();
         assert_eq!(
             lock["packages"][""]["dependencies"]["@opencode-ai/plugin"],
-            "1.18.9"
+            "1.18.27"
         );
         fs::remove_dir_all(root).unwrap();
     }

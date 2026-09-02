@@ -17,7 +17,7 @@ start the backend.
   the durable session remains available.
 
 The exact OpenCode version supported by each AIShe build is embedded in a
-manifest. The current compatibility pin is **OpenCode 1.18.9**. AIShe downloads
+manifest. The current compatibility pin is **OpenCode 1.18.27**. AIShe downloads
 only the platform asset named in that manifest, enforces bounded download and
 extraction limits, verifies its SHA-256, verifies the executable version, and
 installs it under AIShe's user data directory. An unrelated system or Homebrew
@@ -45,7 +45,7 @@ runtime's matching built-in auth hook so it can refresh the private token; user
 plugins and normal OpenCode state remain outside the managed environment.
 
 The bridge is dependency-free plain JavaScript and uses the JSON-Schema
-compatibility surface frozen for OpenCode 1.18.9; it imports no npm package.
+compatibility surface frozen for OpenCode 1.18.27; it imports no npm package.
 Because that OpenCode version otherwise starts a background plugin-SDK install
 for every config root, AIShe seeds the two private roots with an exact offline
 loader attestation and empty `node_modules` directories. Startup also disables
@@ -125,7 +125,7 @@ For an offline or mirrored setup:
 ```sh
 aishe setup --non-interactive \
   --backend opencode --install-backend \
-  --runtime-file /media/opencode-1.18.9.tar.gz \
+  --runtime-file /media/opencode-1.18.27.tar.gz \
   ...other required setup flags...
 
 # or

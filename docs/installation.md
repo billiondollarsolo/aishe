@@ -100,7 +100,7 @@ Installer/runtime controls for mirrors, offline systems, and managed images:
 
 ```sh
 AISHE_RUNTIME_BASE_URL=https://mirror.example/aishe/runtime ./install.sh
-AISHE_RUNTIME_FILE=/media/opencode-1.18.9.tar.gz ./install.sh
+AISHE_RUNTIME_FILE=/media/opencode-1.18.27.tar.gz ./install.sh
 AISHE_SKIP_BACKEND=1 ./install.sh       # binary-only recovery/development
 AISHE_SKIP_ZSH=1 ./install.sh
 ```

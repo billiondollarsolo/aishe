@@ -67,3 +67,78 @@ pub fn wrapper_zshrc() -> String {
 pub fn bash_script() -> String {
     templates::bash_script(&render_slash_dispatch(HookShell::Bash))
 }
+
+/// Bash 3.2 has no quote-aware argv splitter. Keep slash arguments as data,
+/// parse their shell-style quotes here, then re-enter the canonical CLI by argv.
+pub fn dispatch_hook_cli(id: &str, raw: &str) -> anyhow::Result<u8> {
+    use crate::command_surface::{ArgumentPolicy, Lifecycle, ShellHookAction, SurfaceSupport};
+
+    let spec = crate::command_surface::by_id(id).filter(|spec| {
+        matches!(spec.lifecycle, Lifecycle::Active)
+            && matches!(spec.hook_action(), ShellHookAction::Cli)
+            && matches!(spec.arguments, ArgumentPolicy::PassThrough(_))
+            && matches!(
+                spec.support(crate::command_surface::Surface::BashHook),
+                SurfaceSupport::Supported
+            )
+    });
+    let invocation = spec
+        .and_then(|spec| spec.cli)
+        .ok_or_else(|| anyhow::anyhow!("invalid slash-command dispatch identity"))?;
+    let mut command = std::process::Command::new(std::env::current_exe()?);
+    command.arg(invocation.command).args(invocation.prefix_args);
+    command.args(split_hook_words(raw)?);
+    let status = command.status()?;
+    Ok(status.code().unwrap_or(1).clamp(0, u8::MAX as i32) as u8)
+}
+
+fn split_hook_words(input: &str) -> anyhow::Result<Vec<String>> {
+    let mut words = Vec::new();
+    let mut word = String::new();
+    let mut quote = None;
+    let mut escaped = false;
+    let mut started = false;
+    let mut characters = input.chars().peekable();
+    while let Some(character) = characters.next() {
+        if escaped {
+            word.push(character);
+            escaped = false;
+            started = true;
+        } else if character == '\\' && quote != Some('\'') {
+            if quote == Some('"')
+                && !characters
+                    .peek()
+                    .is_some_and(|next| matches!(*next, '$' | '`' | '"' | '\\' | '\n'))
+            {
+                word.push(character);
+            } else {
+                escaped = true;
+            }
+            started = true;
+        } else if matches!(character, '\'' | '"') {
+            if quote == Some(character) {
+                quote = None;
+            } else if quote.is_none() {
+                quote = Some(character);
+                started = true;
+            } else {
+                word.push(character);
+            }
+        } else if character.is_whitespace() && quote.is_none() {
+            if started {
+                words.push(std::mem::take(&mut word));
+                started = false;
+            }
+        } else {
+            word.push(character);
+            started = true;
+        }
+    }
+    if escaped || quote.is_some() {
+        anyhow::bail!("invalid slash-command arguments: unterminated quote or escape");
+    }
+    if started {
+        words.push(word);
+    }
+    Ok(words)
+}

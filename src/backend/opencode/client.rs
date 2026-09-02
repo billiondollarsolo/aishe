@@ -149,6 +149,20 @@ impl OpenCodeClient {
         self.get_json_optional(&path, Some(&session.workspace))
     }
 
+    pub fn fork_session(&self, session: &BackendSession) -> Result<BackendSession> {
+        let path = format!("/session/{}/fork", encode_segment(&session.id));
+        let value = self.post_json(&path, Some(&session.workspace), &serde_json::json!({}))?;
+        let id = value
+            .get("id")
+            .and_then(Value::as_str)
+            .context("OpenCode fork-session response omitted id")?;
+        Ok(BackendSession {
+            id: id.to_string(),
+            workspace: session.workspace.clone(),
+            backend: "opencode".into(),
+        })
+    }
+
     /// Subscribe before admission, then submit the prompt. The returned reader
     /// must be consumed through `read_events`; dropping it is a cancellation of
     /// local rendering, not a server abort.
@@ -182,7 +196,7 @@ impl OpenCodeClient {
             "agent": agent,
             "parts": [{"type":"text","text":request.text}]
         });
-        // OpenCode 1.18.9's submit API accepts `format=json_schema`, but its
+        // OpenCode 1.18.27's submit API accepts `format=json_schema`, but its
         // durable message-read API rejects the same persisted format (including
         // the defaulted retryCount). That poisons snapshot/resume for the whole
         // session. The compatibility-pinned adapter therefore uses the strict
@@ -809,12 +823,45 @@ mod tests {
                 base_url: "https://example.com".into(),
                 username: "aishe".into(),
                 password: "secret".into(),
-                version: "1.18.9".into(),
+                version: "1.18.27".into(),
             },
             "aishe-openai",
             "test",
         )
         .is_err());
+    }
+
+    #[test]
+    fn forks_with_an_explicit_empty_json_body() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let request = read_test_request(&mut stream);
+            assert!(request.starts_with("POST /session/ses_source/fork?directory="));
+            assert_eq!(request.split("\r\n\r\n").nth(1), Some("{}"));
+            write_json_response(&mut stream, &serde_json::json!({"id":"ses_fork"}));
+        });
+        let client = OpenCodeClient::new(
+            OpenCodeConnection {
+                base_url: format!("http://127.0.0.1:{port}"),
+                username: "aishe".into(),
+                password: "private".into(),
+                version: "1.18.27".into(),
+            },
+            "aishe-openai",
+            "model",
+        )
+        .unwrap();
+        let fork = client
+            .fork_session(&BackendSession {
+                id: "ses_source".into(),
+                workspace: std::env::temp_dir(),
+                backend: "opencode".into(),
+            })
+            .unwrap();
+        server.join().unwrap();
+        assert_eq!(fork.id, "ses_fork");
     }
 
     #[test]
@@ -827,10 +874,10 @@ mod tests {
     #[test]
     fn pinned_openapi_fixture_contains_every_adapter_endpoint() {
         let fixture: Value = serde_json::from_str(include_str!(
-            "../../../tests/fixtures/opencode/v1.18.9/openapi-contract.json"
+            "../../../tests/fixtures/opencode/v1.18.27/openapi-contract.json"
         ))
         .unwrap();
-        assert_eq!(fixture["info"]["version"], "1.18.9");
+        assert_eq!(fixture["info"]["version"], "1.18.27");
         let paths = fixture["paths"].as_object().unwrap();
         for (path, method) in [
             ("/global/health", "get"),
@@ -843,6 +890,7 @@ mod tests {
             ("/session/{sessionID}/message", "get"),
             ("/session/{sessionID}/prompt_async", "post"),
             ("/session/{sessionID}/abort", "post"),
+            ("/session/{sessionID}/fork", "post"),
             ("/experimental/tool/ids", "get"),
         ] {
             assert!(
@@ -888,7 +936,7 @@ mod tests {
             assert_eq!(value["parts"][0]["text"], "capital of France?");
             assert!(
                 value.get("format").is_none(),
-                "OpenCode 1.18.9 cannot durably reread json_schema user messages"
+                "OpenCode 1.18.27 cannot durably reread json_schema user messages"
             );
             assert!(
                 value.get("messageID").is_none(),
@@ -955,7 +1003,7 @@ mod tests {
                 base_url: format!("http://127.0.0.1:{port}"),
                 username: "aishe".into(),
                 password: "private".into(),
-                version: "1.18.9".into(),
+                version: "1.18.27".into(),
             },
             "aishe-openai",
             "model",
@@ -1273,7 +1321,7 @@ mod tests {
                 base_url: format!("http://127.0.0.1:{port}"),
                 username: "aishe".into(),
                 password: "private".into(),
-                version: "1.18.9".into(),
+                version: "1.18.27".into(),
             },
             "aishe-openai",
             "model",

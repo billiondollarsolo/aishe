@@ -783,7 +783,7 @@ fn waiting_panel(
 
 fn tool_label(name: &str, arguments: &serde_json::Value) -> String {
     // The dependency-free OpenCode plugin presents one top-level `input`
-    // object so optional JSON-Schema fields remain optional in v1.18.9. Events
+    // object so optional JSON-Schema fields remain optional in v1.18.27. Events
     // therefore carry the provider-facing wrapper, while native/fallback tests
     // and completed bridge calls can still contain the direct argument shape.
     let arguments = arguments.get("input").unwrap_or(arguments);

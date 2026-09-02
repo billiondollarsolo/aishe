@@ -64,6 +64,15 @@ pub(crate) struct Args {
     /// (shell hook) Accept the configured yolo scope for this live shell.
     #[arg(long, hide = true)]
     pub(crate) accept_yolo: bool,
+    /// (bash hook) Safely parse and dispatch pass-through slash arguments.
+    #[arg(
+        long,
+        hide = true,
+        num_args = 2,
+        allow_hyphen_values = true,
+        value_names = ["COMMAND_ID", "ARGUMENTS"]
+    )]
+    pub(crate) hook_cli: Option<Vec<String>>,
     #[command(subcommand)]
     pub(crate) cmd: Option<Cmd>,
 }
@@ -144,6 +153,51 @@ pub(crate) struct SetupArgs {
     pub(crate) json: bool,
 }
 
+#[derive(clap::Args, Debug)]
+pub(crate) struct AgentArgs {
+    /// Objective for the agent. Omit it to open the guided launcher.
+    pub(crate) objective: Vec<String>,
+    /// Run in an isolated background worktree instead of this terminal.
+    #[arg(long)]
+    pub(crate) background: bool,
+    /// Workload role used to select connection, model, and reasoning.
+    #[arg(long, value_parser = ["compose", "answer", "build", "review", "embed"])]
+    pub(crate) role: Option<String>,
+    /// Override the role's connection for this task.
+    #[arg(long)]
+    pub(crate) connection: Option<String>,
+    /// Override the role's model for this task.
+    #[arg(long)]
+    pub(crate) model: Option<String>,
+    /// Agent authority for this task.
+    #[arg(long, value_parser = ["workspace", "host"])]
+    pub(crate) scope: Option<String>,
+    /// Attach a file as model-visible data (repeatable).
+    #[arg(long, value_name = "PATH")]
+    pub(crate) file: Vec<std::path::PathBuf>,
+    /// Attach a bounded directory as model-visible data (repeatable).
+    #[arg(long, value_name = "PATH")]
+    pub(crate) dir: Vec<std::path::PathBuf>,
+    /// Attach the current git diff.
+    #[arg(long)]
+    pub(crate) diff: bool,
+    /// Attach the clipboard contents.
+    #[arg(long)]
+    pub(crate) clipboard: bool,
+    /// Explicitly run a background task without git worktree isolation.
+    #[arg(long, requires = "background")]
+    pub(crate) no_isolation: bool,
+    /// Hard wall-clock allowance for a background task.
+    #[arg(long, default_value_t = 30, requires = "background")]
+    pub(crate) max_minutes: u32,
+    /// Maximum provider turns for a background task.
+    #[arg(long, default_value_t = 40, requires = "background")]
+    pub(crate) max_turns: u32,
+    /// Cost cap for this task.
+    #[arg(long)]
+    pub(crate) max_cost: Option<f64>,
+}
+
 #[derive(Subcommand, Debug)]
 pub(crate) enum Cmd {
     /// Internal managed backend supervisor.
@@ -168,6 +222,15 @@ pub(crate) enum Cmd {
         #[arg(long)]
         restart: bool,
         /// Run every lesson without terminal prompts.
+        #[arg(long)]
+        non_interactive: bool,
+    },
+    /// Run the safe guided first-session demonstration.
+    Demo {
+        /// Discard demo progress and begin again.
+        #[arg(long)]
+        restart: bool,
+        /// Run without terminal prompts.
         #[arg(long)]
         non_interactive: bool,
     },
@@ -390,6 +453,29 @@ pub(crate) enum Cmd {
         #[arg(long)]
         json: bool,
     },
+    /// Launch a foreground or isolated background agent with one coherent set of controls.
+    Agent(AgentArgs),
+    /// Show agent work that needs attention and act on it interactively.
+    Inbox {
+        /// Emit stable JSON instead of opening the inbox.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Show the active model's cached capability evidence.
+    Capabilities {
+        /// Emit stable JSON.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Run local checks and optional paid live model/tool validation.
+    Test {
+        /// Make minimal paid model, structured-output, tool, and streaming requests.
+        #[arg(long)]
+        live: bool,
+        /// Emit stable JSON.
+        #[arg(long)]
+        json: bool,
+    },
     /// Explain whether a line will run in the shell, reach the agent, or invoke a builtin.
     Route {
         /// Emit the schema-versioned route decision as JSON.
@@ -558,7 +644,14 @@ pub(crate) enum Cmd {
         /// Persistently include an optional section (repeatable).
         #[arg(long, value_name = "SECTION")]
         include: Vec<String>,
+        /// Print the exact redacted local context and expanded attachments sent with a request.
+        #[arg(long)]
+        show: bool,
     },
+    /// Interactively create or inspect a durable background-task plan.
+    Plan { id: Option<String> },
+    /// Interactively replace a plan while retaining matching completed steps.
+    Replan { id: Option<String> },
     /// Generate a runnable script + markdown runbook from a recorded session.
     Runbook {
         /// The audit session id to export (default: the most recent session).
@@ -627,6 +720,12 @@ pub(crate) enum BackgroundTaskCmd {
     Resume { id: String },
     /// Show the patch in an isolated task worktree.
     Review { id: String },
+    /// Ask the agent to revise a completed or failed isolated task.
+    Rework {
+        id: String,
+        #[arg(required = true)]
+        instructions: Vec<String>,
+    },
     /// Apply an isolated task patch to its source repository.
     Apply {
         id: String,
@@ -654,6 +753,9 @@ pub(crate) enum BackgroundTaskCmd {
         step: u32,
         #[arg(value_parser = ["pending", "active", "completed", "blocked"])]
         state: String,
+        /// Evidence supporting this checkpoint state.
+        #[arg(long)]
+        evidence: Option<String>,
     },
 }
 
@@ -963,6 +1065,8 @@ pub(crate) enum TaskSessionCmd {
     Rename { id: String, name: String },
     /// Delete exactly one task record.
     Delete { id: String },
+    /// Fork a managed conversation, preserving its history and switching this shell to the fork.
+    Fork { id: Option<String> },
 }
 
 #[derive(Subcommand, Debug)]
@@ -1076,6 +1180,7 @@ pub(crate) fn session_action(command: &TaskSessionCmd) -> aishe::cli::session::A
             name: name.clone(),
         },
         TaskSessionCmd::Delete { id } => aishe::cli::session::Action::Delete { id: id.clone() },
+        TaskSessionCmd::Fork { id } => aishe::cli::session::Action::Fork { id: id.clone() },
     }
 }
 
@@ -1115,6 +1220,10 @@ pub(crate) fn background_task_action(command: &BackgroundTaskCmd) -> aishe::back
         BackgroundTaskCmd::Cancel { id } => Action::Cancel { id: id.clone() },
         BackgroundTaskCmd::Resume { id } => Action::Resume { id: id.clone() },
         BackgroundTaskCmd::Review { id } => Action::Review { id: id.clone() },
+        BackgroundTaskCmd::Rework { id, instructions } => Action::Rework {
+            id: id.clone(),
+            instructions: instructions.join(" "),
+        },
         BackgroundTaskCmd::Apply { id, hunks } => Action::Apply {
             id: id.clone(),
             hunks: hunks.clone(),
@@ -1128,7 +1237,12 @@ pub(crate) fn background_task_action(command: &BackgroundTaskCmd) -> aishe::back
             id: id.clone(),
             steps: steps.clone(),
         },
-        BackgroundTaskCmd::Step { id, step, state } => Action::Step {
+        BackgroundTaskCmd::Step {
+            id,
+            step,
+            state,
+            evidence,
+        } => Action::Step {
             id: id.clone(),
             step: *step,
             state: match state.as_str() {
@@ -1137,6 +1251,7 @@ pub(crate) fn background_task_action(command: &BackgroundTaskCmd) -> aishe::back
                 "blocked" => StepState::Blocked,
                 _ => StepState::Pending,
             },
+            evidence: evidence.clone(),
         },
     }
 }
@@ -1214,7 +1329,10 @@ impl Args {
                 | Cmd::Sessions { json }
                 | Cmd::Context { json, .. }
                 | Cmd::Index { json, .. }
-                | Cmd::Palette { json, .. },
+                | Cmd::Palette { json, .. }
+                | Cmd::Inbox { json }
+                | Cmd::Capabilities { json }
+                | Cmd::Test { json, .. },
             ) => *json,
             Some(Cmd::Ask { json, schema, .. }) => *json || schema.is_some(),
             Some(Cmd::Last {

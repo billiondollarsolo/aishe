@@ -151,7 +151,7 @@ mod tests {
     #[test]
     fn embedded_manifest_is_complete_and_strict() {
         let manifest = RuntimeManifest::embedded().unwrap();
-        assert_eq!(manifest.version, "1.18.9");
+        assert_eq!(manifest.version, "1.18.27");
         assert_eq!(manifest.assets.len(), 6);
         assert!(manifest.assets.iter().all(|asset| asset.size > 40_000_000));
     }
@@ -200,7 +200,7 @@ mod tests {
         let manifest = RuntimeManifest::embedded().unwrap();
         let asset = &manifest.assets[0];
         let url = manifest.source_url(asset, None);
-        assert!(url.contains("/v1.18.9/"));
+        assert!(url.contains("/v1.18.27/"));
         assert!(!url.contains("/latest/"));
         assert_eq!(
             manifest.source_url(asset, Some("https://mirror.invalid/runtime/")),

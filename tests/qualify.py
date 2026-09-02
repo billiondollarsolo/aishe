@@ -604,8 +604,8 @@ def _corpora(root: pathlib.Path) -> list[dict[str, object]]:
         ("boundary-fuzz", "tests/boundary_fuzz.rs"),
         ("live-model-classification", "tests/real_model.py"),
         ("live-model-fuzz", "tests/real_fuzz.py"),
-        ("opencode-events", "tests/fixtures/opencode/v1.18.9/events.jsonl"),
-        ("opencode-api-contract", "tests/fixtures/opencode/v1.18.9/openapi-contract.json"),
+        ("opencode-events", "tests/fixtures/opencode/v1.18.27/events.jsonl"),
+        ("opencode-api-contract", "tests/fixtures/opencode/v1.18.27/openapi-contract.json"),
     )
     return [
         {"id": corpus_id, "path": relative, "sha256": _sha256(root / relative)}

@@ -742,7 +742,7 @@ mod tests {
         let manager = RuntimeManager::with_root(root.clone()).unwrap();
         assert!(matches!(
             manager.status(),
-            RuntimeStatus::Missing { expected_version } if expected_version == "1.18.9"
+            RuntimeStatus::Missing { expected_version } if expected_version == "1.18.27"
         ));
         assert!(!root.exists());
     }
@@ -801,7 +801,7 @@ mod tests {
 
     #[cfg(unix)]
     fn synthetic_archive(root: &Path) -> PathBuf {
-        synthetic_archive_version(root, "1.18.9")
+        synthetic_archive_version(root, "1.18.27")
     }
 
     #[cfg(unix)]

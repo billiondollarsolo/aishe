@@ -95,6 +95,7 @@ pub fn context(
     json_output: bool,
     excludes: &[String],
     includes: &[String],
+    show: bool,
 ) -> Result<u8> {
     const OPTIONAL: &[&str] = &[
         "history",
@@ -162,6 +163,27 @@ pub fn context(
     let mut executor = Executor::new()?;
     executor.set_history_log(crate::cli::history::history_paths(&effective).1);
     context::init(executor.shell());
+    if show {
+        let request = request.unwrap_or("");
+        let expanded = crate::attachments::expand(request, executor.cwd(), &effective)?;
+        println!("--- model-visible local context (redacted) ---");
+        print!("{}", context::build(&executor, &effective));
+        if !request.is_empty() {
+            println!(
+                "\nUser request: {}",
+                crate::commands::display_safe_multiline(&expanded.prompt)
+            );
+        }
+        println!("--- end model-visible local context ---");
+        if !expanded.sources.is_empty() {
+            eprintln!(
+                "attachments: {} · {} bytes",
+                expanded.sources.join(", "),
+                expanded.bytes
+            );
+        }
+        return Ok(0);
+    }
     if !explain
         && request.is_none()
         && !json_output
@@ -220,6 +242,99 @@ pub fn context(
         );
     }
     Ok(0)
+}
+
+pub fn capabilities(config: &Config, json: bool) -> Result<u8> {
+    let report = crate::capabilities::load(config);
+    if json {
+        crate::cli::json_contract::print_object(&serde_json::json!({
+            "schema_version": 1,
+            "available": report.is_some(),
+            "report": report,
+        }))?;
+    } else if let Some(report) = report {
+        print_capability_report(&report);
+        println!(
+            "  agent: {}",
+            if report.live_verified() {
+                "ready"
+            } else {
+                "needs `aishe test --live`"
+            }
+        );
+    } else {
+        println!("no capability evidence for the active connection/model");
+        println!(
+            "run `aishe test --live` to validate text, structured output, tools, and streaming"
+        );
+    }
+    Ok(0)
+}
+
+pub fn self_test(config: &Config, live: bool, json: bool) -> Result<u8> {
+    let started = std::time::Instant::now();
+    let report = if live {
+        crate::capabilities::validate(config, true)
+    } else {
+        crate::capabilities::load(config)
+            .unwrap_or_else(|| crate::capabilities::validate(config, false))
+    };
+    let sandbox_backend = crate::sandbox::backend(config);
+    let sandbox = format!("{sandbox_backend:?}").to_ascii_lowercase();
+    let local_ok = config.aishe.redact_secrets;
+    let passed = local_ok && (!live || report.verified());
+    let elapsed_ms = started.elapsed().as_millis();
+    if json {
+        crate::cli::json_contract::print_object(&serde_json::json!({
+            "schema_version": 1,
+            "passed": passed,
+            "live": live,
+            "elapsed_ms": elapsed_ms,
+            "local": {
+                "config": "pass",
+                "redaction": if config.aishe.redact_secrets { "pass" } else { "fail" },
+                "statusline_position": if config.aishe.status_line { "below" } else { "off" },
+                "sandbox": {
+                    "backend": sandbox,
+                    "enabled": !matches!(sandbox_backend, crate::sandbox::Backend::Off),
+                },
+                "unicode": format!("{:?}", crate::ui::TerminalCapabilities::detect_stdout().unicode).to_ascii_lowercase(),
+            },
+            "provider": report,
+        }))?;
+    } else {
+        println!("AIShe self-test · {} ms", elapsed_ms);
+        println!("  ✓ config parsed");
+        println!(
+            "  {} secret redaction",
+            if config.aishe.redact_secrets {
+                "✓"
+            } else {
+                "✗"
+            }
+        );
+        println!(
+            "  {} statusline",
+            if config.aishe.status_line {
+                "✓ below prompt"
+            } else {
+                "· off"
+            }
+        );
+        println!(
+            "  {} {sandbox} sandbox policy",
+            if matches!(sandbox_backend, crate::sandbox::Backend::Off) {
+                "·"
+            } else {
+                "✓"
+            }
+        );
+        print_capability_report(&report);
+        if !live {
+            println!("  · cached/provider metadata only; add --live for paid end-to-end checks");
+        }
+    }
+    Ok(if passed { 0 } else { 1 })
 }
 
 fn context_cockpit(mut config: Config, executor: &Executor) -> Result<u8> {

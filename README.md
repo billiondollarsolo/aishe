@@ -245,14 +245,18 @@ aishe setup            guided configuration (--verify checks only)
 aishe settings         interactive settings hub
 aishe auth ...         API keys + OpenAI/xAI OAuth login/status/logout
 aishe connection ...   list/add/edit/remove/use/show/pick named accounts
-aishe tour             first-session walkthrough
+aishe tour|demo        safe first-session walkthrough
 aishe init zsh|bash    shell-hook snippet for ~/.zshrc / ~/.bashrc
 aishe doctor           diagnostics (--probe / --live / --json / --fix / --bundle)
 aishe backend ...      managed OpenCode install/verify/repair/rollback/logs
 aishe model [NAME]     shell-local model on active (or --connection) account
 aishe models           list models for a connection
 aishe mode|scope|network|output|reasoning|status|config|mcp|role|…
-aishe task|last|index|palette|ask|sessions|resume|reset|undo|usage|update|…
+aishe agent            guided/scriptable foreground or isolated background agent
+aishe inbox            review, resume, rework, or inspect background work
+aishe capabilities     cached evidence for text/JSON/tools/streaming
+aishe test [--live]    offline health check; --live makes minimal paid probes
+aishe task|plan|context|last|index|palette|ask|sessions|resume|reset|undo|…
 ```
 
 `aishe --help` and `man aishe` list the full surface. Complete reference:
@@ -273,6 +277,13 @@ Daily-driver examples and safety boundaries:
 /log            recent audit events
 /reasoning      shell-local reasoning effort
 /details        expand agent transcript (Ctrl-O)
+/               fuzzy command/session/task/model/MCP palette
+/agent          guided foreground/background agent launcher
+/inbox          agent work needing attention
+/sessions       browse/resume/fork durable conversations
+/context        inspect model-visible local context and token estimates
+/capabilities   show active-model capability evidence
+/test [--live]  offline checks or explicit paid end-to-end validation
 /settings       interactive settings editor
 /reset          fresh conversation (prior session retained)
 /commands       same as /help

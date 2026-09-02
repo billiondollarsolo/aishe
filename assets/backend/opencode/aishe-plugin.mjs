@@ -115,7 +115,7 @@ async function invoke(tool, args, context) {
 }
 
 function proxy(name, description, properties, required) {
-  // OpenCode 1.18.9 accepts dependency-free JSON Schema values in plugin tool
+  // OpenCode 1.18.27 accepts dependency-free JSON Schema values in plugin tool
   // definitions. It treats every top-level entry as required, so the public
   // contract deliberately has one `input` object and expresses optional fields
   // inside it. Aishe validates the same schema again before crossing the bridge.

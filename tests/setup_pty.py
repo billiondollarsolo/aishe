@@ -845,7 +845,7 @@ def tour_pause_resume_skip_restart_and_complete(root, env):
     paused = Pty([BINARY, "tour"], env)
     try:
         paused.expect("1. Normal shell commands")
-        paused.expect("Lesson 1 of 7")
+        paused.expect("Lesson 1 of 8")
         paused.menu(3)  # exit and resume later
         paused.expect("Tour paused")
         if paused.finish() != 0:
@@ -856,11 +856,11 @@ def tour_pause_resume_skip_restart_and_complete(root, env):
     resumed = Pty([BINARY, "tour"], env)
     try:
         resumed.expect("1. Normal shell commands")
-        resumed.expect("Lesson 1 of 7")
+        resumed.expect("Lesson 1 of 8")
         resumed.menu(2)  # skip lesson one
         resumed.expect("2. Natural-language routing")
         resumed.expect("not verified; lesson stays offline")
-        resumed.expect("Lesson 2 of 7")
+        resumed.expect("Lesson 2 of 8")
         resumed.menu(3)  # pause on lesson two
         resumed.expect("Tour paused")
         if resumed.finish() != 0:
@@ -877,11 +877,12 @@ def tour_pause_resume_skip_restart_and_complete(root, env):
         "5. File change and undo",
         "6. Modes and safety",
         "7. Your persistent state",
+        "8. Your daily agent workflow",
     ]
     try:
         for index, lesson in enumerate(lessons, start=1):
             restarted.expect(lesson)
-            restarted.expect("Lesson %d of 7" % index)
+            restarted.expect("Lesson %d of 8" % index)
             restarted.menu(1)
         restarted.expect("Tour complete")
         if restarted.finish() != 0:
@@ -892,7 +893,7 @@ def tour_pause_resume_skip_restart_and_complete(root, env):
     state_path = os.path.join(root, "data", "aishe", "tour", "state.json")
     with open(state_path, encoding="utf-8") as file:
         state = json.load(file)
-    if not state.get("completed") or state.get("next_lesson") != 7:
+    if not state.get("completed") or state.get("next_lesson") != 8:
         raise AssertionError("tour did not persist completed state: %r" % state)
     undo_demo = os.path.join(root, "data", "aishe", "tour", "workspace", "undo-demo.txt")
     if os.path.exists(undo_demo):
