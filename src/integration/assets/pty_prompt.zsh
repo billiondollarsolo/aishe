@@ -7,7 +7,7 @@ if [[ -o interactive && "${AISHE_PTY_PROMPT:-1}" == 1 ]]; then
   aishe_set_prompt() {
     local glyph connection connection_label provider endpoint auth selection identity model reasoning mode backend scope status_text status_row base_prompt key value item branch environment max_width
     local -A metrics
-    local -a status_items
+    local -a status_items item_values
     if [[ -n "${AISHE_MODEL_FILE:-}" && -r "${AISHE_MODEL_FILE}" ]]; then
       IFS= read -r AISHE_MODEL < "${AISHE_MODEL_FILE}"
     fi
@@ -104,7 +104,16 @@ if [[ -o interactive && "${AISHE_PTY_PROMPT:-1}" == 1 ]]; then
           ;;
         *) value="${metrics[$item]:-}" ;;
       esac
-      if [[ -n "$value" ]]; then
+      # Keep the composite identity complete by wrapping its natural fields.
+      # Other individual values remain bounded in case a provider supplies an
+      # unusually long model or label.
+      if [[ "$item" == identity ]]; then
+        item_values=("${(@s: · :)value}")
+      else
+        item_values=("$value")
+      fi
+      for value in "${item_values[@]}"; do
+        [[ -n "$value" ]] || continue
         if (( max_width > 12 && ${#value} > max_width )); then
           if [[ "${AISHE_UNICODE:-unicode}" == ascii ]]; then
             value="${value[1,$((max_width - 3))]}..."
@@ -119,7 +128,7 @@ if [[ -o interactive && "${AISHE_PTY_PROMPT:-1}" == 1 ]]; then
           status_text="${status_text:+${status_text} · }${value}"
           status_row="${status_row:+${status_row} · }${value}"
         fi
-      fi
+      done
     done
     # Keep provider/model text out of PROMPT/RPROMPT. Themes commonly enable
     # PROMPT_SUBST, which would otherwise evaluate `$()` or backticks.

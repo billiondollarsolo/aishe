@@ -208,7 +208,8 @@ request count, and background-task count are rendered through ZLE
 prompt; `RPROMPT` is always empty. Legacy `status_line_position = "right"`
 migrates to `below`. Set `below` or `off` in setup/settings.
 
-The display truncates to terminal width and treats provider/model text as data,
+The display wraps the composite identity at field boundaries, truncates any
+single overlong field to terminal width, and treats provider/model text as data,
 not prompt expansion. Unicode improves the glyphs, but no patched or Nerd Font
 is required. `ui.unicode = "ascii"`, a missing UTF-8 locale, `TERM=dumb`, or
 redirected output selects functional ASCII/plain fallbacks. Shipping a font
