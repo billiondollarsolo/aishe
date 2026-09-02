@@ -1157,6 +1157,10 @@ impl Config {
     /// power loss mid-write can never leave a truncated/corrupt config behind.
     pub fn save(&self) -> Result<()> {
         let path = Self::path();
+        self.save_to(&path)
+    }
+
+    fn save_to(&self, path: &Path) -> Result<()> {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)
                 .with_context(|| format!("creating config dir {}", parent.display()))?;
@@ -1167,9 +1171,9 @@ impl Config {
         persisted.validate_connections()?;
         persisted.version = CONFIG_SCHEMA_VERSION;
         let text = toml::to_string_pretty(&persisted).context("serializing config")?;
-        write_atomic(&path, text.as_bytes())
+        write_atomic(path, text.as_bytes())
             .with_context(|| format!("writing config {}", path.display()))?;
-        set_private_file(&path);
+        set_private_file(path);
         Ok(())
     }
 
@@ -2400,22 +2404,17 @@ mod tests {
     }
 
     #[test]
-    fn save_load_round_trip_via_xdg_dir() {
-        // Point XDG_CONFIG_HOME at a temp dir so Config::path() lands there, then
-        // round-trip a Config through save()/load_from(). Env vars are global, so
-        // restore the prior value afterward.
+    fn save_load_round_trip_at_explicit_path() {
         let dir = TempDir::new("xdg");
-        let prev = std::env::var_os("XDG_CONFIG_HOME");
-        std::env::set_var("XDG_CONFIG_HOME", &dir.path);
+        let path = dir.path.join("config.toml");
 
         let mut cfg = Config::default();
         cfg.aishe.mode = "yolo".into();
         cfg.aishe.provider = "openai".into();
         cfg.providers.openai.model = "gpt-4o-mini".into();
         cfg.aishe.budget_usd = 1.25;
-        cfg.save().unwrap();
+        cfg.save_to(&path).unwrap();
 
-        let path = Config::path();
         let loaded = Config::load_from(&path).unwrap();
         assert_eq!(loaded.aishe.mode, "yolo");
         assert_eq!(loaded.aishe.provider, "openai");
@@ -2429,11 +2428,6 @@ mod tests {
             0,
             "a .tmp. file was left behind in the config dir"
         );
-
-        match prev {
-            Some(v) => std::env::set_var("XDG_CONFIG_HOME", v),
-            None => std::env::remove_var("XDG_CONFIG_HOME"),
-        }
     }
 
     #[test]
