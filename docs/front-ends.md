@@ -37,15 +37,16 @@ branded prompt whose glyph reflects the mode). The hook ergonomics described in
 [Shell integration](shell-integration.md) apply here, since the PTY wrapper
 injects the same hook.
 
-**The branded prompt overrides your own.** By default (`pty_prompt = true`) aishe
-replaces your zsh prompt with its `<cwd> <glyph>` plus configurable status line,
-so any git-aware segments (branch, dirty, ahead/behind) from powerlevel10k or a
-similar theme are hidden while you are in aishe. Only the *prompt* is overridden:
-everything else is your real zsh, so zsh-autosuggestions, zsh-syntax-highlighting,
-your completions, fzf-tab, and oh-my-zsh all behave exactly as usual. To keep your
-own prompt, set `pty_prompt = false`. This is recommended for powerlevel10k users
-in particular, since p10k's instant-prompt and transient-prompt can otherwise
-conflict with the branded prompt.
+**Your prompt is only branded when you have not set one.** With
+`pty_prompt = true` (the default) aishe brands the left prompt as
+`<cwd> <glyph>` only if your zshrc leaves zsh's stock prompt in place.
+powerlevel10k, starship, pure, or any personal `PROMPT` is never replaced; the
+mode glyph then lives in the right-prompt status instead. Everything else is
+your real zsh, so zsh-autosuggestions, zsh-syntax-highlighting, your
+completions, fzf-tab, and oh-my-zsh behave exactly as usual. Set
+`AISHE_PTY_PROMPT=force` to brand the prompt even over a theme, or
+`pty_prompt = false` to never brand it. The status line is configured by
+`status_line*` and is independent of this flag.
 
 On a minimal account with no syntax-highlighting plugin, aishe supplies a
 route-aware fallback: complete command-shaped input is green and recognized

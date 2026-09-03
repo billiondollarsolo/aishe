@@ -178,9 +178,15 @@ fn run_zsh_inner(config: &Config, history_log: &std::path::Path, shell_id: Strin
     } else {
         None
     };
+    // `1` brands the left prompt only when the user left zsh's stock prompt in
+    // place; an explicit AISHE_PTY_PROMPT=force in the environment wins, so a
+    // theme user can still ask for the branded prompt.
     cmd.env(
         "AISHE_PTY_PROMPT",
-        if config.aishe.pty_prompt { "1" } else { "0" },
+        match std::env::var("AISHE_PTY_PROMPT").as_deref() {
+            Ok("force") => "force".to_string(),
+            _ => if config.aishe.pty_prompt { "1" } else { "0" }.to_string(),
+        },
     );
     // Shared per-session usage tally: each NL child process appends its metered
     // usage here so we can print a one-line session summary on exit. Removed on

@@ -135,7 +135,9 @@ def environment(position):
             % (enabled, position, model, model)
         )
     with open(os.path.join(home, ".zshrc"), "w", encoding="utf-8") as file:
-        file.write("unset HISTFILE\nPROMPT='USER_PROMPT> '\n")
+        # Leave zsh's stock prompt: the branded prompt is only applied when the
+        # user has not set one of their own (see tests/theme_prompt_pty.py).
+        file.write("unset HISTFILE\n")
     bin_dir = os.path.join(home, "bin")
     os.makedirs(bin_dir)
     os.symlink(BINARY, os.path.join(bin_dir, "aishe"))
@@ -191,7 +193,9 @@ def run_case(position, cols, expected_position=None):
 
         if position != "off":
             shell.send(
-                "AISHE_STATUS_ITEMS=identity,model; aishe_set_prompt status-only; "
+                # A short cwd keeps the prompt narrow: the status budget is now
+                # computed against the prompt actually on screen.
+                "AISHE_STATUS_ITEMS=identity,model; builtin cd /; aishe_set_prompt status-only; "
                 "print -r -- BEGIN_''STATUS; print -r -- \"$_AISHE_STATUS_TEXT\"; "
                 "print -r -- \"RPROMPT=$RPROMPT\"; print -r -- \"POSTDISPLAY=$POSTDISPLAY\"; "
                 "print -r -- END_''STATUS; "

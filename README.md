@@ -75,7 +75,8 @@ Full routing, Option/Alt+Return, and Mac terminal Meta settings:
 ## Features
 
 - **Your real zsh, untouched.** Plugins, completions, prompt, aliases, key
-  bindings, and job control work unmodified — not a shell reimplementation.
+  bindings, and job control work unmodified — not a shell reimplementation. A
+  prompt theme is never replaced; the mode glyph moves into the status instead.
 - **A real agent engine, still one shell.** Every AI turn uses AIShe's
   version-pinned OpenCode backend for durable conversations, reasoning,
   compaction, and subagents. It starts lazily on authenticated loopback, never

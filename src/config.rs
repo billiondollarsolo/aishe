@@ -325,9 +325,12 @@ pub struct AisheConfig {
     /// are ever re-run, so a destructive or network command is never re-executed.
     #[serde(default)]
     pub fix_capture_stderr: bool,
-    /// In the zsh-PTY front-end, override the prompt with aishe's branded prompt
-    /// (`<cwd> <glyph>`, glyph per mode) so it's obvious you're in aishe. On by
-    /// default; set false to keep your real zsh prompt untouched.
+    /// In the zsh-PTY front-end, brand the left prompt (`<cwd> <glyph>`, glyph
+    /// per mode) when your zshrc leaves zsh's stock prompt in place. A theme or
+    /// a custom `PROMPT` is never replaced; the mode glyph then lives in the
+    /// right-prompt status. Set `AISHE_PTY_PROMPT=force` to brand anyway, or
+    /// this to false to never brand. The status itself is controlled by
+    /// `status_line*`, not by this flag.
     #[serde(default = "default_true")]
     pub pty_prompt: bool,
     /// zsh `AUTO_PUSHD`: every `cd` pushes the previous directory onto the stack
@@ -712,8 +715,8 @@ fn default_hook_timeout_secs() -> u32 {
 }
 fn default_status_line_items() -> Vec<String> {
     vec![
-        "model".to_string(),
         "mode".to_string(),
+        "model".to_string(),
         "scope".to_string(),
         "session_tokens".to_string(),
         "session_cost".to_string(),

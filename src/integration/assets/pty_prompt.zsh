@@ -1,5 +1,5 @@
 # --- aishe branded prompt (PTY front-end; pty_prompt config) ---
-if [[ -o interactive && "${AISHE_PTY_PROMPT:-1}" == 1 ]]; then
+if [[ -o interactive ]]; then
   autoload -Uz add-zsh-hook
   typeset -g _AISHE_STATUS_TEXT=""
   typeset -g _AISHE_STATUS_PROMPT=""
@@ -8,8 +8,16 @@ if [[ -o interactive && "${AISHE_PTY_PROMPT:-1}" == 1 ]]; then
   typeset -g _AISHE_PROMPT_HOST="native"
   typeset -gi _AISHE_STATUS_PSVAR_LAST=89
   typeset -g _AISHE_PROMPT_VALUE=""
-  autoload -Uz vcs_info
-  zstyle ':vcs_info:git:*' formats '%b'
+  # Brand the left prompt only when the user has not set one: zsh's stock
+  # prompt, or macOS /etc/zshrc's. A theme or a personal PROMPT stays untouched
+  # and the mode glyph lives in the right-prompt status instead.
+  # AISHE_PTY_PROMPT=0 never brands, =force always does.
+  typeset -gi _AISHE_BRAND_PROMPT=0
+  case "${PROMPT-}" in
+    ''|'%m%# '|'%n@%m %1~ %# ') _AISHE_BRAND_PROMPT=1 ;;
+  esac
+  [[ "${AISHE_PTY_PROMPT:-1}" == 0 ]] && _AISHE_BRAND_PROMPT=0
+  [[ "${AISHE_PTY_PROMPT:-1}" == force ]] && _AISHE_BRAND_PROMPT=1
   aishe_set_prompt() {
     local glyph connection connection_label provider endpoint auth selection model reasoning mode backend scope status_text status_prompt status_row base_prompt key value item field style branch environment max_width i duplicate seen prompt_open prompt_close prompt_index
     local -A metrics
@@ -60,8 +68,10 @@ if [[ -o interactive && "${AISHE_PTY_PROMPT:-1}" == 1 ]]; then
       [[ -n "$scope" ]] && AISHE_SCOPE="$scope"
     fi
     scope="${AISHE_SCOPE:-workspace}"
-    vcs_info
-    branch="${vcs_info_msg_0_:-}"
+    branch=""
+    if [[ -n "${AISHE_PROTECTED_PATTERNS:-}" || ",${AISHE_STATUS_ITEMS:-}," == *,branch,* ]]; then
+      branch="$(command git symbolic-ref --short -q HEAD 2>/dev/null)"
+    fi
     environment="${AISHE_ENVIRONMENT:-}"
     if [[ -n "$branch" && -n "${AISHE_PROTECTED_PATTERNS:-}" ]]; then
       local pattern
@@ -82,11 +92,29 @@ if [[ -o interactive && "${AISHE_PTY_PROMPT:-1}" == 1 ]]; then
     status_prompt=""
     status_row=""
     seen_values=()
-    max_width=$(( ${COLUMNS:-80} - 20 ))
+    base_prompt="%B%F{cyan}%~%f%b %(?.%F{green}.%F{red})${glyph}%f "
+    # A key-triggered refresh may run after Starship/Powerlevel10k has replaced
+    # AIShe's prompt. Update AIShe-owned glyphs, but never seize a theme's prompt.
+    if (( _AISHE_BRAND_PROMPT )) && [[ "$_AISHE_PROMPT_HOST" != spaceship &&
+          ( "${1:-}" != status-only || "$PROMPT" == "$_AISHE_PROMPT_VALUE" ) ]]; then
+      PROMPT="${base_prompt}"
+      _AISHE_PROMPT_VALUE="$PROMPT"
+    fi
+    # Budget against the prompt actually on screen, in cells. zsh hides the
+    # whole right prompt when it does not fit, so an over-generous budget made
+    # the mode vanish on narrow terminals instead of shortening the status.
+    local left_plain="${(S)${(%%)PROMPT}//$'\e'\[[0-9;]#m/}"
+    local -i left_cells=${(m)#left_plain}
+    local -i user_rprompt_cells=0
+    if [[ -n "$_AISHE_USER_RPROMPT" ]]; then
+      local user_plain="${(S)${(%%)_AISHE_USER_RPROMPT}//$'\e'\[[0-9;]#m/}"
+      user_rprompt_cells=$(( ${(m)#user_plain} + 3 ))
+    fi
+    max_width=$(( ${COLUMNS:-80} - left_cells - user_rprompt_cells - 2 ))
     (( max_width > 72 )) && max_width=72
-    (( max_width < 20 )) && max_width=20
+    (( max_width < 8 )) && max_width=8
     prompt_index=90
-    status_items=("${(@s:,:)${AISHE_STATUS_ITEMS:-identity,mode,scope,session_cost,requests}}")
+    status_items=("${(@s:,:)${AISHE_STATUS_ITEMS:-mode,model,scope,session_tokens,session_cost,requests}}")
     for item in "${status_items[@]}"; do
       value=""
       case "$item" in
@@ -150,7 +178,7 @@ if [[ -o interactive && "${AISHE_PTY_PROMPT:-1}" == 1 ]]; then
         done
         (( duplicate )) && continue
         seen_values+=("$value")
-        if (( max_width > 12 && ${#value} > max_width )); then
+        if (( max_width > 12 && ${(m)#value} > max_width )); then
           if [[ "${AISHE_UNICODE:-unicode}" == ascii ]]; then
             value="${value[1,$((max_width - 3))]}..."
           else
@@ -177,8 +205,8 @@ if [[ -o interactive && "${AISHE_PTY_PROMPT:-1}" == 1 ]]; then
             plan|task|tasks) style='fg=204' ;;
           esac
         fi
-        if [[ -n "$status_row" ]] && (( ${#status_row} + ${#value} + 3 > max_width )); then
-          continue
+        if [[ -n "$status_row" ]] && (( ${(m)#status_row} + ${(m)#value} + 3 > max_width )); then
+          break
         fi
         if [[ -n "$status_row" ]]; then
           status_text+=' · '
@@ -212,14 +240,6 @@ if [[ -o interactive && "${AISHE_PTY_PROMPT:-1}" == 1 ]]; then
     _AISHE_STATUS_PSVAR_LAST=$(( prompt_index - 1 ))
     _AISHE_STATUS_TEXT="$status_text"
     _AISHE_STATUS_PROMPT="$status_prompt"
-    base_prompt="%B%F{cyan}%~%f%b %(?.%F{green}.%F{red})${glyph}%f "
-    # A key-triggered refresh may run after Starship/Powerlevel10k has replaced
-    # AIShe's prompt. Update AIShe-owned glyphs, but never seize a theme's prompt.
-    if [[ "$_AISHE_PROMPT_HOST" != spaceship &&
-          ( "${1:-}" != status-only || "$PROMPT" == "$_AISHE_PROMPT_VALUE" ) ]]; then
-      PROMPT="${base_prompt}"
-      _AISHE_PROMPT_VALUE="$PROMPT"
-    fi
     if [[ "$_AISHE_PROMPT_HOST" == spaceship ]]; then
       spaceship::core::refresh_section --sync aishe
     else
