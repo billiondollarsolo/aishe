@@ -782,7 +782,11 @@ def qualify_bash(binary: str, identity: BashIdentity) -> BashResult:
             shell.expect_prompt()
             calls = paths["call_log"].read_text(encoding="utf-8")
             slash_calls = calls[len(calls_before_slash) :]
-            if "commands" in slash_calls and "status" in slash_calls:
+            # Optional-value slash commands reach AIShe through --hook-cli, which
+            # word-splits the argument; the identity is what matters here.
+            help_seen = "commands" in slash_calls or "--hook-cli help" in slash_calls
+            status_seen = "status" in slash_calls
+            if help_seen and status_seen:
                 passed("slash-command-dispatch", "/help and /status")
             else:
                 failed(

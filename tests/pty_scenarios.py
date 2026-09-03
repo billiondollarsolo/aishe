@@ -169,6 +169,7 @@ def make_env(binary):
             'provider = "anthropic"\n'
             'front_end = "zsh-pty"\n'
             "pty_prompt = false\n"         # use the plain zsh prompt for stable matching
+            "status_line = false\n"        # and no right-prompt status either
             '\n[backend]\n'
             'engine = "native"\n'
             'default_scope = "host"\n'
@@ -660,7 +661,17 @@ def main():
             "yolo-host acceptance phrase is visible, not secret input",
             sh.expect("yolo-host\r\n"),
         )
-        check(sh, "Shift-Tab cycles the mode", sh.expect("aishe mode: yolo"))
+        # With the prompt function present the cycle refreshes the prompt rather
+        # than printing a message, so assert the shell state itself. This must
+        # run before reset_editor: its Ctrl-C races the widget.
+        mode_start = len(sh.transcript)
+        sh.send("print -r -- MODE_''NOW=$AISHE_MODE")
+        sh.expect("MODE_NOW=")
+        check(
+            sh,
+            "Shift-Tab cycles the mode",
+            "MODE_NOW=yolo" in SGR.sub("", sh.transcript[mode_start:]),
+        )
         check(
             sh,
             "mode switch returns to a ready prompt",
@@ -678,7 +689,7 @@ def main():
         check(sh, "/help includes live status", sh.expect("/status"))
         sh.expect_prompt()
         sh.send("/status")
-        check(sh, "/status is available at the prompt", sh.expect("aishe status"))
+        check(sh, "/status is available at the prompt", sh.expect("AIShe status"))
         check(sh, "/status shows output density", sh.expect("output: focus"))
         sh.expect_prompt()
 
@@ -687,14 +698,20 @@ def main():
         sh.raw(b"\x0f")
         check(
             sh,
-            "Ctrl-O reveals agent details for the current shell",
-            sh.expect("aishe agent details: detailed"),
+            "Ctrl-O changes agent detail for the current shell",
+            sh.expect("details: compact (this shell)"),
+        )
+        sh.raw(b"\x0f")
+        check(
+            sh,
+            "Ctrl-O keeps cycling the density",
+            sh.expect("details: detailed (this shell)"),
         )
         sh.raw(b"\x0f")
         check(
             sh,
             "Ctrl-O returns to focus output",
-            sh.expect("aishe agent details: focus"),
+            sh.expect("details: focus (this shell)"),
         )
         # The detail toggle repaints ZLE asynchronously. Discard its prior
         # prompt bytes, interrupt the empty line, then prove a fresh command can
