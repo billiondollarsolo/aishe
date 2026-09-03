@@ -598,7 +598,7 @@ fn run() -> Result<u8> {
             } else {
                 println!("model-invoked skills (yolo mode):");
                 for (name, desc) in skills.list() {
-                    println!("\x20 {name}  —  {desc}");
+                    println!("  {name}  —  {desc}");
                 }
             }
             aishe::cli::runtime::warn_untrusted_skills(&skills);

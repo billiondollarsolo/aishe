@@ -95,10 +95,10 @@ fn every_registered_alias_is_reserved_from_custom_commands() {
 fn newly_registered_primary_commands_fail_locally_with_direct_cli_guidance() {
     let home = temp_home("primary");
     let cases = [
-        ("connection", "next: aishe connection pick [ID_OR_LABEL]"),
-        ("auth", "next: aishe auth status"),
-        ("scope", "next: aishe scope [SCOPE]"),
-        ("network", "next: aishe network [allow|deny]"),
+        ("connection", "Next: aishe connection pick [ID_OR_LABEL]"),
+        ("auth", "Next: aishe auth status"),
+        ("scope", "Next: aishe scope [SCOPE]"),
+        ("network", "Next: aishe network [allow|deny]"),
     ];
     for (alias, next) in cases {
         aishe(&home)

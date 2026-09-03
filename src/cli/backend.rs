@@ -64,7 +64,7 @@ pub fn command(command: &Action) -> Result<u8> {
                     }
                     RuntimeStatus::Missing { expected_version } => {
                         println!("agent runtime: OpenCode {expected_version} · not installed");
-                        println!("next: aishe backend install");
+                        println!("Next: aishe backend install");
                     }
                     RuntimeStatus::Invalid {
                         expected_version,
@@ -72,7 +72,7 @@ pub fn command(command: &Action) -> Result<u8> {
                     } => {
                         println!("agent runtime: OpenCode {expected_version} · invalid");
                         println!("reason: {reason}");
-                        println!("next: aishe backend repair");
+                        println!("Next: aishe backend repair");
                     }
                 }
                 for line in supervisor_lines {

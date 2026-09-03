@@ -1464,7 +1464,7 @@ fn reject_unavailable_one_shot_slash(input: &str) -> Option<u8> {
                     parsed.name
                 );
                 if let Some(hint) = command_cli_hint(spec) {
-                    eprintln!("next: {hint}");
+                    eprintln!("Next: {hint}");
                 }
                 Some(EXIT_COMMAND_UNAVAILABLE)
             }
@@ -1836,7 +1836,7 @@ pub fn print_mcp_listing(mcp: &crate::mcp::McpRegistry) {
         println!("MCP tools (yolo mode):");
         for (name, desc) in mcp.list() {
             let desc = desc.lines().next().unwrap_or("");
-            println!("\x20 {name}  -  {desc}");
+            println!("  {name}  —  {desc}");
         }
     }
     let prompts = mcp.list_prompts();
@@ -1844,7 +1844,7 @@ pub fn print_mcp_listing(mcp: &crate::mcp::McpRegistry) {
         println!("MCP prompts (run as /<server>:<prompt>):");
         for (name, desc) in prompts {
             let desc = desc.lines().next().unwrap_or("");
-            println!("\x20 /{name}  -  {desc}");
+            println!("  /{name}  —  {desc}");
         }
     }
 }

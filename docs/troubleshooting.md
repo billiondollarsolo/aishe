@@ -64,6 +64,8 @@ the action did not resolve the problem.
 | `cli.unknown_task` | the named task or session id does not exist | `aishe sessions`; resume an id from that list |
 | `cli.shell_required` | the command changes this shell's conversation and needs an AIShe shell | start `aishe`, then run the slash form |
 | `cli.unsupported_shell` | `aishe init` was asked for a shell with no integration asset | run `aishe init zsh` or `aishe init bash` |
+| `cli.unknown_profile` | a safety profile name was not one of the four supported values | run `aishe profile` and choose conservative, balanced, autonomous, or custom |
+| `provider.model_list_failed` | the endpoint could not return a model catalog | `aishe doctor --probe`; check the endpoint and credential |
 | `config.setup_incomplete` | setup was paused before it wrote a configuration | `aishe setup --resume`, or `aishe setup --restart` to begin again |
 
 Error namespaces also define stable domain statuses for automation; see

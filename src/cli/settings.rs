@@ -28,7 +28,7 @@ pub fn models(config: &Config, provider: &str, json: bool) -> u8 {
         Ok(models) => {
             if json {
                 if let Err(error) = crate::cli::json_contract::print_envelope("models", &models) {
-                    eprintln!("aishe: models: {error}");
+                    crate::cli::error_contract::emit_from(error.as_ref());
                     return 1;
                 }
             } else {
@@ -48,12 +48,18 @@ pub fn models(config: &Config, provider: &str, json: bool) -> u8 {
             0
         }
         Err(error) => {
-            eprintln!(
-                "aishe: models: {:?}: {}",
-                error.kind(),
-                crate::redact::redact(&error.to_string())
+            // The Debug-formatted kind leaked an internal enum name here.
+            crate::cli::error_contract::emit_classified(
+                crate::user_error::ErrorNamespace::Provider,
+                "model_list_failed",
+                format!(
+                    "Could not list models for '{provider}': {}",
+                    crate::redact::redact(&error.to_string())
+                ),
+                "Run `aishe doctor --probe`, then check the endpoint and credential.",
+                None,
             );
-            1
+            crate::user_error::ErrorNamespace::Provider.exit_code()
         }
     }
 }
@@ -399,7 +405,13 @@ pub fn profile(effective: &Config, value: Option<&str>) -> u8 {
         return 0;
     };
     let Some(profile) = crate::profiles::Profile::parse(value) else {
-        eprintln!("aishe: unknown profile '{value}'");
+        crate::cli::error_contract::emit_classified(
+            crate::user_error::ErrorNamespace::Cli,
+            "unknown_profile",
+            format!("Unknown safety profile '{value}'."),
+            "Run `aishe profile` to see conservative, balanced, autonomous, and custom.",
+            None,
+        );
         return 1;
     };
     let mut config = match Config::load_quiet() {

@@ -35,7 +35,7 @@ pub fn command(config: &Config, action: Action) -> Result<u8> {
                         "not seen"
                     }
                 );
-                println!("reset: aishe hints reset");
+                println!("Next: aishe hints reset");
             }
             Ok(0)
         }

@@ -249,6 +249,8 @@ mod tests {
             "cli.unknown_task",
             "cli.shell_required",
             "cli.unsupported_shell",
+            "cli.unknown_profile",
+            "provider.model_list_failed",
             "config.setup_incomplete",
         ];
         for code in codes {
