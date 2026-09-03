@@ -702,9 +702,9 @@ fn approval_panel_view(
     let network = format!("{:?}", work.network).to_ascii_lowercase();
     let tool = work.tool.replace('_', " ");
     let choices = if work.tool == "run_command" {
-        "o once; s matching session; e edit; d/Esc/Ctrl-C/EOF deny"
+        "o once · s matching session · e edit · d/Esc/Ctrl-C/EOF deny"
     } else {
-        "o once; s matching session; d/Esc/Ctrl-C/EOF deny"
+        "o once · s matching session · d/Esc/Ctrl-C/EOF deny"
     };
     crate::ui::render::approval_panel(
         &crate::ui::render::ApprovalView {

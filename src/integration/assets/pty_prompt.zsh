@@ -171,11 +171,11 @@ if [[ -o interactive ]]; then
         case "$field" in
           reasoning) value="reason:$value" ;;
           mode)
+            # The statusline used to relabel suggest as "review"; every other
+            # surface says suggest.
             case "$value" in
-              suggest) value='review' ;;
-              auto)    value='auto' ;;
-              yolo)    value='yolo' ;;
-              *)       value="mode:$value" ;;
+              suggest|auto|yolo) ;;
+              *) value="mode:$value" ;;
             esac
             ;;
         esac

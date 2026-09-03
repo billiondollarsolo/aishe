@@ -213,7 +213,7 @@ def main():
         first.drain(0.3)
         initial_identity = [
             "work-model",
-            "review",
+            "suggest",
             "workspace",
         ]
         if not all(value in first.transcript for value in initial_identity):

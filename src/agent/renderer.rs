@@ -591,7 +591,9 @@ impl AgentRenderer {
         if self.changed_paths.is_empty() {
             return None;
         }
-        let mut summary = self.changed_paths.join("  |  ");
+        let mut summary = self
+            .changed_paths
+            .join(&format!("  {}  ", self.capabilities.glyphs().separator()));
         let remaining = self.changed_files.saturating_sub(self.changed_paths.len());
         if remaining > 0 {
             summary.push_str(&format!("  |  +{remaining} more"));
@@ -648,7 +650,7 @@ impl AgentRenderer {
         }
         let visible = commands.iter().take(3).cloned().collect::<Vec<_>>();
         let remaining = commands.len().saturating_sub(visible.len());
-        let mut summary = visible.join("  |  ");
+        let mut summary = visible.join(&format!("  {}  ", self.capabilities.glyphs().separator()));
         if remaining > 0 {
             summary.push_str(&format!("  |  +{remaining} more"));
         }
@@ -965,7 +967,7 @@ mod tests {
             "run command  docker logs web".into(),
         ];
         let commands = renderer.command_summary().unwrap();
-        assert!(commands.starts_with("docker ps  |  docker inspect web"));
+        assert!(commands.starts_with("docker ps  ·  docker inspect web"));
         assert!(commands.ends_with("+1 more"));
     }
 

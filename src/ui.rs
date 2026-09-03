@@ -549,6 +549,12 @@ pub fn cell_width(value: &str) -> usize {
 /// Truncate to terminal cells without splitting an extended grapheme cluster.
 /// ANSI styling is intentionally removed: layout should happen before paint.
 pub fn truncate_cells(value: &str, width: usize) -> String {
+    truncate_cells_with(value, width, TerminalCapabilities::detect_stdout().glyphs())
+}
+
+/// Truncate to `width` cells using the caller's glyph policy, so an ASCII
+/// terminal gets `...` rather than U+2026.
+pub fn truncate_cells_with(value: &str, width: usize, glyphs: Glyphs) -> String {
     let plain = strip_ansi(value);
     if cell_width(&plain) <= width {
         return plain;
@@ -556,7 +562,11 @@ pub fn truncate_cells(value: &str, width: usize) -> String {
     if width == 0 {
         return String::new();
     }
-    let ellipsis = if width >= 1 { "…" } else { "" };
+    let ellipsis = if width >= cell_width(glyphs.ellipsis()) {
+        glyphs.ellipsis()
+    } else {
+        ""
+    };
     let target = width.saturating_sub(cell_width(ellipsis));
     let mut output = String::new();
     let mut used = 0;
@@ -697,6 +707,24 @@ impl Glyphs {
         }
     }
 
+    /// Truncation marker, so ASCII policies do not emit U+2026.
+    pub fn ellipsis(self) -> &'static str {
+        if self.unicode {
+            "…"
+        } else {
+            "..."
+        }
+    }
+
+    /// Inline separator between fields of one line.
+    pub fn separator(self) -> &'static str {
+        if self.unicode {
+            "·"
+        } else {
+            "|"
+        }
+    }
+
     pub fn branch(self) -> &'static str {
         if self.unicode {
             "↳"
@@ -831,6 +859,27 @@ mod tests {
             motion: None,
             size: Some((120, 40)),
         }
+    }
+
+    #[test]
+    fn ascii_policy_truncates_with_dots_and_separates_with_a_pipe() {
+        let ascii = TerminalCapabilities::resolve(&CapabilityInputs {
+            is_tty: true,
+            locale: Some("C".into()),
+            ..CapabilityInputs::default()
+        })
+        .glyphs();
+        assert_eq!(truncate_cells_with("abcdefgh", 6, ascii), "abc...");
+        assert_eq!(ascii.separator(), "|");
+        assert_eq!(ascii.ellipsis(), "...");
+        let unicode = TerminalCapabilities::resolve(&CapabilityInputs {
+            is_tty: true,
+            locale: Some("en_US.UTF-8".into()),
+            ..CapabilityInputs::default()
+        })
+        .glyphs();
+        assert_eq!(truncate_cells_with("abcdefgh", 6, unicode), "abcde…");
+        assert_eq!(unicode.separator(), "·");
     }
 
     #[test]
