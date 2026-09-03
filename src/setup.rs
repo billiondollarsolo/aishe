@@ -960,9 +960,13 @@ fn run_interactive(options: Options) -> Result<Outcome> {
                 }
                 let profile = provider.credential_profile();
                 let existing = crate::credentials::resolve(&provider);
-                if existing
-                    .as_ref()
-                    .is_ok_and(|resolved| resolved.secret().is_none())
+                // Only skip the credential menu when the user asked for OAuth.
+                // Choosing the API-key row with an OAuth login already present
+                // used to auto-advance, so there was no way to enter a key.
+                if draft.prefer_oauth
+                    && existing
+                        .as_ref()
+                        .is_ok_and(|resolved| resolved.secret().is_none())
                 {
                     if let Some(oauth_provider) = crate::oauth::active_provider(&draft.config)? {
                         promptui::success(&format!(
@@ -996,6 +1000,17 @@ fn run_interactive(options: Options) -> Result<Outcome> {
                 } else {
                     None
                 };
+                let keep_oauth_index = match crate::oauth::active_provider(&draft.config)? {
+                    Some(active)
+                        if existing
+                            .as_ref()
+                            .is_ok_and(|resolved| resolved.secret().is_none()) =>
+                    {
+                        choices.push(format!("Keep the existing {active} OAuth login"));
+                        Some(choices.len() - 1)
+                    }
+                    _ => None,
+                };
                 let oauth_provider = crate::oauth::OAuthProvider::from_base_url(&provider.base_url);
                 let oauth_index = oauth_provider.map(|_| choices.len());
                 if let Some(oauth_provider) = oauth_provider {
@@ -1009,9 +1024,12 @@ fn run_interactive(options: Options) -> Result<Outcome> {
                     env = provider.api_key_env
                 ));
                 let default_credential = if draft.prefer_oauth {
-                    oauth_index.or(existing_index).unwrap_or(0)
+                    oauth_index
+                        .or(keep_oauth_index)
+                        .or(existing_index)
+                        .unwrap_or(0)
                 } else {
-                    existing_index.unwrap_or(0)
+                    existing_index.or(keep_oauth_index).unwrap_or(0)
                 };
                 match promptui::menu(
                     &format!("Credential profile '{profile}'"),
@@ -1020,6 +1038,11 @@ fn run_interactive(options: Options) -> Result<Outcome> {
                     true,
                     "Saved keys live in a private credentials file; subscription OAuth uses AIShe's private runtime store; environment variables remain available for automation and overrides.",
                 )? {
+                    MenuResult::Selected(index) if Some(index) == keep_oauth_index => {
+                        pending_credential = None;
+                        draft.prefer_oauth = true;
+                        advance(&mut draft)?;
+                    }
                     MenuResult::Selected(index) if Some(index) == existing_index => {
                         pending_credential = None;
                         draft.prefer_oauth = false;
@@ -1499,13 +1522,39 @@ fn run_interactive(options: Options) -> Result<Outcome> {
                     report.as_ref(),
                     pending_credential.as_ref(),
                 )?;
-                let Some(apply) = promptui::confirm("Apply this configuration", true)? else {
-                    return cancel(draft);
-                };
-                if !apply {
-                    draft.step = Step::Service;
-                    save_draft(&draft)?;
-                    continue;
+                // "No" used to restart eleven prompts at the provider step.
+                // Jump to the section the user actually wants to change.
+                let choice = promptui::menu(
+                    "Review and apply",
+                    &[
+                        "Apply this configuration".to_string(),
+                        "Change account or model".to_string(),
+                        "Change behavior and scope".to_string(),
+                        "Change interface".to_string(),
+                        "Pause and resume later".to_string(),
+                    ],
+                    0,
+                    false,
+                    "Apply writes config and credentials. A change row returns to that section and then comes back here.",
+                )?;
+                match choice {
+                    promptui::MenuResult::Selected(0) => {}
+                    promptui::MenuResult::Selected(1) => {
+                        draft.step = Step::Service;
+                        save_draft(&draft)?;
+                        continue;
+                    }
+                    promptui::MenuResult::Selected(2) => {
+                        draft.step = Step::Profile;
+                        save_draft(&draft)?;
+                        continue;
+                    }
+                    promptui::MenuResult::Selected(3) => {
+                        draft.step = Step::Status;
+                        save_draft(&draft)?;
+                        continue;
+                    }
+                    _ => return cancel(draft),
                 }
                 validate_config(&draft.config)?;
                 if let Some(loaded) = crate::policy::load()? {
@@ -1551,14 +1600,7 @@ fn run_interactive(options: Options) -> Result<Outcome> {
                     println!("  backup: {}", path.display());
                 }
                 if let Some(report) = &report {
-                    println!(
-                        "  provider: {}",
-                        if report.verified() {
-                            "verified"
-                        } else {
-                            "saved with warnings; run `aishe setup --verify --live`"
-                        }
-                    );
+                    println!("  provider: {}", report.verdict_label());
                 }
                 if promptui::confirm("Run the guided first-session tour now", true)?
                     .unwrap_or(false)
@@ -2584,14 +2626,7 @@ fn print_review(
         crate::commands::display_safe(&Config::path().display().to_string())
     );
     if let Some(report) = report {
-        println!(
-            "    validation: {}",
-            if report.verified() {
-                "verified"
-            } else {
-                "warnings remain"
-            }
-        );
+        println!("    validation: {}", report.verdict_label());
     }
     let diff = crate::undo::unified_diff(&before, &after);
     if diff.is_empty() {

@@ -103,6 +103,32 @@ impl Report {
             && self.live_verified()
     }
 
+    /// Everything that can be checked without spending tokens.
+    pub fn locally_verified(&self) -> bool {
+        self.credential.state == State::Pass
+            && self.reachability.state != State::Fail
+            && self.model_available.state == State::Pass
+    }
+
+    /// The paid checks were declined, not failed.
+    pub fn live_skipped(&self) -> bool {
+        [&self.text, &self.structured, &self.tools, &self.streaming]
+            .iter()
+            .all(|check| check.state == State::Skipped)
+    }
+
+    /// One sentence for setup, review, and the tour, so a working install is
+    /// never told three times that it has "warnings".
+    pub fn verdict_label(&self) -> &'static str {
+        if self.verified() {
+            "verified"
+        } else if self.locally_verified() && self.live_skipped() {
+            "local checks passed · live checks not run (aishe setup --verify --live)"
+        } else {
+            "warnings remain; run `aishe setup --verify --live`"
+        }
+    }
+
     pub fn live_verified(&self) -> bool {
         [&self.text, &self.structured, &self.tools, &self.streaming]
             .iter()
@@ -973,6 +999,53 @@ mod tests {
         assert!(report.verified());
         report.tools = Check::fail("no", Some(ErrorKind::UnsupportedTools));
         assert!(!report.verified());
+    }
+
+    #[test]
+    fn verdict_label_separates_skipped_live_checks_from_warnings() {
+        let check = Check::pass("ok");
+        let mut report = Report {
+            schema_version: CACHE_SCHEMA_VERSION,
+            checked_at_ms: 0,
+            connection_id: "local".into(),
+            connection_identity: "c-test".into(),
+            provider: "openai".into(),
+            endpoint: "http://localhost".into(),
+            model: "m".into(),
+            models: vec!["m".into()],
+            transport: "chat".into(),
+            credential_env: "KEY".into(),
+            credential_profile: "local".into(),
+            credential_source: "not_required".into(),
+            credential_required: false,
+            credential: check.clone(),
+            reachability: check.clone(),
+            model_list: check.clone(),
+            model_available: check.clone(),
+            text: check.clone(),
+            structured: check.clone(),
+            tools: check.clone(),
+            streaming: check,
+        };
+        assert_eq!(report.verdict_label(), "verified");
+        // Declining the paid checks is not a warning.
+        for field in [
+            &mut report.text,
+            &mut report.structured,
+            &mut report.tools,
+            &mut report.streaming,
+        ] {
+            *field = Check::skipped("declined");
+        }
+        assert_eq!(
+            report.verdict_label(),
+            "local checks passed · live checks not run (aishe setup --verify --live)"
+        );
+        report.credential = Check::fail("missing", None);
+        assert_eq!(
+            report.verdict_label(),
+            "warnings remain; run `aishe setup --verify --live`"
+        );
     }
 
     #[test]

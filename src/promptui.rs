@@ -1071,8 +1071,7 @@ fn read_secret(keys: &mut PickerInput, max_bytes: usize) -> Result<Option<String
             }
             PickerKey::Cancel | PickerKey::Character('\u{4}') => return Ok(None),
             PickerKey::Character(character)
-                if !character.is_control()
-                    && value.len() + character.len_utf8() <= max_bytes =>
+                if !character.is_control() && value.len() + character.len_utf8() <= max_bytes =>
             {
                 value.push(character);
             }

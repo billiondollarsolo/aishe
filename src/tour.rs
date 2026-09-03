@@ -125,17 +125,17 @@ fn print_lesson(index: usize, workspace: &Path) -> Result<()> {
                 "     AI turns use AIShe's private, pinned agent engine; no separate app or TUI opens."
             );
             println!("     Follow-ups in this shell and workspace share one durable conversation.");
-            let verified = Config::load_quiet()
+            let report = Config::load_quiet()
                 .ok()
                 .flatten()
-                .and_then(|config| crate::capabilities::load(&config))
-                .is_some_and(|report| report.live_verified());
+                .and_then(|config| crate::capabilities::load(&config));
             println!(
                 "     Live provider: {}.",
-                if verified {
-                    "previously verified and ready"
-                } else {
-                    "not verified; lesson stays offline (run `aishe doctor --live`)"
+                match report {
+                    Some(report) if report.live_verified() => "previously verified and ready",
+                    Some(report) if report.locally_verified() =>
+                        "ready; live checks not run yet (aishe setup --verify --live)",
+                    _ => "not verified; lesson stays offline (run `aishe doctor --live`)",
                 }
             );
         }
