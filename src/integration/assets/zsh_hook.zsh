@@ -518,18 +518,6 @@ aishe-accept-line() {
   if [[ "$BUFFER" == "/" || "$BUFFER" == "/palette" ]]; then
     aishe-command-palette
     return
-  elif [[ "$BUFFER" == "reset" ]]; then
-    local submitted="$BUFFER"
-    print -s -- "$submitted"
-    command aishe reset <&$_AISHE_INPUT_FD
-    BUFFER=""
-    POSTDISPLAY="$submitted"
-  elif [[ "$BUFFER" == "details" ]]; then
-    local submitted="$BUFFER"
-    print -s -- "$submitted"
-    aishe-toggle-agent-details
-    BUFFER=""
-    POSTDISPLAY="$submitted"
   elif _aishe_slash_id "$BUFFER" > /dev/null; then
     local submitted="$BUFFER"
     print -s -- "$submitted"

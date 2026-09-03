@@ -61,12 +61,6 @@ command_not_found_handle() {
   if (set +m; _aishe_dispatch_slash "$line"); then
     return 0
   fi
-  case "$line" in
-    details)
-      printf 'details\n\n' > "$AISHE_PENDING_FILE"
-      return 0
-      ;;
-  esac
   case "${AISHE_MODE:-suggest}" in
     yolo)
       (set +m; AISHE_PENDING_FILE="$AISHE_PENDING_FILE" command aishe --yolo-line "$line" < /dev/tty > /dev/tty 2>&1)

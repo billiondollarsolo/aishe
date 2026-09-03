@@ -273,8 +273,8 @@ Configuration field names not present in either table do not automatically
 become prompt commands.
 
 Use `aishe settings` for the fields it exposes, or edit `config.toml` for other
-fields without a dedicated CLI command. `reset`/`/reset` and `aishe reset` start
-a fresh retained conversation. `details`/`/details` and Ctrl-O change transcript
+fields without a dedicated CLI command. `/reset` and `aishe reset` start
+a fresh retained conversation. `/details` and Ctrl-O change transcript
 density for following turns in the current shell; use
 `aishe output focus|compact|detailed` to change the default for new shells.
 

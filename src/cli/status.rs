@@ -316,6 +316,9 @@ pub fn print_usage_summary(provider: Option<&dyn Provider>, config: &Config) {
                 );
             }
         }
-        None => println!("usage: provider not configured"),
+        // The managed backend has no legacy in-process provider; the usage file
+        // above is the real source, so an empty one means no calls yet, not a
+        // configuration problem.
+        None => println!("usage: no model calls yet this session"),
     }
 }
