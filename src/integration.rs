@@ -76,7 +76,10 @@ pub fn dispatch_hook_cli(id: &str, raw: &str) -> anyhow::Result<u8> {
     let spec = crate::command_surface::by_id(id).filter(|spec| {
         matches!(spec.lifecycle, Lifecycle::Active)
             && matches!(spec.hook_action(), ShellHookAction::Cli)
-            && matches!(spec.arguments, ArgumentPolicy::PassThrough(_))
+            && matches!(
+                spec.arguments,
+                ArgumentPolicy::PassThrough(_) | ArgumentPolicy::OptionalValue(_)
+            )
             && matches!(
                 spec.support(crate::command_surface::Surface::BashHook),
                 SurfaceSupport::Supported
