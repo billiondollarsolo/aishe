@@ -497,7 +497,8 @@ fn run() -> Result<u8> {
     if args.accept_yolo {
         aishe::cli::history::init_audit(&config);
         return match aishe::cli::runtime::ensure_yolo_acceptance(&config) {
-            Ok(()) => Ok(0),
+            Ok(aishe::cli::runtime::YoloAcceptance::Accepted) => Ok(0),
+            Ok(aishe::cli::runtime::YoloAcceptance::Declined) => Ok(1),
             Err(error) => {
                 aishe::cli::error_contract::emit_from(error.as_ref());
                 Ok(1)

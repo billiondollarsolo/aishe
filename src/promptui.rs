@@ -1089,7 +1089,7 @@ pub fn confirm(label: &str, default: bool) -> Result<Option<bool>> {
             paint(&format!("{suffix}:"), MUTED)
         );
         std::io::stdout().flush().ok();
-        let Some(line) = read_confirmation_line()? else {
+        let Some(line) = read_terminal_line(true)? else {
             return Ok(None);
         };
         match parse_confirmation(&line, default) {
@@ -1125,7 +1125,7 @@ fn parse_confirmation(line: &str, default: bool) -> ConfirmationResponse {
 /// mode is being restored. Reusing the picker's unbuffered stdin input
 /// keeps the transition deterministic. Piped/non-terminal setup input retains
 /// the existing line-oriented contract.
-fn read_confirmation_line() -> Result<Option<String>> {
+pub fn read_terminal_line(echo: bool) -> Result<Option<String>> {
     if !std::io::stdin().is_terminal() || !std::io::stdout().is_terminal() {
         let mut line = String::new();
         return if std::io::stdin().read_line(&mut line)? == 0 {
@@ -1137,7 +1137,7 @@ fn read_confirmation_line() -> Result<Option<String>> {
 
     let mut keys = PickerInput::open().context("opening confirmation input")?;
     let guard = RawGuard::enter()?;
-    let result = read_terminal_confirmation_line(&mut keys, true);
+    let result = read_terminal_confirmation_line(&mut keys, echo);
     // Drop explicitly before the newline so even the normal completion path
     // restores canonical mode first. Error unwinding also drops the guard.
     drop(guard);

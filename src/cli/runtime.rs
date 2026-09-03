@@ -280,37 +280,17 @@ static YOLO_HOST_ACCEPTED: AtomicBool = AtomicBool::new(false);
 /// ZLE invokes the hidden acceptance helper while it owns the terminal and has
 /// echo disabled. The acceptance phrase is not a secret, so make it visible for
 /// this one read and restore the exact inherited terminal flags immediately.
-struct StdinEchoGuard(Option<libc::termios>);
-
-impl StdinEchoGuard {
-    fn visible() -> Self {
-        let mut current = unsafe { std::mem::zeroed::<libc::termios>() };
-        if unsafe { libc::tcgetattr(libc::STDIN_FILENO, &mut current) } != 0
-            || current.c_lflag & libc::ECHO != 0
-        {
-            return Self(None);
-        }
-        let original = current;
-        current.c_lflag |= libc::ECHO | libc::ECHONL;
-        if unsafe { libc::tcsetattr(libc::STDIN_FILENO, libc::TCSANOW, &current) } == 0 {
-            Self(Some(original))
-        } else {
-            Self(None)
-        }
-    }
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum YoloAcceptance {
+    Accepted,
+    Declined,
 }
 
-impl Drop for StdinEchoGuard {
-    fn drop(&mut self) {
-        if let Some(original) = self.0.as_ref() {
-            unsafe {
-                libc::tcsetattr(libc::STDIN_FILENO, libc::TCSANOW, original);
-            }
-        }
-    }
+pub fn yolo_answer_accepts(answer: Option<&str>, expected: &str) -> bool {
+    answer.map(str::trim).is_some_and(|value| value == expected)
 }
 
-pub fn ensure_yolo_acceptance(config: &Config) -> Result<()> {
+pub fn ensure_yolo_acceptance(config: &Config) -> Result<YoloAcceptance> {
     use crate::agent::ExecutionScope;
     use std::io::Write;
 
@@ -322,7 +302,7 @@ pub fn ensure_yolo_acceptance(config: &Config) -> Result<()> {
     };
     if in_process.load(Ordering::SeqCst) || acceptance_file_contains(scope) {
         in_process.store(true, Ordering::SeqCst);
-        return Ok(());
+        return Ok(YoloAcceptance::Accepted);
     }
     if !std::io::stdin().is_terminal() || !std::io::stdout().is_terminal() {
         anyhow::bail!(
@@ -385,19 +365,19 @@ pub fn ensure_yolo_acceptance(config: &Config) -> Result<()> {
         }
     }
     std::io::stdout().flush().ok();
-    let mut answer = String::new();
-    {
-        let _echo = StdinEchoGuard::visible();
-        std::io::stdin()
-            .read_line(&mut answer)
-            .context("reading yolo acceptance")?;
-    }
+    // Raw-mode read: a cooked read_line echoed Shift-Tab as ^[[Z and ignored Esc.
+    let answer = crate::promptui::read_terminal_line(true).context("reading yolo acceptance")?;
     let expected = match scope {
         ExecutionScope::Workspace => "yolo",
         ExecutionScope::Host => "yolo-host",
     };
-    if answer.trim() != expected {
-        anyhow::bail!("yolo scope was not accepted");
+    if !yolo_answer_accepts(answer.as_deref(), expected) {
+        let current = std::env::var("AISHE_MODE")
+            .ok()
+            .filter(|value| !value.is_empty())
+            .unwrap_or_else(|| config.aishe.mode.clone());
+        println!("yolo not enabled · mode stays {}", crate::commands::display_safe(&current));
+        return Ok(YoloAcceptance::Declined);
     }
     persist_acceptance(scope)?;
     in_process.store(true, Ordering::SeqCst);
@@ -406,7 +386,7 @@ pub fn ensure_yolo_acceptance(config: &Config) -> Result<()> {
         &format!("scope={scope:?} workspace={}", workspace.display()),
         Some(0),
     );
-    Ok(())
+    Ok(YoloAcceptance::Accepted)
 }
 
 fn acceptance_file_contains(scope: crate::agent::ExecutionScope) -> bool {
@@ -519,8 +499,8 @@ fn managed_turn(
     if config.backend.engine != "opencode" {
         return Ok(None);
     }
-    if mode == AgentMode::Yolo {
-        ensure_yolo_acceptance(config)?;
+    if mode == AgentMode::Yolo && ensure_yolo_acceptance(config)? == YoloAcceptance::Declined {
+        return Ok(None);
     }
     let options = TurnOptions::from_config(config, mode, render)?;
     match crate::agent::controller::run_turn(config, prompt, options) {
@@ -1948,5 +1928,19 @@ mod tests {
         cache.insert_all(&["git"]);
         assert!(dispatcher::typo_assistance("? gti status", &cache).is_none());
         assert!(dispatcher::typo_assistance("gti status", &cache).is_some());
+    }
+}
+
+#[cfg(test)]
+mod yolo_tests {
+    use super::*;
+
+    #[test]
+    fn yolo_answer_requires_the_exact_word() {
+        assert!(yolo_answer_accepts(Some("yolo"), "yolo"));
+        assert!(yolo_answer_accepts(Some("  yolo \n"), "yolo"));
+        assert!(!yolo_answer_accepts(Some("n"), "yolo"));
+        assert!(!yolo_answer_accepts(Some("yolo"), "yolo-host"));
+        assert!(!yolo_answer_accepts(None, "yolo"));
     }
 }
