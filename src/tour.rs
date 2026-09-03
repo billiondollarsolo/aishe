@@ -57,12 +57,12 @@ pub fn run(options: Options) -> Result<bool> {
     set_private_directory(&workspace);
     let mut state = load_state(&state_path)?.unwrap_or_default();
     if state.completed && !options.restart {
-        println!("aishe tour is complete (use `aishe tour --restart` to run it again)");
+        println!("Tour complete · run `aishe tour --restart` to run it again");
         return Ok(true);
     }
 
     promptui::header(
-        "aishe guided tour",
+        "AIShe tour",
         &format!(
             "workspace: {}",
             crate::commands::display_safe(&workspace.display().to_string())

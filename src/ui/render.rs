@@ -63,6 +63,8 @@ pub enum NoticeKind {
     Success,
     Warning,
     Error,
+    /// Not done and not wrong: a check the platform cannot run.
+    Skipped,
 }
 
 /// Persistent authorship boundary shared by prose-answer surfaces.
@@ -254,6 +256,7 @@ pub fn notice_text(kind: NoticeKind, message: &str, capabilities: &TerminalCapab
         NoticeKind::Success => (capabilities.glyphs().success(), StyleToken::Success),
         NoticeKind::Warning => (capabilities.glyphs().warning(), StyleToken::Warning),
         NoticeKind::Error => (capabilities.glyphs().error(), StyleToken::Danger),
+        NoticeKind::Skipped => (capabilities.glyphs().pending(), StyleToken::Muted),
     };
     capabilities.paint(token, &format!("{glyph} {}", safe(message)))
 }
@@ -268,6 +271,7 @@ pub fn notice_lines(
         NoticeKind::Success => (capabilities.glyphs().success(), StyleToken::Success),
         NoticeKind::Warning => (capabilities.glyphs().warning(), StyleToken::Warning),
         NoticeKind::Error => (capabilities.glyphs().error(), StyleToken::Danger),
+        NoticeKind::Skipped => (capabilities.glyphs().pending(), StyleToken::Muted),
     };
     wrap_cells(&format!("{glyph} {}", safe(message)), width.max(1))
         .into_iter()

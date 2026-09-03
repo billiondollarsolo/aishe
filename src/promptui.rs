@@ -831,6 +831,11 @@ pub fn warning(message: &str) {
     print_notice(crate::ui::render::NoticeKind::Warning, message);
 }
 
+/// A step that did not run because it does not apply here.
+pub fn skipped(message: &str) {
+    print_notice(crate::ui::render::NoticeKind::Skipped, message);
+}
+
 pub fn error(message: &str) {
     print_notice(crate::ui::render::NoticeKind::Error, message);
 }

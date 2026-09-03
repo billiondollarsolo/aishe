@@ -240,6 +240,20 @@ pub struct Outcome {
 
 /// What to do next once setup has applied. When the caller launches the shell
 /// itself, "Run: aishe" would be wrong: the shell is already starting.
+/// The action that actually helps for each setup failure. Every failure used
+/// to say "Run `aishe setup --verify`", including "no resumable draft exists".
+pub fn next_action_for(code: u8) -> &'static str {
+    match code {
+        EXIT_PAUSED => "Run `aishe setup --resume` to continue where you left off.",
+        EXIT_INPUT => "Run `aishe setup` without the conflicting flags.",
+        EXIT_RUNTIME => "Run `aishe backend install`, then retry setup.",
+        EXIT_SANDBOX => "Install bubblewrap with your package manager, then rerun setup.",
+        EXIT_PROVIDER => "Run `aishe setup --verify --live` to see which provider check failed.",
+        EXIT_POLICY => "Review the organization policy file reported by `aishe doctor`.",
+        _ => "Run `aishe setup --verify`; repair the reported item, then retry.",
+    }
+}
+
 pub fn completion_next_steps(launch_follows: bool) -> String {
     let mut out = String::from("\n");
     if launch_follows {
@@ -529,7 +543,7 @@ fn run_interactive(options: Options) -> Result<Outcome> {
     crate::ui::configure(&baseline.ui);
     promptui::brand();
     promptui::header(
-        "aishe setup",
+        "AIShe setup",
         "Configure, verify, and safely apply your AIShe environment.",
         "Active config is not changed until the final Apply step.",
     );
@@ -715,7 +729,7 @@ fn run_interactive(options: Options) -> Result<Outcome> {
                             "Continue shell-only and resume setup later".into(),
                         ];
                         match promptui::menu(
-                            "OpenCode Agent Runtime",
+                            "Agent runtime",
                             &choices,
                             0,
                             true,
@@ -801,7 +815,7 @@ fn run_interactive(options: Options) -> Result<Outcome> {
                 step_header(4, "Execution sandbox");
                 if !cfg!(target_os = "linux") {
                     promptui::warning(
-                        "OS sandbox: unavailable in this macOS release. Workspace paths are policy-checked, and every yolo shell session shows an explicit no-OS-sandbox warning before acceptance.",
+                        "macOS: no kernel sandbox; workspace paths are policy-checked, and every yolo shell session shows an explicit warning before acceptance.",
                     );
                     draft.config.sandbox.linux_backend = "policy".into();
                     advance(&mut draft)?;
@@ -895,12 +909,12 @@ fn run_interactive(options: Options) -> Result<Outcome> {
                 }
             }
             Step::Service => {
-                step_header(5, "Provider and credential");
+                step_header(5, "Account and sign-in");
                 let entries = service_menu_entries();
                 let labels: Vec<String> = entries.iter().copied().map(service_menu_label).collect();
                 let default = service_menu_default(&draft);
                 match promptui::menu(
-                    "Provider service",
+                    "Account",
                     &labels,
                     default,
                     false,
@@ -1039,7 +1053,7 @@ fn run_interactive(options: Options) -> Result<Outcome> {
                     choices.push(oauth_subscription_choice(oauth_provider).into());
                 }
                 let save_key_index = choices.len();
-                choices.push("Enter and save an API key locally (recommended)".into());
+                choices.push("Enter and save an API key locally".into());
                 let env_index = choices.len();
                 choices.push(format!(
                     "Use environment variable only (${env})",
@@ -1079,7 +1093,7 @@ fn run_interactive(options: Options) -> Result<Outcome> {
                     }
                     MenuResult::Selected(index) if Some(index) == oauth_index => {
                         let oauth_provider = oauth_provider.expect("index only exists with provider");
-                        let Some(label) = promptui::text("OAuth profile label", "work", |value| {
+                        let Some(label) = promptui::text("Profile name for this login (for example work or personal)", "work", |value| {
                             crate::oauth::normalize_profile(value)?;
                             Ok(())
                         })? else {
@@ -1171,7 +1185,7 @@ fn run_interactive(options: Options) -> Result<Outcome> {
                     && crate::oauth::active_provider(&draft.config)?.is_some();
                 if using_oauth {
                     promptui::success(
-                        "OAuth is ready; model availability is validated through the managed runtime",
+                        "OAuth login found; the model list comes from your subscription",
                     );
                     match promptui::text("Model ID", &current, |value| {
                         if value.trim().is_empty() {
@@ -1279,7 +1293,7 @@ fn run_interactive(options: Options) -> Result<Outcome> {
                         vec![
                             "Retry /v1/models".into(),
                             "Type a model ID and validate with one minimal request".into(),
-                            "Back to credential or endpoint".into(),
+                            "Back".into(),
                             "Cancel setup".into(),
                         ]
                     };
@@ -1349,10 +1363,10 @@ fn run_interactive(options: Options) -> Result<Outcome> {
                     }
                 }
                 let choices = vec![
-                    "Conservative — suggest, confirm all tool commands".into(),
-                    "Balanced — auto safe commands, confirm writes".into(),
-                    "Autonomous — yolo with readiness checks".into(),
-                    "Custom — preserve individual controls".into(),
+                    "Suggest (conservative) — propose, you confirm".into(),
+                    "Auto (balanced) — run safe commands, confirm the rest".into(),
+                    "Yolo (autonomous) — run without asking in this shell".into(),
+                    "Custom — keep each setting as it is".into(),
                 ];
                 match promptui::menu(
                     "Safety profile",
@@ -1368,8 +1382,7 @@ fn run_interactive(options: Options) -> Result<Outcome> {
                             Profile::Autonomous,
                             Profile::Custom,
                         ][index];
-                        let changes = profiles::apply(&mut draft.config, profile);
-                        println!("  {} safety setting(s) changed", changes.len());
+                        profiles::apply(&mut draft.config, profile);
                         if configure_scope_and_network(&mut draft)? {
                             advance(&mut draft)?;
                         }
@@ -1558,7 +1571,7 @@ fn run_interactive(options: Options) -> Result<Outcome> {
                     "Live validation sends minimal provider requests for text, structured output, tools, and streaming. It consumes tokens and may incur provider charges; declining keeps the verified local setup and marks live capabilities not run.",
                 );
                 let Some(live) =
-                    promptui::confirm("Run the disclosed live capability checks now", true)?
+                    promptui::confirm("Run the disclosed live capability checks now?", true)?
                 else {
                     return cancel(draft);
                 };
@@ -1570,7 +1583,7 @@ fn run_interactive(options: Options) -> Result<Outcome> {
                 advance(&mut draft)?;
             }
             Step::Review => {
-                step_header(10, "Review and Apply");
+                step_header(10, "Review and apply");
                 print_review(
                     &baseline,
                     &draft.config,
@@ -1628,26 +1641,42 @@ fn run_interactive(options: Options) -> Result<Outcome> {
                 discard_draft()?;
                 promptui::success("Setup complete");
                 println!();
-                println!(
-                    "  ✓ zsh             {}",
+                // Rows go through the notice helpers so the ASCII policy and
+                // the skipped state are honoured; a check mark next to a
+                // sandbox the platform cannot provide reads as a lie.
+                promptui::success(&format!(
+                    "zsh             {}",
                     crate::executor::which("zsh")
                         .map(|path| path.display().to_string())
                         .unwrap_or_else(|| "shell-only mode".into())
-                );
-                println!(
-                    "  ✓ agent engine    OpenCode {}",
+                ));
+                promptui::success(&format!(
+                    "agent runtime   OpenCode {}",
                     crate::backend::RuntimeManifest::embedded()?.version
-                );
-                println!(
-                    "  ✓ provider        {} · {}",
-                    draft.config.aishe.provider,
+                ));
+                promptui::success(&format!(
+                    "account         {} · {}",
+                    draft
+                        .config
+                        .active_connection()
+                        .map(|connection| connection.label.clone())
+                        .unwrap_or_else(|| draft.config.aishe.provider.clone()),
                     draft.config.active_model()
-                );
-                println!(
-                    "  ✓ sandbox         {} · {}",
-                    draft.config.sandbox.linux_backend, draft.config.backend.default_scope
-                );
-                println!("  ✓ history         preserved");
+                ));
+                if cfg!(target_os = "linux") && draft.config.sandbox.linux_backend == "bwrap" {
+                    promptui::success(&format!(
+                        "sandbox         bubblewrap · {}",
+                        draft.config.backend.default_scope
+                    ));
+                } else {
+                    promptui::skipped(&format!(
+                        "sandbox         policy checks · {}",
+                        draft.config.backend.default_scope
+                    ));
+                }
+                if crate::cli::history::history_paths(&draft.config).1.exists() {
+                    promptui::success("history         preserved");
+                }
                 println!();
                 println!("  config: {}", Config::path().display());
                 println!("  credentials: {}", crate::credentials::path().display());
@@ -1657,7 +1686,7 @@ fn run_interactive(options: Options) -> Result<Outcome> {
                 if let Some(report) = &report {
                     println!("  provider: {}", report.verdict_label());
                 }
-                if promptui::confirm("Run the guided first-session tour now", true)?
+                if promptui::confirm("Run the guided first-session tour now?", true)?
                     .unwrap_or(false)
                 {
                     crate::tour::run(crate::tour::Options::default())?;

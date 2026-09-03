@@ -249,7 +249,7 @@ def setup_to_provider(shell, install_runtime=False):
             "Continue setup",
             "Review or change setup choices",
             "Fresh install",
-            "Provider service",
+            "Account",
             "› 1) Install",
         ],
         timeout=30,
@@ -260,7 +260,7 @@ def setup_to_provider(shell, install_runtime=False):
         shell.line()
     reached = shell.expect_any(
         [
-            "Provider service",
+            "Account",
             "Linux workspace isolation",
             "› 1) Install",
         ],
@@ -269,7 +269,7 @@ def setup_to_provider(shell, install_runtime=False):
     if reached == "› 1) Install":
         shell.menu(1 if install_runtime else 4)
         reached = shell.expect_any(
-            ["Provider service", "Linux workspace isolation"],
+            ["Account", "Linux workspace isolation"],
             timeout=180 if install_runtime else 30,
         )
     if reached == "Linux workspace isolation":
@@ -280,7 +280,7 @@ def setup_to_provider(shell, install_runtime=False):
         shell.drain(0.5)
         choice = 2 if "Install bubblewrap now" in shell.transcript else 1
         shell.menu(choice)
-        shell.expect("Provider service", timeout=60)
+        shell.expect("Account", timeout=60)
     shell.expect("› ")
 
 
@@ -299,7 +299,7 @@ def setup_visual_style_and_alignment():
             setup_to_provider(shell)
             shell.drain(0.3)
             if not re.search(
-                r"\x1b\[[0-9;]*mProvider service\x1b\[0m",
+                r"\x1b\[[0-9;]*mAccount\x1b\[0m",
                 shell.transcript,
             ):
                 raise AssertionError(
@@ -376,7 +376,7 @@ def setup_width_and_no_color_matrix():
             shell.drain(0.2)
             if re.search(r"\x1b\[(?:3[0-9]|9[0-9]|38;|48;)", shell.transcript):
                 raise AssertionError("NO_COLOR setup emitted color styling")
-            if not re.search(r"(?:›|>) ", shell.transcript) or "Provider service" not in shell.transcript:
+            if not re.search(r"(?:›|>) ", shell.transcript) or "Account" not in shell.transcript:
                 raise AssertionError("NO_COLOR setup lost its focus marker or title")
             shell.send("\x1b")
             shell.expect("Setup paused")
@@ -564,7 +564,7 @@ def cancel_preserves_active_config(root, env, config):
 
     resumed = Pty([BINARY, "setup", "--resume"], env)
     try:
-        resumed.expect("Provider service")
+        resumed.expect("Account")
         resumed.send("\x03")
         resumed.expect("Setup paused")
         expect_setup_exit(resumed, "Ctrl-C cancel")
@@ -601,7 +601,7 @@ def settings_are_transactional(root, env, config, endpoint):
         shell.menu(1)  # provider transaction
         shell.expect("Connection to edit")
         shell.menu(2)  # active OpenAI connection
-        shell.expect("Provider service")
+        shell.expect("Account")
         shell.menu(2)  # OpenAI
         shell.expect("Endpoint")
         shell.line(":cancel")
@@ -682,7 +682,7 @@ def settings_are_transactional(root, env, config, endpoint):
         named.menu(1)
         named.expect("Connection to edit")
         named.menu(3)  # OpenAI Personal (BTree order: anthropic, openai, personal)
-        named.expect("Provider service")
+        named.expect("Account")
         named.menu(7)  # custom endpoint
         named.expect("Endpoint")
         named.line(endpoint)

@@ -152,7 +152,7 @@ fn run() -> Result<u8> {
                         aishe::user_error::ErrorNamespace::Config,
                         "setup_failed",
                         "AIShe setup could not complete.",
-                        "Run `aishe setup --verify`; repair the reported item, then retry.",
+                        aishe::setup::next_action_for(code),
                         Some(&message),
                     );
                 }

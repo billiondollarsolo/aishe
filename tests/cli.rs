@@ -2539,10 +2539,7 @@ fn noninteractive_tour_is_isolated_resumable_and_proves_undo() {
         .stdout(contains("Tour complete").and(contains("proved undo")));
     assert_eq!(std::fs::read_to_string(&sentinel).unwrap(), "unchanged");
     assert!(!dir.join("data/aishe/tour/workspace/undo-demo.txt").exists());
-    run()
-        .assert()
-        .success()
-        .stdout(contains("tour is complete"));
+    run().assert().success().stdout(contains("Tour complete"));
     let state: serde_json::Value =
         serde_json::from_slice(&std::fs::read(dir.join("data/aishe/tour/state.json")).unwrap())
             .unwrap();

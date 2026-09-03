@@ -254,7 +254,7 @@ pub fn run() -> Result<bool> {
     let mut draft = baseline.clone();
     loop {
         promptui::header(
-            "aishe settings",
+            "AIShe settings",
             "Edit configuration in reviewable, transactional sections.",
             "Nothing is saved until you choose Review and apply.",
         );
@@ -348,7 +348,7 @@ fn provider_section(config: &mut Config) -> Result<()> {
         .chain(std::iter::once("Back".into()))
         .collect();
     let selection = promptui::menu(
-        "Provider service",
+        "Account",
         &labels,
         service_index(config),
         true,
