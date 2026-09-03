@@ -8,7 +8,6 @@ use std::io::{BufRead, IsTerminal, Read, Write};
 use std::os::unix::io::AsRawFd;
 
 use anyhow::{Context, Result};
-use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyModifiers};
 
 #[cfg(test)]
 use crate::ui::CapabilityInputs;
@@ -852,39 +851,58 @@ pub fn menu(
         if allow_back { " · b back" } else { "" }
     );
     print_wrapped("  ", &instructions, Some(MUTED));
-    let mut selected = default.min(options.len() - 1);
-    // Enter raw mode before advertising an active focus row. Otherwise a fast
-    // typist (or PTY automation) can submit a numeric choice while the terminal
-    // is still in canonical mode; the buffered digit/newline can then be
-    // observed out of order when crossterm starts reading events.
+    let selected = default.min(options.len() - 1);
+    // Read keys through the picker's unbuffered stdin reader. Under the
+    // zsh-PTY front-end /dev/tty is the *outer* proxy terminal, so a
+    // crossterm reader cannot initialize and `/settings`, `aishe setup`, and
+    // `aishe tour` died after painting their first screen.
+    let mut keys = PickerInput::open().context("opening menu input")?;
     let guard = RawGuard::enter()?;
     print_selection(selected, &options[selected], terminal_columns);
+    let result = menu_select(
+        &mut keys,
+        options,
+        selected,
+        allow_back,
+        help,
+        terminal_columns,
+    );
+    // Leave raw mode before the cooked newline; unwinding also drops the guard.
+    drop(guard);
+    println!();
+    result
+}
+
+fn menu_select(
+    keys: &mut PickerInput,
+    options: &[String],
+    mut selected: usize,
+    allow_back: bool,
+    help: &str,
+    terminal_columns: usize,
+) -> Result<MenuResult> {
     let mut number_buffer = String::new();
     loop {
-        let Event::Key(KeyEvent {
-            code, modifiers, ..
-        }) = event::read().context("reading terminal input")?
-        else {
-            continue;
+        let key = match keys.read_key() {
+            Ok(key) => key,
+            Err(error) if error.kind() == std::io::ErrorKind::UnexpectedEof => {
+                return Ok(MenuResult::Cancel)
+            }
+            Err(error) => return Err(error).context("reading menu input"),
         };
-        match code {
-            KeyCode::Up | KeyCode::Char('k') => {
+        match key {
+            PickerKey::Up | PickerKey::Character('k') => {
                 number_buffer.clear();
                 selected = selected.checked_sub(1).unwrap_or(options.len() - 1);
                 print_selection(selected, &options[selected], terminal_columns);
             }
-            KeyCode::Down | KeyCode::Char('j') => {
+            PickerKey::Down | PickerKey::Character('j') => {
                 number_buffer.clear();
                 selected = (selected + 1) % options.len();
                 print_selection(selected, &options[selected], terminal_columns);
             }
-            KeyCode::Enter => {
-                drop(guard);
-                // Leave raw mode before emitting a cooked newline.
-                println!();
-                return Ok(MenuResult::Selected(selected));
-            }
-            KeyCode::Char(c) if c.is_ascii_digit() => {
+            PickerKey::Enter => return Ok(MenuResult::Selected(selected)),
+            PickerKey::Character(c) if c.is_ascii_digit() => {
                 number_buffer.push(c);
                 if !(1..=options.len()).any(|number| number.to_string().starts_with(&number_buffer))
                 {
@@ -897,26 +915,13 @@ pub fn menu(
                     print_selection(selected, &options[selected], terminal_columns);
                 }
             }
-            KeyCode::Char('b') | KeyCode::Char('B') if allow_back => {
-                drop(guard);
-                println!();
-                return Ok(MenuResult::Back);
-            }
-            KeyCode::Char('?') => {
+            PickerKey::Character('b' | 'B') if allow_back => return Ok(MenuResult::Back),
+            PickerKey::Character('?') => {
                 number_buffer.clear();
                 print_help(help, terminal_columns);
                 print_selection(selected, &options[selected], terminal_columns);
             }
-            KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('Q') => {
-                drop(guard);
-                println!();
-                return Ok(MenuResult::Cancel);
-            }
-            KeyCode::Char('c') if modifiers.contains(KeyModifiers::CONTROL) => {
-                drop(guard);
-                println!();
-                return Ok(MenuResult::Cancel);
-            }
+            PickerKey::Cancel | PickerKey::Character('q' | 'Q') => return Ok(MenuResult::Cancel),
             _ => {}
         }
     }
@@ -1043,47 +1048,32 @@ pub fn secret(label: &str, max_bytes: usize) -> Result<Option<String>> {
         paint("(hidden; Esc cancels):", MUTED)
     );
     std::io::stdout().flush().ok();
+    let mut keys = PickerInput::open().context("opening secret input")?;
     let guard = RawGuard::enter()?;
+    let result = read_secret(&mut keys, max_bytes);
+    drop(guard);
+    println!();
+    result
+}
+
+fn read_secret(keys: &mut PickerInput, max_bytes: usize) -> Result<Option<String>> {
     let mut value = String::new();
     loop {
-        match event::read().context("reading hidden terminal input")? {
-            Event::Key(KeyEvent {
-                code: KeyCode::Enter,
-                ..
-            }) => {
-                drop(guard);
-                println!();
-                return Ok(Some(value));
-            }
-            Event::Key(KeyEvent {
-                code: KeyCode::Backspace,
-                ..
-            }) => {
+        let key = match keys.read_key() {
+            Ok(key) => key,
+            Err(error) if error.kind() == std::io::ErrorKind::UnexpectedEof => return Ok(None),
+            Err(error) => return Err(error).context("reading hidden input"),
+        };
+        match key {
+            PickerKey::Enter => return Ok(Some(value)),
+            PickerKey::Backspace => {
                 value.pop();
             }
-            Event::Key(KeyEvent {
-                code: KeyCode::Esc, ..
-            })
-            | Event::Key(KeyEvent {
-                code: KeyCode::Char('c' | 'd'),
-                modifiers: KeyModifiers::CONTROL,
-                ..
-            }) => {
-                drop(guard);
-                println!();
-                return Ok(None);
-            }
-            Event::Key(KeyEvent {
-                code: KeyCode::Char(character),
-                modifiers,
-                ..
-            }) if !modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) => {
+            PickerKey::Cancel | PickerKey::Character('\u{4}') => return Ok(None),
+            PickerKey::Character(character) if !character.is_control() => {
                 if value.len() + character.len_utf8() <= max_bytes {
                     value.push(character);
                 }
-            }
-            Event::Paste(pasted) if value.len() + pasted.len() <= max_bytes => {
-                value.push_str(&pasted);
             }
             _ => {}
         }
@@ -1202,6 +1192,42 @@ pub fn should_offer_promote_to_default(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn menu_select_reads_arrows_digits_back_and_escape() {
+        let options: Vec<String> = ["one", "two", "three"].map(String::from).to_vec();
+        let mut down_enter = PickerInput::from_bytes(b"\x1b[B\r");
+        assert_eq!(
+            menu_select(&mut down_enter, &options, 0, true, "", 80).unwrap(),
+            MenuResult::Selected(1)
+        );
+        let mut digit = PickerInput::from_bytes(b"3\r");
+        assert_eq!(
+            menu_select(&mut digit, &options, 0, true, "", 80).unwrap(),
+            MenuResult::Selected(2)
+        );
+        let mut back = PickerInput::from_bytes(b"b");
+        assert_eq!(
+            menu_select(&mut back, &options, 0, true, "", 80).unwrap(),
+            MenuResult::Back
+        );
+        // Bare Esc (no continuation byte) cancels instead of crashing.
+        let mut escape = PickerInput::from_bytes(b"\x1b");
+        assert_eq!(
+            menu_select(&mut escape, &options, 0, false, "", 80).unwrap(),
+            MenuResult::Cancel
+        );
+    }
+
+    #[test]
+    fn read_secret_handles_backspace_cancel_and_the_byte_cap() {
+        let mut typed = PickerInput::from_bytes(b"ab\x7fc\r");
+        assert_eq!(read_secret(&mut typed, 64).unwrap().as_deref(), Some("ac"));
+        let mut cancelled = PickerInput::from_bytes(b"secret\x03");
+        assert_eq!(read_secret(&mut cancelled, 64).unwrap(), None);
+        let mut bounded = PickerInput::from_bytes(b"abcdef\r");
+        assert_eq!(read_secret(&mut bounded, 3).unwrap().as_deref(), Some("abc"));
+    }
 
     #[test]
     fn promote_default_policy_is_no_and_gate_works() {
