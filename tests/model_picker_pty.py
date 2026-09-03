@@ -243,7 +243,7 @@ def main():
         first.expect("CANCELLED:openai-personal:personal-model")
 
         first.line("command aishe model broken --connection missing")
-        first.expect("unknown connection or provider 'missing'")
+        first.expect("Unknown connection or provider 'missing'.")
         first.identity("ROLLED_BACK")
         first.expect("ROLLED_BACK:openai-personal:personal-model")
 
