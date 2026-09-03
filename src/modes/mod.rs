@@ -163,10 +163,10 @@ pub fn render_markdown(text: &str) {
     let text = crate::commands::display_safe_multiline(text);
     let capabilities = TerminalCapabilities::detect_stdout();
     if !capabilities.styled() {
-        print!("{text}");
-        if !text.ends_with('\n') {
-            println!();
-        }
+        // Render structure without color rather than printing raw **bold** and
+        // # headers at the reader.
+        let skin = termimad::MadSkin::no_style();
+        skin.print_text(&text);
         let _ = std::io::stdout().flush();
         return;
     }

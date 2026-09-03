@@ -449,8 +449,8 @@ impl AgentRenderer {
                     } else {
                         self.capabilities.glyphs().success()
                     };
+                    // begin_assistant_answer prints the separating blank line.
                     self.line(&format!("  {mark} {activity}"), token);
-                    println!();
                 }
                 let final_text = if self.final_text.trim().is_empty() {
                     safe_multiline(summary, 256 * 1024)
@@ -550,7 +550,14 @@ impl AgentRenderer {
         // zero-column terminal. Treat that as unknown so the live command is
         // still useful instead of collapsing to a single character.
         let width = status_width(Some(self.capabilities.columns));
-        print!("\r\x1b[2K  {}", safe(value, width.max(1)));
+        // Measure cells, not chars: a wide path used to wrap and the next
+        // clear only erased the last physical row.
+        let line = crate::ui::truncate_cells_with(
+            &safe(value, 4096),
+            width.max(1),
+            self.capabilities.glyphs(),
+        );
+        print!("\r\x1b[2K  {line}");
         let _ = std::io::stdout().flush();
         self.status_visible = true;
     }
@@ -628,7 +635,11 @@ impl AgentRenderer {
             parts.push(counted(self.reconnects, "reconnect", "reconnects"));
         }
         parts.push(format_elapsed(self.started_at));
-        if self.mode == OutputMode::Focus && self.capabilities.is_tty {
+        if self.mode == OutputMode::Focus
+            && self.capabilities.is_tty
+            && crate::hints::details_hint_pending_here()
+        {
+            let _ = crate::hints::mark_details_hint_seen();
             parts.push("Ctrl-O details next turn".into());
         }
         Some(parts.join(" · "))
@@ -778,7 +789,7 @@ fn waiting_panel(
     }
     lines.push(format!(
         "  {lower_left}{}{lower_right}",
-        horizontal.repeat(content_width + 2)
+        horizontal.repeat(content_width + 1)
     ));
     format!("{}\n", lines.join("\n"))
 }
@@ -1007,6 +1018,14 @@ mod tests {
         assert!(question
             .lines()
             .all(|line| crate::ui::cell_width(line) <= 42));
+        // The top and bottom rules must be the same width: the corners used to
+        // sit one column apart on every panel.
+        let rules: Vec<&str> = question.lines().collect();
+        assert_eq!(
+            crate::ui::cell_width(rules[0]),
+            crate::ui::cell_width(rules[rules.len() - 1]),
+            "panel corners are misaligned:\n{question}"
+        );
 
         let approval = waiting_approval_panel(
             &capabilities,

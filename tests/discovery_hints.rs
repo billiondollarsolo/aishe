@@ -77,10 +77,11 @@ fn status_and_reset_expose_only_bounded_boolean_seen_state() {
     let state: serde_json::Value =
         serde_json::from_slice(&std::fs::read(&state_path).unwrap()).unwrap();
     let object = state.as_object().unwrap();
-    assert_eq!(object.len(), 3, "state must contain no user content");
+    assert_eq!(object.len(), 4, "state must contain no user content");
     assert_eq!(state["schema_version"], 1);
     assert_eq!(state["launch_hint_seen"], false);
     assert_eq!(state["first_answer_hint_seen"], false);
+    assert_eq!(state["details_hint_seen"], false);
     assert_eq!(std::fs::read(&unrelated).unwrap(), b"preserve me");
     assert_eq!(std::fs::read(&config_path).unwrap(), config_before);
 

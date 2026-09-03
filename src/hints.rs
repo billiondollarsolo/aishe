@@ -15,6 +15,7 @@ pub struct DiscoveryStatus {
     pub enabled: bool,
     pub launch_hint_seen: bool,
     pub first_answer_hint_seen: bool,
+    pub details_hint_seen: bool,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
@@ -25,6 +26,8 @@ struct DiscoveryState {
     launch_hint_seen: bool,
     #[serde(default)]
     first_answer_hint_seen: bool,
+    #[serde(default)]
+    details_hint_seen: bool,
 }
 
 impl DiscoveryState {
@@ -48,6 +51,7 @@ pub fn discovery_status(config: &crate::config::Config) -> Result<DiscoveryStatu
         enabled: config.aishe.discovery_hints,
         launch_hint_seen: state.launch_hint_seen,
         first_answer_hint_seen: state.first_answer_hint_seen,
+        details_hint_seen: state.details_hint_seen,
     })
 }
 
@@ -112,6 +116,7 @@ pub fn reset_discovery() -> Result<()> {
         schema_version: SCHEMA_VERSION,
         launch_hint_seen: false,
         first_answer_hint_seen: false,
+        details_hint_seen: false,
     })
 }
 
@@ -129,6 +134,7 @@ fn load() -> Result<DiscoveryState> {
             schema_version: SCHEMA_VERSION,
             launch_hint_seen: false,
             first_answer_hint_seen: false,
+            details_hint_seen: false,
         });
     }
     let metadata = std::fs::symlink_metadata(&path)
@@ -168,6 +174,31 @@ fn save(state: &DiscoveryState) -> Result<()> {
     Ok(())
 }
 
+/// The Ctrl-O cue belongs in a shell that binds Ctrl-O, and only until the user
+/// has seen it: it used to close every Focus-mode turn forever, including for
+/// a bare `aishe agent` where nothing binds the key. The renderer has no Config
+/// to hand in, so the cheap checks come first and the config load happens only
+/// while the hint is still unseen.
+pub fn details_hint_pending_here() -> bool {
+    std::env::var_os("AISHE_SHELL_ID").is_some_and(|id| !id.is_empty())
+        && load().is_ok_and(|state| !state.details_hint_seen)
+        && crate::config::Config::load_quiet()
+            .ok()
+            .flatten()
+            .is_none_or(|config| config.aishe.discovery_hints)
+}
+
+/// Mark the Ctrl-O cue as seen. Returns whether state changed.
+pub fn mark_details_hint_seen() -> Result<bool> {
+    let mut state = load()?;
+    if state.details_hint_seen {
+        return Ok(false);
+    }
+    state.details_hint_seen = true;
+    save(&state)?;
+    Ok(true)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -178,6 +209,7 @@ mod tests {
             schema_version: SCHEMA_VERSION,
             launch_hint_seen: true,
             first_answer_hint_seen: true,
+            details_hint_seen: true,
         };
         assert!(!state.mark_first_answer_seen());
         state.first_answer_hint_seen = false;
@@ -187,7 +219,8 @@ mod tests {
         assert_eq!(document["schema_version"], 1);
         assert_eq!(document["launch_hint_seen"], true);
         assert_eq!(document["first_answer_hint_seen"], true);
-        assert_eq!(document.as_object().unwrap().len(), 3);
+        assert_eq!(document["details_hint_seen"], true);
+        assert_eq!(document.as_object().unwrap().len(), 4);
         assert!(!first_answer_next_action().contains('\u{1b}'));
     }
 }
