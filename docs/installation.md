@@ -43,8 +43,10 @@ requirements:
 curl -fsSL https://raw.githubusercontent.com/billiondollarsolo/aishe/main/install.sh | sh -s -- --setup
 ```
 
-This opens guided setup after installation; setup handles API-key or subscription
-OAuth sign-in. Omit `-s -- --setup` for an upgrade or a binary/runtime-only
+This runs guided setup after installation, where sign-in happens; on an upgrade
+the installer goes straight to setup instead of suggesting `aishe doctor`. If no
+terminal is attached, the install still succeeds and prints the command to run
+setup yourself. Omit `-s -- --setup` for an upgrade or a binary/runtime-only
 install.
 
 Checksum verification is mandatory for both artifacts. If the runtime cannot be

@@ -113,7 +113,7 @@ export AISHE_NL_KEY='^G'   # Ctrl-G
 Buffer styling (when highlighting is on) is supplemental: the shell and agent
 routes use different semantic palettes, while **Ctrl-X ?** supplies the
 authoritative textual cue. Empty buffer + force-NL key does nothing. See
-[Getting started §6](getting-started.md#6-force-a-route-when-needed).
+[Getting started §5](getting-started.md#5-force-a-route-when-needed).
 
 ### mode-cycle keybinding
 

@@ -5,41 +5,16 @@
 
 This page walks through your first session with **AIShe** (**AI Shell**).
 
-## 1. Authenticate a provider
+## 1. Run guided setup
 
-AIShe keeps API keys out of ordinary config using an AWS CLI-style private
-credentials file. Pick the provider you want and enter its key through the
-hidden prompt:
-
-```sh
-aishe auth set anthropic
-# or
-aishe auth set openai
-```
-
-OpenAI ChatGPT Plus/Pro and xAI SuperGrok subscriptions can use OAuth instead:
-
-```sh
-aishe auth login openai             # device authorization is automatic over SSH
-# or
-aishe auth login xai
-```
-
-`aishe setup` can do this step for you. Environment variables remain supported
-for CI and one-process overrides and take precedence without overwriting the
-saved key. For Groq, Ollama, OpenRouter, and others, see
-[Providers](providers.md).
-
-## 2. Run guided setup
-
-Run the interactive, resumable setup before starting your first shell:
+Setup is interactive and resumable, and it signs you in as part of the flow:
 
 ```sh
 aishe setup
 ```
 
-That directory is `~/.config/aishe/` on Linux but
-`~/Library/Application Support/aishe/` on macOS — aishe follows each platform's
+It writes its configuration to a per-platform directory: `~/.config/aishe/` on
+Linux but `~/Library/Application Support/aishe/` on macOS — aishe follows each platform's
 own convention, and a file left in the wrong one is silently ignored. Run
 `aishe doctor` to see the path actually in use, or set `AISHE_CONFIG_DIR` (and
 `AISHE_DATA_DIR`) to pick your own. Full table:
@@ -98,7 +73,10 @@ container/kernel, Setup labels that condition accurately and lets you choose a
 compatible policy where organization rules allow. macOS is clearly labeled
 policy-only.
 
-Setup writes nothing until you apply the review. If interrupted, rerun `aishe
+Setup does not change `config.toml` or `credentials.toml` until Apply. The
+agent runtime, any system package you approve, and an OAuth login are written
+when you choose them, and the resumable draft (choices only, never credentials)
+is saved after every step. If interrupted, rerun `aishe
 setup --resume`; use `--restart` to discard only its draft. In a pipe or CI,
 setup exits instead of inventing defaults; use `aishe setup
 --non-interactive` with explicit flags. Its interactive color and focus
@@ -118,7 +96,28 @@ settings`, rerun setup, or edit the non-secret config file directly. Use
 other state are preserved by binary/runtime upgrades. A fully annotated example
 config is at [examples/config.toml](../examples/config.toml).
 
-## 3. Run real commands
+### Signing in without the wizard
+
+Setup covers this, but the credential commands work on their own. API keys go
+into an AWS CLI-style private credentials file through a hidden prompt:
+
+```sh
+aishe auth set anthropic
+aishe auth set openai
+```
+
+OpenAI ChatGPT Plus/Pro and xAI SuperGrok subscriptions use OAuth instead:
+
+```sh
+aishe auth login openai             # device authorization is automatic over SSH
+aishe auth login xai
+```
+
+Environment variables remain supported for CI and one-process overrides, and
+take precedence without overwriting the saved key. For Groq, Ollama,
+OpenRouter, and others, see [Providers](providers.md).
+
+## 2. Run real commands
 
 Anything aishe recognizes as a command runs exactly like it would in zsh:
 
@@ -132,20 +131,24 @@ Pipes, globs, redirection, subshells, control structures, and interactive
 programs like `vim`, `ssh`, and `top` all work, because aishe hands shell lines
 to your real shell.
 
-## 4. Ask in plain English
+## 3. Ask in plain English
 
 Type a request that is not a command, and the LLM proposes one:
 
 ```
 ~/projects/app ❯ whats eating my disk
   du -sh * | sort -rh | head
-  [Enter] run   [e] edit   [n] cancel
+  [Enter] run now  [e] edit first  [n/Esc] cancel
 ```
 
 Press Enter to run it, `e` to edit it first, or `n` to cancel. This is suggest
 mode, the default.
 
-## 5. Try the other modes
+In the interactive `aishe` shell the proposal is staged on your command line
+instead: the first Enter puts it there so you can edit it, and the second Enter
+runs it. Nothing is ever executed without a keystroke of yours.
+
+## 4. Try the other modes
 
 ```sh
 aishe mode auto     # run safe commands immediately, ask about the rest
@@ -174,7 +177,7 @@ aishe --mode yolo
 
 See [Modes](modes.md) for the full behavior of each.
 
-## 6. Force a route when needed
+## 5. Force a route when needed
 
 AIShe is **shell-first**: if the first word is a real binary on `PATH`, the
 line runs in zsh. That is intentional so real tools keep working — and it is
@@ -240,7 +243,7 @@ magenta. Imperatives that start with a real binary (`install …`, `find …`,
 `open …`) stay **green** unless you force NL. Ambiguous phrasing cannot be
 perfect; **`?` and `!` are the reliable escape hatches.**
 
-## 7. Check your setup any time
+## 6. Check your setup any time
 
 ```sh
 aishe doctor --probe
@@ -253,7 +256,7 @@ state. Add `--live` for the pinned runtime/server and minimal provider feature
 probes; `--json` for automation; `--fix` for safe local repairs; or `--bundle
 PATH` for a redacted support bundle.
 
-## 8. Switch accounts and models
+## 7. Switch accounts and models
 
 Inside the shell:
 

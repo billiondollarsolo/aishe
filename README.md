@@ -67,7 +67,7 @@ magenta for agent input; color is never required. Press **Ctrl-X ?** in zsh or
 run `aishe route -- '<line>'` to read the route and reason as plain text.
 
 Full routing, Option/Alt+Return, and Mac terminal Meta settings:
-[Getting started §6](docs/getting-started.md#6-force-a-route-when-needed) ·
+[Getting started §5](docs/getting-started.md#5-force-a-route-when-needed) ·
 [Shell integration](docs/shell-integration.md#force-nl-and-input-prefixes).
 
 ---
@@ -108,7 +108,7 @@ Full routing, Option/Alt+Return, and Mac terminal Meta settings:
 - **Fix the last command.** **Ctrl-X Ctrl-F** asks the model for a correction
   after a failure.
 - **Edit without leaving the prompt.** **Ctrl-X Ctrl-A** improves the current
-  buffer and **Ctrl-X Space** or **`/` then Tab** opens a generated command palette; both fill the
+  buffer and **Ctrl-X Space** or **`/` then Tab** opens a palette of the slash commands with what each changes; both fill the
   line for review and never press Enter for you.
 - **Isolated background agents.** `aishe task start '…'` runs long work in a
   detached git worktree with finite time/tool/network/change budgets, durable
@@ -206,7 +206,7 @@ install the optional hook). Walkthrough:
 
 Input prefixes: **`?…` force NL** (prefer this over Option/Alt+Return on Mac) ·
 `!…` force shell (bypass safety gate) · bare `?` after a failed command asks for
-diagnosis. Details: [docs/getting-started.md#6-force-a-route-when-needed](docs/getting-started.md#6-force-a-route-when-needed),
+diagnosis. Details: [docs/getting-started.md#5-force-a-route-when-needed](docs/getting-started.md#5-force-a-route-when-needed),
 [docs/modes.md](docs/modes.md), [docs/safety.md](docs/safety.md).
 
 ## Accounts, providers, and models

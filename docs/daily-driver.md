@@ -13,14 +13,15 @@ Inside `aishe` or the zsh integration:
 |---|---|---|
 | Improve the current command | `Ctrl-X Ctrl-A` | Replaces `BUFFER` with one syntax-checked proposal; never executes it. |
 | Fix the most recent failure | `Ctrl-X Ctrl-F` | Uses the private failure capsule and fills the correction for review. |
-| Open the command palette | `/` then Tab, `/` then Enter, or `Ctrl-X Space` | Searches commands and configured connections, then fills the selected invocation. |
+| Open the command palette | `/` then Tab, `/` then Enter, or `Ctrl-X Space` | Searches the visible slash commands and fills the selected one for review. |
 | Force natural language | `? request` or Alt/Option-Enter | Sends the line to the agent without executing the request as shell. |
-| Toggle agent detail | `Ctrl-O` | Changes transcript density without changing authority. |
+| Cycle agent detail | `Ctrl-O` | Cycles focus, compact, and detailed transcript density without changing authority. |
 
 Press Tab or Enter on an exact `/` to open the same palette without remembering a key
-binding. It includes commands plus configured roles, connections, cached models,
-MCP servers, sessions, background tasks, and review-ready work. A selection is
-inserted into the editable buffer for review; it is never executed automatically.
+binding. It lists the visible slash commands with what each one changes
+(read-only, this shell, saves config, conversation, or runs an agent). A
+selection is inserted into the editable buffer for review; it is never executed
+automatically.
 Quoted slash-command arguments remain data on both zsh and Bash; AIShe never
 uses shell `eval` to reinterpret them.
 

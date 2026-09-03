@@ -193,7 +193,7 @@ available; `aishe route -- '<line>'` names the route and reason in plain text,
 and `?` remains the unambiguous non-color agent cue. There is no separate NL
 mode on the status line. Optional Meta/Alt+Return needs Option-as-Meta in the
 terminal (iTerm/Terminal/VS Code); see
-[Getting started §6](getting-started.md#6-force-a-route-when-needed).
+[Getting started §5](getting-started.md#5-force-a-route-when-needed).
 
 ## A command was treated as natural language
 

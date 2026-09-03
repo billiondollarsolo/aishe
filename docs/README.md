@@ -17,7 +17,7 @@ live in the [root README](../README.md).
 
 - [Installation](installation.md) — prebuilt releases, packages, or source
 - [Getting started](getting-started.md) — guided setup, first requests, and
-  [forcing natural language (`?`)](getting-started.md#6-force-a-route-when-needed)
+  [forcing natural language (`?`)](getting-started.md#5-force-a-route-when-needed)
   when a line starts with a real binary (`install`, `find`, …)
 - [Daily-driver agent workflows](daily-driver.md) — buffer AI, attachments,
   isolated background tasks, failure recovery, roles, MCP, updates, and status
