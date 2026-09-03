@@ -20,7 +20,56 @@ breaking changes can land in any release.
   browser/forking, exact context inspection, evidence-bearing plans, safe demo,
   capability evidence, and offline/paid `aishe test` modes.
 
+### Fixed
+- Menus launched inside the AIShe shell (`/settings`, `aishe setup`,
+  `aishe tour`) read keys again: they used a reader bound to the outer proxy
+  terminal, so they died after painting their first screen and swallowed the
+  next keystroke.
+- Declining the yolo consent prompt is a cancel instead of an internal error,
+  and the prompt reads keys in raw mode so Esc cancels and Shift-Tab no longer
+  echoes as `^[[Z`.
+- The command palette repaints the prompt it drew over, clears the buffer on
+  cancel, and fills slash forms whose effects match the help.
+- `aishe … | head` no longer panics: the process restores the default SIGPIPE
+  disposition.
+- Typos and other user input errors are classified `cli.*` with exit code 2
+  instead of `internal.unexpected` with a support-bundle suggestion.
+- `aishe mode` inside a shell means that shell, like `/mode`, and `--default`
+  saves; slash arguments reach clap word-split so `/model X --default` works.
+- `/usage` reports session spend on managed connections instead of claiming no
+  provider is configured.
+- A prompt theme is never replaced; the branded prompt applies only when the
+  zshrc leaves zsh's stock prompt in place (`AISHE_PTY_PROMPT=force` overrides).
+- The statusline shortens instead of vanishing on narrow terminals, measuring
+  the prompt and its fields in cells.
+- Shift-Tab cycles the mode only on an empty line, delegating to whatever the
+  user's configuration bound (oh-my-zsh: reverse menu completion).
+- `aishe backend gc` and `aishe doctor` detect loopback runtime servers left
+  behind without a supervisor; `gc --kill-orphans` stops them.
+- Panel corners align, the live activity line measures cells, and unstyled
+  markdown keeps its structure.
+
 ### Changed
+- The bare words `reset` and `details` are no longer intercepted; use `/reset`,
+  `/details`, or Ctrl-O.
+- The visible slash surface is 20 commands: duplicates and maintenance commands
+  (`/commands`, `/usage`, `/provider`, `/output`, `/task`, `/hints`, and others)
+  still dispatch and tab-complete but no longer appear in help, the palette, or
+  the docs table.
+- The nine 0.6.5 tombstoned names (`/editor`, `/frontend`, `/stream`,
+  `/structured`, `/theme`, `/rehash`, `/ghost`, `/sandbox`, `/cache`) and the
+  `/help migration` topic are removed, freeing those names for custom commands.
+- One six-value effect vocabulary replaces nine derived labels across help, the
+  palette, and the docs.
+- `/help` fits one screen; `/help all` prints the full table, and an unknown
+  topic exits 2.
+- `aishe provider test`, `aishe demo`, `aishe models`, and top-level
+  `aishe replan` are hidden aliases; `provider test` is removed in favor of
+  `aishe test`.
+- Setup starts at the first real question, asks for an endpoint only where it
+  varies, and offers one recommended-defaults row in place of six settings.
+- The prompt and statusline paint from the same palette as the renderers, so
+  `NO_COLOR`, `TERM=dumb`, and `ui.theme` apply to them too.
 - The live status is always rendered below the editable zsh prompt, wraps into
   width-bounded rows on narrow terminals, includes branch/environment/task
   state, and has a complete ASCII fallback without requiring a patched font.
