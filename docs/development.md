@@ -156,6 +156,16 @@ AISHE_RUNTIME_DIR=/path/to/test-runtime \
 AISHE_RUNTIME_DIR=/path/to/test-runtime \
   python3 tests/opencode_connection_isolation.py target/release/aishe
 python3 tests/model_picker_pty.py target/release/aishe
+# In-shell regressions from the 2026-09-03 daily-driver review
+python3 tests/in_shell_menus_pty.py target/release/aishe
+python3 tests/yolo_consent_pty.py target/release/aishe
+python3 tests/palette_pty.py target/release/aishe
+python3 tests/mode_handoff_pty.py target/release/aishe
+python3 tests/bare_words_pty.py target/release/aishe
+python3 tests/theme_prompt_pty.py target/release/aishe
+python3 tests/keys_pty.py target/release/aishe
+python3 tests/statusline_width_pty.py target/release/aishe
+python3 tests/docs_cli_block_test.py target/release/aishe
 python3 tests/direct_shell_benchmark.py target/release/aishe
 python3 tests/bash_hook.py target/release/aishe --bash bash --require-current-family
 python3 tests/terminal_compat_test.py

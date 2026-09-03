@@ -225,6 +225,17 @@ jobs:
       - name: Interactive setup state-machine PTY
         run: python3 tests/setup_pty.py target/release/aishe
 
+      - name: In-shell regression PTY suite
+        run: |
+          python3 tests/in_shell_menus_pty.py target/release/aishe
+          python3 tests/yolo_consent_pty.py target/release/aishe
+          python3 tests/palette_pty.py target/release/aishe
+          python3 tests/mode_handoff_pty.py target/release/aishe
+          python3 tests/bare_words_pty.py target/release/aishe
+          python3 tests/theme_prompt_pty.py target/release/aishe
+          python3 tests/keys_pty.py target/release/aishe
+          python3 tests/statusline_width_pty.py target/release/aishe
+
       - name: Pinned OpenCode provider and tool-bridge contract
         run: python3 tests/opencode_runtime_contract.py target/release/aishe
 
