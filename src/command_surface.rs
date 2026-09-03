@@ -317,11 +317,11 @@ pub static COMMANDS: &[CommandSpec] = &[
         slash_aliases: &["mode"],
         summary: "Inspect or select suggest, auto, or yolo mode",
         help_topic: "session",
-        arguments: ArgumentPolicy::OptionalValue("MODE"),
+        arguments: ArgumentPolicy::PassThrough("MODE [--default]"),
         availability: cli_only_surfaces(),
         output: OutputType::ShellState,
         side_effects: SideEffectClass::Mixed,
-        shell_local: ShellLocalRequirement::OptionalHandoff,
+        shell_local: ShellLocalRequirement::RequiredHandoff,
         lifecycle: Lifecycle::Active,
     },
     CommandSpec {

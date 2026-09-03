@@ -171,7 +171,7 @@ unless its save/default flow is used.
 | `/connection, /provider [ID_OR_LABEL]` | Inspect or switch the active account connection | this shell by default |
 | `/auth` | Show authentication state for the active connection | read-only |
 | `/model [MODEL]` | Inspect or select a model on the active connection | this shell by default |
-| `/mode [MODE]` | Inspect or select suggest, auto, or yolo mode | this shell by default |
+| `/mode [MODE [--default]…]` | Inspect or select suggest, auto, or yolo mode | may change state |
 | `/scope [SCOPE]` | Inspect or select workspace or host agent scope | durable; refreshes this shell |
 | `/network [allow\|deny]` | Inspect or select workspace-agent network policy | durable setting |
 | `/reasoning [LEVEL]` | Inspect or select reasoning effort | this shell by default |

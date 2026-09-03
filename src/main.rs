@@ -673,12 +673,12 @@ fn run() -> Result<u8> {
             };
             return aishe::repo_index::command(&cwd, action);
         }
-        Some(Cmd::Mode { value }) => {
-            return Ok(aishe::cli::connection::set_or_show(
-                "mode",
-                value.as_deref(),
+        Some(Cmd::Mode { value, default }) => {
+            return Ok(aishe::cli::connection::mode(
                 &config,
-            ))
+                value.as_deref(),
+                *default,
+            ));
         }
         Some(Cmd::Scope { value }) => {
             return Ok(aishe::cli::connection::set_or_show(

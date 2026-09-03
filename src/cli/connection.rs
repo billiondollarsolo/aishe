@@ -775,6 +775,54 @@ pub fn auth_state(connection: &crate::config::ConnectionConfig) -> String {
 /// project overlay or a `--mode`/`--provider` flag can't get baked into the saved
 /// file. Clap already validated the enumerated settings against their allowed
 /// sets.
+/// `aishe mode` inside an AIShe shell means *this* shell, like `/mode`; outside
+/// one it is the durable default. `--default` writes config either way.
+pub fn mode(effective: &Config, value: Option<&str>, save_default: bool) -> u8 {
+    let in_shell = std::env::var_os("AISHE_SHELL_ID").is_some_and(|id| !id.is_empty());
+    let Some(value) = value else {
+        let current = std::env::var("AISHE_MODE")
+            .ok()
+            .filter(|value| !value.is_empty())
+            .unwrap_or_else(|| effective.aishe.mode.clone());
+        let scope = if in_shell {
+            "this shell"
+        } else {
+            "default for new shells"
+        };
+        println!("mode: {} ({scope})", crate::commands::display_safe(&current));
+        return 0;
+    };
+    let (hand_off, save) = mode_targets(in_shell, save_default);
+    if hand_off {
+        if let Some(path) = std::env::var_os("AISHE_PENDING_FILE").filter(|p| !p.is_empty()) {
+            if let Err(error) = std::fs::write(&path, format!("mode\n{value}\n")) {
+                eprintln!("aishe: {error}");
+                return 1;
+            }
+        }
+        println!("mode: {value} (this shell)");
+    }
+    if save {
+        let mut cfg = match Config::load_or_init() {
+            Ok(cfg) => cfg,
+            Err(error) => return crate::cli::error_contract::emit_from(error.as_ref()),
+        };
+        cfg.aishe.mode = value.to_string();
+        cfg.aishe.safety_profile = "custom".to_string();
+        if let Err(error) = cfg.save() {
+            eprintln!("aishe: {error}");
+            return 1;
+        }
+        println!("mode: {value} (default for new shells)");
+    }
+    0
+}
+
+/// (hand off to the parent shell, write the config file)
+fn mode_targets(in_shell: bool, save_default: bool) -> (bool, bool) {
+    (in_shell, save_default || !in_shell)
+}
+
 pub fn set_or_show(field: &str, value: Option<&str>, effective: &Config) -> u8 {
     let Some(value) = value else {
         let current = match field {
@@ -890,4 +938,19 @@ fn output_handoff_path() -> Result<Option<std::path::PathBuf>> {
         anyhow::bail!("AISHE_OUTPUT_FILE must be in the shell temporary directory");
     }
     Ok(Some(path))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn mode_targets_follow_the_shell_it_runs_in() {
+        // Inside an AIShe shell `aishe mode auto` means this shell, like /mode.
+        assert_eq!(mode_targets(true, false), (true, false));
+        // --default also writes config without losing the live shell change.
+        assert_eq!(mode_targets(true, true), (true, true));
+        // Outside a shell there is nothing to hand off to; save the default.
+        assert_eq!(mode_targets(false, false), (false, true));
+    }
 }

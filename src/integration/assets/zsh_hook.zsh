@@ -1,4 +1,5 @@
 : ${AISHE_PENDING_FILE:=${TMPDIR:-/tmp}/aishe-pending-$$}
+export AISHE_PENDING_FILE
 : ${AISHE_FORCE_FILE:=${TMPDIR:-/tmp}/aishe-force-$$}
 # Conversation memory shared across the per-call NL invocations in this shell, so
 # follow-ups keep context. Exported so `command aishe` inherits it.

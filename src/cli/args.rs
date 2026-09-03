@@ -330,10 +330,13 @@ pub(crate) enum Cmd {
         /// `.aishe/config.toml`.
         path: Option<std::path::PathBuf>,
     },
-    /// Show or set the interaction mode (with a value, saves it to your config).
+    /// Show or set the interaction mode for this shell; `--default` also saves it.
     Mode {
         #[arg(value_parser = ["suggest", "auto", "yolo"])]
         value: Option<String>,
+        /// Also save the mode as the default for new shells
+        #[arg(long)]
+        default: bool,
     },
     /// Show or set the agent execution scope for future turns.
     Scope {

@@ -100,12 +100,12 @@ fn generated_shell_artifacts_match_the_reviewed_byte_snapshots() {
         (
             "zsh init",
             zsh_script(),
-            "c500f03d11b26c4adb6d1446e1cd0083257aa805351ae71cd598be9c98cda1cc",
+            "5fcefc0460ac730632f87ef2c690b182e8802dc2a556a7c39c05cb5f062411f4",
         ),
         (
             "bash init",
             bash_script(),
-            "b92dbdb1bb129562bd77138ceff8b8d2322833f788e0a262d84b409569171666",
+            "009d1634a3bd6b255223c088f064f570ca3c47cf95f31dafa270b8b278cba9d2",
         ),
         (
             "wrapper zshenv",
@@ -115,7 +115,7 @@ fn generated_shell_artifacts_match_the_reviewed_byte_snapshots() {
         (
             "wrapper zshrc",
             wrapper_zshrc(),
-            "bed4b40e16041edb0a92bb3311bd1170f6726d59d36f8e483e003331ffd5ab93",
+            "6df3a02d793c5317ac0eb6a689b86c04a301be86cac00b06e0beb6c9960f3cf4",
         ),
     ] {
         assert_eq!(digest(&rendered), expected, "unexpected {name} byte drift");
@@ -200,7 +200,7 @@ fn generated_zsh_dispatch_applies_shell_mode_and_keeps_tombstones_local() {
     assert!(output.status.success());
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stdout.contains("mode = auto  (this shell)"));
+    assert!(stdout.contains("mode: auto (this shell)"));
     assert!(stdout.contains("effective=auto"));
     assert!(stderr.contains("/ghost is no longer available"));
     assert!(!stderr.contains("command not found"));
@@ -222,7 +222,7 @@ fn generated_bash_dispatch_hands_shell_state_back_to_the_prompt() {
         String::from_utf8_lossy(&output.stderr)
     );
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("mode = auto  (this shell)"));
+    assert!(stdout.contains("mode: auto (this shell)"));
     assert!(stdout.contains("effective=auto"));
 }
 

@@ -114,12 +114,11 @@ fn render_cli_hook(spec: &crate::command_surface::CommandSpec, shell: HookShell)
             no_argument_guard(),
             close_no_argument_guard()
         ),
-        ArgumentPolicy::OptionalValue(_) => format!(
-            "      if [[ -n \"$_aishe_arg\" ]]; then\n        {command} \"$_aishe_arg\"{redirect}\n      else\n        {command}{redirect}\n      fi\n"
-        ),
-        ArgumentPolicy::PassThrough(_) => match shell {
+        // One value or many: both word-split, so `/model gpt-5.5 --default` and
+        // `/reasoning high --default` reach clap as separate argv words.
+        ArgumentPolicy::OptionalValue(_) | ArgumentPolicy::PassThrough(_) => match shell {
             HookShell::Zsh => format!(
-                "      if [[ -n \"$_aishe_arg\" ]]; then\n        local -a _aishe_args\n        _aishe_args=(\"${{(z)_aishe_arg}}\") 2>/dev/null || {{ printf 'aishe: invalid slash-command arguments\\n' >&2; return 2; }}\n        {command} \"${{_aishe_args[@]}}\"{redirect}\n      else\n        {command}{redirect}\n      fi\n"
+                "      if [[ -n \"$_aishe_arg\" ]]; then\n        local -a _aishe_args\n        _aishe_args=(\"${{(Q@)${{(z)_aishe_arg}}}}\") 2>/dev/null || {{ printf 'aishe: invalid slash-command arguments\\n' >&2; return 2; }}\n        {command} \"${{_aishe_args[@]}}\"{redirect}\n      else\n        {command}{redirect}\n      fi\n"
             ),
             HookShell::Bash => format!(
                 "      command aishe --hook-cli {} \"$_aishe_arg\"{redirect}\n",
@@ -168,6 +167,8 @@ fn render_hook_action(spec: &crate::command_surface::CommandSpec, shell: HookShe
                 HookShell::Zsh => {
                     r#"      if [[ -z "$_aishe_arg" ]]; then
         printf 'mode: %s (this shell)\n' "${AISHE_MODE:-suggest}"
+      elif [[ "$_aishe_arg" == *--default* ]]; then
+        command aishe mode ${=_aishe_arg} < /dev/tty > /dev/tty 2>&1
       elif (( ${ZSH_SUBSHELL:-0} > 0 )); then
         printf 'mode\n%s\n' "$_aishe_arg" > "$AISHE_PENDING_FILE"
       else
@@ -178,6 +179,10 @@ fn render_hook_action(spec: &crate::command_surface::CommandSpec, shell: HookShe
                 HookShell::Bash => {
                     r#"      if [[ -z "$_aishe_arg" ]]; then
         printf 'mode: %s (this shell)\n' "${AISHE_MODE:-suggest}"
+      elif [[ "$_aishe_arg" == *--default* ]]; then
+        local -a _aishe_mode_args
+        read -ra _aishe_mode_args <<< "$_aishe_arg"
+        command aishe mode "${_aishe_mode_args[@]}" < /dev/tty > /dev/tty 2>&1
       else
         printf 'mode\n%s\n' "$_aishe_arg" > "$AISHE_PENDING_FILE"
       fi
@@ -246,7 +251,7 @@ _aishe_apply_session_mode() {
   esac
   AISHE_MODE="$_aishe_mode"
   export AISHE_MODE
-  printf 'mode = %s  (this shell)\n' "$AISHE_MODE"
+  printf 'mode: %s (this shell)\n' "$AISHE_MODE"
 }
 
 _aishe_dispatch_slash() {

@@ -607,6 +607,14 @@ mod tests {
             + COMMAND_REFERENCE_END.len();
         let checked_in = &from_start[..end];
         let generated = markdown_command_reference(Surface::ZshHook);
+        // Regenerate after an intentional registry change:
+        //   AISHE_UPDATE_DOCS=1 cargo test --lib commands_markdown_matches
+        if std::env::var_os("AISHE_UPDATE_DOCS").is_some() {
+            let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("docs/commands.md");
+            let updated = docs.replace(checked_in.trim(), generated.trim());
+            std::fs::write(path, updated).expect("update docs/commands.md");
+            return;
+        }
         assert_eq!(checked_in.trim(), generated.trim());
     }
 
