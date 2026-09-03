@@ -97,7 +97,7 @@ fn generated_shell_artifacts_match_the_reviewed_byte_snapshots() {
         (
             "zsh init",
             zsh_script(),
-            "2ae62ce2d916c6d414b9df0e3946622b1e11e37be8b9f523d0e380e05f2e029f",
+            "9203dc2f2a6c37135def2b9de66fb883241f623be6fab7f5a2faf5820d45bbdd",
         ),
         (
             "bash init",
@@ -112,7 +112,7 @@ fn generated_shell_artifacts_match_the_reviewed_byte_snapshots() {
         (
             "wrapper zshrc",
             wrapper_zshrc(),
-            "9255c414c185d07ce35e448a789cdd649dc38cc84fa14e9c5b2d312f5dece218",
+            "60c42c570db1fc65479fd192253ebeaf9462de328f77cbb68140c283a6c03f60",
         ),
     ] {
         assert_eq!(digest(&rendered), expected, "unexpected {name} byte drift");
@@ -344,9 +344,12 @@ fn zsh_script_has_mode_cycle_widget() {
     assert!(s.contains("zle -N aishe-cycle-mode"));
     // Default key is Shift-Tab, overridable via AISHE_MODE_KEY.
     assert!(s.contains("${AISHE_MODE_KEY:-^[[Z}"));
-    // It repaints and reports the new mode.
+    // It refreshes status without taking PROMPT/RPROMPT from the user's theme.
+    assert!(s.contains("aishe_set_prompt status-only"));
     assert!(s.contains("reset-prompt"));
-    assert!(s.contains("aishe mode: "));
+    assert!(s.contains("review commands before running"));
+    assert!(s.contains("auto-run safe commands"));
+    assert!(s.contains("agent loop"));
 }
 
 #[test]

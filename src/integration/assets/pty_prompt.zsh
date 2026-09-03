@@ -3,6 +3,8 @@ if [[ -o interactive && "${AISHE_PTY_PROMPT:-1}" == 1 ]]; then
   autoload -Uz add-zsh-hook
   typeset -g _AISHE_STATUS_TEXT=""
   typeset -g _AISHE_STATUS_POSTDISPLAY=""
+  typeset -g _AISHE_PROMPT_VALUE=""
+  typeset -g _AISHE_RPROMPT_VALUE=""
   typeset -ga _AISHE_STATUS_HIGHLIGHTS=()
   autoload -Uz vcs_info
   zstyle ':vcs_info:git:*' formats '%b'
@@ -126,7 +128,14 @@ if [[ -o interactive && "${AISHE_PTY_PROMPT:-1}" == 1 ]]; then
         [[ -n "$value" ]] || continue
         case "$field" in
           reasoning) value="reason:$value" ;;
-          mode) value="mode:$value" ;;
+          mode)
+            case "$value" in
+              suggest) value='review first' ;;
+              auto)    value='auto-run safe' ;;
+              yolo)    value='agent loop' ;;
+              *)       value="mode:$value" ;;
+            esac
+            ;;
         esac
         duplicate=0
         # ponytail: the field list is tiny; linear comparison keeps hostile
@@ -180,8 +189,15 @@ if [[ -o interactive && "${AISHE_PTY_PROMPT:-1}" == 1 ]]; then
     # PROMPT_SUBST, which would otherwise evaluate `$()` or backticks.
     _AISHE_STATUS_TEXT="$status_text"
     base_prompt="%B%F{cyan}%~%f%b %(?.%F{green}.%F{red})${glyph}%f "
-    PROMPT="${base_prompt}"
-    RPROMPT=""
+    # A key-triggered refresh may run after Starship/Powerlevel10k has replaced
+    # AIShe's prompt. Update AIShe-owned glyphs, but never seize a theme's prompt.
+    if [[ "${1:-}" != status-only ||
+          ( "$PROMPT" == "$_AISHE_PROMPT_VALUE" && "$RPROMPT" == "$_AISHE_RPROMPT_VALUE" ) ]]; then
+      PROMPT="${base_prompt}"
+      RPROMPT=""
+      _AISHE_PROMPT_VALUE="$PROMPT"
+      _AISHE_RPROMPT_VALUE="$RPROMPT"
+    fi
   }
   add-zsh-hook precmd aishe_set_prompt
   autoload -Uz add-zle-hook-widget

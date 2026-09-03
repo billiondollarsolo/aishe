@@ -292,6 +292,47 @@ def prompt_substitution_is_inert():
         shutil.rmtree(home, ignore_errors=True)
 
 
+def theme_survives_mode_cycle():
+    home, env, _ = environment("right")
+    theme = os.path.join(home, "theme.zsh")
+    with open(theme, "w", encoding="utf-8") as file:
+        file.write(
+            "autoload -Uz add-zsh-hook\n"
+            "_status_theme() { PROMPT='THEME> '; RPROMPT='THEME-RIGHT'; }\n"
+            "add-zsh-hook precmd _status_theme\n"
+            "export AISHE_MODE=suggest\n"
+        )
+    shell = Pty(env, 180)
+    try:
+        if not shell.ready():
+            raise AssertionError("theme-preservation session never became ready")
+        shell.send("source " + theme)
+        shell.drain(1)
+        shell.send('print -r -- "THEME_READY=$PROMPT|$RPROMPT"')
+        if not shell.expect("THEME_READY=THEME> |THEME-RIGHT"):
+            raise AssertionError(
+                "test prompt theme did not activate:\n%s" % shell.transcript[-2500:]
+            )
+        start = len(shell.transcript)
+        os.write(shell.master, b"\x1b[Z")
+        if not shell.expect("auto-run safe commands"):
+            raise AssertionError("Shift-Tab did not explain the new mode")
+        shell.send(
+            'print -r -- "THEME_CHECK=$AISHE_MODE|$PROMPT|$RPROMPT|$_AISHE_STATUS_TEXT"'
+        )
+        if not shell.expect("THEME_CHECK=auto|THEME> |THEME-RIGHT|"):
+            raise AssertionError(
+                "Shift-Tab replaced the user prompt theme:\n%s"
+                % shell.transcript[start:][-2500:]
+            )
+        if "auto-run safe" not in shell.transcript[start:]:
+            raise AssertionError("Shift-Tab did not refresh the behavioral status label")
+        print("  ok   Shift-Tab preserves the prompt theme and explains the mode")
+    finally:
+        shell.close()
+        shutil.rmtree(home, ignore_errors=True)
+
+
 def main():
     if shutil.which("zsh") is None:
         print("SKIP: zsh not on PATH")
@@ -304,6 +345,7 @@ def main():
     run_case("below", 60)
     run_case("off", 42)
     prompt_substitution_is_inert()
+    theme_survives_mode_cycle()
     print("PASS: statusline placement and live metrics")
 
 
