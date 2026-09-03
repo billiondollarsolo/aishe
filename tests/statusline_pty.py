@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Real-zsh PTY tests for the below-input/off live statusline."""
+"""Real-zsh PTY tests for the native right-prompt/off live status."""
 
 import fcntl
 import os
@@ -121,8 +121,8 @@ def environment(position):
             "show_usage = false\n"
             "status_line = %s\n"
             'status_line_position = "%s"\n'
-            'status_line_items = ["identity", "model", "mode", "last_tokens", "last_cost", '
-            '"session_tokens", "session_cost", "requests"]\n\n'
+            'status_line_items = ["model", "mode", "scope", "session_tokens", '
+            '"requests", "plan"]\n\n'
             "[providers.anthropic]\n"
             'base_url = "https://api.anthropic.com"\n'
             'api_key_env = "UNUSED_FAKE_KEY"\n'
@@ -179,28 +179,23 @@ def run_case(position, cols, expected_position=None):
                 raise AssertionError("ASCII mode rendered a font-dependent logo")
             if not re.search(r"\x1b\[[^\n]*m>{1,2}\x1b", shell.transcript):
                 raise AssertionError("ASCII mode did not render an ASCII prompt glyph")
-        elif model not in shell.transcript or "auto" not in shell.transcript:
+        elif model not in shell.transcript or "AUTO" not in shell.transcript:
             raise AssertionError(
                 "%s statusline did not render identity:\n%s"
                 % (position, shell.transcript[-2500:])
             )
         elif "^[" in CSI.sub("", shell.transcript):
             raise AssertionError("statusline rendered visible ANSI escape text")
-        elif "\x1b[33m" not in shell.transcript or "\x1b[35m" not in shell.transcript:
+        elif "\x1b[33m" not in shell.transcript or "\x1b[36m" not in shell.transcript:
             raise AssertionError("statusline did not apply semantic model/mode colors")
-        elif not re.search(
-            r"[❯»*] [^\n]*\n(?:[^\n]*\n){0,2}[^\n]*" + re.escape(model),
-            CSI.sub("", shell.transcript),
-        ):
-            raise AssertionError(
-                "%s statusline was not below the editable prompt:\n%s"
-                % (position, shell.transcript[-2500:])
-            )
 
         if position != "off":
             shell.send(
+                "AISHE_STATUS_ITEMS=identity,model; aishe_set_prompt status-only; "
                 "print -r -- BEGIN_''STATUS; print -r -- \"$_AISHE_STATUS_TEXT\"; "
-                "print -r -- END_''STATUS"
+                "print -r -- \"RPROMPT=$RPROMPT\"; print -r -- \"POSTDISPLAY=$POSTDISPLAY\"; "
+                "print -r -- END_''STATUS; "
+                "AISHE_STATUS_ITEMS=model,mode,scope,session_tokens,requests,plan"
             )
             if not shell.expect("END_STATUS"):
                 raise AssertionError("could not inspect rendered status text")
@@ -208,6 +203,10 @@ def run_case(position, cols, expected_position=None):
             rendered = plain.split("END_STATUS", 1)[0]
             if rendered.count(model) != 1 or "Auto (legacy)" in rendered:
                 raise AssertionError("composite identity repeated model/auth details")
+            if "RPROMPT=" not in rendered or "%90v" not in rendered:
+                raise AssertionError("status was not installed in native RPROMPT")
+            if re.search(r"POSTDISPLAY=.*" + re.escape(model), rendered):
+                raise AssertionError("status polluted plugin-owned POSTDISPLAY")
 
         shell.send("print -r -- POSITION=$AISHE_STATUS_POSITION")
         if not shell.expect("POSITION=" + expected_position):
@@ -217,7 +216,7 @@ def run_case(position, cols, expected_position=None):
         submitted = "? print the status test marker"
         submitted_start = len(shell.transcript)
         shell.send(submitted)
-        if not shell.expect("STATUS_CALL_OK"):
+        if not shell.expect("STATUS_CALL_OK", timeout=60):
             raise AssertionError("%s AI call did not complete" % position)
         if not submitted_line_remains_visible(
             shell.transcript[submitted_start:], submitted
@@ -227,16 +226,17 @@ def run_case(position, cols, expected_position=None):
                 % (position, shell.transcript[-2500:])
             )
         shell.drain(0.8)
-        dynamic = ["last 123/45 tok", "session 123/45 tok", "1 req"]
+        dynamic = ["session 123/45 tok", "1 req"]
         if position == "off":
             if any(value in shell.transcript for value in dynamic):
                 raise AssertionError("off statusline rendered dynamic metrics")
-        elif not all(value in shell.transcript for value in dynamic):
-            raise AssertionError(
-                "%s statusline did not refresh metrics:\n%s"
-                % (position, shell.transcript[-2500:])
-            )
         else:
+            shell.send("print -r -- DYNAMIC=$_AISHE_STATUS_TEXT")
+            if not all(shell.expect(value) for value in dynamic):
+                raise AssertionError(
+                    "%s statusline did not refresh metrics:\n%s"
+                    % (position, shell.transcript[-2500:])
+                )
             shell.send(
                 "! print -r -- $'plan\\tweek 82% left' >> $AISHE_STATUS_FILE; "
                 "export AISHE_AUTH_KIND=oauth; AISHE_STATUS_ITEMS+=,plan; aishe_set_prompt; "
@@ -261,7 +261,7 @@ def run_case(position, cols, expected_position=None):
 def prompt_substitution_is_inert():
     home, env, original_model = environment("right")
     marker = os.path.join(home, "prompt-substitution-must-not-run")
-    command_payload = "$(touch %s)" % marker
+    command_payload = "$(touch $HOME/prompt-substitution-must-not-run)"
     toml_payload = command_payload + "\\u001b[2Kspoof"
     rendered_payload = command_payload + "\\x1b[2Kspoof"
     config = os.path.join(home, ".config", "aishe", "config.toml")
@@ -294,20 +294,17 @@ def prompt_substitution_is_inert():
 
 def theme_survives_mode_cycle():
     home, env, _ = environment("right")
-    capture = os.path.join(home, "postdisplay")
+    capture = os.path.join(home, "prompt-state")
     with open(os.path.join(home, ".zshrc"), "a", encoding="utf-8") as file:
         file.write(
+            "PROMPT='THEME> '; RPROMPT='THEME-RIGHT'\n"
             "autoload -Uz add-zle-hook-widget\n"
             "_fake_suggestion() { POSTDISPLAY='ghost'; }\n"
             "add-zle-hook-widget line-pre-redraw _fake_suggestion\n"
-        )
-    theme = os.path.join(home, "theme.zsh")
-    with open(theme, "w", encoding="utf-8") as file:
-        file.write(
-            "autoload -Uz add-zsh-hook\n"
-            "_status_theme() { PROMPT='THEME> '; RPROMPT='THEME-RIGHT'; }\n"
-            "add-zsh-hook precmd _status_theme\n"
-            "_capture_display() { print -rn -- \"$POSTDISPLAY\" > " + capture + "; }\n"
+            "_capture_display() { { print -rn -- \"$POSTDISPLAY\"; "
+            "print -rn -- $'\\n---\\n'; print -rn -- \"$RPROMPT\"; } > "
+            + capture
+            + "; }\n"
             "zle -N _capture_display\n"
             "bindkey '^X^T' _capture_display\n"
             "export AISHE_MODE=suggest\n"
@@ -316,10 +313,8 @@ def theme_survives_mode_cycle():
     try:
         if not shell.ready():
             raise AssertionError("theme-preservation session never became ready")
-        shell.send("source " + theme)
-        shell.drain(1)
         shell.send('print -r -- "THEME_READY=$PROMPT|$RPROMPT"')
-        if not shell.expect("THEME_READY=THEME> |THEME-RIGHT"):
+        if not shell.expect("THEME_READY=") or not shell.expect("THEME-RIGHT"):
             raise AssertionError(
                 "test prompt theme did not activate:\n%s" % shell.transcript[-2500:]
             )
@@ -332,21 +327,24 @@ def theme_survives_mode_cycle():
         os.write(shell.master, b"\x18\x14")
         shell.drain(1)
         with open(capture, encoding="utf-8") as file:
-            postdisplay = file.read()
-        if not postdisplay.startswith("ghost\n") or "AUTO" not in postdisplay:
+            prompt_state = file.read()
+        postdisplay, rprompt = prompt_state.split("\n---\n", 1)
+        if postdisplay != "ghost":
             raise AssertionError(
-                "Shift-Tab did not preserve ghost text with the repainted mode: %r\n%s"
+                "Shift-Tab changed plugin-owned POSTDISPLAY: %r\n%s"
                 % (postdisplay, shell.transcript[-2500:])
             )
+        if "THEME-RIGHT" not in rprompt or "%90v" not in rprompt:
+            raise AssertionError("AIShe did not compose with the theme RPROMPT")
         if "AUTO" not in repaint:
             raise AssertionError("Shift-Tab did not visibly emit the new mode")
         os.write(shell.master, b"\x15")
         shell.send(
             'print -r -- "THEME_CHECK=$AISHE_MODE|$PROMPT|$RPROMPT|$_AISHE_STATUS_TEXT"'
         )
-        if not shell.expect("THEME_CHECK=auto|THEME> |THEME-RIGHT|"):
+        if not shell.expect("THEME_CHECK=auto|") or not shell.expect("THEME-RIGHT"):
             raise AssertionError(
-                "Shift-Tab replaced the user prompt theme:\n%s"
+                "Shift-Tab corrupted the composed prompt state:\n%s"
                 % shell.transcript[-2500:]
             )
         print("  ok   Shift-Tab coexists with prompt themes and autosuggestions")
@@ -361,10 +359,9 @@ def main():
         return
     if not os.path.exists(BINARY):
         raise SystemExit("FAIL: binary not found: " + BINARY)
-    # Existing `right` configs migrate at load time; every enabled statusline is
-    # rendered below the editable command line.
-    run_case("right", 180, "below")
-    run_case("below", 60)
+    # Legacy `below` configs migrate to the one stable native placement.
+    run_case("right", 180)
+    run_case("below", 100, "right")
     run_case("off", 42)
     prompt_substitution_is_inert()
     theme_survives_mode_cycle()

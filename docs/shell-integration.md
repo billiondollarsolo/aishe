@@ -242,10 +242,10 @@ runtime installers and package upgrades do not remove it.
 
 ## Branded prompt status line
 
-With `pty_prompt = true`, aishe renders its live status below the editable
-command, or nowhere when disabled. Configure it in `aishe setup` / `aishe
-settings`, or set `status_line_position = "below"` or `"off"`. Existing
-`"right"` values migrate to `"below"`. The default `identity` field shows the safe connection
+With `pty_prompt = true`, aishe renders its live status in zsh's native right
+prompt, or nowhere when disabled. Configure it in `aishe setup` / `aishe
+settings`, or set `status_line_position = "right"` or `"off"`. Existing
+`"below"` values migrate to `"right"`. The default `identity` field shows the safe connection
 label/ID, provider/endpoint host, authentication label, model/reasoning, and
 whether the choice is shell-local or the durable default. Individual fields
 include `connection`, `provider`, `endpoint`, `auth`, `selection`, `model`,

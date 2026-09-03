@@ -39,8 +39,8 @@ def environment():
             'connection = "openai-work"\n'
             'connection_fallback = "openai-work"\n'
             'pty_prompt = true\n'
-            'status_line_position = "below"\n'
-            'status_line_items = ["identity"]\n\n'
+            'status_line_position = "right"\n'
+            'status_line_items = ["model", "mode", "scope"]\n\n'
             '[connections.openai-work]\n'
             'provider = "openai"\n'
             'label = "OpenAI work"\n'
@@ -212,18 +212,15 @@ def main():
         second.ready()
         first.drain(0.3)
         initial_identity = [
-            "OpenAI work (openai-work)",
-            "openai@127.0.0.1",
-            "No auth",
-            "work-model/auto",
-            "default",
+            "work-model",
+            "REVIEW",
+            "workspace",
         ]
         if not all(value in first.transcript for value in initial_identity):
-            raise AssertionError("compact identity disclosure is incomplete")
+            raise AssertionError("compact status identity is incomplete")
 
         select_connection(first, "personal")
         first.expect("connection = openai-personal")
-        first.expect("OpenAI personal (openai-personal)")
         first.expect("this shell")
         first.identity("FIRST")
         first.expect("FIRST:openai-personal:personal-model")

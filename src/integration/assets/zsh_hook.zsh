@@ -559,6 +559,8 @@ aishe-cycle-mode() {
   case "${AISHE_MODE:-suggest}" in
     suggest) AISHE_MODE=auto ;;
     auto)
+      # An interactive child owns the terminal until acceptance completes.
+      zle -I
       if command aishe --accept-yolo < /dev/tty > /dev/tty 2>&1; then
         AISHE_MODE=yolo
       else
@@ -569,10 +571,9 @@ aishe-cycle-mode() {
   esac
   export AISHE_MODE
   if (( $+functions[aishe_set_prompt] )); then
-    # Refresh the persistent footer directly without touching the theme prompt.
+    # Refresh zsh's native right prompt without touching the theme's left prompt.
     aishe_set_prompt status-only
-    (( $+functions[_aishe_status_below] )) && _aishe_status_below
-    zle -R
+    zle reset-prompt
   else
     zle -M "aishe mode: ${AISHE_MODE}"
   fi

@@ -205,7 +205,7 @@ fn run_zsh_inner(config: &Config, history_log: &std::path::Path, shell_id: Strin
     cmd.env(
         "AISHE_STATUS_POSITION",
         if config.aishe.status_line {
-            "below"
+            "right"
         } else {
             "off"
         },

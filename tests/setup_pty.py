@@ -488,10 +488,10 @@ def complete_setup(root, env, endpoint):
         shell.expect("Agent transcript density")
         shell.menu(1)  # focus
         shell.expect("Live status-line placement")
-        shell.menu(1)  # below
+        shell.menu(1)  # right prompt
         shell.expect("Status-line contents")
         shell.menu(2)  # detailed
-        shell.expect("preview (below)")
+        shell.expect("preview (right)")
         shell.expect("Enable the private redacted audit log?")
         shell.line("n")
 
@@ -515,7 +515,7 @@ def complete_setup(root, env, endpoint):
     required = [
         'model = "setup-local-model"',
         'safety_profile = "balanced"',
-        'status_line_position = "below"',
+        'status_line_position = "right"',
         "input = 0.125",
         "output = 0.5",
     ]
@@ -609,8 +609,8 @@ def settings_are_transactional(root, env, config, endpoint):
         apply.expect("Shell, history & statusline")
         apply.menu(6)  # placement
         apply.expect("Statusline placement")
-        apply.menu(1)  # below
-        apply.expect("preview (below)")
+        apply.menu(1)  # right prompt
+        apply.expect("preview (right)")
         apply.expect("Shell, history & statusline")
         apply.menu(8)  # transcript density
         apply.expect("Agent transcript density")
@@ -627,7 +627,7 @@ def settings_are_transactional(root, env, config, endpoint):
     finally:
         apply.close()
     text = open(config, encoding="utf-8").read()
-    if 'status_line_position = "below"' not in text:
+    if 'status_line_position = "right"' not in text:
         raise AssertionError("settings did not apply selected placement")
     if "hook_timeout_secs = 75" not in text:
         raise AssertionError("settings did not apply selected hook timeout")

@@ -293,7 +293,7 @@ pub fn self_test(config: &Config, live: bool, json: bool) -> Result<u8> {
             "local": {
                 "config": "pass",
                 "redaction": if config.aishe.redact_secrets { "pass" } else { "fail" },
-                "statusline_position": if config.aishe.status_line { "below" } else { "off" },
+                "statusline_position": if config.aishe.status_line { "right" } else { "off" },
                 "sandbox": {
                     "backend": sandbox,
                     "enabled": !matches!(sandbox_backend, crate::sandbox::Backend::Off),
@@ -316,7 +316,7 @@ pub fn self_test(config: &Config, live: bool, json: bool) -> Result<u8> {
         println!(
             "  {} statusline",
             if config.aishe.status_line {
-                "✓ below prompt"
+                "✓ right prompt"
             } else {
                 "· off"
             }

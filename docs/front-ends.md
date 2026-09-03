@@ -59,8 +59,8 @@ Color is not the only route signal. Press **Ctrl-X ?** to display
 `aishe route: agent` or `aishe route: shell/local` for the current zsh buffer
 without submitting or replacing it.
 
-The branded prompt also has a configurable live status display below the
-editable command; `off` hides it. Choose its ordered fields during setup or in
+The branded prompt also has a configurable live status chip in zsh's native
+right prompt; `off` hides it. Choose its ordered fields during setup or in
 `aishe settings`. Fields include model, mode, backend, scope,
 network, sandbox, task, elapsed time, latest context tokens, call/session
 tokens/cost, budget, and request count.

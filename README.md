@@ -115,8 +115,8 @@ Full routing, Option/Alt+Return, and Mac terminal Meta settings:
 - **Explicit context and automation.** Agent-only `@file`, `@dir`, `@diff`, and
   `@clipboard` attachments are bounded; `aishe index` searches tracked code
   locally; `aishe ask --json|--schema` produces validated machine output.
-- **Cost-aware.** Per-call and session metering, optional hard budget, status
-  line below the editable command. OAuth status prefers a `plan` marker over fake
+- **Cost-aware.** Per-call and session metering, optional hard budget, native
+  right-prompt status. OAuth status prefers a `plan` marker over fake
   dollar spend when prices are subscription-based.
 - **Durable AI tasks.** Checkpointed agent sessions; `aishe sessions` /
   `aishe resume` recover interrupted work without blind re-execution.

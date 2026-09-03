@@ -267,13 +267,21 @@ scope remains the default.
 ## Status placement and terminal compatibility
 
 AIShe's live connection, model, mode, scope, branch/environment, session cost,
-request count, and background-task count are rendered through ZLE
-`POSTDISPLAY`. This keeps the status on the physical line below the editable
-prompt; `RPROMPT` is always empty. Legacy `status_line_position = "right"`
-migrates to `below`. Set `below` or `off` in setup/settings.
+request count, and background-task count are rendered through zsh's native
+right prompt. Spaceship is extended through its right-prompt section API;
+other themes keep their existing `RPROMPT` and AIShe appends its chip. Legacy
+`status_line_position = "below"` values migrate to `right`; set `right` or
+`off` in setup/settings.
 
-The display wraps the composite identity at field boundaries, truncates any
-single overlong field to terminal width, and treats provider/model text as data,
+Native ZLE does not provide a reserved, persistent footer row. A simulated
+below-prompt footer conflicts with asynchronous themes and autosuggestions and
+can leave a new line on every redraw. A guaranteed fixed footer, like Codex or
+Claude Code, requires a dedicated full-screen terminal renderer. The native
+right prompt stays visible while typing and yields automatically if the command
+would overlap it.
+
+The display omits lower-priority fields that do not fit, truncates any single
+overlong field to terminal width, and treats provider/model text as data,
 not prompt expansion. Unicode improves the glyphs, but no patched or Nerd Font
 is required. `ui.unicode = "ascii"`, a missing UTF-8 locale, `TERM=dumb`, or
 redirected output selects functional ASCII/plain fallbacks. Shipping a font

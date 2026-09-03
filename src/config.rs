@@ -376,10 +376,10 @@ pub struct AisheConfig {
     /// Print a dim per-session token/cost line after each model interaction.
     #[serde(default = "default_true")]
     pub show_usage: bool,
-    /// Show a live status line below the zsh editing buffer.
+    /// Show live status in zsh's native right prompt.
     #[serde(default = "default_true")]
     pub status_line: bool,
-    /// Status placement. `right` remains a legacy input alias for `below`.
+    /// Status placement. Legacy `below` input migrates to `right`.
     #[serde(default = "default_status_line_position")]
     pub status_line_position: String,
     /// Ordered fields rendered in the status line, including the active safe
@@ -724,7 +724,7 @@ fn default_protected_environment_patterns() -> Vec<String> {
     vec!["prod".to_string(), "production".to_string()]
 }
 fn default_status_line_position() -> String {
-    "below".to_string()
+    "right".to_string()
 }
 fn default_transport() -> String {
     "auto".to_string()
@@ -1106,8 +1106,8 @@ impl Config {
             .with_context(|| format!("reading config at {}", path.display()))?;
         match toml::from_str::<Config>(&text) {
             Ok(mut cfg) => {
-                if cfg.aishe.status_line_position == "right" {
-                    cfg.aishe.status_line_position = "below".into();
+                if cfg.aishe.status_line_position == "below" {
+                    cfg.aishe.status_line_position = "right".into();
                 }
                 let source_version = source_schema_version(&text)?;
                 if source_version > CONFIG_SCHEMA_VERSION {

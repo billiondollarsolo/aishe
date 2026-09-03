@@ -4,7 +4,7 @@ aishe meters every model call so you can see what a session costs and cap it.
 
 ## What you see
 
-The interactive shell keeps a live status display below the editable command.
+The interactive shell keeps a live status chip in zsh's native right prompt.
 It shows the safe connection identity, mode, scope, active connection cost, and
 request count. You can turn it off and choose its ordered fields during setup or
 in `aishe settings`.

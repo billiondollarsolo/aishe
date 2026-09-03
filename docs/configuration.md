@@ -91,7 +91,7 @@ brevity. Read `~/.config/aishe/...` as `<config>/...` and
 | `context_exclude` | array | `[]` | Optional context section IDs to omit. Manage with `aishe context`. |
 | `show_usage` | bool | `true` | Record and display model-call usage in the interactive session. |
 | `status_line` | bool | `true` | Enable the branded prompt's live status display. |
-| `status_line_position` | string | `below` | Status placement: `below` or `off`; legacy `right` values load as `below`. |
+| `status_line_position` | string | `right` | Native right-prompt status or `off`; legacy `below` values load as `right`. |
 | `status_line_items` | array | `["model","mode","scope","session_tokens","session_cost","requests"]` | Ordered fields. Subscription OAuth hides cost and shows authoritative quota windows when its provider exposes them; unavailable quota is omitted. `identity` and individual connection fields remain available for diagnostics or custom layouts. |
 | `budget_usd` | float | `0.0` | Stop calling the model past this session cost. `0` = unlimited. |
 | `memory` | bool | `true` | Remember recent natural-language turns so follow-ups have context. Clear at the aishe prompt with `reset`. |

@@ -1362,7 +1362,7 @@ fn run_interactive(options: Options) -> Result<Outcome> {
                     MenuResult::Selected(_) => unreachable!(),
                 }
                 let positions = vec![
-                    "Below the prompt — Codex-style status line".into(),
+                    "Right prompt — native, stable shell status".into(),
                     "Off — keep only per-call/exit summaries".into(),
                 ];
                 let position_default = usize::from(!draft.config.aishe.status_line);
@@ -1371,7 +1371,7 @@ fn run_interactive(options: Options) -> Result<Outcome> {
                     &positions,
                     position_default,
                     true,
-                    "The status line stays below the editable command so it never collides with input.",
+                    "Native zsh cannot reserve a fixed footer; the right prompt redraws cleanly with themes and plugins.",
                 )? {
                     MenuResult::Selected(1) => {
                         draft.config.aishe.status_line = false;
@@ -1380,7 +1380,7 @@ fn run_interactive(options: Options) -> Result<Outcome> {
                     }
                     MenuResult::Selected(0) => {
                         draft.config.aishe.status_line = true;
-                        draft.config.aishe.status_line_position = "below".into();
+                        draft.config.aishe.status_line_position = "right".into();
                         if !choose_status_items(&mut draft)? {
                             continue;
                         }
@@ -2408,13 +2408,8 @@ pub(crate) fn validate_config(config: &Config) -> Result<()> {
         anyhow::bail!("model cannot be empty");
     }
     validate_transport(&provider.transport)?;
-    if config.aishe.status_line
-        && !matches!(
-            config.aishe.status_line_position.as_str(),
-            "right" | "below"
-        )
-    {
-        anyhow::bail!("status_line_position must be right, below, or off");
+    if config.aishe.status_line && !matches!(config.aishe.status_line_position.as_str(), "right") {
+        anyhow::bail!("status_line_position must be right or off");
     }
     validate_status_items(&config.aishe.status_line_items)?;
     if !(1..=600).contains(&config.aishe.hook_timeout_secs) {

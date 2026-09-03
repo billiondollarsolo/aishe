@@ -97,7 +97,7 @@ fn generated_shell_artifacts_match_the_reviewed_byte_snapshots() {
         (
             "zsh init",
             zsh_script(),
-            "94b8d76a36cd5fad85f6cf1033bdb9206a5e1fa603fa325bb6766b6cbf1346ee",
+            "e6a6b9559f1b5aad74f95090813628910f2f2caa6f6bd5790608c323239e3804",
         ),
         (
             "bash init",
@@ -112,7 +112,7 @@ fn generated_shell_artifacts_match_the_reviewed_byte_snapshots() {
         (
             "wrapper zshrc",
             wrapper_zshrc(),
-            "03697086e1f73de840204ad8f2960111fdd716c40d94c07f77c7e349a3715565",
+            "381ff60742d360c4adb8a41c363de6ef8520cdb04e2c19af2d97e7145f1aaf4d",
         ),
     ] {
         assert_eq!(digest(&rendered), expected, "unexpected {name} byte drift");
@@ -346,8 +346,8 @@ fn zsh_script_has_mode_cycle_widget() {
     assert!(s.contains("${AISHE_MODE_KEY:-^[[Z}"));
     // It refreshes status without taking PROMPT/RPROMPT from the user's theme.
     assert!(s.contains("aishe_set_prompt status-only"));
-    assert!(s.contains("_aishe_status_below"));
-    assert!(s.contains("zle -R"));
+    assert!(s.contains("zle -I"));
+    assert!(s.contains("zle reset-prompt"));
     assert!(s.contains("aishe mode: "));
 }
 

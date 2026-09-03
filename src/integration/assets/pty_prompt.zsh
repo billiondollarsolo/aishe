@@ -2,14 +2,16 @@
 if [[ -o interactive && "${AISHE_PTY_PROMPT:-1}" == 1 ]]; then
   autoload -Uz add-zsh-hook
   typeset -g _AISHE_STATUS_TEXT=""
-  typeset -g _AISHE_STATUS_POSTDISPLAY=""
+  typeset -g _AISHE_STATUS_PROMPT=""
+  typeset -g _AISHE_USER_RPROMPT="$RPROMPT"
+  typeset -g _AISHE_COMPOSED_RPROMPT=""
+  typeset -g _AISHE_PROMPT_HOST="native"
+  typeset -gi _AISHE_STATUS_PSVAR_LAST=89
   typeset -g _AISHE_PROMPT_VALUE=""
-  typeset -g _AISHE_RPROMPT_VALUE=""
-  typeset -ga _AISHE_STATUS_HIGHLIGHTS=()
   autoload -Uz vcs_info
   zstyle ':vcs_info:git:*' formats '%b'
   aishe_set_prompt() {
-    local glyph connection connection_label provider endpoint auth selection model reasoning mode backend scope status_text status_row base_prompt key value item field style branch environment max_width i duplicate seen start end
+    local glyph connection connection_label provider endpoint auth selection model reasoning mode backend scope status_text status_prompt status_row base_prompt key value item field style branch environment max_width i duplicate seen prompt_open prompt_close prompt_index
     local -A metrics
     local -a status_items item_values item_keys seen_values
     if [[ -n "${AISHE_MODEL_FILE:-}" && -r "${AISHE_MODEL_FILE}" ]]; then
@@ -77,10 +79,13 @@ if [[ -o interactive && "${AISHE_PTY_PROMPT:-1}" == 1 ]]; then
       done < "${AISHE_STATUS_FILE}"
     fi
     status_text=""
+    status_prompt=""
     status_row=""
     seen_values=()
-    _AISHE_STATUS_HIGHLIGHTS=()
-    max_width=$(( ${COLUMNS:-80} - 2 ))
+    max_width=$(( ${COLUMNS:-80} - 20 ))
+    (( max_width > 72 )) && max_width=72
+    (( max_width < 20 )) && max_width=20
+    prompt_index=90
     status_items=("${(@s:,:)${AISHE_STATUS_ITEMS:-identity,mode,scope,session_cost,requests}}")
     for item in "${status_items[@]}"; do
       value=""
@@ -153,7 +158,7 @@ if [[ -o interactive && "${AISHE_PTY_PROMPT:-1}" == 1 ]]; then
           fi
         fi
         style=''
-        if [[ -z "${NO_COLOR:-}" && "${TERM:-}" != dumb && -n "${_AISHE_HIGHLIGHT_MEMO:-}" ]]; then
+        if [[ -z "${NO_COLOR:-}" && "${TERM:-}" != dumb ]]; then
           case "$field" in
             connection|auth) style='fg=cyan' ;;
             provider|endpoint|selection|backend) style='fg=242' ;;
@@ -173,66 +178,73 @@ if [[ -o interactive && "${AISHE_PTY_PROMPT:-1}" == 1 ]]; then
           esac
         fi
         if [[ -n "$status_row" ]] && (( ${#status_row} + ${#value} + 3 > max_width )); then
-          status_text+=$'\n'
-          status_row=""
-        else
-          if [[ -n "$status_row" ]]; then
-            start=${#status_text}
-            status_text+=' · '
-            end=${#status_text}
-            [[ -n "$style" ]] && _AISHE_STATUS_HIGHLIGHTS+=("$start $end fg=242")
-            status_row+=' · '
-          fi
+          continue
         fi
-        start=${#status_text}
+        if [[ -n "$status_row" ]]; then
+          status_text+=' · '
+          status_prompt+=' %F{242}·%f '
+          status_row+=' · '
+        fi
         status_text+="$value"
-        end=${#status_text}
-        [[ -n "$style" ]] && _AISHE_STATUS_HIGHLIGHTS+=("$start $end $style")
         status_row+="$value"
+        psvar[$prompt_index]="$value"
+        prompt_open=''
+        prompt_close=''
+        case "$style" in
+          fg=242)         prompt_open='%F{242}'; prompt_close='%f' ;;
+          fg=cyan)        prompt_open='%F{cyan}'; prompt_close='%f' ;;
+          fg=yellow)      prompt_open='%F{yellow}'; prompt_close='%f' ;;
+          fg=215)         prompt_open='%F{215}'; prompt_close='%f' ;;
+          fg=green)       prompt_open='%F{green}'; prompt_close='%f' ;;
+          fg=209)         prompt_open='%F{209}'; prompt_close='%f' ;;
+          fg=204)         prompt_open='%F{204}'; prompt_close='%f' ;;
+          fg=yellow,bold) prompt_open='%B%F{yellow}'; prompt_close='%f%b' ;;
+          fg=cyan,bold)   prompt_open='%B%F{cyan}'; prompt_close='%f%b' ;;
+          fg=red,bold)    prompt_open='%B%F{red}'; prompt_close='%f%b' ;;
+        esac
+        status_prompt+="${prompt_open}%${prompt_index}v${prompt_close}"
+        (( prompt_index++ ))
       done
     done
-    # Keep provider/model text out of PROMPT/RPROMPT. Themes commonly enable
-    # PROMPT_SUBST, which would otherwise evaluate `$()` or backticks.
+    for (( i = prompt_index; i <= _AISHE_STATUS_PSVAR_LAST; i++ )); do
+      psvar[$i]=''
+    done
+    _AISHE_STATUS_PSVAR_LAST=$(( prompt_index - 1 ))
     _AISHE_STATUS_TEXT="$status_text"
+    _AISHE_STATUS_PROMPT="$status_prompt"
     base_prompt="%B%F{cyan}%~%f%b %(?.%F{green}.%F{red})${glyph}%f "
     # A key-triggered refresh may run after Starship/Powerlevel10k has replaced
     # AIShe's prompt. Update AIShe-owned glyphs, but never seize a theme's prompt.
-    if [[ "${1:-}" != status-only ||
-          ( "$PROMPT" == "$_AISHE_PROMPT_VALUE" && "$RPROMPT" == "$_AISHE_RPROMPT_VALUE" ) ]]; then
+    if [[ "$_AISHE_PROMPT_HOST" != spaceship &&
+          ( "${1:-}" != status-only || "$PROMPT" == "$_AISHE_PROMPT_VALUE" ) ]]; then
       PROMPT="${base_prompt}"
-      RPROMPT=""
       _AISHE_PROMPT_VALUE="$PROMPT"
-      _AISHE_RPROMPT_VALUE="$RPROMPT"
     fi
-  }
-  add-zsh-hook precmd aishe_set_prompt
-  autoload -Uz add-zle-hook-widget
-  _aishe_status_below() {
-    emulate -L zsh
-    region_highlight=("${region_highlight[@]:#*memo=aishe-status}")
-    local owned_len=${#_AISHE_STATUS_POSTDISPLAY} keep_len
-    if (( owned_len > 0 && ${#POSTDISPLAY} >= owned_len )) &&
-       [[ "${POSTDISPLAY[$(( ${#POSTDISPLAY} - owned_len + 1 )),-1]}" == "$_AISHE_STATUS_POSTDISPLAY" ]]; then
-      keep_len=$(( ${#POSTDISPLAY} - owned_len ))
-      if (( keep_len > 0 )); then
-        POSTDISPLAY="${POSTDISPLAY[1,$keep_len]}"
-      else
-        POSTDISPLAY=""
+    if [[ "$_AISHE_PROMPT_HOST" == spaceship ]]; then
+      spaceship::core::refresh_section --sync aishe
+    else
+      if [[ "$RPROMPT" != "$_AISHE_COMPOSED_RPROMPT" ]]; then
+        _AISHE_USER_RPROMPT="$RPROMPT"
       fi
-    fi
-    _AISHE_STATUS_POSTDISPLAY=""
-    if [[ "${AISHE_STATUS_POSITION:-below}" != off && -n "$_AISHE_STATUS_TEXT" ]]; then
-      local existing_len=${#POSTDISPLAY}
-      _AISHE_STATUS_POSTDISPLAY=$'\n'"$_AISHE_STATUS_TEXT"
-      POSTDISPLAY+="$_AISHE_STATUS_POSTDISPLAY"
-      local base=$(( ${#BUFFER} + existing_len + 1 )) spec
-      local -a parts
-      for spec in "${_AISHE_STATUS_HIGHLIGHTS[@]}"; do
-        parts=(${=spec})
-        region_highlight+=("$((base + parts[1])) $((base + parts[2])) ${parts[3]} memo=aishe-status")
-      done
+      local rprompt_separator=''
+      [[ -n "$_AISHE_USER_RPROMPT" ]] && rprompt_separator=' %F{242}·%f '
+      if [[ "${AISHE_STATUS_POSITION:-right}" != off && -n "$status_prompt" ]]; then
+        RPROMPT="${_AISHE_USER_RPROMPT}${rprompt_separator}${status_prompt}"
+      else
+        RPROMPT="$_AISHE_USER_RPROMPT"
+      fi
+      _AISHE_COMPOSED_RPROMPT="$RPROMPT"
     fi
   }
-  add-zle-hook-widget line-init _aishe_status_below
-  add-zle-hook-widget line-pre-redraw _aishe_status_below
+  # Themes own their render lifecycle. Join through a supported extension point
+  # when one is available instead of racing the theme for PROMPT/RPROMPT.
+  if (( $+functions[spaceship::rprompt] )); then
+    spaceship_aishe() {
+      [[ "${AISHE_STATUS_POSITION:-right}" != off ]] &&
+        spaceship::section::v4 --color white --prefix '' --suffix '' "$_AISHE_STATUS_PROMPT"
+    }
+    SPACESHIP_RPROMPT_ORDER=("${(@)SPACESHIP_RPROMPT_ORDER:#aishe}" aishe)
+    _AISHE_PROMPT_HOST="spaceship"
+  fi
+  add-zsh-hook precmd aishe_set_prompt
 fi
