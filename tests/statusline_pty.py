@@ -294,12 +294,22 @@ def prompt_substitution_is_inert():
 
 def theme_survives_mode_cycle():
     home, env, _ = environment("right")
+    capture = os.path.join(home, "postdisplay")
+    with open(os.path.join(home, ".zshrc"), "a", encoding="utf-8") as file:
+        file.write(
+            "autoload -Uz add-zle-hook-widget\n"
+            "_fake_suggestion() { POSTDISPLAY='ghost'; }\n"
+            "add-zle-hook-widget line-pre-redraw _fake_suggestion\n"
+        )
     theme = os.path.join(home, "theme.zsh")
     with open(theme, "w", encoding="utf-8") as file:
         file.write(
             "autoload -Uz add-zsh-hook\n"
             "_status_theme() { PROMPT='THEME> '; RPROMPT='THEME-RIGHT'; }\n"
             "add-zsh-hook precmd _status_theme\n"
+            "_capture_display() { print -rn -- \"$POSTDISPLAY\" > " + capture + "; }\n"
+            "zle -N _capture_display\n"
+            "bindkey '^X^T' _capture_display\n"
             "export AISHE_MODE=suggest\n"
         )
     shell = Pty(env, 180)
@@ -317,11 +327,20 @@ def theme_survives_mode_cycle():
         os.write(shell.master, b"\x1b[Z")
         shell.drain(1)
         repaint = CSI.sub("", shell.transcript)
-        if "AUTO" not in repaint:
+        os.write(shell.master, b"hello")
+        shell.drain(1)
+        os.write(shell.master, b"\x18\x14")
+        shell.drain(1)
+        with open(capture, encoding="utf-8") as file:
+            postdisplay = file.read()
+        if not postdisplay.startswith("ghost\n") or "AUTO" not in postdisplay:
             raise AssertionError(
-                "Shift-Tab did not repaint the mode status segment:\n%s"
-                % shell.transcript[-2500:]
+                "Shift-Tab did not preserve ghost text with the repainted mode: %r\n%s"
+                % (postdisplay, shell.transcript[-2500:])
             )
+        if "AUTO" not in repaint:
+            raise AssertionError("Shift-Tab did not visibly emit the new mode")
+        os.write(shell.master, b"\x15")
         shell.send(
             'print -r -- "THEME_CHECK=$AISHE_MODE|$PROMPT|$RPROMPT|$_AISHE_STATUS_TEXT"'
         )
@@ -330,7 +349,7 @@ def theme_survives_mode_cycle():
                 "Shift-Tab replaced the user prompt theme:\n%s"
                 % shell.transcript[-2500:]
             )
-        print("  ok   Shift-Tab preserves the prompt theme and repaints the mode")
+        print("  ok   Shift-Tab coexists with prompt themes and autosuggestions")
     finally:
         shell.close()
         shutil.rmtree(home, ignore_errors=True)

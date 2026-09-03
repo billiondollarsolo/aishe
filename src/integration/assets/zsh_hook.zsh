@@ -435,7 +435,7 @@ _aishe_highlight_command() {
     fi
   done
   region_highlight=("${kept[@]}")
-  [[ "${AISHE_COMMAND_HIGHLIGHT:-1}" != 0 && -n "$BUFFER" ]] || return
+  [[ "${AISHE_COMMAND_HIGHLIGHT:-1}" != 0 && -n "$BUFFER" ]] || return 0
 
   if _aishe_routes_to_agent "$BUFFER"; then
     local owned_spec
@@ -445,24 +445,24 @@ _aishe_highlight_command() {
       owned_spec="0 ${#BUFFER} fg=magenta,bold"
     fi
     region_highlight+=("$owned_spec")
-    return
+    return 0
   fi
 
   local leading="${BUFFER%%[^[:space:]]*}"
   local rest="${BUFFER#$leading}"
   local head="${rest%%[[:space:]]*}"
-  [[ "$head" == [[:alnum:]_./+-]## ]] || return
+  [[ "$head" == [[:alnum:]_./+-]## ]] || return 0
 
   # Explicit paths and other shell-shaped buffers may have an unresolved head;
   # leave those to the native highlighter instead of falsely coloring them as
   # agent input.
-  whence -w -- "$head" >/dev/null 2>&1 || return
+  whence -w -- "$head" >/dev/null 2>&1 || return 0
 
   # A real syntax plugin owns valid shell grammar and command colors. AIShe only
   # overlays the natural-language route above.
   if (( $+functions[_zsh_highlight] || $+functions[_zsh_highlight_main] ||
         $+functions[_fast_highlight] || $+functions[_fast_main] )); then
-    return
+    return 0
   fi
 
   local start=${#leading}
@@ -474,6 +474,7 @@ _aishe_highlight_command() {
     owned_spec="$start $end fg=green,bold"
   fi
   region_highlight+=("$owned_spec")
+  return 0
 }
 
 # On-demand, non-color route cue. It is a widget instead of an always-on

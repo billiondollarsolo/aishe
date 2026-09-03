@@ -210,14 +210,22 @@ if [[ -o interactive && "${AISHE_PTY_PROMPT:-1}" == 1 ]]; then
   _aishe_status_below() {
     emulate -L zsh
     region_highlight=("${region_highlight[@]:#*memo=aishe-status}")
-    if [[ -n "$_AISHE_STATUS_POSTDISPLAY" && "$POSTDISPLAY" == "$_AISHE_STATUS_POSTDISPLAY" ]]; then
-      POSTDISPLAY=""
+    local owned_len=${#_AISHE_STATUS_POSTDISPLAY} keep_len
+    if (( owned_len > 0 && ${#POSTDISPLAY} >= owned_len )) &&
+       [[ "${POSTDISPLAY[$(( ${#POSTDISPLAY} - owned_len + 1 )),-1]}" == "$_AISHE_STATUS_POSTDISPLAY" ]]; then
+      keep_len=$(( ${#POSTDISPLAY} - owned_len ))
+      if (( keep_len > 0 )); then
+        POSTDISPLAY="${POSTDISPLAY[1,$keep_len]}"
+      else
+        POSTDISPLAY=""
+      fi
     fi
     _AISHE_STATUS_POSTDISPLAY=""
-    if [[ "${AISHE_STATUS_POSITION:-below}" != off && -n "$_AISHE_STATUS_TEXT" && -z "${POSTDISPLAY:-}" ]]; then
+    if [[ "${AISHE_STATUS_POSITION:-below}" != off && -n "$_AISHE_STATUS_TEXT" ]]; then
+      local existing_len=${#POSTDISPLAY}
       _AISHE_STATUS_POSTDISPLAY=$'\n'"$_AISHE_STATUS_TEXT"
-      POSTDISPLAY="$_AISHE_STATUS_POSTDISPLAY"
-      local base=$(( ${#BUFFER} + 1 )) spec
+      POSTDISPLAY+="$_AISHE_STATUS_POSTDISPLAY"
+      local base=$(( ${#BUFFER} + existing_len + 1 )) spec
       local -a parts
       for spec in "${_AISHE_STATUS_HIGHLIGHTS[@]}"; do
         parts=(${=spec})
