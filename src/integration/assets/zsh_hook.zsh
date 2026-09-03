@@ -50,6 +50,10 @@ _aishe_show_auth() {
 # Unknown command: zsh forks a SUBSHELL for this, so it stages via the temp file.
 command_not_found_handler() {
   local line="${(j: :)@}"
+  # Prompt themes, plugins, functions, substitutions, and startup files also
+  # trigger this global hook. Only the exact line most recently accepted at
+  # the interactive top level is eligible; nested misses keep native status 127.
+  [[ -n "${_AISHE_ACCEPTED_LINE:-}" && "$line" == "$_AISHE_ACCEPTED_LINE" ]] || return 127
   _aishe_dispatch_slash "$line" && return 0
   local head="${line%%[[:space:]]*}"
   if [[ "$head" == */* ]]; then
@@ -198,6 +202,9 @@ aishe-nl-widget() {
 # theme resets it; _aishe_capture_cmd records the command via preexec.
 _aishe_capture_exit() {
   AISHE_LAST_EXIT=$?
+  # This runs before every prompt theme. The accepted-line proof has already
+  # served any top-level command and must not authorize prompt/plugin probes.
+  typeset -g _AISHE_ACCEPTED_LINE=""
   if [[ "$AISHE_LAST_EXIT" != 0 && "$AISHE_LAST_EXIT" != 130 && -n "$AISHE_LAST_CMD" ]]; then
     local elapsed=""
     if [[ -n "${_AISHE_COMMAND_STARTED:-}" && -n "${EPOCHREALTIME:-}" ]]; then
@@ -216,6 +223,7 @@ _aishe_capture_cmd() {
   # so a real failure should retain the ordinary recovery hint.
   typeset -g _AISHE_STAGED_SUGGESTION=""
   AISHE_LAST_CMD="$1"
+  typeset -g _AISHE_ACCEPTED_LINE="$1"
   typeset -g _AISHE_COMMAND_STARTED="${EPOCHREALTIME:-}"
   # Persist each interactive command to aishe's timestamped history log (zsh
   # EXTENDED_HISTORY format) so `aishe history` and semantic search have data;

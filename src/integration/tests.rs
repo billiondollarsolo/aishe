@@ -97,7 +97,7 @@ fn generated_shell_artifacts_match_the_reviewed_byte_snapshots() {
         (
             "zsh init",
             zsh_script(),
-            "1bfcda5ae6f42489a2e4954b6e2934f069decc35a31a85c24bc0335df1bec66d",
+            "2ae62ce2d916c6d414b9df0e3946622b1e11e37be8b9f523d0e380e05f2e029f",
         ),
         (
             "bash init",
@@ -112,7 +112,7 @@ fn generated_shell_artifacts_match_the_reviewed_byte_snapshots() {
         (
             "wrapper zshrc",
             wrapper_zshrc(),
-            "a5081e637eced5dd9bd701ecf71eb8ffd621d63c699e6ded5b0c22504e5f661b",
+            "ff5510ed148d21a922ead03aa375b25653b1c2b033103f83fd9c763ccefead3f",
         ),
     ] {
         assert_eq!(digest(&rendered), expected, "unexpected {name} byte drift");
@@ -610,6 +610,31 @@ fn generated_zsh_route_matches_every_versioned_corpus_case() {
             case.input
         );
     }
+}
+
+#[test]
+fn nested_zsh_missing_commands_never_reach_the_agent() {
+    if std::process::Command::new("zsh")
+        .arg("--version")
+        .output()
+        .is_err()
+    {
+        return;
+    }
+    let program = format!(
+        "{}\n_aishe_handle_nl() {{ return 0 }}\n\
+         _AISHE_ACCEPTED_LINE=aishe-definitely-missing\n\
+         aishe-definitely-missing >/dev/null 2>&1; print $?\n\
+         _AISHE_ACCEPTED_LINE=previous-user-command\n\
+         _aishe_prompt_probe() {{ aishe-definitely-missing >/dev/null 2>&1; print $? }}\n\
+         _aishe_prompt_probe",
+        zsh_hook()
+    );
+    let output = std::process::Command::new("zsh")
+        .args(["-fc", &program])
+        .output()
+        .expect("run nested missing-command probe");
+    assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), "0\n127");
 }
 
 #[test]
