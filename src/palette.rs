@@ -20,6 +20,7 @@ pub fn entries(config: &Config) -> Vec<Entry> {
     let mut entries = crate::command_surface::COMMANDS
         .iter()
         .filter(|spec| matches!(spec.lifecycle, Lifecycle::Active))
+        .filter(|spec| spec.id != "resume")
         .filter_map(|spec| {
             let cli = spec.cli?;
             let mut words = vec!["aishe", cli.command];
@@ -237,6 +238,8 @@ mod tests {
         assert!(entries.iter().all(|entry| !entry.invocation.is_empty()));
         assert!(entries.iter().all(|entry| !entry.effect.is_empty()));
         assert!(entries.iter().any(|entry| entry.id == "agent:new"));
+        assert!(entries.iter().any(|entry| entry.id == "sessions"));
+        assert!(entries.iter().all(|entry| entry.id != "resume"));
         assert!(entries
             .iter()
             .all(|entry| !entry.id.starts_with("session:")));
