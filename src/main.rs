@@ -24,6 +24,13 @@ use aishe::skills::SkillRegistry;
 use aishe::{context, integration};
 
 fn main() -> ExitCode {
+    // Rust starts with SIGPIPE ignored, so `aishe log | head` panicked on the
+    // closed pipe. Restore the Unix default: the process ends quietly (141).
+    #[cfg(unix)]
+    // SAFETY: setting a signal disposition before any thread is spawned.
+    unsafe {
+        libc::signal(libc::SIGPIPE, libc::SIG_DFL);
+    }
     match run() {
         Ok(code) => ExitCode::from(code),
         Err(error) => {

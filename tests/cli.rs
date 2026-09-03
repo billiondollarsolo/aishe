@@ -2788,3 +2788,18 @@ fn uninstall_preview_defaults_to_replaceable_components_and_preserves_state() {
 
     std::fs::remove_dir_all(dir).ok();
 }
+
+#[test]
+fn closing_stdout_early_does_not_panic() {
+    let bin = assert_cmd::cargo::cargo_bin("aishe");
+    for args in ["log", "completions zsh", "--help"] {
+        let output = std::process::Command::new("sh")
+            .arg("-c")
+            .arg(format!("'{}' {args} | head -n 1", bin.display()))
+            .output()
+            .expect("run pipeline");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(!stderr.contains("panicked"), "{args}: {stderr}");
+        assert!(!stderr.contains("Broken pipe"), "{args}: {stderr}");
+    }
+}
