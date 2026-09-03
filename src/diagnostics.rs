@@ -120,7 +120,7 @@ pub fn inspect(version: &str, options: &Options) -> Report {
         "version",
         Status::Pass,
         Severity::Info,
-        format!("version: aishe {version}"),
+        format!("aishe {version}"),
         "running binary metadata",
     ));
     checks.push(path_binary_check());
@@ -312,10 +312,9 @@ pub fn inspect(version: &str, options: &Options) -> Report {
         Status::Pass,
         Severity::Info,
         format!(
-            "terminal UI: {:?} theme · {:?} color · {:?} glyphs · {:?} motion",
+            "terminal ui: theme {} · color {} · {} glyphs · {} motion",
             terminal.theme, terminal.color_depth, terminal.unicode, terminal.motion
-        )
-        .to_ascii_lowercase(),
+        ),
         format!(
             "{}x{} cells; NO_COLOR, TERM=dumb, redirection, and JSON can reduce the configured presentation policy",
             terminal.columns, terminal.rows
@@ -1031,38 +1030,46 @@ fn append_backend_checks(
             state.control_url.starts_with("http://127.0.0.1:")
                 && state.opencode_url.starts_with("http://127.0.0.1:")
         });
-    for (id, summary, pass_detail) in [
-        (
-            "backend.server.loopback",
-            "backend listeners",
-            "both control and OpenCode listeners are IPv4 loopback-only",
-        ),
-        (
-            "backend.server.auth",
-            "backend authentication",
-            "private state passed authenticated health with bounded identities",
-        ),
-        (
-            "backend.server.health",
-            "backend health",
-            "supervisor and OpenCode process identities are live",
-        ),
-    ] {
+    // When nothing is running these three rows all said "run aishe doctor
+    // --live"; collapse them into one line and keep the detail for a live run.
+    if verified_states.is_empty() {
         checks.push(Check::new(
-            id,
-            if !verified_states.is_empty() && (id != "backend.server.loopback" || loopback) {
-                Status::Pass
-            } else {
-                Status::Skipped
-            },
+            "backend.live",
+            Status::Skipped,
             Severity::Critical,
-            summary,
-            if !verified_states.is_empty() {
-                pass_detail
-            } else {
-                "not running; use `aishe doctor --live` for an active smoke test"
-            },
+            "backend live checks: not run",
+            "run `aishe doctor --live` for listener, authentication, health, isolation, plugin, tool-bridge, and event-stream checks",
         ));
+    } else {
+        for (id, summary, pass_detail) in [
+            (
+                "backend.server.loopback",
+                "backend listeners",
+                "both control and OpenCode listeners are IPv4 loopback-only",
+            ),
+            (
+                "backend.server.auth",
+                "backend authentication",
+                "private state passed authenticated health with bounded identities",
+            ),
+            (
+                "backend.server.health",
+                "backend health",
+                "supervisor and OpenCode process identities are live",
+            ),
+        ] {
+            checks.push(Check::new(
+                id,
+                if id != "backend.server.loopback" || loopback {
+                    Status::Pass
+                } else {
+                    Status::Skipped
+                },
+                Severity::Critical,
+                summary,
+                pass_detail,
+            ));
+        }
     }
 
     let smoke = if options.live && runtime_ready {
@@ -1083,19 +1090,23 @@ fn append_backend_checks(
         Some(Err(error)) => crate::redact::redact(&error.to_string()),
         None => "run `aishe doctor --live` to start the isolated smoke server".into(),
     };
-    for (id, summary) in [
-        ("backend.config.isolated", "backend config isolation"),
-        ("backend.plugin.hash", "trusted plugin hash"),
-        ("backend.tools.restricted", "model tool restriction"),
-        ("backend.tool_bridge", "AIShe tool bridge"),
-    ] {
-        checks.push(Check::new(
-            id,
-            smoke_status,
-            Severity::Critical,
-            summary,
-            smoke_detail.clone(),
-        ));
+    // Without a smoke run these four rows repeat one sentence; the collapsed
+    // backend.live row above already says how to get them.
+    if smoke.is_some() {
+        for (id, summary) in [
+            ("backend.config.isolated", "backend config isolation"),
+            ("backend.plugin.hash", "trusted plugin hash"),
+            ("backend.tools.restricted", "model tool restriction"),
+            ("backend.tool_bridge", "AIShe tool bridge"),
+        ] {
+            checks.push(Check::new(
+                id,
+                smoke_status,
+                Severity::Critical,
+                summary,
+                smoke_detail.clone(),
+            ));
+        }
     }
     checks.push(Check::new(
         "backend.events",
@@ -1182,6 +1193,18 @@ fn append_backend_checks(
 }
 
 fn append_sandbox_checks(checks: &mut Vec<Check>, config: &Config) {
+    // bubblewrap is Linux-only. Warning about it on macOS reads as a defect
+    // when the platform simply has no kernel sandbox to offer.
+    if !cfg!(target_os = "linux") {
+        checks.push(Check::new(
+            "sandbox.bubblewrap",
+            Status::Skipped,
+            Severity::Info,
+            "bubblewrap: not applicable on this platform",
+            "workspace actions are policy-checked; macOS has no supported kernel sandbox",
+        ));
+        return;
+    }
     let state = crate::dependencies::bubblewrap_probe();
     let present = !matches!(&state, crate::dependencies::BubblewrapState::Missing);
     let usable = matches!(&state, crate::dependencies::BubblewrapState::Usable { .. });
@@ -1675,7 +1698,7 @@ fn set_private_mode(_path: &Path, _desired: u32) -> bool {
 }
 
 pub fn render_text(report: &Report) -> String {
-    let mut output = String::from("aishe doctor\n────────────\n");
+    let mut output = String::from("AIShe doctor\n────────────\n");
     for check in &report.checks {
         let icon = match check.status {
             Status::Pass => "✓",

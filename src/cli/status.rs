@@ -100,18 +100,18 @@ pub fn command(config: &Config, json: bool) -> u8 {
         return 0;
     }
 
-    println!("aishe status");
+    println!("AIShe status");
+    // The label already carries the provider brand; the id belongs with auth.
     println!(
-        "  connection: {} ({}) · provider: {} · endpoint: {} · {}",
+        "  connection: {} · {} · {}",
         crate::commands::display_safe(&connection_label),
-        crate::commands::display_safe(&connection_id),
-        crate::commands::display_safe(&provider),
         crate::commands::display_safe(&endpoint_host),
         selection_scope,
     );
     println!(
-        "  auth: {} · {}",
+        "  auth: {} ({}) · {}",
         crate::commands::display_safe(&auth),
+        crate::commands::display_safe(&connection_id),
         crate::commands::display_safe(&auth_state),
     );
     println!("  model: {}", crate::commands::display_safe(&model));

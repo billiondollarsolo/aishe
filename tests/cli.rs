@@ -2860,3 +2860,40 @@ fn root_help_hides_duplicate_commands_that_still_work() {
             .success();
     }
 }
+
+#[test]
+fn status_and_doctor_do_not_repeat_themselves() {
+    let home = temp_config_home();
+    let status = Command::cargo_bin("aishe")
+        .unwrap()
+        .env("AISHE_CONFIG_DIR", &home)
+        .arg("status")
+        .output()
+        .unwrap();
+    let status = String::from_utf8_lossy(&status.stdout).to_string();
+    assert!(status.starts_with("AIShe status\n"), "{status}");
+    assert!(
+        !status.contains("· provider: "),
+        "provider named twice:\n{status}"
+    );
+
+    let doctor = Command::cargo_bin("aishe")
+        .unwrap()
+        .env("AISHE_CONFIG_DIR", &home)
+        .arg("doctor")
+        .output()
+        .unwrap();
+    let doctor = String::from_utf8_lossy(&doctor.stdout).to_string();
+    assert!(!doctor.contains("version: version:"), "{doctor}");
+    assert!(!doctor.contains("none theme"), "{doctor}");
+    assert!(
+        doctor.matches("aishe doctor --live").count() <= 1,
+        "the live hint repeats:\n{doctor}"
+    );
+    if cfg!(target_os = "macos") {
+        assert!(
+            doctor.contains("not applicable on this platform"),
+            "{doctor}"
+        );
+    }
+}

@@ -51,6 +51,48 @@ pub enum Motion {
     Static,
 }
 
+// User-facing names for the presentation policy. `{:?}` leaked "None" and
+// "TrueColor" into `aishe doctor` and setup.
+impl std::fmt::Display for Theme {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::Auto | Self::None => "auto",
+            Self::Dark => "dark",
+            Self::Light => "light",
+            Self::Mono => "mono",
+        })
+    }
+}
+
+impl std::fmt::Display for ColorDepth {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::None => "off",
+            Self::Ansi16 => "16-color",
+            Self::Ansi256 => "256-color",
+            Self::TrueColor => "truecolor",
+        })
+    }
+}
+
+impl std::fmt::Display for UnicodePolicy {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::Unicode => "unicode",
+            Self::Ascii => "ascii",
+        })
+    }
+}
+
+impl std::fmt::Display for Motion {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::Live => "live",
+            Self::Static => "static",
+        })
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum StyleToken {
     Accent,
