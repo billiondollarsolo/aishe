@@ -123,6 +123,7 @@ pub fn inspect(version: &str, options: &Options) -> Report {
         format!("version: aishe {version}"),
         "running binary metadata",
     ));
+    checks.push(path_binary_check());
 
     let zsh = crate::executor::which("zsh");
     let bash = crate::executor::which("bash");
@@ -574,6 +575,61 @@ pub fn inspect(version: &str, options: &Options) -> Report {
         paths,
         checks,
         capability_report,
+    }
+}
+
+/// Warn when setup/Doctor is run through a different executable than the one
+/// `aishe` resolves to for the next ordinary shell command.
+pub fn path_binary_check() -> Check {
+    path_binary_check_for(
+        std::env::current_exe().ok(),
+        crate::executor::which("aishe"),
+    )
+}
+
+fn path_binary_check_for(current: Option<PathBuf>, resolved: Option<PathBuf>) -> Check {
+    let Some(current) = current else {
+        return Check::new(
+            "binary.path",
+            Status::Skipped,
+            Severity::Info,
+            "PATH binary could not be compared",
+            "the operating system did not report the running executable",
+        );
+    };
+    let Some(resolved) = resolved else {
+        return Check::new(
+            "binary.path",
+            Status::Warn,
+            Severity::Warning,
+            "`aishe` is not on PATH",
+            format!(
+                "running {}; install this build on PATH before starting a new shell",
+                current.display()
+            ),
+        );
+    };
+    let canonical_current = std::fs::canonicalize(&current).unwrap_or_else(|_| current.clone());
+    let canonical_resolved = std::fs::canonicalize(&resolved).unwrap_or_else(|_| resolved.clone());
+    if canonical_current == canonical_resolved {
+        Check::new(
+            "binary.path",
+            Status::Pass,
+            Severity::Info,
+            format!("PATH binary: {}", resolved.display()),
+            "the next `aishe` command resolves to this running build",
+        )
+    } else {
+        Check::new(
+            "binary.path",
+            Status::Warn,
+            Severity::Critical,
+            format!("PATH resolves another AIShe binary: {}", resolved.display()),
+            format!(
+                "setup/Doctor is running {}; install this build at the PATH location or reorder PATH, then run `aishe --version`",
+                current.display()
+            ),
+        )
     }
 }
 
@@ -1765,6 +1821,22 @@ mod tests {
         let json = serde_json::to_string(&report).unwrap();
         assert!(text.contains("example.check"));
         assert!(json.contains("example.check"));
+    }
+
+    #[test]
+    fn path_binary_check_detects_a_shadowing_install() {
+        let root = std::env::temp_dir().join(format!("aishe-path-check-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let current = root.join("checkout-aishe");
+        let resolved = root.join("installed-aishe");
+        std::fs::write(&current, b"current").unwrap();
+        std::fs::write(&resolved, b"old").unwrap();
+
+        let check = path_binary_check_for(Some(current), Some(resolved));
+        assert_eq!(check.status, Status::Warn);
+        assert!(check.summary.contains("PATH resolves another"));
+
+        std::fs::remove_dir_all(root).ok();
     }
 
     #[test]

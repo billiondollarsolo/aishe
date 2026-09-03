@@ -151,6 +151,13 @@ fn run() -> Result<u8> {
                 return Ok(code);
             }
         };
+        if !setup.json {
+            let path_check = aishe::diagnostics::path_binary_check();
+            if path_check.status == aishe::diagnostics::Status::Warn {
+                eprintln!("aishe: {}", path_check.summary);
+                eprintln!("  {}", path_check.detail);
+            }
+        }
         return Ok(outcome.exit_code);
     }
 
