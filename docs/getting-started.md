@@ -202,6 +202,11 @@ shows the migration notice and planned compatibility window.
 |--------------|---------|
 | **Green** | Routed as a **shell** command |
 | **Magenta** | Routed as **natural language** |
+| **Cyan** | A recognized AIShe `/command` |
+
+An unrecognized `/name` keeps whatever your syntax-highlighting plugin gives an
+unknown command, usually red, which is accurate: it falls through to the shell
+as a path and fails.
 
 The colors are optional accelerators, not the only signal. Press **Ctrl-X ?**
 in the zsh front end to print `agent` or `shell/local` for the current buffer,

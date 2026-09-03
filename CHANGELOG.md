@@ -21,6 +21,10 @@ breaking changes can land in any release.
   capability evidence, and offline/paid `aishe test` modes.
 
 ### Fixed
+- A registered `/command` no longer wears the error color. A syntax-highlighting
+  plugin reads `/model` as an absolute path that does not exist and paints it the
+  same red it gives a real typo; AIShe owns that namespace, so it now claims the
+  span. An unregistered `/modle` stays red, where red is true.
 - Arrow keys move the selection in `/model`, `/connection`, and every other
   in-shell picker. Under the zsh-PTY front end `/dev/tty` names the *outer*
   proxy terminal, where AIShe's own forwarding loop also reads: it won the race

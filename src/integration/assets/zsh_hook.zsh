@@ -451,7 +451,7 @@ _aishe_highlight_command() {
       [[ "$spec" == *" memo=aishe" ]] || kept+=("$spec")
     else
       case "$spec" in
-        <->\ <->\ fg=green,bold|<->\ <->\ fg=magenta,bold) ;;
+        <->\ <->\ fg=green,bold|<->\ <->\ fg=magenta,bold|<->\ <->\ fg=cyan,bold) ;;
         *) kept+=("$spec") ;;
       esac
     fi
@@ -473,6 +473,27 @@ _aishe_highlight_command() {
   local leading="${BUFFER%%[^[:space:]]*}"
   local rest="${BUFFER#$leading}"
   local head="${rest%%[[:space:]]*}"
+
+  # A registered `/name` is AIShe's own namespace, not shell grammar: a syntax
+  # plugin reads it as an absolute path that does not exist and paints it in the
+  # error color, which is the same red it gives a genuine typo. Claim the span so
+  # a recognized command reads as recognized, and leave `/modle` red, where red
+  # is true: it falls through to the shell and fails.
+  if [[ "$head" == /* ]]; then
+    if _aishe_slash_id "$head" > /dev/null 2>&1; then
+      local slash_start=${#leading}
+      local slash_end=$(( slash_start + ${#head} ))
+      local owned_spec
+      if [[ -n "$_AISHE_HIGHLIGHT_MEMO" ]]; then
+        owned_spec="$slash_start $slash_end fg=cyan memo=aishe"
+      else
+        owned_spec="$slash_start $slash_end fg=cyan,bold"
+      fi
+      region_highlight+=("$owned_spec")
+    fi
+    return 0
+  fi
+
   [[ "$head" == [[:alnum:]_./+-]## ]] || return 0
 
   # Explicit paths and other shell-shaped buffers may have an unresolved head;

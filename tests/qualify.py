@@ -458,6 +458,13 @@ LOCAL_FULL_GATES = (
         required_tools=("zsh",),
     ),
     python_gate(
+        "slash-highlight-pty",
+        "A registered /command does not read as an error",
+        "tests/slash_highlight_pty.py",
+        BINARY,
+        required_tools=("zsh",),
+    ),
+    python_gate(
         "picker-arrows-pty",
         "Arrow keys move the selection in in-shell pickers",
         "tests/picker_arrows_pty.py",

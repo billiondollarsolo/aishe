@@ -62,8 +62,9 @@ echo 'eval "$(aishe init zsh)"' >> ~/.zshrc   # or: aishe init bash
 **Common trap:** lines whose **first word is a real binary** run as shell — even
 if the rest is English. `install` is `/usr/bin/install` on every Mac/Linux box,
 so `install kubectl please` is **not** “please install the package”; use
-`? install kubectl please`. Optional highlighting uses green for shell and
-magenta for agent input; color is never required. Press **Ctrl-X ?** in zsh or
+`? install kubectl please`. Optional highlighting follows the route: green for
+shell, magenta for agent input, cyan for a recognized `/command`; color is never
+required. Press **Ctrl-X ?** in zsh or
 run `aishe route -- '<line>'` to read the route and reason as plain text.
 
 Full routing, Option/Alt+Return, and Mac terminal Meta settings:
