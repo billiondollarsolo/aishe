@@ -148,13 +148,14 @@ The standalone AIShe shell prints a one-line `/help` hint at startup. `/help`
 is **task-first** (not a raw dump of every flag). Topics:
 
 ```text
-/help              overview — accounts, models, session, config
+/help              task-first overview and the keys
 /help accounts     add/switch accounts, OAuth vs API key, brands
 /help models       models for the active connection only
+/help agent        foreground and background agent work
 /help session      status, usage, reset, reasoning, mode keys
 /help config       setup, settings, doctor, tour, backend
 /help routing      explain shell-command vs natural-language routing
-/help migration    removed names and their exact replacements
+/help all          every visible slash command with its effect
 ```
 
 `aishe commands` and `/commands` share the same help surface.
@@ -265,11 +266,11 @@ Ctrl-O is the keyboard equivalent of `/details`; Shift-Tab cycles
 `aishe-product` skill.
 ## This shell versus defaults for new shells
 
-The active slash commands in the generated table are the supported interactive
-surface. Removed names in its compatibility table are recognized locally only:
-they print migration guidance and never become natural-language model input.
-Configuration field names not present in either table do not automatically
-become prompt commands.
+The slash commands in the generated table are the supported interactive
+surface. Hidden aliases (`/commands`, `/usage`, `/provider`, `/output`, and the
+maintenance commands) still dispatch and tab-complete without appearing there.
+Configuration field names not present in the table do not automatically become
+prompt commands.
 
 Use `aishe settings` for the fields it exposes, or edit `config.toml` for other
 fields without a dedicated CLI command. `/reset` and `aishe reset` start

@@ -150,9 +150,9 @@ fn contains_exact_shell_token(haystack: &str, needle: &str) -> bool {
 fn help_aliases_and_commands_cli_render_the_same_registry_inventory() {
     let home = temp_home("help-conformance");
     let outputs = [
-        aishe(&home).args(["commands"]).output().unwrap(),
-        aishe(&home).args(["-c", "/help"]).output().unwrap(),
-        aishe(&home).args(["-c", "/commands"]).output().unwrap(),
+        aishe(&home).args(["commands", "all"]).output().unwrap(),
+        aishe(&home).args(["-c", "/help all"]).output().unwrap(),
+        aishe(&home).args(["-c", "/commands all"]).output().unwrap(),
     ];
     for output in &outputs {
         assert!(output.status.success());

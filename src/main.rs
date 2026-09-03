@@ -564,8 +564,7 @@ fn run() -> Result<u8> {
             };
         }
         Some(Cmd::Commands { topic }) => {
-            aishe::cli::runtime::print_help_command(topic.as_deref());
-            return Ok(0);
+            return Ok(aishe::cli::runtime::print_help_command(topic.as_deref()));
         }
         Some(Cmd::Palette { query, json }) => {
             return aishe::palette::command(&config, query.as_deref(), *json);

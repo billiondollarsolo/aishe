@@ -11,14 +11,21 @@ pub(crate) const VERSION: &str = concat!(
     ")"
 );
 
+static AFTER_HELP: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| {
+    format!(
+        "AIShe is AI Shell; the CLI package is aishe.\n\
+         In the interactive shell: /connection switches account, /model lists models for that account only.\n\
+         See also: aishe commands · in-shell /help {}",
+        aishe::product_help::help_topics_line()
+    )
+});
+
 #[derive(Parser, Debug)]
 #[command(
     name = "aishe",
     version = VERSION,
     about = "AIShe (AI Shell): natural-language-aware shell",
-    after_help = "AIShe is AI Shell; the CLI package is aishe.\n\
-In the interactive shell: /connection switches account; /model lists models for the *active* account only.\n\
-See also: aishe help · in-shell /help accounts|models|session|config"
+    after_help = AFTER_HELP.as_str()
 )]
 pub(crate) struct Args {
     /// Override the interaction mode for this session.
@@ -444,7 +451,7 @@ pub(crate) enum Cmd {
     },
     /// List primary slash-commands, or show task-oriented help.
     Commands {
-        /// Optional topic: accounts, models, session, config.
+        /// Optional topic: accounts, models, agent, session, config, routing, or `all`
         topic: Option<String>,
     },
     /// Search or open the generated command palette.

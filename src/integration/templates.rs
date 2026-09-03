@@ -23,6 +23,7 @@ enum Slot {
     ZshHookFinal,
     PtyPrompt,
     AsciiLogo,
+    ControlsHint,
 }
 
 impl Slot {
@@ -36,6 +37,7 @@ impl Slot {
             Self::ZshHookFinal => "# __AISHE_TEMPLATE_ZSH_HOOK_FINAL__\n",
             Self::PtyPrompt => "# __AISHE_TEMPLATE_PTY_PROMPT__",
             Self::AsciiLogo => "__AISHE_TEMPLATE_ASCII_LOGO__",
+            Self::ControlsHint => "__AISHE_TEMPLATE_CONTROLS_HINT__",
         }
     }
 }
@@ -106,6 +108,7 @@ pub(super) fn wrapper_zshrc(zsh_hook: &str, pty_prompt: &str, ascii_logo: &str) 
             Substitution::new(Slot::ZshHook, zsh_hook),
             Substitution::new(Slot::PtyPrompt, pty_prompt),
             Substitution::new(Slot::AsciiLogo, ascii_logo),
+            Substitution::new(Slot::ControlsHint, crate::product_help::CONTROLS_HINT),
         ],
     );
     // The historical formatter ended immediately after `fi`; retain those

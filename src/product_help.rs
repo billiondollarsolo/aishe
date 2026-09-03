@@ -14,8 +14,34 @@ pub const COMMAND_REFERENCE_BEGIN: &str = "<!-- BEGIN GENERATED COMMAND SURFACE 
 pub const COMMAND_REFERENCE_END: &str = "<!-- END GENERATED COMMAND SURFACE -->";
 
 /// Print task-oriented help. `topic` is optional (`accounts`, `models`, …).
-pub fn print_help(topic: Option<&str>) {
-    print!("{}", render_help(topic));
+/// Prints help and returns the process exit code: an unknown topic is a usage
+/// error, not a successful no-op.
+pub fn print_help(topic: Option<&str>) -> u8 {
+    let rendered = render_help(topic);
+    print!("{rendered}");
+    if rendered.starts_with("unknown help topic") {
+        crate::user_error::ErrorNamespace::Cli.exit_code()
+    } else {
+        0
+    }
+}
+
+/// The help topics, in one place: `/help`, `aishe commands --help`, the root
+/// `after_help`, and the docs all render from this.
+pub const HELP_TOPICS: &[&str] = &[
+    "accounts", "models", "agent", "session", "config", "routing",
+];
+
+/// The keys that are not discoverable from a command list.
+pub const KEYS_HINT: &str = "Shift-Tab mode · Ctrl-O details · ? asks the agent";
+
+/// The one-line control cue for the shell launch banner and `aishe status`,
+/// which used to word the same keys three different ways.
+pub const CONTROLS_HINT: &str =
+    "/help · /connection · /model · Shift-Tab mode · Ctrl-O details · ? asks the agent";
+
+pub fn help_topics_line() -> String {
+    HELP_TOPICS.join(" · ")
 }
 
 /// Build task-oriented help. The prose remains task-first; command rows come
@@ -23,7 +49,8 @@ pub fn print_help(topic: Option<&str>) {
 pub fn render_help(topic: Option<&str>) -> String {
     let normalized = topic.map(|value| value.trim().to_ascii_lowercase());
     match normalized.as_deref() {
-        None | Some("") | Some("help") | Some("all") => render_overview(),
+        None | Some("") | Some("help") => render_overview(),
+        Some("all") => render_all(),
         Some("accounts" | "account" | "connection" | "connections" | "auth" | "login") => {
             render_accounts()
         }
@@ -32,30 +59,34 @@ pub fn render_help(topic: Option<&str>) -> String {
         Some("agent" | "agents" | "task" | "tasks") => render_agent(),
         Some("config" | "setup" | "settings" | "doctor") => render_config(),
         Some("routing" | "route" | "input") => render_routing(),
-        Some("migration" | "removed" | "legacy") => render_migration(),
         Some(other) => format!(
-            "unknown help topic '{other}'\n\
-             topics: accounts · models · agent · session · config · routing · migration  (or bare /help)\n"
+            "unknown help topic '{other}'\nNext: /help {}\n",
+            help_topics_line()
         ),
     }
 }
 
 fn render_overview() -> String {
-    let mut out = String::from(
+    format!(
         "AIShe (AI Shell) — what do you want to do?\n\n\
            Switch account/model:  /connection · /model\n\
-           Inspect this session:  /status · /usage · /log\n\
+           Inspect this session:  /status · /log\n\
            Change this session:   /mode · /reasoning · /details · /reset\n\
-           Configure AIShe:       /settings · /scope · /network · /output\n\
+           Configure AIShe:       /settings · /scope · /network\n\
+           Agent work:            /agent · /inbox · /sessions · /ask\n\
            Add an account:        aishe setup\n\
-           Diagnose health:       aishe doctor --live\n\
-           Explain input routing: /help routing\n\n\
-         Keys: Shift-Tab mode · Ctrl-O details · Alt-Enter natural language\n\n\
-         Topics: /help accounts · models · agent · session · config · routing · migration\n\
-         Ask:   how do I add a Codex OAuth account?\n\
-         CLI:   aishe --help\n\n\
-         Slash commands\n",
-    );
+           Diagnose health:       aishe doctor --live\n\n\
+         Keys: {KEYS_HINT}\n\n\
+         Topics: /help {}\n\
+         Every command: /help all · CLI: aishe --help\n",
+        help_topics_line()
+    )
+}
+
+/// Every visible command with its effect. Kept out of the overview so the
+/// task-first header does not scroll off a short terminal.
+fn render_all() -> String {
+    let mut out = String::from("Slash commands\n");
     append_terminal_commands(&mut out, None);
     out
 }
@@ -178,31 +209,6 @@ fn render_routing() -> String {
          Paths and executable names win over natural-language heuristics. Use ! or ?\n\
          whenever you want an explicit route.\n",
     )
-}
-
-fn render_migration() -> String {
-    let mut out = String::from(
-        "Removed slash commands\n\n\
-         These names are reserved tombstones. They fail locally and are never sent to a model.\n",
-    );
-    for spec in COMMANDS
-        .iter()
-        .filter(|spec| matches!(spec.lifecycle, Lifecycle::Tombstone { .. }))
-    {
-        let Lifecycle::Tombstone {
-            recognized_since,
-            guidance,
-        } = spec.lifecycle
-        else {
-            unreachable!()
-        };
-        let _ = writeln!(
-            out,
-            "  {:<18} removed in {recognized_since}; {guidance}",
-            slash_names(spec)
-        );
-    }
-    out
 }
 
 fn argument_suffix(policy: ArgumentPolicy) -> String {
@@ -501,6 +507,37 @@ mod tests {
     use super::*;
 
     #[test]
+    fn overview_fits_one_screen_and_every_surface_shares_the_topic_list() {
+        let overview = render_help(None);
+        assert!(
+            overview.lines().count() <= 20,
+            "overview is {} lines",
+            overview.lines().count()
+        );
+        assert!(overview.contains("/help all"));
+        assert!(overview.contains(KEYS_HINT));
+        assert!(!overview.contains("aishe hints"));
+        assert!(overview.contains(&help_topics_line()));
+        // `all` carries the full table the overview no longer prints.
+        let all = render_help(Some("all"));
+        assert!(all.contains("/agent"));
+        assert!(all.contains("/undo"));
+        // An unknown topic is a usage error, not a silent success.
+        assert!(render_help(Some("bogus")).starts_with("unknown help topic"));
+        for document in ["../docs/commands.md", "../README.md"] {
+            let text = std::fs::read_to_string(
+                std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .join(document.trim_start_matches("../")),
+            )
+            .unwrap();
+            assert!(
+                !text.contains("migration"),
+                "{document} still documents the removed migration topic"
+            );
+        }
+    }
+
+    #[test]
     fn effect_labels_come_from_the_declared_effect() {
         use crate::command_surface::{by_id, Effect};
         for spec in COMMANDS.iter().filter(|spec| spec.is_active()) {
@@ -580,16 +617,24 @@ mod tests {
             .iter()
             .filter(|spec| spec.is_active() && !spec.hidden)
         {
+            let full = render_help(Some("all"));
             for alias in spec.slash_aliases {
                 assert!(
-                    overview.contains(&format!("/{alias}")),
-                    "overview omitted /{alias} ({})",
+                    full.contains(&format!("/{alias}")),
+                    "/help all omitted /{alias} ({})",
                     spec.id
                 );
             }
+            // A spec filed under the overview lives in the full table, which
+            // is what the overview now points at.
             let topic = render_help(Some(spec.help_topic));
+            let listed = if topic == render_help(None) {
+                &full
+            } else {
+                &topic
+            };
             assert!(
-                topic.contains(&command_usage(spec)),
+                listed.contains(&command_usage(spec)),
                 "topic {} omitted exact usage for {}",
                 spec.help_topic,
                 spec.id

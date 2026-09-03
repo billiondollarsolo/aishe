@@ -31,6 +31,6 @@ AI Shell'
   else
     print -r -- '__AISHE_TEMPLATE_ASCII_LOGO__'
   fi
-  print -P "%F{244}aishe: /help · /connection · /model · Shift-Tab mode · Ctrl-O details · ask \"how do I…\"%f"
+  print -P "%F{244}aishe: __AISHE_TEMPLATE_CONTROLS_HINT__%f"
   export AISHE_COMMAND_HINT_SHOWN=1
 fi

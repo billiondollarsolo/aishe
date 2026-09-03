@@ -1528,7 +1528,7 @@ pub fn one_shot(
                 // and tombstones with an actionable diagnostic.
                 match tokens.get(1).map(|s| s.as_str()) {
                     Some("help") => {
-                        print_help_command(tokens.get(2).map(String::as_str));
+                        return Ok(print_help_command(tokens.get(2).map(String::as_str)));
                     }
                     Some("status") => {
                         crate::cli::status::command(config, false);
@@ -1849,10 +1849,10 @@ pub fn print_mcp_listing(mcp: &crate::mcp::McpRegistry) {
     }
 }
 
-pub fn print_help_command(topic: Option<&str>) {
-    // Task-first product help is the single index; topics expand under
-    // /help accounts|models|session|config. Only append custom commands once.
-    crate::product_help::print_help(topic);
+pub fn print_help_command(topic: Option<&str>) -> u8 {
+    // Task-first product help is the single index; `/help all` expands to the
+    // full table. Only append custom commands once.
+    let code = crate::product_help::print_help(topic);
     if topic.is_none() {
         let commands = CommandRegistry::load();
         if commands.is_empty() {
@@ -1867,6 +1867,7 @@ pub fn print_help_command(topic: Option<&str>) {
             }
         }
     }
+    code
 }
 
 #[cfg(test)]

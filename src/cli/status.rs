@@ -172,9 +172,7 @@ pub fn command(config: &Config, json: bool) -> u8 {
     } else {
         println!("  budget: unlimited");
     }
-    println!(
-        "  controls: /help · /connection · /model · Ctrl-O · Shift-Tab · ask how-to questions"
-    );
+    println!("  controls: {}", crate::product_help::CONTROLS_HINT);
     0
 }
 

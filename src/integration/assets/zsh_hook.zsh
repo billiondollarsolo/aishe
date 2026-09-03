@@ -521,7 +521,7 @@ aishe-accept-line() {
   if [[ "$BUFFER" == "/" || "$BUFFER" == "/palette" ]]; then
     aishe-command-palette
     return
-  elif _aishe_slash_id "$BUFFER" > /dev/null; then
+  elif [[ "$BUFFER" != *[\|\>\;]* ]] && _aishe_slash_id "$BUFFER" > /dev/null; then
     local submitted="$BUFFER"
     print -s -- "$submitted"
     zle -I
