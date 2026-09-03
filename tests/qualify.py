@@ -458,6 +458,13 @@ LOCAL_FULL_GATES = (
         required_tools=("zsh",),
     ),
     python_gate(
+        "picker-arrows-pty",
+        "Arrow keys move the selection in in-shell pickers",
+        "tests/picker_arrows_pty.py",
+        BINARY,
+        required_tools=("zsh",),
+    ),
+    python_gate(
         "statusline-width-pty",
         "The statusline shortens instead of vanishing",
         "tests/statusline_width_pty.py",

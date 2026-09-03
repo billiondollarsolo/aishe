@@ -105,9 +105,24 @@ fn close_no_argument_guard() -> &'static str {
     "      fi\n"
 }
 
+/// Where an interactive AIShe child reads keys.
+///
+/// Under the zsh-PTY front end `/dev/tty` names the *outer* proxy terminal,
+/// where AIShe's own forwarding loop is also reading: it wins the race for the
+/// bytes after an ESC, so arrow keys reached the picker as a bare Esc (cancel)
+/// and the `[B` leaked to the next prompt. The hook preserves the inner PTY as
+/// `_AISHE_INPUT_FD` at load; read from that. Bash is not nested, so `/dev/tty`
+/// is already the right terminal there.
+fn interactive_redirect(shell: HookShell) -> &'static str {
+    match shell {
+        HookShell::Zsh => " <&$_AISHE_INPUT_FD > /dev/tty 2>&1",
+        HookShell::Bash => " < /dev/tty > /dev/tty 2>&1",
+    }
+}
+
 fn render_cli_hook(spec: &crate::command_surface::CommandSpec, shell: HookShell) -> String {
     let command = cli_words(spec).expect("validated CLI-backed hook command");
-    let redirect = " < /dev/tty > /dev/tty 2>&1";
+    let redirect = interactive_redirect(shell);
     match spec.arguments {
         ArgumentPolicy::None => format!(
             "{}        {command}{redirect}\n{}",
@@ -132,8 +147,9 @@ fn render_hook_action(spec: &crate::command_surface::CommandSpec, shell: HookShe
     match spec.hook_action() {
         ShellHookAction::Cli => render_cli_hook(spec, shell),
         ShellHookAction::OneShot => format!(
-            "{}        command aishe -c \"$_aishe_line\" < /dev/tty > /dev/tty 2>&1\n{}",
+            "{}        command aishe -c \"$_aishe_line\"{}\n{}",
             no_argument_guard(),
+            interactive_redirect(shell),
             close_no_argument_guard()
         ),
         ShellHookAction::AuthStatus => format!(
@@ -168,7 +184,7 @@ fn render_hook_action(spec: &crate::command_surface::CommandSpec, shell: HookShe
                     r#"      if [[ -z "$_aishe_arg" ]]; then
         printf 'mode: %s (this shell)\n' "${AISHE_MODE:-suggest}"
       elif [[ "$_aishe_arg" == *--default* ]]; then
-        command aishe mode ${=_aishe_arg} < /dev/tty > /dev/tty 2>&1
+        command aishe mode ${=_aishe_arg} <&$_AISHE_INPUT_FD > /dev/tty 2>&1
       elif (( ${ZSH_SUBSHELL:-0} > 0 )); then
         printf 'mode\n%s\n' "$_aishe_arg" > "$AISHE_PENDING_FILE"
       else
@@ -240,7 +256,7 @@ _aishe_apply_session_mode() {
   case "$_aishe_mode" in
     suggest|auto) ;;
     yolo)
-      if ! command aishe --accept-yolo < /dev/tty > /dev/tty 2>&1; then
+      if ! command aishe --accept-yolo__AISHE_INTERACTIVE_REDIRECT__; then
         return 1
       fi
       ;;
@@ -276,5 +292,10 @@ _aishe_dispatch_slash() {
 }
 "#,
     );
-    out
+    // The shared preamble is emitted for both shells; only zsh has the
+    // preserved inner-PTY descriptor.
+    out.replace(
+        "__AISHE_INTERACTIVE_REDIRECT__",
+        interactive_redirect(shell),
+    )
 }

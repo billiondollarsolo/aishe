@@ -21,6 +21,12 @@ breaking changes can land in any release.
   capability evidence, and offline/paid `aishe test` modes.
 
 ### Fixed
+- Arrow keys move the selection in `/model`, `/connection`, and every other
+  in-shell picker. Under the zsh-PTY front end `/dev/tty` names the *outer*
+  proxy terminal, where AIShe's own forwarding loop also reads: it won the race
+  for the bytes after an ESC, so an arrow arrived as a bare Esc (cancel) and the
+  rest leaked onto the next prompt. Slash commands now read the preserved inner
+  PTY descriptor.
 - Menus launched inside the AIShe shell (`/settings`, `aishe setup`,
   `aishe tour`) read keys again: they used a reader bound to the outer proxy
   terminal, so they died after painting their first screen and swallowed the

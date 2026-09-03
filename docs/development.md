@@ -164,6 +164,7 @@ python3 tests/mode_handoff_pty.py target/release/aishe
 python3 tests/bare_words_pty.py target/release/aishe
 python3 tests/theme_prompt_pty.py target/release/aishe
 python3 tests/keys_pty.py target/release/aishe
+python3 tests/picker_arrows_pty.py target/release/aishe
 python3 tests/statusline_width_pty.py target/release/aishe
 python3 tests/docs_cli_block_test.py target/release/aishe
 python3 tests/direct_shell_benchmark.py target/release/aishe
