@@ -120,8 +120,9 @@ authoritative textual cue. Empty buffer + force-NL key does nothing. See
 Press **Shift-Tab** to rotate the interaction mode for the session
 (`suggest -> auto -> yolo -> suggest`), like Claude Code. The prompt glyph
 updates (`❯` suggest, `»` auto, `*` yolo) and the new mode is shown. In zsh,
-Shift-Tab still navigates an open completion menu first; it only cycles the mode
-when no menu is showing. This changes how the *next* natural-language line routes;
+Shift-Tab cycles the mode only on an empty line: with text on the line it runs
+whatever your own configuration bound to Shift-Tab (oh-my-zsh binds reverse
+menu completion). This changes how the *next* natural-language line routes;
 changing mode does not grant authority: the first yolo turn still requires
 per-shell scope acceptance. Override the key:
 

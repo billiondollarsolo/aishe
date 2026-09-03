@@ -212,7 +212,9 @@ _aishe_capture_exit() {
       elapsed=$(( (EPOCHREALTIME - _AISHE_COMMAND_STARTED) * 1000 ))
       elapsed=${elapsed%.*}
     fi
-    AISHE_LAST_DURATION_MS="$elapsed" command aishe --record-failure "$AISHE_LAST_CMD" >/dev/null 2>&1
+    # Backgrounded: the capsule is only read by `?`, Ctrl-X Ctrl-F, and
+    # `aishe last`, so no prompt should wait on it.
+    AISHE_LAST_DURATION_MS="$elapsed" command aishe --record-failure "$AISHE_LAST_CMD" >/dev/null 2>&1 &!
     typeset -g _AISHE_FAILURE_ACTIVE=1
   elif [[ "${_AISHE_FAILURE_ACTIVE:-0}" == 1 ]]; then
     command aishe last clear >/dev/null 2>&1
@@ -564,6 +566,10 @@ aishe-toggle-agent-details() {
 # this never bypasses confirmation; it only changes how the next NL line routes.
 aishe-cycle-mode() {
   emulate -L zsh
+  if [[ -n "$BUFFER" && -n "${_AISHE_ORIG_MODE_WIDGET:-}" ]]; then
+    zle "$_AISHE_ORIG_MODE_WIDGET"
+    return
+  fi
   case "${AISHE_MODE:-suggest}" in
     suggest) AISHE_MODE=auto ;;
     auto)
@@ -605,6 +611,15 @@ if [[ -o interactive ]]; then
   add-zsh-hook preexec _aishe_capture_cmd
   zle -N aishe-nl-widget
   bindkey "${AISHE_NL_KEY:-^[^M}" aishe-nl-widget
+  # oh-my-zsh binds Shift-Tab to reverse-menu-complete. Keep that for a
+  # non-empty line; mode cycling is an empty-line action.
+  typeset -ga _aishe_mode_binding
+  _aishe_mode_binding=("${(@z)$(bindkey "${AISHE_MODE_KEY:-^[[Z}")}")
+  case "${_aishe_mode_binding[-1]:-}" in
+    aishe-cycle-mode|undefined-key|"") ;;
+    *) typeset -g _AISHE_ORIG_MODE_WIDGET="${_aishe_mode_binding[-1]}" ;;
+  esac
+  unset _aishe_mode_binding
   zle -N aishe-cycle-mode
   bindkey "${AISHE_MODE_KEY:-^[[Z}" aishe-cycle-mode
   zle -N aishe-toggle-agent-details
