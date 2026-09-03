@@ -178,6 +178,9 @@ jobs:
       - name: Installer upgrade preserves config and data
         run: sh tests/installer_upgrade.sh target/release/aishe
 
+      - name: Generated CLI reference matches the clap tree
+        run: python3 tests/docs_cli_block_test.py target/release/aishe
+
       - name: Unauthenticated loopback provider
         run: python3 tests/provider_unauthenticated.py target/release/aishe
 

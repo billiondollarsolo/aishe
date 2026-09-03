@@ -457,6 +457,9 @@ pub(crate) enum Cmd {
     Commands {
         /// Optional topic: accounts, models, agent, session, config, routing, or `all`
         topic: Option<String>,
+        /// Print the docs/commands.md CLI table generated from this command tree
+        #[arg(long, hide = true)]
+        cli_markdown: bool,
     },
     /// Search or open the generated command palette.
     Palette {
@@ -1504,4 +1507,30 @@ impl Args {
             _ => false,
         }
     }
+}
+
+/// The CLI reference block in `docs/commands.md`, generated from the clap tree
+/// so the docs cannot drift from the binary the way the hand-written list did.
+pub(crate) fn cli_markdown() -> String {
+    use clap::CommandFactory;
+    let command = Args::command();
+    let mut out = String::from("<!-- BEGIN GENERATED CLI SURFACE -->\n```\n");
+    for sub in command.get_subcommands() {
+        if sub.is_hide_set() || sub.get_name() == "help" {
+            continue;
+        }
+        let about = sub
+            .get_about()
+            .map(|about| about.to_string())
+            .unwrap_or_default();
+        let about = about.lines().next().unwrap_or("").trim_end_matches('.');
+        let usage = if sub.get_subcommands().next().is_some() {
+            format!("aishe {} ...", sub.get_name())
+        } else {
+            format!("aishe {}", sub.get_name())
+        };
+        out.push_str(&format!("{usage:<22} {about}\n"));
+    }
+    out.push_str("```\n<!-- END GENERATED CLI SURFACE -->");
+    out
 }

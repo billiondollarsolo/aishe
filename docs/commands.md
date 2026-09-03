@@ -9,55 +9,64 @@ subcommands, a few inspection commands, and input prefixes that control routing.
 
 ## Subcommands
 
+<!-- BEGIN GENERATED CLI SURFACE -->
 ```
-aishe                  launch the interactive zsh-PTY shell
-aishe zsh              the same, explicitly
-aishe -c '<line>'      run one line non-interactively and exit
-aishe setup            guided/resumable configuration and verification
-aishe settings         interactive settings hub with value provenance
-aishe auth ...         manage private named credential profiles
-aishe connection ...   manage named provider/authentication connections
-aishe tour             resumable guided first-session tour
-aishe init zsh|bash    print the shell-hook snippet (for ~/.zshrc / ~/.bashrc)
-aishe doctor           diagnostics; --probe/--live/--json/--fix/--bundle
-aishe backend ...      status/install/verify/repair/rollback/stop/logs/gc
-aishe uninstall        category-based removal; state preserved by default
-aishe completions ...  print a shell completion script for aishe itself
-aishe trust [PATH]     trust this repo's .aishe/config.toml, or one project file
-aishe trust --list     list every trusted file
-aishe untrust [PATH]   drop trust for this repo (or one file); --all for every one
-
-aishe mode [suggest|auto|yolo]      show or set the interaction mode
-aishe scope [workspace|host]        show or set the next agent execution scope
-aishe network [allow|deny]          show or set workspace-agent network access
-aishe output [focus|compact|detailed]  show or set agent transcript density
-aishe reasoning [LEVEL] [--default]   shell-local or saved reasoning effort
-aishe model [NAME] [--connection ID] [--default]  models for the active connection (OAuth via OpenCode)
-aishe connection pick [ID] [--default]            switch account/connection
-aishe provider [NAME]               select a unique provider connection (legacy form)
-aishe provider test [--live] [--json]  validate the active provider
-aishe models [--connection ID]      list models returned for one connection
-aishe profile [VALUE]               show/apply a transparent safety profile
-aishe readiness [--json]            check autonomous-mode readiness
-aishe price list|set|remove         manage exact model price overrides
-aishe config                        print the active configuration
-aishe mcp                           list the MCP tools offered to yolo
-aishe commands                      list primary and custom slash-commands
-aishe route [--json] -- '<line>'    explain input routing without executing it
-aishe status [--json]               show active session settings and spend
-aishe hints status [--json]         show local discovery-hint seen-state
-aishe hints reset                   clear discovery seen-state only
-aishe skills                        list model-invoked skills
-aishe undo [--list]                 revert the most recent AI file change
-aishe log [filters]                 show the audit log of AI calls and actions
-aishe usage [--by model|connection|day|session] [--connection ID]  audit token/cost totals
-aishe context                       print the context block sent to the model
-aishe runbook [--session ID|-o DIR|--replay]  export a session as a script + runbook
-aishe sessions [--json]             list managed conversations and legacy tasks
-aishe session show|rename|delete    inspect/manage exactly one session/task
-aishe resume [ID] [--cwd PATH]      resume/bind a durable conversation or task
-aishe reset                         start fresh; retain the prior conversation
+aishe setup            Configure and verify AIShe interactively, or provision it with flags
+aishe settings         Edit the current configuration through an interactive section hub
+aishe auth ...         Manage provider API keys and OAuth subscriptions in AIShe's private stores
+aishe tour             Run the resumable guided first-session tour
+aishe init             Print a shell integration snippet: `eval "$(aishe init zsh)"`
+aishe zsh              Launch your real interactive zsh (with all native plugins) under aishe
+aishe doctor           Check your environment: shell, config, front-end, provider, API key
+aishe backend ...      Manage AIShe's private, compatibility-pinned agent runtime
+aishe update ...       Check, apply, or roll back the AIShe binary itself
+aishe completions      Print a shell completion script for `aishe` itself (bash/zsh/fish/...)
+aishe man              Print a roff man page for `aishe` (e.g. `aishe man > /usr/share/man/man1/aishe.1`)
+aishe uninstall        Remove AIShe components by category; user state is preserved by default
+aishe trust            Trust the current project's `.aishe/config.toml` so its sensitive keys (provider/endpoint, MCP servers, audit logging, safety toggles, `yolo`) apply. Safe cosmetic keys apply without trust
+aishe untrust          Drop trust for the current project's `.aishe/config.toml`, or for a specific project file
+aishe mode             Show or set the interaction mode for this shell; `--default` also saves it
+aishe scope            Show or set the agent execution scope for future turns
+aishe network          Show or set network access for workspace-scoped agent turns
+aishe output           Show or set persistent agent transcript density
+aishe reasoning        Show or set reasoning effort for this shell; `auto` uses the model default
+aishe role ...         Configure workload-specific connection/model/reasoning overrides
+aishe model            Select a model for the active connection (this shell, or default for new shells)
+aishe connection ...   Manage named provider/authentication connections
+aishe profile          Show/apply a safety profile, or export/import portable non-secret config
+aishe readiness        Check whether autonomous mode is ready for real work
+aishe price ...        Manage per-model token prices used for estimates and budgets
+aishe config           Print the active configuration
+aishe mcp ...          List or transactionally manage MCP servers and their capabilities
+aishe commands         List primary slash-commands, or show task-oriented help
+aishe palette          Search or open the generated command palette
+aishe agent            Launch a foreground or isolated background agent with one coherent set of controls
+aishe inbox            Show agent work that needs attention and act on it interactively
+aishe capabilities     Show the active model's cached capability evidence
+aishe test             Run local checks and optional paid live model/tool validation
+aishe route            Explain whether a line will run in the shell, reach the agent, or invoke a builtin
+aishe status           Show model, mode, scope, output, live spend, and audit-log state
+aishe hints ...        Inspect or reset local one-time discovery-hint seen-state
+aishe skills           List model-invoked skills
+aishe undo             Undo the most recent AI file change (from the built-in file tools)
+aishe log              Show the audit log of AI calls and actions (needs logging enabled)
+aishe usage            Summarize token usage and estimated cost from the audit log
+aishe suggest          Turn a natural-language request into a shell command (for scripting). Prints the command to stdout; exit 0 = safe/answer, 20 = flagged (either `dangerous`, or `unknown` when the gate cannot tell what the command runs — the command is still printed for review), 1 = no provider or no query. Use `--json` for structured output
+aishe ask              Ask for a non-executing answer suitable for humans or Unix automation
+aishe last ...         Inspect, explain, fix, safely retry, or clear the last shell failure
+aishe index            Build, inspect, or search a bounded index of tracked repository text
+aishe history ...      Semantic search over your shell history (opt-in; needs an embedder)
+aishe sessions         List durable AI task sessions
+aishe reset            Start a fresh conversation in this AIShe shell without deleting the previous managed session
+aishe session ...      Inspect or manage one durable AI task session
+aishe task ...         Run and manage durable background agent tasks
+aishe resume           Resume the most recent interrupted task, or a specific task ID
+aishe dry-run          Preview a command's file changes against a throwaway copy of the working tree (read-only system, no network via bubblewrap), then keep or discard
+aishe context          Inspect or configure the environment context sent to the model
+aishe plan             Interactively create or inspect a durable background-task plan
+aishe runbook          Generate a runnable script + markdown runbook from a recorded session
 ```
+<!-- END GENERATED CLI SURFACE -->
 
 These are real subcommands, so they work the same in the interactive zsh-PTY
 shell, a plain shell, or a script.

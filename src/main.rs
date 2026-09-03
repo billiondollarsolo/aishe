@@ -568,7 +568,14 @@ fn run() -> Result<u8> {
                 Some(McpCmd::Test { name, json }) => aishe::mcp_config::test(&config, name, *json),
             };
         }
-        Some(Cmd::Commands { topic }) => {
+        Some(Cmd::Commands {
+            topic,
+            cli_markdown,
+        }) => {
+            if *cli_markdown {
+                println!("{}", args::cli_markdown());
+                return Ok(0);
+            }
             return Ok(aishe::cli::runtime::print_help_command(topic.as_deref()));
         }
         Some(Cmd::Palette { query, json }) => {
