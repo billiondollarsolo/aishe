@@ -185,7 +185,7 @@ unless its save/default flow is used.
 | `/config` | Print the active AIShe configuration | read-only |
 | `/skills` | List model-invoked skills | read-only |
 | `/mcp` | List configured MCP tools and prompts | read-only |
-| `/palette` | Search every built-in and contextual AIShe action | read-only |
+| `/palette` | Search AIShe actions from one focused menu | read-only |
 | `/agent [OPTIONS OBJECTIVE…]` | Launch a controlled foreground or background agent | may change state |
 | `/inbox` | Review agent work that needs attention | may change state |
 | `/sessions` | Browse, resume, inspect, or fork AI sessions | session |

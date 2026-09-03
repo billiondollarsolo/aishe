@@ -16,11 +16,36 @@ pub struct Entry {
     pub note: Option<String>,
 }
 
-pub fn entries(config: &Config) -> Vec<Entry> {
+const PRIMARY_ACTIONS: &[&str] = &[
+    "agent",
+    "ask",
+    "last",
+    "undo",
+    "inbox",
+    "task",
+    "plan",
+    "sessions",
+    "reset",
+    "mode",
+    "model",
+    "connection",
+    "reasoning",
+    "scope",
+    "network",
+    "context",
+    "status",
+    "usage",
+    "settings",
+    "help",
+];
+
+pub fn entries(_config: &Config) -> Vec<Entry> {
     let mut entries = crate::command_surface::COMMANDS
         .iter()
         .filter(|spec| matches!(spec.lifecycle, Lifecycle::Active))
-        .filter(|spec| spec.id != "resume")
+        // Detail rows belong in their command's own picker; recursive or
+        // argument-only shortcuts are noise in the top-level action palette.
+        .filter(|spec| !matches!(spec.id, "palette" | "resume" | "role"))
         .filter_map(|spec| {
             let cli = spec.cli?;
             let mut words = vec!["aishe", cli.command];
@@ -35,118 +60,19 @@ pub fn entries(config: &Config) -> Vec<Entry> {
             })
         })
         .collect::<Vec<_>>();
-    for (id, connection) in &config.connections {
-        entries.push(Entry {
-            id: format!("connection:{id}"),
-            label: format!(
-                "aishe connection pick {id} — switch to {}",
-                connection.label
-            ),
-            invocation: format!("aishe connection pick {}", shell_quote(id)),
-            effect: "shell_state".into(),
-            available: true,
-            note: None,
-        });
-    }
-    let live_ready = crate::capabilities::load(config).is_some_and(|report| report.live_verified());
-    let mut add = |id: String,
-                   invocation: String,
-                   summary: String,
-                   effect: &str,
-                   available: bool,
-                   note: Option<String>| {
-        entries.push(Entry {
-            id,
-            label: format!("{invocation} — {summary}"),
-            invocation,
-            effect: effect.into(),
-            available,
-            note,
-        });
-    };
-    add(
-        "agent:new".into(),
-        "aishe agent".into(),
-        "guided foreground/background agent launcher".into(),
-        "mixed",
-        live_ready,
-        (!live_ready).then(|| "model tools are not live-verified; run aishe test --live".into()),
-    );
-    for role in crate::roles::NAMES {
-        add(
-            format!("role:{role}"),
-            format!("aishe agent --role {role}"),
-            format!("launch with the {role} workload role"),
-            "mixed",
-            live_ready,
-            (!live_ready).then(|| "provider not live-verified".into()),
-        );
-    }
-    for (name, server) in &config.mcp_servers {
-        add(
-            format!("mcp:{name}"),
-            format!("aishe mcp show {}", shell_quote(name)),
-            format!(
-                "inspect {} MCP server",
-                if server.enabled {
-                    "enabled"
-                } else {
-                    "disabled"
-                }
-            ),
-            "read_only",
-            true,
-            None,
-        );
-    }
-    if let Some(report) = crate::capabilities::load(config) {
-        for model in report.models {
-            add(
-                format!("model:{model}"),
-                format!("aishe model {}", shell_quote(&model)),
-                "switch this shell's model".into(),
-                "shell_state",
-                true,
-                None,
-            );
-        }
-    }
-    for (id, state, objective) in crate::background::palette_summaries() {
-        add(
-            format!("task:{id}"),
-            format!("aishe task show {}", shell_quote(&id)),
-            format!(
-                "{:?} · {}",
-                state,
-                crate::commands::display_safe(&objective.chars().take(52).collect::<String>())
-            ),
-            "read_only",
-            true,
-            None,
-        );
-        if matches!(
-            state,
-            crate::background::State::Completed
-                | crate::background::State::Failed
-                | crate::background::State::Interrupted
-        ) {
-            add(
-                format!("review:{id}"),
-                format!("aishe task review {}", shell_quote(&id)),
-                "review, apply, rework, or reject isolated changes".into(),
-                "mixed",
-                true,
-                None,
-            );
-        }
-    }
-    for entry in &mut entries {
-        if !entry.available {
-            entry.label.push_str(" · needs live verification");
-        }
-    }
-    entries.sort_by(|a, b| a.invocation.cmp(&b.invocation));
+    entries.sort_by(|a, b| {
+        action_rank(&a.id)
+            .cmp(&action_rank(&b.id))
+            .then_with(|| a.invocation.cmp(&b.invocation))
+    });
     entries
+}
+
+fn action_rank(id: &str) -> usize {
+    PRIMARY_ACTIONS
+        .iter()
+        .position(|candidate| *candidate == id)
+        .unwrap_or(usize::MAX)
 }
 
 pub fn command(config: &Config, query: Option<&str>, json: bool) -> Result<u8> {
@@ -204,6 +130,9 @@ pub fn command(config: &Config, query: Option<&str>, json: bool) -> Result<u8> {
 }
 
 fn filtered<'a>(entries: &'a [Entry], query: &str) -> Vec<&'a Entry> {
+    if query.trim().is_empty() {
+        return entries.iter().collect();
+    }
     let labels = entries.iter().map(|entry| entry.label.clone()).collect();
     crate::fuzzy::rank(labels, query)
         .into_iter()
@@ -223,10 +152,6 @@ fn effect(effect: SideEffectClass) -> &'static str {
     }
 }
 
-fn shell_quote(value: &str) -> String {
-    format!("'{}'", value.replace('\'', "'\"'\"'"))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -237,16 +162,18 @@ mod tests {
         assert!(entries.iter().any(|entry| entry.id == "status"));
         assert!(entries.iter().all(|entry| !entry.invocation.is_empty()));
         assert!(entries.iter().all(|entry| !entry.effect.is_empty()));
-        assert!(entries.iter().any(|entry| entry.id == "agent:new"));
+        assert_eq!(
+            entries.first().map(|entry| entry.id.as_str()),
+            Some("agent")
+        );
         assert!(entries.iter().any(|entry| entry.id == "sessions"));
         assert!(entries.iter().all(|entry| entry.id != "resume"));
-        assert!(entries
+        assert!(entries.iter().all(|entry| !entry.id.contains(':')));
+        let unique = entries
             .iter()
-            .all(|entry| !entry.id.starts_with("session:")));
-    }
-
-    #[test]
-    fn contextual_invocations_are_shell_quoted() {
-        assert_eq!(shell_quote("a'b"), "'a'\"'\"'b'");
+            .map(|entry| entry.invocation.as_str())
+            .collect::<std::collections::HashSet<_>>();
+        assert_eq!(unique.len(), entries.len());
+        assert_eq!(filtered(&entries, "")[0].id, "agent");
     }
 }

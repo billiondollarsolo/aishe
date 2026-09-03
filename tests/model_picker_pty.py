@@ -158,7 +158,7 @@ def select_connection(shell, filter_text, save=False):
     shell.line("/connection")
     shell.expect("Select a connection")
     shell.raw(filter_text.encode())
-    shell.expect("filter: " + filter_text)
+    shell.expect("search: " + filter_text)
     shell.raw(b"\r")
     if save:
         # Promotion is one explicit interaction after selection; printable
@@ -184,7 +184,7 @@ def select_model(shell, filter_text="", save=False):
     shell.expect("Select a model")
     if filter_text:
         shell.raw(filter_text.encode())
-        shell.expect("filter: " + filter_text)
+        shell.expect("search: " + filter_text)
     shell.raw(b"\r")
     if save:
         shell.expect("the default for new shells on this connection?", timeout=3)

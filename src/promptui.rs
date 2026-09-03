@@ -75,8 +75,8 @@ enum PickerKey {
 
 const PICKER_MAX_VISIBLE_ROWS: usize = 20;
 const PICKER_FRAME_OVERHEAD_ROWS: usize = 4;
-const PICKER_HELP: &str = "↑/↓ or Ctrl-P/Ctrl-N move · Home/End first/last · PgUp/PgDn jump · type to filter · Enter use · Esc cancel";
-const PICKER_HELP_ASCII: &str = "Up/Down or Ctrl-P/Ctrl-N move | Home/End first/last | PgUp/PgDn jump | type to filter | Enter use | Esc cancel";
+const PICKER_HELP: &str = "type to search · ↑/↓ move · Enter select · Esc close";
+const PICKER_HELP_ASCII: &str = "type to search | Up/Down move | Enter select | Esc close";
 
 /// Filterable single-column picker shared by `/model` and `/connection`. It
 /// intentionally uses plain text and ASCII focus marks so terminal font/theme
@@ -105,7 +105,7 @@ pub fn filter_picker(title: &str, options: &[String], default: usize) -> Result<
     } else {
         PICKER_HELP
     };
-    println!("  {help}");
+    println!("  {}", capabilities.paint(MUTED, help));
     if capabilities.motion == Motion::Static {
         return static_filter_picker(options, default);
     }
@@ -124,7 +124,7 @@ pub fn filter_picker(title: &str, options: &[String], default: usize) -> Result<
         }
         let visible_rows = picker_visible_rows();
         let lines = picker_frame_lines(options, &matches, &filter, selected, visible_rows);
-        draw_raw_frame(&lines, &mut drawn_rows);
+        draw_raw_frame(&lines, &mut drawn_rows, &capabilities);
         std::io::stdout().flush().ok();
         match keys.read_key().context("reading picker input")? {
             key @ (PickerKey::Up
@@ -411,30 +411,17 @@ fn picker_frame_lines(
     visible_rows: usize,
 ) -> Vec<String> {
     let mut lines = vec![format!(
-        "  filter: {}",
+        "  search: {}",
         crate::commands::display_safe(filter)
     )];
     if matches.is_empty() {
-        lines.push("  0 matches".into());
-        lines.push("    no matches".into());
+        lines.push("  no matches".into());
         return lines;
     }
 
     let selected = selected.min(matches.len() - 1);
     let (start, end) = picker_viewport(matches.len(), selected, visible_rows);
-    let noun = if matches.len() == 1 {
-        "match"
-    } else {
-        "matches"
-    };
-    lines.push(format!(
-        "  {} {noun} · selected {}/{} · showing {}–{}",
-        matches.len(),
-        selected + 1,
-        matches.len(),
-        start + 1,
-        end
-    ));
+    lines.push(format!("  {} of {}", selected + 1, matches.len()));
     for (match_position, index) in matches.iter().enumerate().take(end).skip(start) {
         lines.push(crate::ui::render::picker_row(
             &crate::commands::display_safe(&options[*index]),
@@ -473,14 +460,15 @@ pub fn performance_picker_frame(
 /// `drawn_rows` is the number of content lines written on the previous frame.
 /// After each frame the cursor sits on the blank line immediately below the
 /// last content row, so the next redraw moves up exactly `drawn_rows` lines.
-fn draw_raw_frame(lines: &[String], drawn_rows: &mut usize) {
+fn draw_raw_frame(lines: &[String], drawn_rows: &mut usize, capabilities: &TerminalCapabilities) {
     let width = columns().max(1);
     if *drawn_rows > 0 {
         // Cursor is on the blank line under the previous frame.
         print!("\r\x1b[{}A", *drawn_rows);
     }
-    for line in lines {
+    for (index, line) in lines.iter().enumerate() {
         let content = truncate_to_width(line, width);
+        let content = style_picker_line(&content, index, capabilities);
         // Clear the full row, write content, then CRLF so the next row starts
         // at column 0 even when the terminal is in raw mode.
         print!("\r\x1b[2K{content}\r\n");
@@ -488,6 +476,31 @@ fn draw_raw_frame(lines: &[String], drawn_rows: &mut usize) {
     // Drop any leftover rows from a taller previous frame.
     print!("\x1b[J");
     *drawn_rows = lines.len();
+}
+
+fn style_picker_line(line: &str, index: usize, capabilities: &TerminalCapabilities) -> String {
+    if let Some(query) = line.strip_prefix("  search: ") {
+        return format!(
+            "  {} {}",
+            capabilities.paint(MUTED, "search:"),
+            capabilities.paint(StyleToken::ProposedCommand, query)
+        );
+    }
+    if index == 1 {
+        return capabilities.paint(MUTED, line);
+    }
+    if line.starts_with("  > ") {
+        return capabilities.paint(FOCUS, line);
+    }
+    if let Some((command, summary)) = line.split_once(" — ") {
+        return format!(
+            "{}{}{}",
+            capabilities.paint(StyleToken::ProposedCommand, command),
+            capabilities.paint(MUTED, " — "),
+            capabilities.paint(MUTED, summary)
+        );
+    }
+    line.to_string()
 }
 
 /// Unbuffered terminal input for the filter picker.
@@ -1279,8 +1292,8 @@ mod tests {
         let matches = picker_matches(&options, "");
         assert_eq!(matches, vec![0, 1]);
         let lines = picker_frame_lines(&options, &matches, "", 1, 20);
-        assert_eq!(lines[0], "  filter: ");
-        assert_eq!(lines[1], "  2 matches · selected 2/2 · showing 1–2");
+        assert_eq!(lines[0], "  search: ");
+        assert_eq!(lines[1], "  2 of 2");
         assert_eq!(
             lines[2],
             "    Anthropic            Auto (legacy)            claude-sonnet-4-20250514"
@@ -1306,9 +1319,7 @@ mod tests {
         assert_eq!(picker_matches(&options, "open"), vec![1]);
         assert_eq!(picker_matches(&options, "zzzz"), Vec::<usize>::new());
         let empty = picker_frame_lines(&options, &[], "zzzz", 0, 20);
-        assert_eq!(empty[0], "  filter: zzzz");
-        assert_eq!(empty[1], "  0 matches");
-        assert_eq!(empty[2], "    no matches");
+        assert_eq!(empty, ["  search: zzzz", "  no matches"]);
     }
 
     #[test]
@@ -1341,7 +1352,7 @@ mod tests {
         assert_eq!(matches.len(), 1000);
         let lines = performance_picker_frame(&options, &matches, 999, 20);
         assert_eq!(lines.len(), 22);
-        assert!(lines[1].contains("selected 1000/1000"));
+        assert!(lines[1].contains("1000 of 1000"));
         assert!(lines.iter().any(|line| line.starts_with("  > model-0999")));
     }
 
@@ -1404,22 +1415,14 @@ mod tests {
             let selected = count.saturating_sub(1);
             let lines = picker_frame_lines(&options, &matches, "", selected, 20);
 
-            assert_eq!(lines[0], "  filter: ");
+            assert_eq!(lines[0], "  search: ");
             if count == 0 {
-                assert_eq!(lines, ["  filter: ", "  0 matches", "    no matches"]);
+                assert_eq!(lines, ["  search: ", "  no matches"]);
                 continue;
             }
 
             let visible_count = count.min(20);
-            let expected_start = count - visible_count;
-            let noun = if count == 1 { "match" } else { "matches" };
-            assert_eq!(
-                lines[1],
-                format!(
-                    "  {count} {noun} · selected {count}/{count} · showing {}–{count}",
-                    expected_start + 1
-                )
-            );
+            assert_eq!(lines[1], format!("  {count} of {count}"));
             assert_eq!(lines.len(), visible_count + 2);
             assert_eq!(
                 lines
@@ -1483,7 +1486,7 @@ mod tests {
         }
         assert!(!PICKER_HELP.contains("j/k"));
         assert!(!PICKER_HELP.contains("save as default"));
-        assert!(PICKER_HELP.contains("type to filter"));
+        assert!(PICKER_HELP.contains("type to search"));
     }
 
     #[test]

@@ -516,7 +516,7 @@ pub static COMMANDS: &[CommandSpec] = &[
         id: "palette",
         cli: cli("palette"),
         slash_aliases: &["palette"],
-        summary: "Search every built-in and contextual AIShe action",
+        summary: "Search AIShe actions from one focused menu",
         help_topic: "help",
         arguments: ArgumentPolicy::None,
         availability: cli_only_surfaces(),
