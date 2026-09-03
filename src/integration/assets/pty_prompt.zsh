@@ -19,6 +19,9 @@ if [[ -o interactive ]]; then
   [[ "${AISHE_PTY_PROMPT:-1}" == 0 ]] && _AISHE_BRAND_PROMPT=0
   [[ "${AISHE_PTY_PROMPT:-1}" == force ]] && _AISHE_BRAND_PROMPT=1
   aishe_set_prompt() {
+    # The width budget strips SGR escapes with a [0-9;]# pattern, which needs
+    # extended_glob; without it every prompt measured as if it were all escapes.
+    setopt localoptions extended_glob
     local glyph connection connection_label provider endpoint auth selection model reasoning mode backend scope status_text status_prompt status_row base_prompt key value item field style branch environment max_width i duplicate seen prompt_open prompt_close prompt_index
     local -A metrics
     local -a status_items item_values item_keys seen_values
@@ -92,7 +95,13 @@ if [[ -o interactive ]]; then
     status_prompt=""
     status_row=""
     seen_values=()
-    base_prompt="%B%F{cyan}%~%f%b %(?.%F{green}.%F{red})${glyph}%f "
+    if [[ "${AISHE_STYLE:-on}" == none ]]; then
+      base_prompt="%~ ${glyph} "
+    else
+      # Assign first: an inline ${x:-%F{green}} default leaves a stray brace.
+      local ok_color="$AISHE_COLOR_SUCCESS" bad_color="$AISHE_COLOR_DANGER"
+      base_prompt="${AISHE_COLOR_PATH}%~%f%b %(?.${ok_color}.${bad_color})${glyph}%f%b "
+    fi
     # A key-triggered refresh may run after Starship/Powerlevel10k has replaced
     # AIShe's prompt. Update AIShe-owned glyphs, but never seize a theme's prompt.
     if (( _AISHE_BRAND_PROMPT )) && [[ "$_AISHE_PROMPT_HOST" != spaceship &&
@@ -185,51 +194,31 @@ if [[ -o interactive ]]; then
             value="${value[1,$((max_width - 1))]}…"
           fi
         fi
-        style=''
-        if [[ -z "${NO_COLOR:-}" && "${TERM:-}" != dumb ]]; then
+        # Colors come from AIShe's palette via AISHE_COLOR_* (see ui::zsh_color_map),
+        # so the prompt matches the renderers and honours NO_COLOR/ui.theme.
+        prompt_open=''
+        prompt_close=''
+        if [[ "${AISHE_STYLE:-on}" != none ]]; then
           case "$field" in
-            connection|auth) style='fg=cyan' ;;
-            provider|endpoint|selection|backend) style='fg=242' ;;
-            model) style='fg=yellow' ;;
-            reasoning) style='fg=215' ;;
-            mode)
-              case "$mode" in
-                suggest) style='fg=yellow,bold' ;;
-                auto)    style='fg=cyan,bold' ;;
-                yolo)    style='fg=red,bold' ;;
-              esac
-              ;;
-            scope|branch) style='fg=green' ;;
-            environment) style='fg=red,bold' ;;
-            last_tokens|last_cost|session_tokens|session_cost|requests|elapsed|context) style='fg=209' ;;
-            plan|task|tasks) style='fg=204' ;;
+            mode) prompt_open="${(P)${:-AISHE_COLOR_MODE_${mode:u}}}" ;;
+            last_tokens|last_cost|session_tokens|session_cost|requests|elapsed|context)
+              prompt_open="${AISHE_COLOR_METRIC}" ;;
+            task|tasks) prompt_open="${AISHE_COLOR_PLAN}" ;;
+            *) prompt_open="${(P)${:-AISHE_COLOR_${field:u}}}" ;;
           esac
+          [[ -n "$prompt_open" ]] && prompt_close='%f%b'
         fi
         if [[ -n "$status_row" ]] && (( ${(m)#status_row} + ${(m)#value} + 3 > max_width )); then
           break
         fi
         if [[ -n "$status_row" ]]; then
           status_text+=' · '
-          status_prompt+=' %F{242}·%f '
+          status_prompt+=" ${AISHE_COLOR_MUTED}·%f "
           status_row+=' · '
         fi
         status_text+="$value"
         status_row+="$value"
         psvar[$prompt_index]="$value"
-        prompt_open=''
-        prompt_close=''
-        case "$style" in
-          fg=242)         prompt_open='%F{242}'; prompt_close='%f' ;;
-          fg=cyan)        prompt_open='%F{cyan}'; prompt_close='%f' ;;
-          fg=yellow)      prompt_open='%F{yellow}'; prompt_close='%f' ;;
-          fg=215)         prompt_open='%F{215}'; prompt_close='%f' ;;
-          fg=green)       prompt_open='%F{green}'; prompt_close='%f' ;;
-          fg=209)         prompt_open='%F{209}'; prompt_close='%f' ;;
-          fg=204)         prompt_open='%F{204}'; prompt_close='%f' ;;
-          fg=yellow,bold) prompt_open='%B%F{yellow}'; prompt_close='%f%b' ;;
-          fg=cyan,bold)   prompt_open='%B%F{cyan}'; prompt_close='%f%b' ;;
-          fg=red,bold)    prompt_open='%B%F{red}'; prompt_close='%f%b' ;;
-        esac
         status_prompt+="${prompt_open}%${prompt_index}v${prompt_close}"
         (( prompt_index++ ))
       done
@@ -247,7 +236,7 @@ if [[ -o interactive ]]; then
         _AISHE_USER_RPROMPT="$RPROMPT"
       fi
       local rprompt_separator=''
-      [[ -n "$_AISHE_USER_RPROMPT" ]] && rprompt_separator=' %F{242}·%f '
+      [[ -n "$_AISHE_USER_RPROMPT" ]] && rprompt_separator=" ${AISHE_COLOR_MUTED}·%f "
       if [[ "${AISHE_STATUS_POSITION:-right}" != off && -n "$status_prompt" ]]; then
         RPROMPT="${_AISHE_USER_RPROMPT}${rprompt_separator}${status_prompt}"
       else

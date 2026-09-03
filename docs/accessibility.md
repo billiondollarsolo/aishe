@@ -6,7 +6,9 @@ label, distinct glyph, or explicit focus marker after ANSI is stripped.
 `ui.motion = "static"` replaces erased/spinning status with durable phase
 lines; `ui.unicode = "ascii"` replaces box drawing and symbolic state glyphs;
 `ui.theme = "none"`, `NO_COLOR`, `TERM=dumb`, redirected output, and every JSON
-surface suppress styling entirely.
+surface suppress styling entirely. That includes the zsh prompt and statusline:
+they paint from the same palette through `AISHE_COLOR_*`, exported by the PTY
+front end, so a colorless policy reaches them too.
 
 ## Maintained palette review
 

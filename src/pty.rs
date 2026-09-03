@@ -96,6 +96,13 @@ fn run_zsh_inner(config: &Config, history_log: &std::path::Path, shell_id: Strin
     cmd.env("AISHE_REAL_ZDOTDIR", &real_zdotdir);
     cmd.env("AISHE_SHELL_ID", &shell_id);
     cmd.env("AISHE_MODE", &config.aishe.mode);
+    // The prompt paints from the same palette as the Rust renderers, and goes
+    // colorless under NO_COLOR/TERM=dumb/ui.theme = "none" like everything else.
+    let terminal = crate::ui::TerminalCapabilities::detect_stdout();
+    for (key, value) in crate::ui::zsh_color_map(&terminal) {
+        cmd.env(key, value);
+    }
+    cmd.env("AISHE_STYLE", if terminal.styled() { "on" } else { "none" });
     cmd.env(
         "AISHE_UNICODE",
         match crate::ui::TerminalCapabilities::detect_stdout().unicode {

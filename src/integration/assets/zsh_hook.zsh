@@ -130,7 +130,7 @@ aishe_precmd() {
   if [[ "${AISHE_FAILURE_HINTS:-${AISHE_AUTODIAGNOSE:-0}}" == 1 &&
         "${AISHE_LAST_EXIT:-0}" != 0 && "${AISHE_LAST_EXIT:-0}" != 130 &&
         -n "$AISHE_LAST_CMD" && "$_aishe_hint_sig" != "$_AISHE_LAST_HINT_SIGNATURE" ]]; then
-    print -P "%F{244}aishe: exit ${AISHE_LAST_EXIT} — ? explain · Ctrl-X Ctrl-F suggest a fix · !<cmd> force shell%f"
+    print -P "${AISHE_COLOR_MUTED:-%F{244}}aishe: exit ${AISHE_LAST_EXIT} — ? explain · Ctrl-X Ctrl-F suggest a fix · !<cmd> force shell%f"
     typeset -g _AISHE_LAST_HINT_SIGNATURE="$_aishe_hint_sig"
   fi
   if [[ -f "$AISHE_FORCE_FILE" ]]; then

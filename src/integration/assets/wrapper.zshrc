@@ -31,6 +31,6 @@ AI Shell'
   else
     print -r -- '__AISHE_TEMPLATE_ASCII_LOGO__'
   fi
-  print -P "%F{244}aishe: __AISHE_TEMPLATE_CONTROLS_HINT__%f"
+  print -P "${AISHE_COLOR_MUTED:-%F{244}}aishe: __AISHE_TEMPLATE_CONTROLS_HINT__%f"
   export AISHE_COMMAND_HINT_SHOWN=1
 fi

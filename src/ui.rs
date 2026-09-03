@@ -430,6 +430,50 @@ impl TerminalCapabilities {
     }
 }
 
+/// The statusline colors, as zsh prompt escapes, resolved from the same
+/// palette the Rust renderers use. zsh used to carry its own literal indices,
+/// so scope was green in the prompt and magenta in an approval panel, and
+/// NO_COLOR never reached the prompt at all.
+pub fn zsh_color_map(capabilities: &TerminalCapabilities) -> Vec<(&'static str, String)> {
+    let entries: &[(&'static str, StyleToken, bool)] = &[
+        ("AISHE_COLOR_CONNECTION", StyleToken::Accent, false),
+        ("AISHE_COLOR_AUTH", StyleToken::Accent, false),
+        ("AISHE_COLOR_PROVIDER", StyleToken::Muted, false),
+        ("AISHE_COLOR_ENDPOINT", StyleToken::Muted, false),
+        ("AISHE_COLOR_SELECTION", StyleToken::Muted, false),
+        ("AISHE_COLOR_BACKEND", StyleToken::Muted, false),
+        ("AISHE_COLOR_MUTED", StyleToken::Muted, false),
+        ("AISHE_COLOR_MODEL", StyleToken::CodeLabel, false),
+        ("AISHE_COLOR_REASONING", StyleToken::Activity, false),
+        ("AISHE_COLOR_SCOPE", StyleToken::Policy, false),
+        ("AISHE_COLOR_BRANCH", StyleToken::Policy, false),
+        ("AISHE_COLOR_ENVIRONMENT", StyleToken::Danger, true),
+        ("AISHE_COLOR_METRIC", StyleToken::Activity, false),
+        ("AISHE_COLOR_PLAN", StyleToken::ProposedCommand, false),
+        ("AISHE_COLOR_PATH", StyleToken::Accent, true),
+        ("AISHE_COLOR_SUCCESS", StyleToken::Success, false),
+        ("AISHE_COLOR_DANGER", StyleToken::Danger, false),
+        ("AISHE_COLOR_MODE_SUGGEST", StyleToken::Warning, true),
+        ("AISHE_COLOR_MODE_AUTO", StyleToken::Accent, true),
+        ("AISHE_COLOR_MODE_YOLO", StyleToken::Danger, true),
+    ];
+    entries
+        .iter()
+        .map(|(key, token, bold)| {
+            if !capabilities.styled() {
+                return (*key, String::new());
+            }
+            let (_, ansi256, (r, g, b)) = palette_entry(capabilities.theme, *token);
+            let color = match capabilities.color_depth {
+                ColorDepth::None => return (*key, String::new()),
+                ColorDepth::TrueColor => format!("%F{{#{r:02x}{g:02x}{b:02x}}}"),
+                _ => format!("%F{{{ansi256}}}"),
+            };
+            (*key, if *bold { format!("%B{color}") } else { color })
+        })
+        .collect()
+}
+
 fn palette_entry(theme: Theme, token: StyleToken) -> (&'static str, u8, (u8, u8, u8)) {
     let light = theme == Theme::Light;
     match token {
@@ -787,6 +831,38 @@ mod tests {
             motion: None,
             size: Some((120, 40)),
         }
+    }
+
+    #[test]
+    fn zsh_color_map_matches_the_renderer_palette_and_obeys_no_color() {
+        let off = TerminalCapabilities::resolve(&CapabilityInputs {
+            is_tty: true,
+            no_color: true,
+            term: Some("xterm-256color".into()),
+            ..CapabilityInputs::default()
+        });
+        assert!(zsh_color_map(&off)
+            .iter()
+            .all(|(_, value)| value.is_empty()));
+
+        let dark = TerminalCapabilities::resolve(&CapabilityInputs {
+            is_tty: true,
+            term: Some("xterm-256color".into()),
+            ..CapabilityInputs::default()
+        });
+        let map = zsh_color_map(&dark);
+        let scope = &map
+            .iter()
+            .find(|(key, _)| *key == "AISHE_COLOR_SCOPE")
+            .unwrap()
+            .1;
+        // Scope is Policy in the renderers; the prompt used to paint it green.
+        let (_, ansi256, _) = palette_entry(dark.theme, StyleToken::Policy);
+        assert!(
+            scope.contains(&ansi256.to_string()) || scope.starts_with("%F{#"),
+            "scope color {scope} is not the Policy token"
+        );
+        assert!(map.iter().all(|(_, value)| !value.is_empty()));
     }
 
     #[test]

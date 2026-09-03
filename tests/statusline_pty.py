@@ -188,8 +188,10 @@ def run_case(position, cols, expected_position=None):
             )
         elif "^[" in CSI.sub("", shell.transcript):
             raise AssertionError("statusline rendered visible ANSI escape text")
-        elif "\x1b[33m" not in shell.transcript or "\x1b[36m" not in shell.transcript:
-            raise AssertionError("statusline did not apply semantic model/mode colors")
+        elif not re.search(r"\x1b\[(38;2;\d+;\d+;\d+|38;5;\d+|3[0-7])m", shell.transcript):
+            # Colors come from ui::zsh_color_map, so the exact codes track the
+            # renderer palette and terminal depth rather than fixed literals.
+            raise AssertionError("statusline did not apply semantic colors")
 
         if position != "off":
             shell.send(
