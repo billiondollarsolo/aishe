@@ -77,6 +77,28 @@ const PICKER_FRAME_OVERHEAD_ROWS: usize = 4;
 const PICKER_HELP: &str = "type to search · ↑/↓ move · Enter select · Esc close";
 const PICKER_HELP_ASCII: &str = "type to search | Up/Down move | Enter select | Esc close";
 
+/// One footer for every prompt. Menus, pickers, text prompts, and the hidden
+/// secret prompt used four different vocabularies, and the menu footer ignored
+/// the ASCII glyph policy.
+pub fn prompt_footer(capabilities: &TerminalCapabilities, back: bool) -> String {
+    let ascii = capabilities.glyphs().focus() == ">";
+    let (up, sep) = if ascii {
+        ("Up/Down", " | ")
+    } else {
+        ("↑/↓", " · ")
+    };
+    let mut parts = vec![format!("{up} or number"), "Enter accept".to_string()];
+    if back {
+        parts.push("b back".into());
+    }
+    parts.push("? help".into());
+    parts.push("Esc cancel".into());
+    parts.join(sep)
+}
+
+/// The one word every cancelled prompt prints.
+pub const CANCELLED: &str = "cancelled";
+
 /// Filterable single-column picker shared by `/model` and `/connection`. It
 /// intentionally uses plain text and ASCII focus marks so terminal font/theme
 /// choices never turn status into colored pictographs.
@@ -846,10 +868,7 @@ pub fn menu(
     for (index, option) in options.iter().enumerate() {
         print_option(index, option, terminal_columns);
     }
-    let instructions = format!(
-        "↑/↓ or number select · Enter accept{} · ? help · Esc cancel",
-        if allow_back { " · b back" } else { "" }
-    );
+    let instructions = prompt_footer(&TerminalCapabilities::detect_stdout(), allow_back);
     print_wrapped("  ", &instructions, Some(MUTED));
     let selected = default.min(options.len() - 1);
     // Read keys through the picker's unbuffered stdin reader. Under the
@@ -1192,6 +1211,28 @@ pub fn should_offer_promote_to_default(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn prompt_footer_respects_the_glyph_policy() {
+        let unicode = TerminalCapabilities::resolve(&CapabilityInputs {
+            is_tty: true,
+            locale: Some("en_US.UTF-8".into()),
+            ..CapabilityInputs::default()
+        });
+        assert_eq!(
+            prompt_footer(&unicode, true),
+            "↑/↓ or number · Enter accept · b back · ? help · Esc cancel"
+        );
+        let ascii = TerminalCapabilities::resolve(&CapabilityInputs {
+            is_tty: true,
+            locale: Some("C".into()),
+            ..CapabilityInputs::default()
+        });
+        assert_eq!(
+            prompt_footer(&ascii, false),
+            "Up/Down or number | Enter accept | ? help | Esc cancel"
+        );
+    }
 
     #[test]
     fn menu_select_reads_arrows_digits_back_and_escape() {

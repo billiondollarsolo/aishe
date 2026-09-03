@@ -207,7 +207,7 @@ pub fn model(
                 index
             }
             crate::promptui::PickerResult::Cancel => {
-                println!("model selection cancelled");
+                println!("{}", crate::promptui::CANCELLED);
                 return 0;
             }
         };
@@ -411,7 +411,7 @@ fn pick(effective: &Config, value: Option<&str>, save_default: bool) -> u8 {
                 index
             }
             crate::promptui::PickerResult::Cancel => {
-                println!("connection selection cancelled");
+                println!("{}", crate::promptui::CANCELLED);
                 return 0;
             }
         };
@@ -716,7 +716,7 @@ pub fn command(effective: &Config, command: &Action) -> Result<u8> {
                 if crate::promptui::confirm(&format!("Remove connection '{id}'?"), false)?
                     != Some(true)
                 {
-                    println!("connection removal cancelled");
+                    println!("{}", crate::promptui::CANCELLED);
                     return Ok(0);
                 }
             }

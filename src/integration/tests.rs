@@ -100,12 +100,12 @@ fn generated_shell_artifacts_match_the_reviewed_byte_snapshots() {
         (
             "zsh init",
             zsh_script(),
-            "d1370b0126b3f6f3f88178ce7414d62d85e11802117733e9f1d3ef3e13064b17",
+            "b2f0f5c3adf69bae4f46f88576e03f2430e1bace2d5caf84f142181f8bc63332",
         ),
         (
             "bash init",
             bash_script(),
-            "5e2e29669f172a4709dae68e8b8502f3b133332fe302d41f7892f94a0b124c7e",
+            "4e261476550975f179f998a2470c68430cdcfade0ba164797782ad29fff38621",
         ),
         (
             "wrapper zshenv",
@@ -115,7 +115,7 @@ fn generated_shell_artifacts_match_the_reviewed_byte_snapshots() {
         (
             "wrapper zshrc",
             wrapper_zshrc(),
-            "e443d64b84a2393e9338221f15ceb61cb8f944ea24f5d2d38b8f45ec97a4d9c6",
+            "2a39202c5b0df06d5ce23bdbfcd19e7074e68ce9582cb3af49a79f57aa200cab",
         ),
     ] {
         assert_eq!(digest(&rendered), expected, "unexpected {name} byte drift");
@@ -350,7 +350,7 @@ fn zsh_script_has_mode_cycle_widget() {
     assert!(s.contains("aishe_set_prompt status-only"));
     assert!(s.contains("zle -I"));
     assert!(s.contains("zle reset-prompt"));
-    assert!(s.contains("aishe mode: "));
+    assert!(s.contains("mode: ${AISHE_MODE} (this shell)"));
 }
 
 #[test]

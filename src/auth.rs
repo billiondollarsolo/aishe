@@ -277,7 +277,7 @@ pub fn run(command: &AuthCommand) -> Result<u8> {
                     false,
                 )?;
                 if confirmed != Some(true) {
-                    println!("OAuth logout cancelled");
+                    println!("{}", crate::promptui::CANCELLED);
                     return Ok(0);
                 }
             }
@@ -558,7 +558,7 @@ pub fn run(command: &AuthCommand) -> Result<u8> {
                     false,
                 )?;
                 if confirmed != Some(true) {
-                    println!("credential removal cancelled");
+                    println!("{}", crate::promptui::CANCELLED);
                     return Ok(0);
                 }
             }

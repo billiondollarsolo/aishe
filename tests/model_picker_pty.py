@@ -238,7 +238,7 @@ def main():
         first.line("/model")
         first.expect("Select a model")
         first.raw(b"\x1b")
-        first.expect("model selection cancelled")
+        first.expect("cancelled")
         first.identity("CANCELLED")
         first.expect("CANCELLED:openai-personal:personal-model")
 

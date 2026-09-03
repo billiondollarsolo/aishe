@@ -15,7 +15,7 @@ def main():
         if not shell.expect("AIShe command palette"):
             raise AssertionError("palette did not open:\n" + shell.plain()[start:])
         shell.send("\x1b")
-        if not shell.expect("palette cancelled"):
+        if not shell.expect("cancelled"):
             raise AssertionError("palette did not report cancelling")
         shell.drain(0.6)
         # zle -I makes ZLE repaint the prompt below the picker frame.

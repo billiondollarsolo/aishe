@@ -305,7 +305,7 @@ aishe-command-palette() {
   else
     BUFFER=""
     CURSOR=0
-    zle -M "aishe: palette cancelled"
+    zle -M "cancelled"
   fi
   # The frame overwrote the prompt line; ZLE would otherwise repaint only the
   # right-prompt region and leave the left prompt missing.
@@ -557,7 +557,7 @@ aishe-toggle-agent-details() {
     *)        AISHE_AGENT_OUTPUT=detailed ;;
   esac
   export AISHE_AGENT_OUTPUT
-  zle -M "aishe agent details: ${AISHE_AGENT_OUTPUT}"
+  zle -M "details: ${AISHE_AGENT_OUTPUT} (this shell)"
 }
 
 # Mode-cycle key (default Shift-Tab; override with AISHE_MODE_KEY). Rotates
@@ -589,7 +589,7 @@ aishe-cycle-mode() {
     aishe_set_prompt status-only
     zle reset-prompt
   else
-    zle -M "aishe mode: ${AISHE_MODE}"
+    zle -M "mode: ${AISHE_MODE} (this shell)"
   fi
 }
 if [[ -o interactive ]]; then

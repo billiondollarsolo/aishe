@@ -304,7 +304,7 @@ __aishe_cycle_mode() {
       ;;
     *)       export AISHE_MODE=suggest ;;
   esac
-  printf '\naishe mode: %s\n' "$AISHE_MODE"
+  printf '\nmode: %s (this shell)\n' "$AISHE_MODE"
 }
 bind -x '"\e[Z": __aishe_cycle_mode' 2>/dev/null
 
