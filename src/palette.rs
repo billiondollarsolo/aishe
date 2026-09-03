@@ -139,23 +139,6 @@ pub fn entries(config: &Config) -> Vec<Entry> {
             );
         }
     }
-    for record in crate::backend::opencode::session::SessionStore::from_default_root()
-        .and_then(|store| store.records(None))
-        .unwrap_or_default()
-    {
-        add(
-            format!("session:{}", record.backend_session_id),
-            format!("aishe resume {}", shell_quote(&record.backend_session_id)),
-            format!(
-                "resume {} · {}",
-                record.model_id,
-                record.workspace.display()
-            ),
-            "conversation_state",
-            true,
-            None,
-        );
-    }
     for entry in &mut entries {
         if !entry.available {
             entry.label.push_str(" · needs live verification");
@@ -254,6 +237,9 @@ mod tests {
         assert!(entries.iter().all(|entry| !entry.invocation.is_empty()));
         assert!(entries.iter().all(|entry| !entry.effect.is_empty()));
         assert!(entries.iter().any(|entry| entry.id == "agent:new"));
+        assert!(entries
+            .iter()
+            .all(|entry| !entry.id.starts_with("session:")));
     }
 
     #[test]
