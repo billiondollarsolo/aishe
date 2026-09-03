@@ -7,6 +7,13 @@ breaking changes can land in any release.
 ## [Unreleased]
 
 ### Added
+- `/usage` and `aishe usage` report tokens in and out, prompt-cache read and
+  write with a hit rate, thinking tokens, turns, model time, and cost, split by
+  this shell, today, and all time, plus your provider plan quota where the
+  provider exposes one (OpenAI subscriptions today). `--json` matches `aishe log`.
+- A content-free usage ledger at `<data>/usage.jsonl`: numbers only, no prompts,
+  answers, commands, or paths, always written, so the usage report works without
+  enabling the content-carrying audit log.
 - Daily-driver agent workflows: current-buffer editing, a generated command
   palette, explicit bounded attachments, durable failure recovery, structured
   `ask`, local repository indexing, workload model roles, transactional MCP

@@ -70,7 +70,7 @@ fn render_overview() -> String {
     format!(
         "AIShe (AI Shell) — what do you want to do?\n\n\
            Switch account/model:  /connection · /model\n\
-           Inspect this session:  /status · /log\n\
+           Inspect this session:  /status · /usage · /log\n\
            Change this session:   /mode · /reasoning · /details · /reset\n\
            Configure AIShe:       /settings · /scope · /network\n\
            Agent work:            /agent · /inbox · /sessions · /ask\n\

@@ -3,6 +3,22 @@
 aishe has two related features for safety and observability: secret redaction
 (on by default) and an audit log (off by default).
 
+## Usage ledger versus the audit log
+
+Two different files answer two different questions.
+
+`<data>/usage.jsonl` is the **usage ledger**: one line per model turn with
+tokens in and out, cache read and write, thinking tokens, the cost the backend
+reported, and how long the turn took. It carries no prompt, answer, command, or
+path, so it is always written and needs no opt-in. `aishe usage` reads it.
+
+`<data>/audit.jsonl` is the **audit log**: what the agent did, including prompts,
+answers, and the commands it ran. It is off by default and enabled in
+`[logging]` or with `AISHE_LOG=1`.
+
+If you only want to know what things cost, the ledger is enough and the audit
+log can stay off.
+
 ## Secret redaction
 
 Before each request, aishe builds an environment context block that includes your

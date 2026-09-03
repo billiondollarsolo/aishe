@@ -368,11 +368,13 @@ fn run() -> Result<u8> {
                 by,
                 since,
                 connection,
+                json,
             }) => Ok(aishe::cli::history::usage(
                 &config,
                 by.as_deref(),
                 since.as_deref(),
                 connection.as_deref(),
+                *json,
             )),
             Some(Cmd::Runbook {
                 session,

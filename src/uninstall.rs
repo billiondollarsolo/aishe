@@ -141,11 +141,16 @@ impl Plan {
                 .filter(|value| !value.is_empty())
                 .map(PathBuf::from)
                 .unwrap_or_else(|| data_dir.join("undo.jsonl"));
+            // The usage ledger is separate from the audit log but is the same
+            // category of retained local record, so it goes with it.
+            let ledger = data_dir.join("usage.jsonl");
             for path in [
                 audit.clone(),
                 suffixed(&audit, ".1"),
                 undo.clone(),
                 suffixed(&undo, ".1"),
+                ledger.clone(),
+                suffixed(&ledger, ".1"),
             ] {
                 targets.push(file("audit/undo data", path, false));
             }

@@ -466,6 +466,26 @@ fn audit_managed_response(
         "cost_usd": usage.cost_usd,
         "duration_ms": duration_ms,
     });
+    // Numbers only, always written: `aishe usage` must work without opting into
+    // the content-carrying audit log.
+    crate::audit::ledger::record(serde_json::json!({
+        "session": crate::audit::session_id(),
+        "model": config.active_model(),
+        "provider": config.aishe.provider,
+        "connection_id": config.active_connection_id(),
+        "auth_type": config
+            .active_connection()
+            .map(|connection| connection.auth_kind())
+            .unwrap_or("unknown"),
+        "mode": options.mode,
+        "tokens_in": usage.input_tokens,
+        "tokens_out": usage.output_tokens,
+        "reasoning_tokens": usage.reasoning_tokens,
+        "cache_read_tokens": usage.cache_read_tokens,
+        "cache_write_tokens": usage.cache_write_tokens,
+        "cost_usd": usage.cost_usd,
+        "duration_ms": duration_ms,
+    }));
     if !reasoning.is_empty() {
         fields["reasoning"] = serde_json::Value::String(reasoning.to_string());
     }

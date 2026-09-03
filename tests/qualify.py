@@ -458,6 +458,12 @@ LOCAL_FULL_GATES = (
         required_tools=("zsh",),
     ),
     python_gate(
+        "usage-report",
+        "Usage report reads the content-free ledger",
+        "tests/usage_report_pty.py",
+        BINARY,
+    ),
+    python_gate(
         "slash-highlight-pty",
         "A registered /command does not read as an error",
         "tests/slash_highlight_pty.py",

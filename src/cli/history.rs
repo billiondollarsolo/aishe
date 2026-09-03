@@ -474,20 +474,145 @@ pub fn log(
 }
 
 /// `aishe usage`: aggregate token counts and estimated cost from the audit log.
+/// Ledger rows as audit-shaped entries, so one aggregation path serves both.
+fn ledger_entries() -> Vec<crate::audit::Entry> {
+    crate::audit::ledger::read()
+        .into_iter()
+        .map(|value| {
+            let string = |key: &str| value.get(key).and_then(|v| v.as_str()).map(str::to_string);
+            let number = |key: &str| value.get(key).and_then(serde_json::Value::as_u64);
+            crate::audit::Entry {
+                ts_ms: number("ts_ms").unwrap_or(0),
+                session: string("session").unwrap_or_default(),
+                kind: "ai_response".to_string(),
+                model: string("model"),
+                connection_id: string("connection_id"),
+                provider: string("provider"),
+                auth_type: string("auth_type"),
+                mode: string("mode"),
+                tokens_in: number("tokens_in"),
+                tokens_out: number("tokens_out"),
+                cache_read_tokens: number("cache_read_tokens"),
+                cache_write_tokens: number("cache_write_tokens"),
+                reasoning_tokens: number("reasoning_tokens"),
+                cost_usd: value.get("cost_usd").and_then(serde_json::Value::as_f64),
+                duration_ms: number("duration_ms"),
+                ..Default::default()
+            }
+        })
+        .collect()
+}
+
+/// Why a group has no dollar figure. Subscription plans have no per-token price
+/// at all, which is a different situation from a priced model nobody configured.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum CostBasis {
+    /// Every call in the group had a known price.
+    Priced,
+    /// Some or all calls ran on a subscription, where tokens are not billed.
+    #[default]
+    Subscription,
+    /// A billable model with no configured price.
+    Unpriced,
+}
+
+impl CostBasis {
+    fn merge(self, other: Self) -> Self {
+        match (self, other) {
+            (Self::Unpriced, _) | (_, Self::Unpriced) => Self::Unpriced,
+            (Self::Priced, _) | (_, Self::Priced) => Self::Priced,
+            _ => Self::Subscription,
+        }
+    }
+}
+
+#[derive(Default)]
+struct UsageAgg {
+    tin: u64,
+    tout: u64,
+    cache_read: u64,
+    cache_write: u64,
+    reasoning: u64,
+    reqs: u64,
+    errors: u64,
+    duration_ms: u64,
+    cost: f64,
+    unpriced: u64,
+    basis: Option<CostBasis>,
+}
+
+impl UsageAgg {
+    fn add(&mut self, other: &UsageSample) {
+        self.tin += other.tin;
+        self.tout += other.tout;
+        self.cache_read += other.cache_read;
+        self.cache_write += other.cache_write;
+        self.reasoning += other.reasoning;
+        self.reqs += 1;
+        self.duration_ms += other.duration_ms;
+        self.cost += other.cost;
+        if other.basis == CostBasis::Unpriced {
+            self.unpriced += 1;
+        }
+        self.basis = Some(match self.basis {
+            Some(existing) => existing.merge(other.basis),
+            None => other.basis,
+        });
+    }
+
+    /// Share of input tokens served from the prompt cache.
+    fn cache_hit_rate(&self) -> Option<f64> {
+        let offered = self.tin + self.cache_read;
+        (offered > 0 && (self.cache_read > 0 || self.cache_write > 0))
+            .then(|| self.cache_read as f64 * 100.0 / offered as f64)
+    }
+
+    fn cost_label(&self) -> String {
+        match self.basis.unwrap_or_default() {
+            CostBasis::Priced => format!("~${:.4}", self.cost),
+            CostBasis::Unpriced if self.cost > 0.0 => {
+                format!("~${:.4} (+{} unpriced)", self.cost, self.unpriced)
+            }
+            CostBasis::Unpriced => "no price set".to_string(),
+            CostBasis::Subscription => "plan".to_string(),
+        }
+    }
+}
+
+struct UsageSample {
+    tin: u64,
+    tout: u64,
+    cache_read: u64,
+    cache_write: u64,
+    reasoning: u64,
+    duration_ms: u64,
+    cost: f64,
+    basis: CostBasis,
+}
+
+/// `aishe usage`: what this shell, today, and the whole audit log have spent.
+/// Everything here is read from AIShe's own audit log, so it is exact for what
+/// AIShe did; plan quota is fetched from the provider and labelled as such.
 pub fn usage(
     config: &Config,
     by: Option<&str>,
     since: Option<&str>,
     connection: Option<&str>,
+    json: bool,
 ) -> u8 {
     use crate::usage::{self, Usage};
-    let path = audit_log_path(config);
-    let entries = crate::audit::read_entries(&path);
-    if entries.is_empty() && !path.exists() {
-        eprintln!(
-            "aishe: no audit log at {} (enable it in [logging] or with AISHE_LOG=1)",
-            path.display()
-        );
+    // The ledger is content-free and always written; the audit log is opt-in and
+    // carries prompts. Prefer the ledger, and fall back so history recorded
+    // before the ledger existed still counts.
+    let mut entries = ledger_entries();
+    if entries.is_empty() {
+        entries = crate::audit::read_entries(&audit_log_path(config));
+    }
+    if entries.is_empty() {
+        println!("no model calls recorded yet");
+        if let Some(plan) = plan_quota(config) {
+            println!("plan: {plan} (from your provider subscription)");
+        }
         return 0;
     }
     let cutoff = since.and_then(parse_since);
@@ -498,20 +623,22 @@ pub fn usage(
             .unwrap_or_else(|_| value.to_string())
     });
 
-    #[derive(Default)]
-    struct Agg {
-        tin: u64,
-        tout: u64,
-        reqs: u64,
-        cost: f64,
-        unknown: u64,
-    }
-    let mut groups: std::collections::BTreeMap<String, Agg> = std::collections::BTreeMap::new();
-    let mut total = Agg::default();
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|value| value.as_millis() as u64)
+        .unwrap_or(0);
+    let today = crate::audit::fmt_date(now_ms);
+    let shell_session = std::env::var("AISHE_SHELL_ID")
+        .ok()
+        .filter(|id| !id.is_empty());
+    let mut groups: std::collections::BTreeMap<String, UsageAgg> =
+        std::collections::BTreeMap::new();
+    let mut total = UsageAgg::default();
+    let mut today_agg = UsageAgg::default();
+    let mut session_agg = UsageAgg::default();
+    let mut errors = 0_u64;
+
     for e in &entries {
-        if e.kind != "ai_response" {
-            continue;
-        }
         if connection
             .as_deref()
             .is_some_and(|id| e.connection_id.as_deref() != Some(id))
@@ -523,22 +650,43 @@ pub fn usage(
                 continue;
             }
         }
+        if e.kind == "ai_error" {
+            errors += 1;
+            continue;
+        }
+        if e.kind != "ai_response" {
+            continue;
+        }
         let tin = e.tokens_in.unwrap_or(0);
         let tout = e.tokens_out.unwrap_or(0);
         let model = e.model.as_deref().unwrap_or("?");
-        let (cost, known) = match usage::price_for(model, &config.pricing) {
-            Some(p) => (
+        // A subscription reports no per-token price, so an absent price there is
+        // correct rather than missing configuration.
+        let subscription = e.auth_type.as_deref() == Some("oauth");
+        let (cost, basis) = match usage::price_for(model, &config.pricing) {
+            Some(price) => (
                 usage::cost(
                     Usage {
                         input: tin,
                         output: tout,
                         requests: 1,
                     },
-                    p,
+                    price,
                 ),
-                true,
+                CostBasis::Priced,
             ),
-            None => (0.0, false),
+            None if subscription => (e.cost_usd.unwrap_or(0.0), CostBasis::Subscription),
+            None => (0.0, CostBasis::Unpriced),
+        };
+        let sample = UsageSample {
+            tin,
+            tout,
+            cache_read: e.cache_read_tokens.unwrap_or(0),
+            cache_write: e.cache_write_tokens.unwrap_or(0),
+            reasoning: e.reasoning_tokens.unwrap_or(0),
+            duration_ms: e.duration_ms.unwrap_or(0),
+            cost,
+            basis,
         };
         let key = match by {
             "connection" => e
@@ -549,54 +697,181 @@ pub fn usage(
             "session" => e.session.clone(),
             _ => model.to_string(),
         };
-        let g = groups.entry(key).or_default();
-        for agg in [g, &mut total] {
-            agg.tin += tin;
-            agg.tout += tout;
-            agg.reqs += 1;
-            agg.cost += cost;
-            if !known {
-                agg.unknown += 1;
-            }
+        groups.entry(key).or_default().add(&sample);
+        total.add(&sample);
+        if crate::audit::fmt_date(e.ts_ms) == today {
+            today_agg.add(&sample);
+        }
+        if shell_session.as_deref() == Some(e.session.as_str()) {
+            session_agg.add(&sample);
         }
     }
-    if total.reqs == 0 {
-        println!("no model calls recorded in the audit log");
-        return 0;
-    }
-    if let Some(connection) = &connection {
-        println!("usage for connection {connection} by {by}:");
-    } else {
-        println!("usage by {by}:");
-    }
-    let fmt_cost = |a: &Agg| {
-        if a.unknown == 0 {
-            format!("~${:.4}", a.cost)
-        } else if a.cost > 0.0 {
-            format!("~${:.4} (+{} unpriced)", a.cost, a.unknown)
-        } else {
-            "cost n/a".to_string()
-        }
-    };
-    for (k, a) in &groups {
-        println!(
-            "  {:<28} {:>10} in  {:>9} out  {:>4} req  {}",
-            k,
-            a.tin,
-            a.tout,
-            a.reqs,
-            fmt_cost(a)
+    total.errors = errors;
+
+    let plan = plan_quota(config);
+    if json {
+        return usage_json(
+            config,
+            by,
+            &groups,
+            &total,
+            &today_agg,
+            &session_agg,
+            plan.as_deref(),
         );
     }
-    println!(
-        "  {:<28} {:>10} in  {:>9} out  {:>4} req  {}",
-        "TOTAL".to_string(),
-        total.tin,
-        total.tout,
-        total.reqs,
-        fmt_cost(&total)
-    );
+    print_usage_report(
+        by,
+        connection.as_deref(),
+        &groups,
+        &total,
+        &today_agg,
+        &session_agg,
+        plan.as_deref(),
+    )
+}
+
+/// Plan quota for the active connection, when the provider exposes one. Only
+/// OpenAI subscriptions do today; everything else reports nothing rather than
+/// guessing.
+fn plan_quota(config: &Config) -> Option<String> {
+    let connection = config.active_connection()?;
+    let crate::config::ConnectionAuth::OAuth { profile } = &connection.auth else {
+        return None;
+    };
+    let provider = crate::oauth::OAuthProvider::from_base_url(&connection.settings.base_url)?;
+    crate::oauth::plan_usage(provider, profile).map(|usage| usage.summary)
+}
+
+fn tokens(value: u64) -> String {
+    crate::usage::group(value)
+}
+
+fn print_usage_report(
+    by: &str,
+    connection: Option<&str>,
+    groups: &std::collections::BTreeMap<String, UsageAgg>,
+    total: &UsageAgg,
+    today: &UsageAgg,
+    session: &UsageAgg,
+    plan: Option<&str>,
+) -> u8 {
+    if total.reqs == 0 {
+        println!("no model calls recorded in the audit log");
+        if let Some(plan) = plan {
+            println!("plan: {plan}");
+        }
+        return 0;
+    }
+    println!("AIShe usage");
+    for (label, agg) in [
+        ("this shell", session),
+        ("today", today),
+        ("all time", total),
+    ] {
+        if agg.reqs == 0 {
+            continue;
+        }
+        let mut line = format!(
+            "  {label:<11} {} in · {} out · {} turns · {}",
+            tokens(agg.tin),
+            tokens(agg.tout),
+            agg.reqs,
+            agg.cost_label()
+        );
+        if agg.reasoning > 0 {
+            line.push_str(&format!(" · {} thinking", tokens(agg.reasoning)));
+        }
+        if let Some(rate) = agg.cache_hit_rate() {
+            line.push_str(&format!(" · {rate:.0}% cached"));
+        }
+        if agg.duration_ms > 0 {
+            line.push_str(&format!(
+                " · {:.1}s model time",
+                agg.duration_ms as f64 / 1000.0
+            ));
+        }
+        println!("{line}");
+    }
+    if total.errors > 0 {
+        println!("  errors      {} failed turn(s)", total.errors);
+    }
+    if let Some(plan) = plan {
+        println!("  plan        {plan} (from your provider subscription)");
+    }
+    println!();
+    match connection {
+        Some(connection) => println!("by {by} · connection {connection}:"),
+        None => println!("by {by}:"),
+    }
+    for (key, agg) in groups {
+        print_usage_row(key, agg);
+    }
+    print_usage_row("TOTAL", total);
     0
+}
+
+fn print_usage_row(label: &str, agg: &UsageAgg) {
+    let cache = match agg.cache_hit_rate() {
+        Some(rate) => format!("{rate:>3.0}% cached"),
+        None => String::new(),
+    };
+    println!(
+        "  {:<28} {:>9} in {:>9} out {:>4} req  {:<22} {}",
+        label,
+        tokens(agg.tin),
+        tokens(agg.tout),
+        agg.reqs,
+        agg.cost_label(),
+        cache
+    );
+}
+
+fn usage_json(
+    config: &Config,
+    by: &str,
+    groups: &std::collections::BTreeMap<String, UsageAgg>,
+    total: &UsageAgg,
+    today: &UsageAgg,
+    session: &UsageAgg,
+    plan: Option<&str>,
+) -> u8 {
+    let describe = |agg: &UsageAgg| {
+        serde_json::json!({
+            "tokens_in": agg.tin,
+            "tokens_out": agg.tout,
+            "cache_read_tokens": agg.cache_read,
+            "cache_write_tokens": agg.cache_write,
+            "reasoning_tokens": agg.reasoning,
+            "requests": agg.reqs,
+            "duration_ms": agg.duration_ms,
+            "cost_usd": agg.cost,
+            "cost_basis": match agg.basis.unwrap_or_default() {
+                CostBasis::Priced => "priced",
+                CostBasis::Subscription => "subscription",
+                CostBasis::Unpriced => "unpriced",
+            },
+            "cache_hit_percent": agg.cache_hit_rate(),
+        })
+    };
+    let document = serde_json::json!({
+        "schema_version": 1,
+        "group_by": by,
+        "connection": config.active_connection_id(),
+        "session": describe(session),
+        "today": describe(today),
+        "total": describe(total),
+        "errors": total.errors,
+        "plan": plan,
+        "groups": groups
+            .iter()
+            .map(|(key, agg)| serde_json::json!({"key": key, "usage": describe(agg)}))
+            .collect::<Vec<_>>(),
+    });
+    match crate::cli::json_contract::print_object(&document) {
+        Ok(()) => 0,
+        Err(error) => crate::cli::error_contract::emit_from(error.as_ref()),
+    }
 }
 
 /// `aishe runbook`: turn a recorded session (from the audit log) into a runnable

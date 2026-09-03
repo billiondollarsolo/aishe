@@ -553,6 +553,9 @@ pub(crate) enum Cmd {
         /// Include only this connection ID or unique label.
         #[arg(long)]
         connection: Option<String>,
+        /// Print JSON instead of text
+        #[arg(long)]
+        json: bool,
     },
     /// Turn a natural-language request into a shell command (for scripting).
     /// Prints the command to stdout; exit 0 = safe/answer, 20 = flagged (either
@@ -1453,6 +1456,7 @@ impl Args {
                 | Cmd::Route { json, .. }
                 | Cmd::Status { json }
                 | Cmd::Log { json, .. }
+                | Cmd::Usage { json, .. }
                 | Cmd::Suggest { json, .. }
                 | Cmd::Sessions { json }
                 | Cmd::Context { json, .. }

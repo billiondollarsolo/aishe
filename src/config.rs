@@ -531,6 +531,17 @@ impl ConnectionConfig {
         provider
     }
 
+    /// Coarse authentication kind for usage attribution: `oauth`, `api_key`,
+    /// `none`, or `auto`. Never a credential or profile name.
+    pub fn auth_kind(&self) -> &'static str {
+        match &self.auth {
+            ConnectionAuth::OAuth { .. } => "oauth",
+            ConnectionAuth::ApiKey { .. } => "api_key",
+            ConnectionAuth::None => "none",
+            ConnectionAuth::Auto => "auto",
+        }
+    }
+
     pub fn auth_label(&self) -> String {
         match &self.auth {
             ConnectionAuth::ApiKey { credential, .. } => {

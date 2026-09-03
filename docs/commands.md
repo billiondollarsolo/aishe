@@ -195,7 +195,7 @@ The State/effect column uses one six-value vocabulary:
 | `/reasoning [LEVEL]` | Inspect or select reasoning effort | this shell · --default saves |
 | `/details` | Cycle agent transcript density for this shell | this shell |
 | `/status [OPTIONS…]` | Show the effective connection, model, mode, scope, and usage | read-only |
-| `/usage` | Show token and estimated-cost usage | read-only |
+| `/usage [OPTIONS…]` | Show tokens, cache, cost, and plan usage | read-only |
 | `/log [OPTIONS…]` | Show recent audit events and agent actions | read-only |
 | `/reset` | Start a fresh conversation without deleting the prior session | conversation |
 | `/settings` | Open the transactional settings editor | saves config |

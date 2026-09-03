@@ -44,6 +44,7 @@ pub const PUBLIC_SURFACES: &[Surface] = &[
     surface("inbox --json", Format::Json),
     surface("capabilities --json", Format::Json),
     surface("test --json", Format::Json),
+    surface("usage --json", Format::Json),
     surface("sessions --json", Format::Json),
     surface("context --json", Format::Json),
     surface("connection list --json", Format::Json),

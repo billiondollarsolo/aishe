@@ -2140,7 +2140,7 @@ fn log_and_usage_read_the_audit_log() {
         .assert()
         .success()
         .stdout(
-            contains("1050 in")
+            contains("1,050 in")
                 .and(contains("~$"))
                 .and(contains("TOTAL")),
         );
@@ -2155,7 +2155,7 @@ fn log_and_usage_read_the_audit_log() {
         .assert()
         .success()
         .stdout(
-            contains("usage by connection:")
+            contains("by connection:")
                 .and(contains("openai-work"))
                 .and(contains("openai-personal")),
         );
@@ -2168,7 +2168,7 @@ fn log_and_usage_read_the_audit_log() {
         .args(["usage", "--connection", "openai-personal"])
         .assert()
         .success()
-        .stdout(contains("50 in").and(contains("1050 in").not()));
+        .stdout(contains("50 in").and(contains("1,050 in").not()));
 
     assert!(!dir
         .join("config")

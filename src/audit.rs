@@ -131,6 +131,79 @@ fn init_with_identity(enabled: bool, path: Option<PathBuf>, redact: bool, identi
     );
 }
 
+/// Durable, content-free record of what each model turn consumed.
+///
+/// The audit log answers "what did the agent do", carries prompts and answers,
+/// and is opt-in for exactly that reason. `aishe usage` only needs numbers, so
+/// they go here instead: no prompt, no answer, no command, no path. This file is
+/// always written, so the usage report works without opting into content
+/// logging.
+pub mod ledger {
+    use super::{now_ms, rotate_if_needed};
+    use serde_json::{json, Value};
+    use std::io::Write;
+
+    /// Same ceiling as the audit log; one turn is a few hundred bytes.
+    const MAX_BYTES: u64 = 8 * 1024 * 1024;
+
+    pub fn path() -> Option<std::path::PathBuf> {
+        Some(
+            crate::config::data_root()?
+                .join("aishe")
+                .join("usage.jsonl"),
+        )
+    }
+
+    /// Append one turn. Best-effort: a usage record is never worth failing a turn.
+    pub fn record(fields: Value) {
+        let Some(path) = path() else { return };
+        if let Some(parent) = path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        let _ = rotate_if_needed(&path, MAX_BYTES);
+        let mut record = json!({
+            "schema_version": 1,
+            "ts_ms": now_ms(),
+        });
+        if let (Some(map), Some(extra)) = (record.as_object_mut(), fields.as_object()) {
+            for (key, value) in extra {
+                map.insert(key.clone(), value.clone());
+            }
+        }
+        let Ok(mut file) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)
+        else {
+            return;
+        };
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = file.set_permissions(std::fs::Permissions::from_mode(0o600));
+        }
+        let _ = writeln!(file, "{record}");
+    }
+
+    /// Every recorded turn, oldest first. Malformed lines are skipped.
+    pub fn read() -> Vec<Value> {
+        let Some(path) = path() else {
+            return Vec::new();
+        };
+        let mut out = Vec::new();
+        for candidate in [super::rotated_path(&path), path] {
+            let Ok(text) = std::fs::read_to_string(&candidate) else {
+                continue;
+            };
+            out.extend(
+                text.lines()
+                    .filter_map(|line| serde_json::from_str::<Value>(line).ok()),
+            );
+        }
+        out
+    }
+}
+
 fn rotated_path(path: &std::path::Path) -> PathBuf {
     let mut value = path.as_os_str().to_os_string();
     value.push(".1");
@@ -152,6 +225,15 @@ fn rotate_if_needed(path: &std::path::Path, limit: u64) -> std::io::Result<bool>
     }
     std::fs::rename(path, rotated)?;
     Ok(true)
+}
+
+/// This process's session id, whether or not the audit log is active. The
+/// usage ledger groups by it, and it must not depend on content logging.
+pub fn session_id() -> String {
+    AUDIT
+        .get()
+        .map(|audit| audit.session.clone())
+        .unwrap_or_else(|| format!("{}-{}", std::process::id(), now_ms()))
 }
 
 /// Whether logging is active (enabled and the file opened).
@@ -317,7 +399,7 @@ fn now_ms() -> u128 {
 /// One parsed audit line. Fields absent for a given `kind` are `None`. The raw
 /// JSON is kept so `--json` can re-emit it. Legacy unversioned records are
 /// normalized additively to public schema v1 at the read boundary.
-#[derive(Debug, Clone)]
+#[derive(Default, Debug, Clone)]
 pub struct Entry {
     pub ts_ms: u64,
     pub session: String,
@@ -332,6 +414,14 @@ pub struct Entry {
     pub mode: Option<String>,
     pub tokens_in: Option<u64>,
     pub tokens_out: Option<u64>,
+    /// Prompt-cache accounting. Recorded per response; a high read share is
+    /// usually what explains a long agent turn's bill.
+    pub cache_read_tokens: Option<u64>,
+    pub cache_write_tokens: Option<u64>,
+    /// Thinking tokens, billed as output but invisible in the answer.
+    pub reasoning_tokens: Option<u64>,
+    /// Cost as reported by the backend, when it reports one.
+    pub cost_usd: Option<f64>,
     pub source: Option<String>,
     pub command: Option<String>,
     pub exit: Option<i64>,
@@ -382,6 +472,10 @@ fn entry_from(v: Value) -> Entry {
         mode: s("mode"),
         tokens_in: u("tokens_in"),
         tokens_out: u("tokens_out"),
+        cache_read_tokens: u("cache_read_tokens"),
+        cache_write_tokens: u("cache_write_tokens"),
+        reasoning_tokens: u("reasoning_tokens"),
+        cost_usd: v.get("cost_usd").and_then(Value::as_f64),
         source: s("source"),
         command: s("command"),
         exit: v.get("exit").and_then(|x| x.as_i64()),

@@ -211,7 +211,6 @@ impl CommandSpec {
                 "auth" => ShellHookAction::AuthStatus,
                 "details" => ShellHookAction::ToggleDetails,
                 "mode" => ShellHookAction::SessionMode,
-                "usage" => ShellHookAction::OneShot,
                 _ => ShellHookAction::Cli,
             },
         }
@@ -458,12 +457,12 @@ pub static COMMANDS: &[CommandSpec] = &[
         id: "usage",
         cli: cli("usage"),
         slash_aliases: &["usage"],
-        summary: "Show token and estimated-cost usage",
+        summary: "Show tokens, cache, cost, and plan usage",
         help_topic: "session",
-        arguments: ArgumentPolicy::None,
+        arguments: ArgumentPolicy::PassThrough("OPTIONS"),
         availability: surfaces(SUPPORTED, SUPPORTED, SUPPORTED),
         output: OutputType::HumanText,
-        hidden: true,
+        hidden: false,
         effect: Effect::ReadOnly,
         side_effects: SideEffectClass::ReadOnly,
         shell_local: ShellLocalRequirement::None,
@@ -1145,7 +1144,6 @@ mod tests {
             ("auth", ShellHookAction::AuthStatus),
             ("details", ShellHookAction::ToggleDetails),
             ("mode", ShellHookAction::SessionMode),
-            ("usage", ShellHookAction::OneShot),
         ];
         for &(id, expected) in &special {
             assert_eq!(by_id(id).unwrap().hook_action(), expected);
