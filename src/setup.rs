@@ -123,6 +123,10 @@ struct Draft {
     /// ChatGPT/Codex or Grok OAuth service choice.
     #[serde(default)]
     prefer_oauth: bool,
+    /// Set once the user declines the recommended defaults, so the per-setting
+    /// questions are asked on this pass and after a `b back`.
+    #[serde(default)]
+    customize_behavior: bool,
     config: Config,
 }
 
@@ -593,6 +597,17 @@ fn run_interactive(options: Options) -> Result<Outcome> {
     loop {
         match draft.step {
             Step::Discovery => {
+                // On a fresh install there is nothing to review and the menu's
+                // only real choice is "Continue setup"; say where the config
+                // will land and go to the first real question.
+                if !Config::path().exists() && !quick_verify_available(&baseline) {
+                    promptui::success(&format!(
+                        "Fresh install · configuration will be written to {} on Apply",
+                        Config::path().display()
+                    ));
+                    advance(&mut draft)?;
+                    continue;
+                }
                 step_header(1, "Welcome and existing state");
                 print_existing_state(&baseline)?;
                 let quick_verify = quick_verify_available(&baseline);
@@ -927,6 +942,13 @@ fn run_interactive(options: Options) -> Result<Outcome> {
                 }
             }
             Step::Endpoint => {
+                // Every catalog service but `custom` and `ollama` has one
+                // official endpoint, and the docs already promise it is filled
+                // in; asking for it was a prompt with one right answer.
+                if !matches!(draft.service.as_str(), "custom" | "ollama") {
+                    advance(&mut draft)?;
+                    continue;
+                }
                 let provider = active_provider_mut(&mut draft.config);
                 match promptui::text("API endpoint", &provider.base_url, validate_url)? {
                     Some(value) if value == ":back" => {
@@ -1241,10 +1263,7 @@ fn run_interactive(options: Options) -> Result<Outcome> {
                 } else {
                     let error = catalog.unwrap_err();
                     let detail = crate::redact::redact(&error.to_string());
-                    promptui::error(&format!(
-                        "Could not load /v1/models ({:?}): {detail}",
-                        error.kind()
-                    ));
+                    promptui::error(&format!("Could not load the model list: {detail}"));
                     let credential_rejected = matches!(
                         error.kind(),
                         crate::providers::ErrorKind::MissingCredential
@@ -1293,6 +1312,42 @@ fn run_interactive(options: Options) -> Result<Outcome> {
             }
             Step::Profile => {
                 step_header(7, "Behavior and scope");
+                // One question instead of six: a first-time user cannot
+                // evaluate scope, network, density, placement, contents, and
+                // audit, and Settings changes every one of them later.
+                if !draft.customize_behavior {
+                    match promptui::menu(
+                        "Behavior and interface",
+                        &[
+                            "Use recommended defaults (balanced · workspace · network deny · focus output · status on the right · audit off)".to_string(),
+                            "Choose each setting myself".to_string(),
+                        ],
+                        0,
+                        true,
+                        "Recommended defaults apply the balanced profile with workspace scope; `aishe settings` changes any of them later.",
+                    )? {
+                        MenuResult::Selected(0) => {
+                            profiles::apply(&mut draft.config, Profile::Balanced);
+                            draft.config.backend.default_scope = "workspace".into();
+                            draft.config.backend.workspace_network = "deny".into();
+                            draft.config.backend.output = "focus".into();
+                            draft.config.aishe.status_line = true;
+                            draft.config.logging.enabled = false;
+                            draft.step = Step::Pricing;
+                            save_draft(&draft)?;
+                            continue;
+                        }
+                        MenuResult::Selected(_) => {
+                            draft.customize_behavior = true;
+                            save_draft(&draft)?;
+                        }
+                        MenuResult::Back => {
+                            draft.step = draft.step.previous();
+                            continue;
+                        }
+                        MenuResult::Cancel => return cancel(draft),
+                    }
+                }
                 let choices = vec![
                     "Conservative — suggest, confirm all tool commands".into(),
                     "Balanced — auto safe commands, confirm writes".into(),
@@ -1737,7 +1792,7 @@ fn print_platform_state() {
     }
     let terminal = crate::ui::TerminalCapabilities::detect_stdout();
     println!(
-        "  terminal: PTY {} · theme {:?} · color {:?} · characters {:?} · motion {:?} · {}x{}",
+        "  terminal: PTY {} · theme {} · color {} · {} characters · {} motion · {}x{}",
         if terminal.is_tty {
             "available"
         } else {
@@ -2103,6 +2158,7 @@ fn fresh_draft(config: Config) -> Draft {
         step: Step::Discovery,
         service: service.into(),
         prefer_oauth,
+        customize_behavior: false,
         config,
     }
 }
@@ -2184,8 +2240,7 @@ fn prompt_manual_model(
                     }
                     Err(error) => {
                         promptui::error(&format!(
-                            "Model validation failed ({:?}): {}",
-                            error.kind(),
+                            "Model validation failed: {}",
                             crate::redact::redact(&error.to_string())
                         ));
                         current = model;
@@ -2627,6 +2682,12 @@ fn print_review(
     );
     if let Some(report) = report {
         println!("    validation: {}", report.verdict_label());
+    }
+    // On a fresh install the "diff" is the entire file, after a summary that
+    // already said everything.
+    if !Config::path().exists() {
+        println!("\n  New configuration; nothing to compare.");
+        return Ok(());
     }
     let diff = crate::undo::unified_diff(&before, &after);
     if diff.is_empty() {

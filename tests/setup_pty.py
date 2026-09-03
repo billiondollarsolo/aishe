@@ -242,12 +242,21 @@ def cleanup_isolated_root(root):
 
 
 def setup_to_provider(shell, install_runtime=False):
+    # A fresh install skips the welcome menu entirely and lands on the first
+    # real question; an existing install still offers verify-or-review.
     welcome = shell.expect_any(
-        ["Continue setup", "Review or change setup choices"], timeout=30
+        [
+            "Continue setup",
+            "Review or change setup choices",
+            "Fresh install",
+            "Provider service",
+            "› 1) Install",
+        ],
+        timeout=30,
     )
     if welcome == "Review or change setup choices":
         shell.menu(2)
-    else:
+    elif welcome == "Continue setup":
         shell.line()
     reached = shell.expect_any(
         [
@@ -308,7 +317,8 @@ def setup_visual_style_and_alignment():
             if "Grok OAuth" not in shell.transcript:
                 raise AssertionError("explicit Grok OAuth option missing from setup menu")
 
-            shell.menu(4)  # OpenAI API-key catalog row (after two OAuth shortcuts)
+            # Only custom/ollama still ask for an endpoint; the presets fill it in.
+            shell.menu(9)  # Other / custom endpoint
             shell.expect("API endpoint")
             shell.drain(0.2)
             aligned = re.compile(
@@ -346,7 +356,7 @@ def setup_width_and_no_color_matrix():
                     raise AssertionError(
                         "setup lost its visible focus row at %d columns" % cols
                     )
-                shell.menu(4)  # OpenAI catalog row after OAuth shortcuts
+                shell.menu(9)  # Other / custom endpoint still asks for one
                 shell.expect("API endpoint")
                 shell.line(":cancel")
                 shell.expect("Setup paused")
@@ -397,7 +407,7 @@ def setup_checks_catalog_credential_and_manual_model():
                 rejected.menu(1)
                 rejected.expect("API key for 'custom'")
                 rejected.line("wrong-key")
-                rejected.expect("Could not load /v1/models (InvalidCredential)")
+                rejected.expect("Could not load the model list")
                 rejected.expect("Model discovery needs attention")
                 rejected.line()  # default: back to credential
                 rejected.expect("Credential profile 'custom'")
@@ -425,10 +435,12 @@ def setup_checks_catalog_credential_and_manual_model():
                 restarted.expect("Validate it with one minimal request?")
                 restarted.line()
                 restarted.expect("making one minimal request")
-                restarted.expect("Model validation failed (ModelNotFound)")
+                restarted.expect("Model validation failed")
                 restarted.expect("Model ID")
                 restarted.line("catalog-valid-model")
                 restarted.expect("present in the current endpoint catalog")
+                restarted.expect("Behavior and interface")
+                restarted.menu(2)
                 restarted.expect("Safety profile")
                 restarted.send("b")
                 restarted.expect("Available models (refreshed from /v1/models)")
@@ -436,6 +448,8 @@ def setup_checks_catalog_credential_and_manual_model():
                 restarted.expect(
                     "Model 'catalog-model-08' is present in the current endpoint catalog"
                 )
+                # The draft remembers the customize choice, so the gate is not
+                # asked again on the way back through.
                 restarted.expect("Safety profile")
                 restarted.send("\x1b")
                 restarted.expect("Setup paused")
@@ -470,6 +484,8 @@ def complete_setup(root, env, endpoint):
         shell.line("setup-local-model")
         shell.expect("present in the current endpoint catalog")
 
+        shell.expect("Behavior and interface")
+        shell.menu(2)  # choose each setting myself
         shell.expect("Safety profile")
         shell.menu(2)  # balanced
         shell.expect("Default execution scope")
@@ -777,6 +793,8 @@ def hidden_auth_and_staged_setup_are_secret_safe(runtime_root):
             resumed.expect("Model ID")
             resumed.line("custom-credential-model")
             resumed.expect("present in the current endpoint catalog")
+            resumed.expect("Behavior and interface")
+            resumed.menu(2)
             resumed.expect("Safety profile")
             resumed.menu(1)
             resumed.expect("Default execution scope")
