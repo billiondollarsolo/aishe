@@ -135,9 +135,9 @@ if [[ -o interactive && "${AISHE_PTY_PROMPT:-1}" == 1 ]]; then
           reasoning) value="reason:$value" ;;
           mode)
             case "$value" in
-              suggest) value='REVIEW' ;;
-              auto)    value='AUTO' ;;
-              yolo)    value='AGENT' ;;
+              suggest) value='review' ;;
+              auto)    value='auto' ;;
+              yolo)    value='yolo' ;;
               *)       value="mode:$value" ;;
             esac
             ;;

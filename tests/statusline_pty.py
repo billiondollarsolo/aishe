@@ -179,7 +179,7 @@ def run_case(position, cols, expected_position=None):
                 raise AssertionError("ASCII mode rendered a font-dependent logo")
             if not re.search(r"\x1b\[[^\n]*m>{1,2}\x1b", shell.transcript):
                 raise AssertionError("ASCII mode did not render an ASCII prompt glyph")
-        elif model not in shell.transcript or "AUTO" not in shell.transcript:
+        elif model not in shell.transcript or "auto" not in shell.transcript:
             raise AssertionError(
                 "%s statusline did not render identity:\n%s"
                 % (position, shell.transcript[-2500:])
@@ -336,7 +336,7 @@ def theme_survives_mode_cycle():
             )
         if "THEME-RIGHT" not in rprompt or "%90v" not in rprompt:
             raise AssertionError("AIShe did not compose with the theme RPROMPT")
-        if "AUTO" not in repaint:
+        if "auto" not in repaint:
             raise AssertionError("Shift-Tab did not visibly emit the new mode")
         os.write(shell.master, b"\x15")
         shell.send(
