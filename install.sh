@@ -253,13 +253,13 @@ else
   if [ -n "${AISHE_RUNTIME_FILE:-}" ]; then
     [ -f "$AISHE_RUNTIME_FILE" ] ||
       err "AISHE_RUNTIME_FILE is not a file: $AISHE_RUNTIME_FILE"
-    "$tmp/aishe" backend install --from "$AISHE_RUNTIME_FILE" ||
+    "$tmp/aishe" backend install --from "$AISHE_RUNTIME_FILE" >&2 ||
       err "managed runtime installation failed; the existing Aishe binary was not replaced"
   else
-    "$tmp/aishe" backend install ||
+    "$tmp/aishe" backend install >&2 ||
       err "managed runtime installation failed; the existing Aishe binary was not replaced"
   fi
-  "$tmp/aishe" backend verify --live ||
+  "$tmp/aishe" backend verify --live >&2 ||
     err "managed runtime live verification failed; the existing Aishe binary was not replaced"
 fi
 

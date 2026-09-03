@@ -278,14 +278,22 @@ pub fn run(options: Options) -> Result<Outcome> {
         crate::policy::constrain(&mut config).map_err(|error| classified(EXIT_POLICY, error))?;
         verify_runtime_and_sandbox(&config, false, None, None, false)?;
         let report = capabilities::validate(&config, options.live);
-        let verified = report.credential.state != State::Fail
-            && report.model_available.state != State::Fail
-            && (!options.live || report.verified());
+        let verified = if options.live {
+            report.verified()
+        } else {
+            report.locally_verified()
+        };
         if options.json {
+            // `--verify --json` reported runtime: null while
+            // `--non-interactive --json` reported it; both describe the same
+            // installation.
+            let runtime = crate::backend::RuntimeManager::new()
+                .map(|manager| manager.status())
+                .ok();
             print_setup_json(
                 false,
                 &config,
-                None,
+                runtime.as_ref(),
                 &report,
                 if verified { EXIT_OK } else { EXIT_PROVIDER },
             )?;
