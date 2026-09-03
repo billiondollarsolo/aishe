@@ -1111,14 +1111,23 @@ def main():
             ok,
             "" if ok else f"(rc={rc} out={out.strip()[:30]!r} err={err.strip()[:60]!r})",
         )
-    for command in ["/ghost", "/plan", "/cache", "/sandbox"]:
+    # The 0.6.5 tombstones were removed in 0.7.0. A freed name behaves like any
+    # unknown slash: an absolute path the shell rejects, never model input.
+    for command in ["/ghost", "/cache", "/sandbox"]:
         rc, out, err = run([BIN, "-c", command], env_local, cwd=fixture)
-        ok = failed_locally_as_unavailable(rc, out, err)
+        ok = rc != 0 and "no such file or directory" in err.lower()
         add(
-            f"surface: tombstone {command}",
+            f"surface: freed name {command} stays local",
             ok,
             "" if ok else f"(rc={rc} out={out.strip()[:30]!r} err={err.strip()[:60]!r})",
         )
+    rc, out, err = run([BIN, "-c", "/plan"], env_local, cwd=fixture)
+    ok = failed_locally_as_unavailable(rc, out, err)
+    add(
+        "surface: one-shot unavailable /plan",
+        ok,
+        "" if ok else f"(rc={rc} out={out.strip()[:30]!r} err={err.strip()[:60]!r})",
+    )
     # `/usage` with no calls reports an empty session rather than erroring.
     rc, out, err = run([BIN, "-c", "/usage"], env_local, cwd=fixture)
     add("surface: /usage reports empty session", "no model calls" in out.lower() or "usage" in out.lower())
