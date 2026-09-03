@@ -121,7 +121,7 @@ def environment(position):
             "show_usage = false\n"
             "status_line = %s\n"
             'status_line_position = "%s"\n'
-            'status_line_items = ["model", "mode", "last_tokens", "last_cost", '
+            'status_line_items = ["identity", "model", "mode", "last_tokens", "last_cost", '
             '"session_tokens", "session_cost", "requests"]\n\n'
             "[providers.anthropic]\n"
             'base_url = "https://api.anthropic.com"\n'
@@ -140,6 +140,7 @@ def environment(position):
     os.makedirs(bin_dir)
     os.symlink(BINARY, os.path.join(bin_dir, "aishe"))
     env = dict(os.environ)
+    env.pop("NO_COLOR", None)
     env.update(
         {
             "HOME": home,
@@ -183,14 +184,30 @@ def run_case(position, cols, expected_position=None):
                 "%s statusline did not render identity:\n%s"
                 % (position, shell.transcript[-2500:])
             )
+        elif "^[" in CSI.sub("", shell.transcript):
+            raise AssertionError("statusline rendered visible ANSI escape text")
+        elif "\x1b[33m" not in shell.transcript or "\x1b[35m" not in shell.transcript:
+            raise AssertionError("statusline did not apply semantic model/mode colors")
         elif not re.search(
-            r"[❯»*] [^\n]*\n[^\n]*" + re.escape(model),
+            r"[❯»*] [^\n]*\n(?:[^\n]*\n){0,2}[^\n]*" + re.escape(model),
             CSI.sub("", shell.transcript),
         ):
             raise AssertionError(
                 "%s statusline was not below the editable prompt:\n%s"
                 % (position, shell.transcript[-2500:])
             )
+
+        if position != "off":
+            shell.send(
+                "print -r -- BEGIN_''STATUS; print -r -- \"$_AISHE_STATUS_TEXT\"; "
+                "print -r -- END_''STATUS"
+            )
+            if not shell.expect("END_STATUS"):
+                raise AssertionError("could not inspect rendered status text")
+            plain = CSI.sub("", shell.transcript).rsplit("BEGIN_STATUS", 1)[1]
+            rendered = plain.split("END_STATUS", 1)[0]
+            if rendered.count(model) != 1 or "Auto (legacy)" in rendered:
+                raise AssertionError("composite identity repeated model/auth details")
 
         shell.send("print -r -- POSITION=$AISHE_STATUS_POSITION")
         if not shell.expect("POSITION=" + expected_position):

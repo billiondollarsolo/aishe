@@ -761,20 +761,18 @@ fn print_status_preview(config: &Config) {
         .active_connection()
         .map(|connection| connection.label.as_str())
         .unwrap_or(config.active_connection_id());
+    let identity = format!(
+        "{} · {}@{} · {} · reason:{}",
+        label,
+        config.active_provider_name(),
+        endpoint,
+        config.active_model(),
+        config.active_reasoning_effort(),
+    );
     let auth = config
         .active_connection()
         .map(crate::config::ConnectionConfig::auth_label)
         .unwrap_or_else(|| "Auto (legacy)".into());
-    let identity = format!(
-        "{} ({}) · {}@{} · {} · {}/{} · default",
-        label,
-        config.active_connection_id(),
-        config.active_provider_name(),
-        endpoint,
-        auth,
-        config.active_model(),
-        config.active_reasoning_effort(),
-    );
     let values: Vec<String> = config
         .aishe
         .status_line_items

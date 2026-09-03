@@ -3,12 +3,13 @@ if [[ -o interactive && "${AISHE_PTY_PROMPT:-1}" == 1 ]]; then
   autoload -Uz add-zsh-hook
   typeset -g _AISHE_STATUS_TEXT=""
   typeset -g _AISHE_STATUS_POSTDISPLAY=""
+  typeset -ga _AISHE_STATUS_HIGHLIGHTS=()
   autoload -Uz vcs_info
   zstyle ':vcs_info:git:*' formats '%b'
   aishe_set_prompt() {
-    local glyph connection connection_label provider endpoint auth selection identity model reasoning mode backend scope status_text status_row base_prompt key value item branch environment max_width
+    local glyph connection connection_label provider endpoint auth selection model reasoning mode backend scope status_text status_row base_prompt key value item field style branch environment max_width i duplicate seen start end
     local -A metrics
-    local -a status_items item_values
+    local -a status_items item_values item_keys seen_values
     if [[ -n "${AISHE_MODEL_FILE:-}" && -r "${AISHE_MODEL_FILE}" ]]; then
       IFS= read -r AISHE_MODEL < "${AISHE_MODEL_FILE}"
     fi
@@ -48,7 +49,6 @@ if [[ -o interactive && "${AISHE_PTY_PROMPT:-1}" == 1 ]]; then
     selection="${AISHE_SELECTION_SCOPE:-default}"
     [[ "$selection" == shell ]] && selection="this shell"
     reasoning="${AISHE_REASONING:-auto}"
-    identity="${connection_label} (${connection}) · ${provider}@${endpoint} · ${auth} · ${model}/${reasoning} · ${selection}"
     mode="${AISHE_MODE:-suggest}"
     backend="${AISHE_BACKEND:-opencode}"
     if [[ -n "${AISHE_SCOPE_FILE:-}" && -r "${AISHE_SCOPE_FILE}" ]]; then
@@ -76,12 +76,21 @@ if [[ -o interactive && "${AISHE_PTY_PROMPT:-1}" == 1 ]]; then
     fi
     status_text=""
     status_row=""
+    seen_values=()
+    _AISHE_STATUS_HIGHLIGHTS=()
     max_width=$(( ${COLUMNS:-80} - 2 ))
     status_items=("${(@s:,:)${AISHE_STATUS_ITEMS:-identity,mode,scope,session_cost,requests}}")
     for item in "${status_items[@]}"; do
       value=""
       case "$item" in
-        identity) value="$identity" ;;
+        identity)
+          item_values=("$connection_label" "${provider}@${endpoint}" "$model" "$reasoning")
+          item_keys=(connection endpoint model reasoning)
+          if [[ "$selection" != default ]]; then
+            item_values+=("$selection")
+            item_keys+=(selection)
+          fi
+          ;;
         connection) value="${connection_label}" ;;
         provider) value="$provider" ;;
         endpoint) value="$endpoint" ;;
@@ -105,16 +114,26 @@ if [[ -o interactive && "${AISHE_PTY_PROMPT:-1}" == 1 ]]; then
           ;;
         *) value="${metrics[$item]:-}" ;;
       esac
-      # Keep the composite identity complete by wrapping its natural fields.
-      # Other individual values remain bounded in case a provider supplies an
-      # unusually long model or label.
-      if [[ "$item" == identity ]]; then
-        item_values=("${(@s: · :)value}")
-      else
+      if [[ "$item" != identity ]]; then
         item_values=("$value")
+        item_keys=("$item")
       fi
-      for value in "${item_values[@]}"; do
+      for (( i = 1; i <= ${#item_values}; i++ )); do
+        value="${item_values[$i]}"
+        field="${item_keys[$i]}"
         [[ -n "$value" ]] || continue
+        case "$field" in
+          reasoning) value="reason:$value" ;;
+          mode) value="mode:$value" ;;
+        esac
+        duplicate=0
+        # ponytail: the field list is tiny; linear comparison keeps hostile
+        # display values out of associative-array subscript evaluation.
+        for seen in "${seen_values[@]}"; do
+          [[ "$seen" == "$value" ]] && duplicate=1 && break
+        done
+        (( duplicate )) && continue
+        seen_values+=("$value")
         if (( max_width > 12 && ${#value} > max_width )); then
           if [[ "${AISHE_UNICODE:-unicode}" == ascii ]]; then
             value="${value[1,$((max_width - 3))]}..."
@@ -122,13 +141,37 @@ if [[ -o interactive && "${AISHE_PTY_PROMPT:-1}" == 1 ]]; then
             value="${value[1,$((max_width - 1))]}…"
           fi
         fi
-        if [[ -n "$status_row" ]] && (( ${#status_row} + ${#value} + 3 > max_width )); then
-          status_text+=$'\n'"$value"
-          status_row="$value"
-        else
-          status_text="${status_text:+${status_text} · }${value}"
-          status_row="${status_row:+${status_row} · }${value}"
+        style=''
+        if [[ -z "${NO_COLOR:-}" && "${TERM:-}" != dumb && -n "${_AISHE_HIGHLIGHT_MEMO:-}" ]]; then
+          case "$field" in
+            connection|auth) style='fg=cyan' ;;
+            provider|endpoint|selection|backend) style='fg=242' ;;
+            model) style='fg=yellow' ;;
+            reasoning) style='fg=215' ;;
+            mode) style='fg=magenta' ;;
+            scope|branch) style='fg=green' ;;
+            environment) style='fg=red,bold' ;;
+            last_tokens|last_cost|session_tokens|session_cost|requests|elapsed|context) style='fg=209' ;;
+            plan|task|tasks) style='fg=204' ;;
+          esac
         fi
+        if [[ -n "$status_row" ]] && (( ${#status_row} + ${#value} + 3 > max_width )); then
+          status_text+=$'\n'
+          status_row=""
+        else
+          if [[ -n "$status_row" ]]; then
+            start=${#status_text}
+            status_text+=' · '
+            end=${#status_text}
+            [[ -n "$style" ]] && _AISHE_STATUS_HIGHLIGHTS+=("$start $end fg=242")
+            status_row+=' · '
+          fi
+        fi
+        start=${#status_text}
+        status_text+="$value"
+        end=${#status_text}
+        [[ -n "$style" ]] && _AISHE_STATUS_HIGHLIGHTS+=("$start $end $style")
+        status_row+="$value"
       done
     done
     # Keep provider/model text out of PROMPT/RPROMPT. Themes commonly enable
@@ -142,6 +185,7 @@ if [[ -o interactive && "${AISHE_PTY_PROMPT:-1}" == 1 ]]; then
   autoload -Uz add-zle-hook-widget
   _aishe_status_below() {
     emulate -L zsh
+    region_highlight=("${region_highlight[@]:#*memo=aishe-status}")
     if [[ -n "$_AISHE_STATUS_POSTDISPLAY" && "$POSTDISPLAY" == "$_AISHE_STATUS_POSTDISPLAY" ]]; then
       POSTDISPLAY=""
     fi
@@ -149,6 +193,12 @@ if [[ -o interactive && "${AISHE_PTY_PROMPT:-1}" == 1 ]]; then
     if [[ "${AISHE_STATUS_POSITION:-below}" != off && -n "$_AISHE_STATUS_TEXT" && -z "${POSTDISPLAY:-}" ]]; then
       _AISHE_STATUS_POSTDISPLAY=$'\n'"$_AISHE_STATUS_TEXT"
       POSTDISPLAY="$_AISHE_STATUS_POSTDISPLAY"
+      local base=$(( ${#BUFFER} + 1 )) spec
+      local -a parts
+      for spec in "${_AISHE_STATUS_HIGHLIGHTS[@]}"; do
+        parts=(${=spec})
+        region_highlight+=("$((base + parts[1])) $((base + parts[2])) ${parts[3]} memo=aishe-status")
+      done
     fi
   }
   add-zle-hook-widget line-init _aishe_status_below
