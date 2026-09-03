@@ -110,7 +110,13 @@ def check_capabilities(command, env, label):
         payload = json.loads(result.stdout)
     except json.JSONDecodeError as error:
         raise AssertionError("%s returned invalid JSON: %s" % (label, error)) from error
-    report = payload.get("capability_report") if label == "doctor --live" else payload
+    # doctor nests it under capability_report, `aishe test` under provider.
+    if label == "doctor --live":
+        report = payload.get("capability_report")
+    elif label == "test --live":
+        report = payload.get("provider")
+    else:
+        report = payload
     require(isinstance(report, dict), "%s omitted capability report" % label)
     for field in (
         "credential",
@@ -235,9 +241,9 @@ def main():
 
         transcript.append(
             check_capabilities(
-                [BINARY, "provider", "test", "--live", "--json"],
+                [BINARY, "test", "--live", "--json"],
                 env,
-                "provider test --live",
+                "test --live",
             )
         )
         checks.append("provider text/structured/tools/streaming")

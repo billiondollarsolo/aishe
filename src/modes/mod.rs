@@ -163,10 +163,13 @@ pub fn render_markdown(text: &str) {
     let text = crate::commands::display_safe_multiline(text);
     let capabilities = TerminalCapabilities::detect_stdout();
     if !capabilities.styled() {
-        // Render structure without color rather than printing raw **bold** and
-        // # headers at the reader.
-        let skin = termimad::MadSkin::no_style();
-        skin.print_text(&text);
+        // Print the Markdown source verbatim. A no-style skin reflows text and
+        // drops fences, which loses the exact command inside a code block; the
+        // host-scope contract depends on the source surviving unchanged.
+        print!("{text}");
+        if !text.ends_with('\n') {
+            println!();
+        }
         let _ = std::io::stdout().flush();
         return;
     }
