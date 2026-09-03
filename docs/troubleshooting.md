@@ -28,7 +28,6 @@ the action did not resolve the problem.
 | Code | Meaning | Maintained recovery |
 | --- | --- | --- |
 | `cli.missing_request` | `suggest` received no request | `aishe suggest "list files by size"` |
-| `cli.invalid_provider_flags` | incompatible legacy provider-selection flags were combined | use one of `--connection`, `--provider`, or the active default; inspect `aishe connection list` |
 | `cli.interactive_shell_missing` | the requested interactive zsh front end is unavailable | install zsh, use `aishe -c …`, or generate the tested Bash hook with `aishe init bash` |
 | `config.setup_failed` | setup validation or its transactional apply step failed | rerun `aishe setup --resume`; use `aishe doctor` for the reported dependency/config category |
 | `config.provider_unavailable` | no usable connection/provider | `aishe setup`, then `aishe doctor --live` |

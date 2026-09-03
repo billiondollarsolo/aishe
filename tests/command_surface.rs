@@ -198,7 +198,10 @@ fn canonical_cli_commands_are_in_root_help_and_both_completion_scripts() {
         completions.push((shell, String::from_utf8_lossy(&output.stdout).into_owned()));
     }
 
-    for spec in COMMANDS.iter().filter(|spec| spec.is_active()) {
+    for spec in COMMANDS
+        .iter()
+        .filter(|spec| spec.is_active() && !spec.hidden)
+    {
         let Some(cli) = spec.cli else { continue };
         assert!(
             contains_exact_shell_token(&root_help, cli.command),

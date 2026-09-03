@@ -613,11 +613,11 @@ mod tests {
     fn overview_and_topics_cover_the_active_registry_exactly() {
         crate::command_surface::validate_registry().unwrap();
         let overview = render_help(None);
+        let full = render_help(Some("all"));
         for spec in COMMANDS
             .iter()
             .filter(|spec| spec.is_active() && !spec.hidden)
         {
-            let full = render_help(Some("all"));
             for alias in spec.slash_aliases {
                 assert!(
                     full.contains(&format!("/{alias}")),
@@ -628,7 +628,7 @@ mod tests {
             // A spec filed under the overview lives in the full table, which
             // is what the overview now points at.
             let topic = render_help(Some(spec.help_topic));
-            let listed = if topic == render_help(None) {
+            let listed = if topic == overview {
                 &full
             } else {
                 &topic

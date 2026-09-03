@@ -2626,9 +2626,11 @@ auth_required = false
             .args(args);
         command
     };
-    let output = run(&["provider", "test", "--json"]).output().unwrap();
+    // `provider test` was a duplicate spelling of `aishe test`.
+    let output = run(&["test", "--json"]).output().unwrap();
     assert!(output.status.success(), "{:?}", output);
-    let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let document: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let report = &document["provider"];
     assert_eq!(report["schema_version"], 2);
     assert_eq!(report["credential"]["state"], "pass");
     assert_eq!(report["credential_required"], false);
@@ -2825,5 +2827,36 @@ fn user_input_errors_are_cli_coded_with_exit_2() {
         let stderr = String::from_utf8_lossy(&assertion.get_output().stderr).to_string();
         assert!(stderr.contains("[cli."), "{args:?}: {stderr}");
         assert!(!stderr.contains("support bundle"), "{args:?}: {stderr}");
+    }
+}
+
+#[test]
+fn root_help_hides_duplicate_commands_that_still_work() {
+    let home = temp_config_home();
+    let output = Command::cargo_bin("aishe")
+        .unwrap()
+        .env("AISHE_CONFIG_DIR", &home)
+        .arg("--help")
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    for hidden in ["\n  demo ", "\n  provider ", "\n  models ", "\n  replan "] {
+        assert!(
+            !stdout.contains(hidden),
+            "{hidden:?} is still listed:\n{stdout}"
+        );
+    }
+    // Hidden does not mean gone: each still parses.
+    for args in [
+        vec!["provider", "--help"],
+        vec!["demo", "--help"],
+        vec!["models", "--help"],
+    ] {
+        Command::cargo_bin("aishe")
+            .unwrap()
+            .env("AISHE_CONFIG_DIR", &home)
+            .args(&args)
+            .assert()
+            .success();
     }
 }

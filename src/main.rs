@@ -723,32 +723,7 @@ fn run() -> Result<u8> {
         Some(Cmd::Connection { cmd }) => {
             return aishe::cli::connection::command(&config, &connection_action(cmd))
         }
-        Some(Cmd::Provider { value, live, json }) => {
-            if value.as_deref() == Some("test") {
-                let report = aishe::capabilities::validate(&config, *live);
-                if *json {
-                    println!("{}", serde_json::to_string_pretty(&report)?);
-                } else {
-                    aishe::cli::settings::print_capability_report(&report);
-                }
-                return Ok(
-                    if report.credential.state == aishe::capabilities::State::Fail {
-                        1
-                    } else {
-                        0
-                    },
-                );
-            }
-            if *live || *json {
-                aishe::cli::error_contract::emit_classified(
-                    aishe::user_error::ErrorNamespace::Cli,
-                    "invalid_provider_flags",
-                    "Provider validation flags require the `test` action.",
-                    "Run `aishe provider test --live` or `aishe provider test --json`.",
-                    None,
-                );
-                return Ok(aishe::user_error::ErrorNamespace::Cli.exit_code());
-            }
+        Some(Cmd::Provider { value }) => {
             return Ok(aishe::cli::connection::set_or_show(
                 "provider",
                 value.as_deref(),

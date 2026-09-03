@@ -49,12 +49,6 @@ pub const COMMON_FATAL_PATHS: &[FatalPath] = &[
         "emit_from(error.as_ref())",
     ),
     path(
-        "provider_flag_misuse",
-        "connection",
-        "src/main.rs",
-        "invalid_provider_flags",
-    ),
-    path(
         "interactive_zsh_missing",
         "pty",
         "src/main.rs",
@@ -207,7 +201,7 @@ mod tests {
     #[test]
     fn common_fatal_coverage_is_static_owned_and_at_least_ninety_five_percent() {
         let (migrated, total) = coverage();
-        assert_eq!((migrated, total), (20, 20));
+        assert_eq!((migrated, total), (19, 19));
         assert!(migrated * 100 >= total * 95);
         for item in COMMON_FATAL_PATHS.iter().chain(INTERNAL_ONLY_ALLOWLIST) {
             assert!(!item.id.is_empty());
@@ -233,7 +227,6 @@ mod tests {
         let document = source("docs/troubleshooting.md");
         let codes = [
             "cli.missing_request",
-            "cli.invalid_provider_flags",
             "cli.interactive_shell_missing",
             "config.setup_failed",
             "config.provider_unavailable",

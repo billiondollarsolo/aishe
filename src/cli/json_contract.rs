@@ -31,7 +31,6 @@ pub const PUBLIC_SURFACES: &[Surface] = &[
     surface("setup --json", Format::Json),
     surface("settings --json", Format::Json),
     surface("doctor --json", Format::Json),
-    surface_version("provider test --json", Format::Json, 2),
     surface("models --json", Format::Json),
     surface("readiness --json", Format::Json),
     surface("config --json", Format::Json),

@@ -46,13 +46,15 @@ fn every_public_json_flag_has_a_versioned_inventory_entry() {
             surface.command
         );
     }
+    // The capability report is nested under `provider` in `aishe test --json`
+    // now that `provider test` is gone.
     assert_eq!(
         PUBLIC_SURFACES
             .iter()
-            .find(|surface| surface.command == "provider test --json")
+            .find(|surface| surface.command == "test --json")
             .unwrap()
             .schema_version,
-        aishe::capabilities::CACHE_SCHEMA_VERSION,
+        1,
     );
 }
 

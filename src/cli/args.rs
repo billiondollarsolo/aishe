@@ -233,6 +233,7 @@ pub(crate) enum Cmd {
         non_interactive: bool,
     },
     /// Run the safe guided first-session demonstration.
+    #[command(hide = true)]
     Demo {
         /// Discard demo progress and begin again.
         #[arg(long)]
@@ -388,19 +389,14 @@ pub(crate) enum Cmd {
         #[command(subcommand)]
         cmd: ConnectionCmd,
     },
-    /// Show or set the provider (with a value, saves it to your config).
+    /// Legacy alias of `connection use`.
+    #[command(hide = true)]
     Provider {
-        /// Set anthropic/openai, or use `test` to validate the active provider.
-        #[arg()]
+        /// Connection id or provider name to select
         value: Option<String>,
-        /// With `provider test`, make minimal text/structured/tool/stream requests.
-        #[arg(long)]
-        live: bool,
-        /// With `provider test`, emit the capability report as JSON.
-        #[arg(long)]
-        json: bool,
     },
     /// List models returned by the configured endpoint.
+    #[command(hide = true)]
     Models {
         /// Unique provider family or connection to query (defaults to active).
         #[arg(long)]
@@ -661,6 +657,7 @@ pub(crate) enum Cmd {
     /// Interactively create or inspect a durable background-task plan.
     Plan { id: Option<String> },
     /// Interactively replace a plan while retaining matching completed steps.
+    #[command(hide = true)]
     Replan { id: Option<String> },
     /// Generate a runnable script + markdown runbook from a recorded session.
     Runbook {
@@ -1338,7 +1335,6 @@ impl Args {
             Some(
                 Cmd::Settings { json }
                 | Cmd::Doctor { json, .. }
-                | Cmd::Provider { json, .. }
                 | Cmd::Models { json, .. }
                 | Cmd::Readiness { json }
                 | Cmd::Config { json, .. }
