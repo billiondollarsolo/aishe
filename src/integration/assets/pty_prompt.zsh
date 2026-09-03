@@ -123,7 +123,7 @@ if [[ -o interactive ]]; then
     (( max_width > 72 )) && max_width=72
     (( max_width < 8 )) && max_width=8
     prompt_index=90
-    status_items=("${(@s:,:)${AISHE_STATUS_ITEMS:-mode,model,scope,session_tokens,session_cost,requests}}")
+    status_items=("${(@s:,:)AISHE_STATUS_ITEMS}")
     for item in "${status_items[@]}"; do
       value=""
       case "$item" in

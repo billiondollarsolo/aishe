@@ -334,6 +334,20 @@ pub fn model(
     0
 }
 
+/// One account row: label, how it authenticates, and its model. The label
+/// already carries the brand, so repeating it as the auth column was noise, and
+/// a migrated `auto` connection now says what to do about it.
+pub fn connection_row(label: &str, auth: &str, model: &str) -> String {
+    let auth = if auth == label {
+        "selected".to_string()
+    } else if auth.starts_with("Auto") {
+        "legacy · aishe connection edit".to_string()
+    } else {
+        auth.to_string()
+    };
+    format!("{label:<28} {auth:<30} {model}")
+}
+
 fn pick(effective: &Config, value: Option<&str>, save_default: bool) -> u8 {
     let mut selected = effective.clone();
     let mut save_default = save_default;
@@ -380,16 +394,14 @@ fn pick(effective: &Config, value: Option<&str>, save_default: bool) -> u8 {
             println!("  /help accounts");
             return 0;
         }
-        println!("  Add a new account: aishe setup  ·  /help accounts\n");
         let rows: Vec<String> = choices
             .iter()
             .map(|(id, _)| {
                 let connection = &selected.connections[id];
-                format!(
-                    "{:<28} {:<22} {}",
-                    connection.label,
-                    connection.auth_label(),
-                    connection.settings.model
+                connection_row(
+                    &connection.label,
+                    &connection.auth_label(),
+                    &connection.settings.model,
                 )
             })
             .collect();
@@ -955,5 +967,28 @@ mod tests {
         assert_eq!(mode_targets(true, true), (true, true));
         // Outside a shell there is nothing to hand off to; save the default.
         assert_eq!(mode_targets(false, false), (false, true));
+    }
+}
+
+#[cfg(test)]
+mod row_tests {
+    use super::connection_row;
+
+    #[test]
+    fn connection_rows_name_each_thing_once() {
+        let row = connection_row(
+            "Codex - OAuth · codex1",
+            "Codex - OAuth · codex1",
+            "gpt-5.6-luna",
+        );
+        // The auth column used to repeat the label verbatim.
+        assert_eq!(row.matches("codex1").count(), 1, "{row}");
+        assert!(row.contains("selected"), "{row}");
+        let legacy = connection_row("Anthropic", "Auto (legacy)", "claude-x");
+        assert!(
+            legacy.contains("legacy · aishe connection edit"),
+            "{legacy}"
+        );
+        assert!(!legacy.contains("Auto (legacy)"), "{legacy}");
     }
 }

@@ -552,9 +552,12 @@ aishe-accept-line() {
 # preserves reasoning summaries, tool calls, tool output, diffs, and usage.
 aishe-toggle-agent-details() {
   emulate -L zsh
+  # Cycle all three densities so /details reaches every value that
+  # `aishe output` can save, instead of flipping between two.
   case "${AISHE_AGENT_OUTPUT:-focus}" in
-    detailed) AISHE_AGENT_OUTPUT=focus ;;
-    *)        AISHE_AGENT_OUTPUT=detailed ;;
+    focus)    AISHE_AGENT_OUTPUT=compact ;;
+    compact)  AISHE_AGENT_OUTPUT=detailed ;;
+    *)        AISHE_AGENT_OUTPUT=focus ;;
   esac
   export AISHE_AGENT_OUTPUT
   zle -M "details: ${AISHE_AGENT_OUTPUT} (this shell)"

@@ -100,7 +100,7 @@ fn generated_shell_artifacts_match_the_reviewed_byte_snapshots() {
         (
             "zsh init",
             zsh_script(),
-            "001a2cd7a52029e786ac26e01e94064bda1374b292da0d3538eaf3244e20a99a",
+            "c63b2ae7dc265f9ec3df2cad7c8b15ee7e49d2bffed4722ee6b40a01a7a457dc",
         ),
         (
             "bash init",
@@ -115,7 +115,7 @@ fn generated_shell_artifacts_match_the_reviewed_byte_snapshots() {
         (
             "wrapper zshrc",
             wrapper_zshrc(),
-            "72745f52cef57cdf7eac35e4b254487587b85e4ccbe7341b726401a54e4d897c",
+            "0ab989a6ed75de3b4ede599077711427d1fee03f0f302d024b29f65aca9dedb9",
         ),
     ] {
         assert_eq!(digest(&rendered), expected, "unexpected {name} byte drift");

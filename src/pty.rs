@@ -338,13 +338,28 @@ fn run_zsh_inner(config: &Config, history_log: &std::path::Path, shell_id: Strin
         });
     }
 
-    // Window-resize forwarding (poll; SIGWINCH without async is fiddly).
+    // Window-resize forwarding. SIGWINCH sets a flag so the status re-fits
+    // before the next keystroke; the 200 ms poll stays as a fallback for hosts
+    // that do not deliver the signal.
     {
+        static RESIZED: AtomicBool = AtomicBool::new(false);
+        extern "C" fn on_winch(_: libc::c_int) {
+            RESIZED.store(true, Ordering::Relaxed);
+        }
+        // SAFETY: installing a handler that only sets an atomic flag.
+        unsafe {
+            libc::signal(libc::SIGWINCH, on_winch as *const () as libc::sighandler_t);
+        }
         let done = Arc::clone(&done);
         std::thread::spawn(move || {
             let mut last = (cols, rows);
             while !done.load(Ordering::Relaxed) {
-                std::thread::sleep(Duration::from_millis(200));
+                for _ in 0..10 {
+                    if RESIZED.swap(false, Ordering::Relaxed) {
+                        break;
+                    }
+                    std::thread::sleep(Duration::from_millis(20));
+                }
                 if let Ok(size) = crossterm::terminal::size() {
                     if size != last {
                         last = size;

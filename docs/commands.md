@@ -184,7 +184,7 @@ The State/effect column uses one six-value vocabulary:
 | `/scope [SCOPE]` | Inspect or select workspace or host agent scope | saves config |
 | `/network [allow\|deny]` | Inspect or select workspace-agent network policy | saves config |
 | `/reasoning [LEVEL]` | Inspect or select reasoning effort | this shell · --default saves |
-| `/details` | Toggle focused and detailed agent output for this shell | this shell |
+| `/details` | Cycle agent transcript density for this shell | this shell |
 | `/status [OPTIONS…]` | Show the effective connection, model, mode, scope, and usage | read-only |
 | `/usage` | Show token and estimated-cost usage | read-only |
 | `/log [OPTIONS…]` | Show recent audit events and agent actions | read-only |

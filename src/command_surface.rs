@@ -407,7 +407,7 @@ pub static COMMANDS: &[CommandSpec] = &[
         id: "details",
         cli: None,
         slash_aliases: &["details"],
-        summary: "Toggle focused and detailed agent output for this shell",
+        summary: "Cycle agent transcript density for this shell",
         help_topic: "session",
         arguments: ArgumentPolicy::None,
         availability: SurfaceAvailability {
