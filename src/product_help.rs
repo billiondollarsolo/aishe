@@ -255,6 +255,7 @@ pub fn effect_label(spec: &CommandSpec) -> &'static str {
 fn append_terminal_commands(out: &mut String, topic: Option<&str>) {
     for spec in COMMANDS.iter().filter(|spec| {
         spec.is_active()
+            && !spec.hidden
             && topic.is_none_or(|topic| spec.help_topic == topic)
             && (!matches!(
                 spec.support(Surface::ZshHook),
@@ -575,7 +576,10 @@ mod tests {
     fn overview_and_topics_cover_the_active_registry_exactly() {
         crate::command_surface::validate_registry().unwrap();
         let overview = render_help(None);
-        for spec in COMMANDS.iter().filter(|spec| spec.is_active()) {
+        for spec in COMMANDS
+            .iter()
+            .filter(|spec| spec.is_active() && !spec.hidden)
+        {
             for alias in spec.slash_aliases {
                 assert!(
                     overview.contains(&format!("/{alias}")),
@@ -590,22 +594,6 @@ mod tests {
                 spec.help_topic,
                 spec.id
             );
-        }
-    }
-
-    #[test]
-    fn migration_help_contains_every_tombstone_and_exact_guidance() {
-        let migration = render_help(Some("migration"));
-        assert!(migration.contains("never sent to a model"));
-        for spec in COMMANDS
-            .iter()
-            .filter(|spec| matches!(spec.lifecycle, Lifecycle::Tombstone { .. }))
-        {
-            let Lifecycle::Tombstone { guidance, .. } = spec.lifecycle else {
-                unreachable!()
-            };
-            assert!(migration.contains(&slash_names(spec)));
-            assert!(migration.contains(guidance));
         }
     }
 

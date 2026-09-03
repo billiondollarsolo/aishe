@@ -45,7 +45,7 @@ pub fn entries(_config: &Config) -> Vec<Entry> {
         .filter(|spec| matches!(spec.lifecycle, Lifecycle::Active))
         // Detail rows belong in their command's own picker; recursive or
         // argument-only shortcuts are noise in the top-level action palette.
-        .filter(|spec| !matches!(spec.id, "palette" | "resume" | "role"))
+        .filter(|spec| !spec.hidden)
         .filter_map(|spec| {
             // Fill the slash form when one exists: `/mode auto` is shell-local,
             // while `aishe mode auto` saves config and leaves the live prompt

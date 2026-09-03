@@ -6,8 +6,13 @@
       "input": "? install kubectl please",
       "expected": "natural_language",
       "reason": "forced_agent",
-      "platform": ["linux", "macos"],
-      "known_commands": ["install"],
+      "platform": [
+        "linux",
+        "macos"
+      ],
+      "known_commands": [
+        "install"
+      ],
       "aliases_functions": [],
       "critical": true,
       "notes": "Explicit agent routing wins over an executable-name collision."
@@ -17,7 +22,10 @@
       "input": "# explain this repository",
       "expected": "natural_language",
       "reason": "forced_agent",
-      "platform": ["linux", "macos"],
+      "platform": [
+        "linux",
+        "macos"
+      ],
       "known_commands": [],
       "aliases_functions": [],
       "critical": true,
@@ -28,7 +36,10 @@
       "input": "! command-that-is-not-cached --version",
       "expected": "shell",
       "reason": "forced_shell",
-      "platform": ["linux", "macos"],
+      "platform": [
+        "linux",
+        "macos"
+      ],
       "known_commands": [],
       "aliases_functions": [],
       "critical": true,
@@ -39,29 +50,24 @@
       "input": "/help models",
       "expected": "builtin",
       "reason": "slash_command",
-      "platform": ["linux", "macos"],
+      "platform": [
+        "linux",
+        "macos"
+      ],
       "known_commands": [],
       "aliases_functions": [],
       "critical": true,
       "notes": "A registered slash alias is intercepted locally."
     },
     {
-      "id": "slash-tombstone",
-      "input": "/editor vim",
-      "expected": "builtin",
-      "reason": "slash_command",
-      "platform": ["linux", "macos"],
-      "known_commands": [],
-      "aliases_functions": [],
-      "critical": true,
-      "notes": "Tombstones remain local so migration guidance cannot become model input."
-    },
-    {
       "id": "unknown-slash-custom-namespace",
       "input": "/deploy staging",
       "expected": "shell",
       "reason": "shell_syntax",
-      "platform": ["linux", "macos"],
+      "platform": [
+        "linux",
+        "macos"
+      ],
       "known_commands": [],
       "aliases_functions": [],
       "critical": false,
@@ -72,7 +78,10 @@
       "input": "cd /tmp",
       "expected": "builtin",
       "reason": "intercepted_builtin",
-      "platform": ["linux", "macos"],
+      "platform": [
+        "linux",
+        "macos"
+      ],
       "known_commands": [],
       "aliases_functions": [],
       "critical": true,
@@ -83,7 +92,10 @@
       "input": "export AISHE_ROUTE_FIXTURE=1",
       "expected": "builtin",
       "reason": "intercepted_builtin",
-      "platform": ["linux", "macos"],
+      "platform": [
+        "linux",
+        "macos"
+      ],
       "known_commands": [],
       "aliases_functions": [],
       "critical": true,
@@ -94,7 +106,10 @@
       "input": "/usr/bin/env",
       "expected": "shell",
       "reason": "shell_syntax",
-      "platform": ["linux", "macos"],
+      "platform": [
+        "linux",
+        "macos"
+      ],
       "known_commands": [],
       "aliases_functions": [],
       "critical": true,
@@ -105,7 +120,10 @@
       "input": "./scripts/check.sh",
       "expected": "shell",
       "reason": "shell_syntax",
-      "platform": ["linux", "macos"],
+      "platform": [
+        "linux",
+        "macos"
+      ],
       "known_commands": [],
       "aliases_functions": [],
       "critical": true,
@@ -116,7 +134,10 @@
       "input": "~/bin/tool",
       "expected": "shell",
       "reason": "shell_syntax",
-      "platform": ["linux", "macos"],
+      "platform": [
+        "linux",
+        "macos"
+      ],
       "known_commands": [],
       "aliases_functions": [],
       "critical": true,
@@ -127,8 +148,13 @@
       "input": "$(date)",
       "expected": "shell",
       "reason": "shell_syntax",
-      "platform": ["linux", "macos"],
-      "known_commands": ["date"],
+      "platform": [
+        "linux",
+        "macos"
+      ],
+      "known_commands": [
+        "date"
+      ],
       "aliases_functions": [],
       "critical": true,
       "notes": "A leading command substitution is unambiguously shell syntax."
@@ -138,8 +164,13 @@
       "input": "(printf hello)",
       "expected": "shell",
       "reason": "shell_syntax",
-      "platform": ["linux", "macos"],
-      "known_commands": ["printf"],
+      "platform": [
+        "linux",
+        "macos"
+      ],
+      "known_commands": [
+        "printf"
+      ],
       "aliases_functions": [],
       "critical": true,
       "notes": "A parenthesized subshell is unambiguously shell syntax."
@@ -149,8 +180,13 @@
       "input": "greet() { printf hello; }",
       "expected": "shell",
       "reason": "function_definition",
-      "platform": ["linux", "macos"],
-      "known_commands": ["printf"],
+      "platform": [
+        "linux",
+        "macos"
+      ],
+      "known_commands": [
+        "printf"
+      ],
       "aliases_functions": [],
       "critical": true,
       "notes": "Function definitions are admitted before compound splitting."
@@ -160,8 +196,13 @@
       "input": "function greet { print hello; }",
       "expected": "shell",
       "reason": "function_definition",
-      "platform": ["macos", "linux"],
-      "known_commands": ["print"],
+      "platform": [
+        "macos",
+        "linux"
+      ],
+      "known_commands": [
+        "print"
+      ],
       "aliases_functions": [],
       "critical": true,
       "notes": "The zsh function keyword is recognized."
@@ -171,8 +212,13 @@
       "input": "for item in a b; do printf '%s\\n' $item; done",
       "expected": "shell",
       "reason": "control_structure",
-      "platform": ["linux", "macos"],
-      "known_commands": ["printf"],
+      "platform": [
+        "linux",
+        "macos"
+      ],
+      "known_commands": [
+        "printf"
+      ],
       "aliases_functions": [],
       "critical": true,
       "notes": "A loop head is shell even though the full line is compound."
@@ -182,8 +228,14 @@
       "input": "if true; then echo yes; fi",
       "expected": "shell",
       "reason": "control_structure",
-      "platform": ["linux", "macos"],
-      "known_commands": ["true", "echo"],
+      "platform": [
+        "linux",
+        "macos"
+      ],
+      "known_commands": [
+        "true",
+        "echo"
+      ],
       "aliases_functions": [],
       "critical": true,
       "notes": "A conditional head is shell grammar."
@@ -193,7 +245,10 @@
       "input": "[[ -f Cargo.toml ]]",
       "expected": "shell",
       "reason": "control_structure",
-      "platform": ["linux", "macos"],
+      "platform": [
+        "linux",
+        "macos"
+      ],
       "known_commands": [],
       "aliases_functions": [],
       "critical": true,
@@ -204,8 +259,14 @@
       "input": "time cargo test",
       "expected": "shell",
       "reason": "control_structure",
-      "platform": ["linux", "macos"],
-      "known_commands": ["time", "cargo"],
+      "platform": [
+        "linux",
+        "macos"
+      ],
+      "known_commands": [
+        "time",
+        "cargo"
+      ],
       "aliases_functions": [],
       "critical": true,
       "notes": "The reserved word wins over the command-name collision."
@@ -215,7 +276,10 @@
       "input": "AISHE_ROUTE_FIXTURE=value",
       "expected": "shell",
       "reason": "assignment",
-      "platform": ["linux", "macos"],
+      "platform": [
+        "linux",
+        "macos"
+      ],
       "known_commands": [],
       "aliases_functions": [],
       "critical": true,
@@ -226,8 +290,13 @@
       "input": "LC_ALL=C env",
       "expected": "shell",
       "reason": "assignment",
-      "platform": ["linux", "macos"],
-      "known_commands": ["env"],
+      "platform": [
+        "linux",
+        "macos"
+      ],
+      "known_commands": [
+        "env"
+      ],
       "aliases_functions": [],
       "critical": true,
       "notes": "Leading environment assignments do not obscure the command head."
@@ -237,7 +306,10 @@
       "input": "items=(one two three)",
       "expected": "shell",
       "reason": "assignment",
-      "platform": ["linux", "macos"],
+      "platform": [
+        "linux",
+        "macos"
+      ],
       "known_commands": [],
       "aliases_functions": [],
       "critical": true,
@@ -248,8 +320,13 @@
       "input": "what is the capital of France",
       "expected": "natural_language",
       "reason": "question_grammar",
-      "platform": ["macos", "linux"],
-      "known_commands": ["what"],
+      "platform": [
+        "macos",
+        "linux"
+      ],
+      "known_commands": [
+        "what"
+      ],
       "aliases_functions": [],
       "critical": true,
       "notes": "English question grammar beats the macOS what executable collision."
@@ -259,8 +336,13 @@
       "input": "where is the ssh config",
       "expected": "natural_language",
       "reason": "question_grammar",
-      "platform": ["macos", "linux"],
-      "known_commands": ["where"],
+      "platform": [
+        "macos",
+        "linux"
+      ],
+      "known_commands": [
+        "where"
+      ],
       "aliases_functions": [],
       "critical": true,
       "notes": "Question grammar beats a zsh builtin name collision."
@@ -270,8 +352,13 @@
       "input": "who am i logged in as",
       "expected": "natural_language",
       "reason": "question_grammar",
-      "platform": ["linux", "macos"],
-      "known_commands": ["who"],
+      "platform": [
+        "linux",
+        "macos"
+      ],
+      "known_commands": [
+        "who"
+      ],
       "aliases_functions": [],
       "critical": true,
       "notes": "Question grammar beats the ubiquitous who executable collision."
@@ -281,7 +368,10 @@
       "input": "how many files are here?",
       "expected": "natural_language",
       "reason": "question_grammar",
-      "platform": ["linux", "macos"],
+      "platform": [
+        "linux",
+        "macos"
+      ],
       "known_commands": [],
       "aliases_functions": [],
       "critical": true,
@@ -292,8 +382,14 @@
       "input": "printf hello | grep ell",
       "expected": "shell",
       "reason": "compound_shell",
-      "platform": ["linux", "macos"],
-      "known_commands": ["printf", "grep"],
+      "platform": [
+        "linux",
+        "macos"
+      ],
+      "known_commands": [
+        "printf",
+        "grep"
+      ],
       "aliases_functions": [],
       "critical": true,
       "notes": "Every pipeline segment has a declared command head."
@@ -303,8 +399,14 @@
       "input": "test -f Cargo.toml && echo yes",
       "expected": "shell",
       "reason": "compound_shell",
-      "platform": ["linux", "macos"],
-      "known_commands": ["test", "echo"],
+      "platform": [
+        "linux",
+        "macos"
+      ],
+      "known_commands": [
+        "test",
+        "echo"
+      ],
       "aliases_functions": [],
       "critical": true,
       "notes": "Known segments joined by an AND operator remain shell."
@@ -314,8 +416,13 @@
       "input": "find large files | summarize them",
       "expected": "natural_language",
       "reason": "compound_unknown",
-      "platform": ["linux", "macos"],
-      "known_commands": ["find"],
+      "platform": [
+        "linux",
+        "macos"
+      ],
+      "known_commands": [
+        "find"
+      ],
       "aliases_functions": [],
       "critical": true,
       "notes": "An unknown pipeline segment prevents shell admission."
@@ -325,8 +432,13 @@
       "input": "grep -E 'foo|bar' input.txt",
       "expected": "shell",
       "reason": "known_command",
-      "platform": ["linux", "macos"],
-      "known_commands": ["grep"],
+      "platform": [
+        "linux",
+        "macos"
+      ],
+      "known_commands": [
+        "grep"
+      ],
       "aliases_functions": [],
       "critical": true,
       "notes": "An operator inside single quotes does not split the line."
@@ -336,8 +448,13 @@
       "input": "sed 's/a/b/;s/c/d/' input.txt",
       "expected": "shell",
       "reason": "known_command",
-      "platform": ["linux", "macos"],
-      "known_commands": ["sed"],
+      "platform": [
+        "linux",
+        "macos"
+      ],
+      "known_commands": [
+        "sed"
+      ],
       "aliases_functions": [],
       "critical": true,
       "notes": "A semicolon inside a quoted program does not split the line."
@@ -347,8 +464,13 @@
       "input": "printf hello > output.txt",
       "expected": "shell",
       "reason": "known_command",
-      "platform": ["linux", "macos"],
-      "known_commands": ["printf"],
+      "platform": [
+        "linux",
+        "macos"
+      ],
+      "known_commands": [
+        "printf"
+      ],
       "aliases_functions": [],
       "critical": true,
       "notes": "A known command with a redirect remains shell."
@@ -358,8 +480,13 @@
       "input": "ls *.rs",
       "expected": "shell",
       "reason": "known_command",
-      "platform": ["linux", "macos"],
-      "known_commands": ["ls"],
+      "platform": [
+        "linux",
+        "macos"
+      ],
+      "known_commands": [
+        "ls"
+      ],
       "aliases_functions": [],
       "critical": true,
       "notes": "A known command owns glob expansion."
@@ -369,8 +496,12 @@
       "input": "xdg-open README.md",
       "expected": "shell",
       "reason": "known_command",
-      "platform": ["linux"],
-      "known_commands": ["xdg-open"],
+      "platform": [
+        "linux"
+      ],
+      "known_commands": [
+        "xdg-open"
+      ],
       "aliases_functions": [],
       "critical": true,
       "notes": "Linux desktop opener is supplied as fixture evidence, not host PATH evidence."
@@ -380,8 +511,12 @@
       "input": "open README.md",
       "expected": "shell",
       "reason": "known_command",
-      "platform": ["macos"],
-      "known_commands": ["open"],
+      "platform": [
+        "macos"
+      ],
+      "known_commands": [
+        "open"
+      ],
       "aliases_functions": [],
       "critical": true,
       "notes": "The macOS open executable remains shell-first."
@@ -391,8 +526,12 @@
       "input": "say hello",
       "expected": "shell",
       "reason": "known_command",
-      "platform": ["macos"],
-      "known_commands": ["say"],
+      "platform": [
+        "macos"
+      ],
+      "known_commands": [
+        "say"
+      ],
       "aliases_functions": [],
       "critical": true,
       "notes": "The macOS say executable remains shell-first."
@@ -402,8 +541,13 @@
       "input": "install kubectl please",
       "expected": "shell",
       "reason": "known_command",
-      "platform": ["linux", "macos"],
-      "known_commands": ["install"],
+      "platform": [
+        "linux",
+        "macos"
+      ],
+      "known_commands": [
+        "install"
+      ],
       "aliases_functions": [],
       "critical": true,
       "notes": "Shell-first collision; diagnostics recommend ? for the agent."
@@ -413,8 +557,13 @@
       "input": "find . -name '*.rs'",
       "expected": "shell",
       "reason": "known_command",
-      "platform": ["linux", "macos"],
-      "known_commands": ["find"],
+      "platform": [
+        "linux",
+        "macos"
+      ],
+      "known_commands": [
+        "find"
+      ],
       "aliases_functions": [],
       "critical": true,
       "notes": "A command-shaped find invocation remains shell."
@@ -424,8 +573,13 @@
       "input": "who -u",
       "expected": "shell",
       "reason": "known_command",
-      "platform": ["linux", "macos"],
-      "known_commands": ["who"],
+      "platform": [
+        "linux",
+        "macos"
+      ],
+      "known_commands": [
+        "who"
+      ],
       "aliases_functions": [],
       "critical": true,
       "notes": "An option-bearing collision is command-shaped."
@@ -435,8 +589,13 @@
       "input": "print -r -- hello",
       "expected": "shell",
       "reason": "known_command",
-      "platform": ["macos", "linux"],
-      "known_commands": ["print"],
+      "platform": [
+        "macos",
+        "linux"
+      ],
+      "known_commands": [
+        "print"
+      ],
       "aliases_functions": [],
       "critical": true,
       "notes": "Declared zsh builtin evidence is independent of host discovery."
@@ -446,9 +605,14 @@
       "input": "ll /tmp",
       "expected": "shell",
       "reason": "known_command",
-      "platform": ["linux", "macos"],
+      "platform": [
+        "linux",
+        "macos"
+      ],
       "known_commands": [],
-      "aliases_functions": ["ll"],
+      "aliases_functions": [
+        "ll"
+      ],
       "critical": true,
       "notes": "Fixture-declared aliases are command evidence."
     },
@@ -457,9 +621,14 @@
       "input": "project-build release",
       "expected": "shell",
       "reason": "known_command",
-      "platform": ["linux", "macos"],
+      "platform": [
+        "linux",
+        "macos"
+      ],
       "known_commands": [],
-      "aliases_functions": ["project-build"],
+      "aliases_functions": [
+        "project-build"
+      ],
       "critical": true,
       "notes": "Fixture-declared functions are command evidence."
     },
@@ -468,8 +637,13 @@
       "input": "yes please continue",
       "expected": "shell",
       "reason": "known_command",
-      "platform": ["linux", "macos"],
-      "known_commands": ["yes"],
+      "platform": [
+        "linux",
+        "macos"
+      ],
+      "known_commands": [
+        "yes"
+      ],
       "aliases_functions": [],
       "critical": true,
       "notes": "The yes executable remains shell-first even when its arguments resemble prose."
@@ -479,8 +653,13 @@
       "input": "false alarm today",
       "expected": "shell",
       "reason": "known_command",
-      "platform": ["linux", "macos"],
-      "known_commands": ["false"],
+      "platform": [
+        "linux",
+        "macos"
+      ],
+      "known_commands": [
+        "false"
+      ],
       "aliases_functions": [],
       "critical": true,
       "notes": "The false builtin/executable collision remains shell-first."
@@ -490,8 +669,13 @@
       "input": "true story please",
       "expected": "shell",
       "reason": "known_command",
-      "platform": ["linux", "macos"],
-      "known_commands": ["true"],
+      "platform": [
+        "linux",
+        "macos"
+      ],
+      "known_commands": [
+        "true"
+      ],
       "aliases_functions": [],
       "critical": true,
       "notes": "The true builtin/executable collision remains shell-first."
@@ -501,8 +685,13 @@
       "input": "read this value please",
       "expected": "shell",
       "reason": "known_command",
-      "platform": ["linux", "macos"],
-      "known_commands": ["read"],
+      "platform": [
+        "linux",
+        "macos"
+      ],
+      "known_commands": [
+        "read"
+      ],
       "aliases_functions": [],
       "critical": true,
       "notes": "The read builtin remains shell-first; diagnostics can identify the ambiguity."
@@ -512,8 +701,13 @@
       "input": "type this value please",
       "expected": "shell",
       "reason": "known_command",
-      "platform": ["linux", "macos"],
-      "known_commands": ["type"],
+      "platform": [
+        "linux",
+        "macos"
+      ],
+      "known_commands": [
+        "type"
+      ],
       "aliases_functions": [],
       "critical": true,
       "notes": "The type builtin remains shell-first; ? provides the agent override."
@@ -523,8 +717,13 @@
       "input": "source ~/.aishrc",
       "expected": "builtin",
       "reason": "intercepted_builtin",
-      "platform": ["linux", "macos"],
-      "known_commands": ["source"],
+      "platform": [
+        "linux",
+        "macos"
+      ],
+      "known_commands": [
+        "source"
+      ],
       "aliases_functions": [],
       "critical": true,
       "notes": "Source is intercepted because it mutates live shell state."
@@ -534,8 +733,13 @@
       "input": "history 10",
       "expected": "builtin",
       "reason": "intercepted_builtin",
-      "platform": ["linux", "macos"],
-      "known_commands": ["history"],
+      "platform": [
+        "linux",
+        "macos"
+      ],
+      "known_commands": [
+        "history"
+      ],
       "aliases_functions": [],
       "critical": true,
       "notes": "History is served by AIShe's timestamped shell history path."
@@ -545,7 +749,10 @@
       "input": "(( total += 1 ))",
       "expected": "shell",
       "reason": "shell_syntax",
-      "platform": ["linux", "macos"],
+      "platform": [
+        "linux",
+        "macos"
+      ],
       "known_commands": [],
       "aliases_functions": [],
       "critical": true,
@@ -556,7 +763,10 @@
       "input": "explain this repository",
       "expected": "natural_language",
       "reason": "unknown_input",
-      "platform": ["linux", "macos"],
+      "platform": [
+        "linux",
+        "macos"
+      ],
       "known_commands": [],
       "aliases_functions": [],
       "critical": true,
@@ -567,18 +777,26 @@
       "input": "gti status",
       "expected": "natural_language",
       "reason": "unknown_input",
-      "platform": ["linux", "macos"],
-      "known_commands": ["git"],
+      "platform": [
+        "linux",
+        "macos"
+      ],
+      "known_commands": [
+        "git"
+      ],
       "aliases_functions": [],
       "critical": false,
       "notes": "v1 characterizes typos; ROUTE-005 will add bounded assistance."
     },
     {
       "id": "unicode-words",
-      "input": "explain café permissions",
+      "input": "explain caf\u00e9 permissions",
       "expected": "natural_language",
       "reason": "unknown_input",
-      "platform": ["linux", "macos"],
+      "platform": [
+        "linux",
+        "macos"
+      ],
       "known_commands": [],
       "aliases_functions": [],
       "critical": true,
@@ -589,7 +807,10 @@
       "input": "explain\u2003this repository",
       "expected": "natural_language",
       "reason": "unknown_input",
-      "platform": ["linux", "macos"],
+      "platform": [
+        "linux",
+        "macos"
+      ],
       "known_commands": [],
       "aliases_functions": [],
       "critical": true,
@@ -600,7 +821,10 @@
       "input": "explain \u001b[31mthis\u001b[0m output",
       "expected": "natural_language",
       "reason": "unknown_input",
-      "platform": ["linux", "macos"],
+      "platform": [
+        "linux",
+        "macos"
+      ],
       "known_commands": [],
       "aliases_functions": [],
       "critical": true,
@@ -611,7 +835,10 @@
       "input": "!# ordinary shell comment",
       "expected": "shell",
       "reason": "forced_shell",
-      "platform": ["linux", "macos"],
+      "platform": [
+        "linux",
+        "macos"
+      ],
       "known_commands": [],
       "aliases_functions": [],
       "critical": true,
@@ -624,7 +851,10 @@
       "input": "# ordinary shell comment",
       "expected": "natural_language",
       "reason": "forced_agent",
-      "platform": ["linux", "macos"],
+      "platform": [
+        "linux",
+        "macos"
+      ],
       "known_commands": [],
       "aliases_functions": [],
       "critical": false,
@@ -635,8 +865,13 @@
       "input": "'printf' hello",
       "expected": "natural_language",
       "reason": "unknown_input",
-      "platform": ["linux", "macos"],
-      "known_commands": ["printf"],
+      "platform": [
+        "linux",
+        "macos"
+      ],
+      "known_commands": [
+        "printf"
+      ],
       "aliases_functions": [],
       "critical": false,
       "notes": "Characterizes a tokenizer limitation without making it normative."
@@ -646,8 +881,13 @@
       "input": "kubetcl",
       "expected": "natural_language",
       "reason": "unknown_input",
-      "platform": ["linux", "macos"],
-      "known_commands": ["kubectl"],
+      "platform": [
+        "linux",
+        "macos"
+      ],
+      "known_commands": [
+        "kubectl"
+      ],
       "aliases_functions": [],
       "critical": false,
       "notes": "Potential spelling correction is intentionally deferred to ROUTE-005."

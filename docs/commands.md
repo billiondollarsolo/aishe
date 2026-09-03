@@ -224,15 +224,6 @@ Removed names remain reserved for one compatibility window:
 
 | Removed slash command | Local guidance |
 |---|---|
-| `/editor [ARGS…]` | AIShe now uses native shell line editing; configure zsh or bash directly |
-| `/frontend [ARGS…]` | use `aishe zsh` for the full PTY front end or `aishe init bash` for the bash hook |
-| `/stream [ARGS…]` | streaming is selected automatically by the active backend |
-| `/structured [ARGS…]` | structured output is negotiated internally; use command-specific `--json` for automation |
-| `/theme [ARGS…]` | use the terminal palette or set `NO_COLOR=1` for plain output |
-| `/rehash` | use bare `rehash` for zsh's executable cache; AIShe discovers commands automatically |
-| `/ghost [ARGS…]` | use suggest mode with `aishe mode suggest` |
-| `/sandbox [ARGS…]` | use `aishe scope workspace` and `aishe network deny`, then verify with `aishe readiness` |
-| `/cache [ARGS…]` | the legacy suggest-response cache was removed and has no direct replacement |
 <!-- END GENERATED COMMAND SURFACE -->
 
 ### `/connection` vs `/model`

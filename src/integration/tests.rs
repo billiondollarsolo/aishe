@@ -100,12 +100,12 @@ fn generated_shell_artifacts_match_the_reviewed_byte_snapshots() {
         (
             "zsh init",
             zsh_script(),
-            "40ea04602229febade35b4cbbad3331bbb9a1bee44fc3258760a1bd862ac7c3d",
+            "1c48f676395df35464af0e22db4d23987751ea8768e5ff53152df50f3be87781",
         ),
         (
             "bash init",
             bash_script(),
-            "009d1634a3bd6b255223c088f064f570ca3c47cf95f31dafa270b8b278cba9d2",
+            "897f40f23dd188d0728e26c04ba26f72416d5767a90a196afe680f6a8695b8ab",
         ),
         (
             "wrapper zshenv",
@@ -115,7 +115,7 @@ fn generated_shell_artifacts_match_the_reviewed_byte_snapshots() {
         (
             "wrapper zshrc",
             wrapper_zshrc(),
-            "d90ea34949443815cf35614455505ecf177fbf4ce764613d0ad5c227d7af7db4",
+            "896d680785954562e597b1f64dfa8ed71490f2b7727305f11b4b1813722ea3ee",
         ),
     ] {
         assert_eq!(digest(&rendered), expected, "unexpected {name} byte drift");
@@ -188,11 +188,11 @@ fn generated_bash_hook_has_no_new_shellcheck_findings() {
 }
 
 #[test]
-fn generated_zsh_dispatch_applies_shell_mode_and_keeps_tombstones_local() {
+fn generated_zsh_dispatch_applies_shell_mode_locally() {
     let program = format!(
-            "{}\n_aishe_dispatch_slash '/mode auto'\nprintf 'effective=%s\\n' \"$AISHE_MODE\"\n_aishe_dispatch_slash '/ghost'",
-            zsh_hook()
-        );
+        "{}\n_aishe_dispatch_slash '/mode auto'\nprintf 'effective=%s\\n' \"$AISHE_MODE\"",
+        zsh_hook()
+    );
     let output = std::process::Command::new("zsh")
         .args(["-f", "-c", &program])
         .output()
@@ -202,7 +202,6 @@ fn generated_zsh_dispatch_applies_shell_mode_and_keeps_tombstones_local() {
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stdout.contains("mode: auto (this shell)"));
     assert!(stdout.contains("effective=auto"));
-    assert!(stderr.contains("/ghost is no longer available"));
     assert!(!stderr.contains("command not found"));
 }
 

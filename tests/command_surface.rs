@@ -3,7 +3,7 @@
 use std::io::Write;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use aishe::command_surface::{by_id, by_slash_alias, Lifecycle, Surface, SurfaceSupport, COMMANDS};
+use aishe::command_surface::{by_id, by_slash_alias, Surface, SurfaceSupport, COMMANDS};
 use assert_cmd::Command;
 use predicates::prelude::PredicateBooleanExt;
 
@@ -92,28 +92,6 @@ fn every_registered_alias_is_reserved_from_custom_commands() {
 }
 
 #[test]
-fn every_tombstone_reports_its_local_migration_guidance() {
-    let home = temp_home("tombstones");
-    for spec in COMMANDS {
-        let Lifecycle::Tombstone { guidance, .. } = spec.lifecycle else {
-            continue;
-        };
-        for alias in spec.slash_aliases {
-            let output = aishe(&home)
-                .args(["-c", &format!("/{alias} ignored")])
-                .output()
-                .unwrap();
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            assert_eq!(output.status.code(), Some(2), "/{alias}: {stderr}");
-            assert!(stderr.contains(&format!("/{alias} is no longer available")));
-            assert!(stderr.contains(guidance), "/{alias}: {stderr}");
-            assert!(!stderr.contains("SHADOW_EXECUTED_BY_MODEL"));
-        }
-    }
-    std::fs::remove_dir_all(home).ok();
-}
-
-#[test]
 fn newly_registered_primary_commands_fail_locally_with_direct_cli_guidance() {
     let home = temp_home("primary");
     let cases = [
@@ -183,7 +161,10 @@ fn help_aliases_and_commands_cli_render_the_same_registry_inventory() {
     for output in &outputs[1..] {
         assert_eq!(String::from_utf8_lossy(&output.stdout), expected);
     }
-    for spec in COMMANDS.iter().filter(|spec| spec.is_active()) {
+    for spec in COMMANDS
+        .iter()
+        .filter(|spec| spec.is_active() && !spec.hidden)
+    {
         for alias in spec.slash_aliases {
             assert!(
                 expected.contains(&format!("/{alias}")),
@@ -193,36 +174,6 @@ fn help_aliases_and_commands_cli_render_the_same_registry_inventory() {
         }
     }
 
-    let migration_outputs = [
-        aishe(&home)
-            .args(["commands", "migration"])
-            .output()
-            .unwrap(),
-        aishe(&home)
-            .args(["-c", "/help migration"])
-            .output()
-            .unwrap(),
-        aishe(&home)
-            .args(["-c", "/commands migration"])
-            .output()
-            .unwrap(),
-    ];
-    for output in &migration_outputs {
-        assert!(output.status.success());
-    }
-    let migration = String::from_utf8_lossy(&migration_outputs[0].stdout);
-    for output in &migration_outputs[1..] {
-        assert_eq!(String::from_utf8_lossy(&output.stdout), migration);
-    }
-    for spec in COMMANDS {
-        let Lifecycle::Tombstone { guidance, .. } = spec.lifecycle else {
-            continue;
-        };
-        for alias in spec.slash_aliases {
-            assert!(migration.contains(&format!("/{alias}")));
-        }
-        assert!(migration.contains(guidance));
-    }
     std::fs::remove_dir_all(home).ok();
 }
 
