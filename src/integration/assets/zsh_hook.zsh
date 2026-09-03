@@ -291,14 +291,22 @@ aishe-command-palette() {
   emulate -L zsh
   local handoff="${TMPDIR:-/tmp}/aishe-palette-${AISHE_SHELL_ID}"
   command rm -f "$handoff"
+  # The picker paints a frame below the prompt. Tell ZLE its display is gone,
+  # or the buffer is redrawn against a stale cursor with no prompt in sight.
+  zle -I
   AISHE_PALETTE_FILE="$handoff" command aishe palette <&$_AISHE_INPUT_FD
   if [[ -r "$handoff" ]]; then
     BUFFER="$(<"$handoff")"
     CURSOR=${#BUFFER}
     command rm -f "$handoff"
   else
+    BUFFER=""
+    CURSOR=0
     zle -M "aishe: palette cancelled"
   fi
+  # The frame overwrote the prompt line; ZLE would otherwise repaint only the
+  # right-prompt region and leave the left prompt missing.
+  zle reset-prompt
 }
 
 # `/` + Tab opens AIShe's palette; every other Tab delegates to the widget the
@@ -507,7 +515,7 @@ aishe-show-route() {
 # through the previously installed accept-line widget.
 aishe-accept-line() {
   emulate -L zsh
-  if [[ "$BUFFER" == "/" ]]; then
+  if [[ "$BUFFER" == "/" || "$BUFFER" == "/palette" ]]; then
     aishe-command-palette
     return
   elif [[ "$BUFFER" == "reset" ]]; then

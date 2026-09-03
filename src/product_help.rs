@@ -249,7 +249,7 @@ fn command_usage(spec: &CommandSpec) -> String {
     }
 }
 
-fn effect_label(spec: &CommandSpec) -> &'static str {
+pub fn effect_label(spec: &CommandSpec) -> &'static str {
     match (spec.side_effects, spec.shell_local) {
         (SideEffectClass::ReadOnly, _) => "read-only",
         (SideEffectClass::ShellState, _) => "this shell",

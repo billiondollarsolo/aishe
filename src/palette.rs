@@ -47,13 +47,26 @@ pub fn entries(_config: &Config) -> Vec<Entry> {
         // argument-only shortcuts are noise in the top-level action palette.
         .filter(|spec| !matches!(spec.id, "palette" | "resume" | "role"))
         .filter_map(|spec| {
-            let cli = spec.cli?;
-            let mut words = vec!["aishe", cli.command];
-            words.extend(cli.prefix_args);
+            // Fill the slash form when one exists: `/mode auto` is shell-local,
+            // while `aishe mode auto` saves config and leaves the live prompt
+            // on the old mode.
+            let invocation = match spec.slash_aliases.first() {
+                Some(alias) => format!("/{alias}"),
+                None => {
+                    let cli = spec.cli?;
+                    let mut words = vec!["aishe", cli.command];
+                    words.extend(cli.prefix_args);
+                    words.join(" ")
+                }
+            };
             Some(Entry {
                 id: spec.id.into(),
-                label: format!("{} — {}", words.join(" "), spec.summary),
-                invocation: words.join(" "),
+                label: format!(
+                    "{invocation} — {} · {}",
+                    spec.summary,
+                    crate::product_help::effect_label(spec)
+                ),
+                invocation,
                 effect: effect(spec.side_effects).into(),
                 available: true,
                 note: None,
@@ -123,6 +136,15 @@ pub fn command(config: &Config, query: Option<&str>, json: bool) -> Result<u8> {
             use std::os::unix::fs::PermissionsExt;
             std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
         }
+    } else if let Some(path) =
+        std::env::var_os("AISHE_PENDING_FILE").filter(|value| !value.is_empty())
+    {
+        // Typed as `/palette` (no widget handoff): stage the choice on the next
+        // prompt the same way a suggestion is staged.
+        crate::config::write_atomic(
+            std::path::Path::new(&path),
+            format!("fill\n{}\n", selected.invocation).as_bytes(),
+        )?;
     } else {
         println!("{}", selected.invocation);
     }
@@ -155,6 +177,20 @@ fn effect(effect: SideEffectClass) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn entries_fill_slash_forms_and_name_their_effect() {
+        let entries = entries(&Config::default());
+        let mode = entries.iter().find(|e| e.id == "mode").expect("mode entry");
+        assert_eq!(mode.invocation, "/mode");
+        assert!(mode.label.starts_with("/mode — "), "{}", mode.label);
+        assert!(mode.label.contains(" · "), "{}", mode.label);
+        assert!(
+            entries.iter().all(|e| !e.label.starts_with("aishe ")
+                || e.invocation.starts_with("aishe ")),
+            "slash-aliased commands must fill their slash form"
+        );
+    }
 
     #[test]
     fn entries_come_from_registry_and_have_effects() {
