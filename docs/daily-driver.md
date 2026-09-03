@@ -13,11 +13,11 @@ Inside `aishe` or the zsh integration:
 |---|---|---|
 | Improve the current command | `Ctrl-X Ctrl-A` | Replaces `BUFFER` with one syntax-checked proposal; never executes it. |
 | Fix the most recent failure | `Ctrl-X Ctrl-F` | Uses the private failure capsule and fills the correction for review. |
-| Open the command palette | `Ctrl-X Space` | Searches commands and configured connections, then fills the selected invocation. |
+| Open the command palette | `/` then Tab, `/` then Enter, or `Ctrl-X Space` | Searches commands and configured connections, then fills the selected invocation. |
 | Force natural language | `? request` or Alt/Option-Enter | Sends the line to the agent without executing the request as shell. |
 | Toggle agent detail | `Ctrl-O` | Changes transcript density without changing authority. |
 
-Press Enter on an exact `/` to open the same palette without remembering a key
+Press Tab or Enter on an exact `/` to open the same palette without remembering a key
 binding. It includes commands plus configured roles, connections, cached models,
 MCP servers, sessions, background tasks, and review-ready work. A selection is
 inserted into the editable buffer for review; it is never executed automatically.

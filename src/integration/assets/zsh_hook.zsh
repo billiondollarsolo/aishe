@@ -301,6 +301,17 @@ aishe-command-palette() {
   fi
 }
 
+# `/` + Tab opens AIShe's palette; every other Tab delegates to the widget the
+# user's theme or completion plugin installed before AIShe.
+aishe-slash-tab() {
+  emulate -L zsh
+  if [[ "$BUFFER" == "/" ]]; then
+    aishe-command-palette
+  else
+    zle "${_AISHE_ORIG_TAB_WIDGET:-expand-or-complete}"
+  fi
+}
+
 # Semantic history recall (default Ctrl-X Ctrl-R; override AISHE_RECALL_KEY).
 # Takes the current line as a natural-language query ("the docker run with the
 # prometheus volume"), asks aishe for the closest past command by meaning, and
@@ -600,6 +611,14 @@ if [[ -o interactive ]]; then
   bindkey "${AISHE_EDIT_KEY:-^X^A}" aishe-edit-command
   zle -N aishe-command-palette
   bindkey "${AISHE_PALETTE_KEY:-^X }" aishe-command-palette
+  typeset -ga _aishe_tab_binding
+  _aishe_tab_binding=("${(@z)$(bindkey '^I')}")
+  if [[ "${_aishe_tab_binding[-1]:-}" != aishe-slash-tab ]]; then
+    typeset -g _AISHE_ORIG_TAB_WIDGET="${_aishe_tab_binding[-1]:-expand-or-complete}"
+  fi
+  unset _aishe_tab_binding
+  zle -N aishe-slash-tab
+  bindkey '^I' aishe-slash-tab
   zle -N aishe-recall
   bindkey "${AISHE_RECALL_KEY:-^X^R}" aishe-recall
   zle -N aishe-show-route

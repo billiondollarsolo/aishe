@@ -16,6 +16,9 @@ fn zsh_script_has_handler_and_print_z() {
     assert!(s.contains("zle -N aishe-command-palette"));
     assert!(s.contains(r#"if [[ "$BUFFER" == "/" ]]; then"#));
     assert!(s.contains("${AISHE_PALETTE_KEY:-^X }"));
+    assert!(s.contains("zle -N aishe-slash-tab"));
+    assert!(s.contains("bindkey '^I' aishe-slash-tab"));
+    assert!(s.contains("_AISHE_ORIG_TAB_WIDGET"));
     assert!(s.contains(r#"_aishe_slash_id "$BUFFER" > /dev/null"#));
     assert!(s.contains("/help|/commands"));
     assert!(s.contains("command aishe status"));
@@ -97,7 +100,7 @@ fn generated_shell_artifacts_match_the_reviewed_byte_snapshots() {
         (
             "zsh init",
             zsh_script(),
-            "e6a6b9559f1b5aad74f95090813628910f2f2caa6f6bd5790608c323239e3804",
+            "19a8c1e887616e5c09c9e4ffc44521bd85751eb9b4c47992c175b30fddc10bbd",
         ),
         (
             "bash init",
@@ -112,7 +115,7 @@ fn generated_shell_artifacts_match_the_reviewed_byte_snapshots() {
         (
             "wrapper zshrc",
             wrapper_zshrc(),
-            "92e449f1d029bc8f9ae43e83f979fe5d83f2b6add49948b2e8e339e2f5110075",
+            "5c8887de67780addd8824a3a77d7b345470c7f8fe77f95a71950e04c15f83e95",
         ),
     ] {
         assert_eq!(digest(&rendered), expected, "unexpected {name} byte drift");

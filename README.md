@@ -107,7 +107,7 @@ Full routing, Option/Alt+Return, and Mac terminal Meta settings:
 - **Fix the last command.** **Ctrl-X Ctrl-F** asks the model for a correction
   after a failure.
 - **Edit without leaving the prompt.** **Ctrl-X Ctrl-A** improves the current
-  buffer and **Ctrl-X Space** opens a generated command palette; both fill the
+  buffer and **Ctrl-X Space** or **`/` then Tab** opens a generated command palette; both fill the
   line for review and never press Enter for you.
 - **Isolated background agents.** `aishe task start '…'` runs long work in a
   detached git worktree with finite time/tool/network/change budgets, durable

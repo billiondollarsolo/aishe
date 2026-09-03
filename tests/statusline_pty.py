@@ -295,9 +295,13 @@ def prompt_substitution_is_inert():
 def theme_survives_mode_cycle():
     home, env, _ = environment("right")
     capture = os.path.join(home, "prompt-state")
+    buffer_capture = os.path.join(home, "buffer-state")
     with open(os.path.join(home, ".zshrc"), "a", encoding="utf-8") as file:
         file.write(
             "PROMPT='THEME> '; RPROMPT='THEME-RIGHT'\n"
+            "_original_tab_test() { BUFFER+='-tab'; CURSOR=${#BUFFER}; }\n"
+            "zle -N _original_tab_test\n"
+            "bindkey '^I' _original_tab_test\n"
             "autoload -Uz add-zle-hook-widget\n"
             "_fake_suggestion() { POSTDISPLAY='ghost'; }\n"
             "add-zle-hook-widget line-pre-redraw _fake_suggestion\n"
@@ -307,6 +311,11 @@ def theme_survives_mode_cycle():
             + "; }\n"
             "zle -N _capture_display\n"
             "bindkey '^X^T' _capture_display\n"
+            "_capture_buffer() { print -rn -- \"$BUFFER\" > "
+            + buffer_capture
+            + "; }\n"
+            "zle -N _capture_buffer\n"
+            "bindkey '^X^B' _capture_buffer\n"
             "export AISHE_MODE=suggest\n"
         )
     shell = Pty(env, 180)
@@ -318,6 +327,17 @@ def theme_survives_mode_cycle():
             raise AssertionError(
                 "test prompt theme did not activate:\n%s" % shell.transcript[-2500:]
             )
+        os.write(shell.master, b"plain\t\x18\x02")
+        shell.drain(0.5)
+        with open(buffer_capture, encoding="utf-8") as file:
+            if file.read() != "plain-tab":
+                raise AssertionError("ordinary Tab did not delegate to the prior widget")
+        os.write(shell.master, b"\x15/\t")
+        if not shell.expect("AIShe command palette", timeout=5):
+            raise AssertionError("slash-Tab did not open the command palette")
+        os.write(shell.master, b"\x1b")
+        shell.drain(0.5)
+        os.write(shell.master, b"\x15")
         shell.transcript = ""
         os.write(shell.master, b"\x1b[Z")
         shell.drain(1)
