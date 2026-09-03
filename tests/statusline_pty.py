@@ -313,21 +313,24 @@ def theme_survives_mode_cycle():
             raise AssertionError(
                 "test prompt theme did not activate:\n%s" % shell.transcript[-2500:]
             )
-        start = len(shell.transcript)
+        shell.transcript = ""
         os.write(shell.master, b"\x1b[Z")
-        if not shell.expect("auto-run safe commands"):
-            raise AssertionError("Shift-Tab did not explain the new mode")
+        shell.drain(1)
+        repaint = CSI.sub("", shell.transcript)
+        if "AUTO" not in repaint:
+            raise AssertionError(
+                "Shift-Tab did not repaint the mode status segment:\n%s"
+                % shell.transcript[-2500:]
+            )
         shell.send(
             'print -r -- "THEME_CHECK=$AISHE_MODE|$PROMPT|$RPROMPT|$_AISHE_STATUS_TEXT"'
         )
         if not shell.expect("THEME_CHECK=auto|THEME> |THEME-RIGHT|"):
             raise AssertionError(
                 "Shift-Tab replaced the user prompt theme:\n%s"
-                % shell.transcript[start:][-2500:]
+                % shell.transcript[-2500:]
             )
-        if "auto-run safe" not in shell.transcript[start:]:
-            raise AssertionError("Shift-Tab did not refresh the behavioral status label")
-        print("  ok   Shift-Tab preserves the prompt theme and explains the mode")
+        print("  ok   Shift-Tab preserves the prompt theme and repaints the mode")
     finally:
         shell.close()
         shutil.rmtree(home, ignore_errors=True)

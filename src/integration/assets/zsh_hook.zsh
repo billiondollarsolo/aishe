@@ -567,14 +567,14 @@ aishe-cycle-mode() {
     *)       AISHE_MODE=suggest ;;
   esac
   export AISHE_MODE
-  # Refresh status immediately without taking PROMPT/RPROMPT back from a theme.
-  (( $+functions[aishe_set_prompt] )) && aishe_set_prompt status-only
-  zle reset-prompt
-  case "$AISHE_MODE" in
-    suggest) zle -M 'AIShe · review commands before running' ;;
-    auto)    zle -M 'AIShe · auto-run safe commands' ;;
-    yolo)    zle -M "AIShe · agent loop · ${AISHE_SCOPE:-workspace}" ;;
-  esac
+  if (( $+functions[aishe_set_prompt] )); then
+    # Refresh the persistent footer directly without touching the theme prompt.
+    aishe_set_prompt status-only
+    (( $+functions[_aishe_status_below] )) && _aishe_status_below
+    zle -R
+  else
+    zle -M "aishe mode: ${AISHE_MODE}"
+  fi
 }
 if [[ -o interactive ]]; then
   autoload -Uz add-zsh-hook

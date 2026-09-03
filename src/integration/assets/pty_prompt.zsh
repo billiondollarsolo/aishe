@@ -130,9 +130,9 @@ if [[ -o interactive && "${AISHE_PTY_PROMPT:-1}" == 1 ]]; then
           reasoning) value="reason:$value" ;;
           mode)
             case "$value" in
-              suggest) value='review first' ;;
-              auto)    value='auto-run safe' ;;
-              yolo)    value='agent loop' ;;
+              suggest) value='REVIEW' ;;
+              auto)    value='AUTO' ;;
+              yolo)    value='AGENT' ;;
               *)       value="mode:$value" ;;
             esac
             ;;
@@ -159,7 +159,13 @@ if [[ -o interactive && "${AISHE_PTY_PROMPT:-1}" == 1 ]]; then
             provider|endpoint|selection|backend) style='fg=242' ;;
             model) style='fg=yellow' ;;
             reasoning) style='fg=215' ;;
-            mode) style='fg=magenta' ;;
+            mode)
+              case "$mode" in
+                suggest) style='fg=yellow,bold' ;;
+                auto)    style='fg=cyan,bold' ;;
+                yolo)    style='fg=red,bold' ;;
+              esac
+              ;;
             scope|branch) style='fg=green' ;;
             environment) style='fg=red,bold' ;;
             last_tokens|last_cost|session_tokens|session_cost|requests|elapsed|context) style='fg=209' ;;
