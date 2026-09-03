@@ -60,8 +60,10 @@ def main():
         env["AISHE_CONFIG_DIR"] = os.path.join(root, "config")
         env["AISHE_DATA_DIR"] = os.path.join(root, "data")
 
+        # `provider test` was a duplicate spelling of `aishe test`, which nests
+        # the same capability report under "provider".
         tested = subprocess.run(
-            [BINARY, "provider", "test", "--json"],
+            [BINARY, "test", "--json"],
             env=env,
             capture_output=True,
             text=True,
@@ -69,7 +71,7 @@ def main():
         )
         if tested.returncode != 0:
             raise AssertionError(tested.stderr or tested.stdout)
-        report = json.loads(tested.stdout)
+        report = json.loads(tested.stdout)["provider"]
         assert report["credential_required"] is False
         assert report["credential"]["state"] == "pass"
         assert report["model_available"]["state"] == "pass"
