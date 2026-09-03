@@ -1855,6 +1855,9 @@ pub fn print_help_command(topic: Option<&str>) -> u8 {
     let code = crate::product_help::print_help(topic);
     if topic.is_none() {
         let commands = CommandRegistry::load();
+        for name in commands.shadowed() {
+            eprintln!("aishe: custom command /{name} is shadowed by a built-in (rename the file)");
+        }
         if commands.is_empty() {
             println!(
                 "custom slash-commands: none (add *.md under {})",

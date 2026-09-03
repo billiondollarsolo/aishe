@@ -185,13 +185,13 @@ The State/effect column uses one six-value vocabulary:
 | `/network [allow\|deny]` | Inspect or select workspace-agent network policy | saves config |
 | `/reasoning [LEVEL]` | Inspect or select reasoning effort | this shell · --default saves |
 | `/details` | Toggle focused and detailed agent output for this shell | this shell |
-| `/status` | Show the effective connection, model, mode, scope, and usage | read-only |
+| `/status [OPTIONS…]` | Show the effective connection, model, mode, scope, and usage | read-only |
 | `/usage` | Show token and estimated-cost usage | read-only |
-| `/log` | Show recent audit events and agent actions | read-only |
+| `/log [OPTIONS…]` | Show recent audit events and agent actions | read-only |
 | `/reset` | Start a fresh conversation without deleting the prior session | conversation |
 | `/settings` | Open the transactional settings editor | saves config |
 | `/output [DENSITY]` | Inspect or save persistent agent transcript density | saves config |
-| `/config` | Print the active AIShe configuration | read-only |
+| `/config [OPTIONS…]` | Print the active AIShe configuration | read-only |
 | `/skills` | List model-invoked skills | read-only |
 | `/mcp` | List configured MCP tools and prompts | read-only |
 | `/palette` | Search AIShe actions from one focused menu | runs agent / edits files |

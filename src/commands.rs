@@ -219,9 +219,16 @@ pub fn command_preview_lines(command: &str, max_body_lines: usize) -> Vec<String
 #[derive(Debug, Default, Clone)]
 pub struct CommandRegistry {
     cmds: BTreeMap<String, CustomCommand>,
+    /// Files whose name a built-in already owns, reported by `aishe commands`.
+    shadowed: Vec<String>,
 }
 
 impl CommandRegistry {
+    /// Custom-command files that a built-in name shadows.
+    pub fn shadowed(&self) -> &[String] {
+        &self.shadowed
+    }
+
     /// Load from the user and project command directories. On a name collision
     /// the **user's** command wins — a project command never shadows it.
     pub fn load() -> Self {
@@ -246,6 +253,12 @@ impl CommandRegistry {
             let Some(stem) = path.file_stem().and_then(|s| s.to_str()) else {
                 continue;
             };
+            // A built-in wins the name, so loading this file would list a
+            // command that can never run. Say so instead.
+            if crate::command_surface::is_reserved_slash(stem) {
+                self.shadowed.push(stem.to_string());
+                continue;
+            }
             if let Ok(text) = std::fs::read_to_string(&path) {
                 let mut cmd = parse_command(stem, &text);
                 if is_project {

@@ -370,7 +370,7 @@ pub enum Dispatch {
 
 /// Builtins we handle in-process to persist shell state.
 const INTERCEPTED: &[&str] = &[
-    "cd", "export", "unset", "source", ".", "exit", "quit", "aishe", "pushd", "popd", "dirs",
+    "cd", "export", "unset", "source", ".", "exit", "quit", "pushd", "popd", "dirs",
     // Background-job builtins (reedline front-end manages the job table).
     "jobs", "fg", "bg", "wait", "disown", // History listing from the timestamped log.
     "history",
@@ -1662,7 +1662,14 @@ mod tests {
             Dispatch::Builtin(vec!["cd".into(), "/tmp".into()])
         );
         assert!(matches!(dispatch("export FOO=1", &c), Dispatch::Builtin(_)));
-        assert!(matches!(dispatch("aishe help", &c), Dispatch::Builtin(_)));
+        // `aishe …` is no longer intercepted wholesale: with `aishe` on PATH it
+        // runs the real binary, so `aishe -c 'aishe doctor'` behaves like typing
+        // it in any shell instead of hitting a slash handler table.
+        let with_aishe = cache_with(&["aishe"]);
+        assert!(matches!(
+            dispatch("aishe help", &with_aishe),
+            Dispatch::Shell(_)
+        ));
     }
 
     #[test]

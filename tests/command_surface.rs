@@ -240,3 +240,21 @@ fn top_level_only_hints_surface_is_live_without_reserving_a_slash_name() {
     assert!(by_slash_alias("hints").is_none());
     std::fs::remove_dir_all(home).ok();
 }
+
+#[test]
+fn reserved_custom_command_names_are_skipped_with_a_warning() {
+    let home = temp_home("reserved-custom");
+    let commands = home.join("aishe").join("commands");
+    std::fs::create_dir_all(&commands).unwrap();
+    std::fs::write(commands.join("status.md"), "# shadowed\necho hi\n").unwrap();
+    std::fs::write(commands.join("deploy.md"), "# fine\necho ok\n").unwrap();
+    let output = aishe(&home).arg("commands").output().unwrap();
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stderr.contains("custom command /status is shadowed by a built-in"),
+        "{stderr}"
+    );
+    assert!(stdout.contains("/deploy"), "{stdout}");
+    std::fs::remove_dir_all(home).ok();
+}
