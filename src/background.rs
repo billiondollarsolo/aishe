@@ -1506,7 +1506,11 @@ fn validate_id(id: &str) -> Result<()> {
             .bytes()
             .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
     {
-        anyhow::bail!("invalid background task ID");
+        return Err(crate::user_error::UserFacing::cli(
+            "unknown_task",
+            format!("No task or session '{}'.", crate::commands::display_safe(id)),
+            "Run `aishe sessions` to list what can be resumed.",
+        ));
     }
     Ok(())
 }

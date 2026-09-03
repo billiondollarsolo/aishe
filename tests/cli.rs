@@ -2803,3 +2803,26 @@ fn closing_stdout_early_does_not_panic() {
         assert!(!stderr.contains("Broken pipe"), "{args}: {stderr}");
     }
 }
+
+#[test]
+fn user_input_errors_are_cli_coded_with_exit_2() {
+    let home = temp_config_home();
+    for args in [
+        vec!["--connection", "nope", "status"],
+        vec!["connection", "show", "nope"],
+        vec!["connection", "use", "nope"],
+        vec!["provider", "nope"],
+        vec!["session", "show", "nope"],
+        vec!["task", "show", "nope"],
+    ] {
+        let assertion = Command::cargo_bin("aishe")
+            .unwrap()
+            .env("AISHE_CONFIG_DIR", &home)
+            .args(&args)
+            .assert()
+            .code(2);
+        let stderr = String::from_utf8_lossy(&assertion.get_output().stderr).to_string();
+        assert!(stderr.contains("[cli."), "{args:?}: {stderr}");
+        assert!(!stderr.contains("support bundle"), "{args:?}: {stderr}");
+    }
+}

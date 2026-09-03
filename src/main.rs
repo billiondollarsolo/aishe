@@ -747,7 +747,7 @@ fn run() -> Result<u8> {
                     "Run `aishe provider test --live` or `aishe provider test --json`.",
                     None,
                 );
-                return Ok(1);
+                return Ok(aishe::user_error::ErrorNamespace::Cli.exit_code());
             }
             return Ok(aishe::cli::connection::set_or_show(
                 "provider",
@@ -913,7 +913,7 @@ fn run() -> Result<u8> {
                 "Install zsh, rerun AIShe, or use `aishe -c`; Bash users can evaluate `aishe init bash`.",
                 None,
             );
-            return Ok(1);
+            return Ok(aishe::user_error::ErrorNamespace::Cli.exit_code());
         }
         return aishe::pty::run_zsh(&config, &aishe::cli::history::history_paths(&config).1);
     }

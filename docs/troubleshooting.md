@@ -61,6 +61,9 @@ the action did not resolve the problem.
 | `config.invalid` | effective configuration could not be loaded | `aishe doctor`; repair the reported config file |
 | `io.operation_failed` | local path, permissions, or operating-system operation failed | `aishe doctor`; inspect the bounded details and correct the path/permissions |
 | `internal.unexpected` | no safer public domain classification was available | `aishe doctor`; if persistent, create and inspect a redacted support bundle |
+| `cli.unknown_connection` | a connection or provider id was not found in the active configuration | `aishe connection list`; use an exact id or label |
+| `cli.unknown_task` | the named task or session id does not exist | `aishe sessions`; resume an id from that list |
+| `cli.shell_required` | the command changes this shell's conversation and needs an AIShe shell | start `aishe`, then run the slash form |
 
 Error namespaces also define stable domain statuses for automation; see
 [Automation and machine-readable contracts](automation.md#error-document-v1).

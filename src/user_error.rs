@@ -28,6 +28,49 @@ pub const MAX_CODE_NAME_BYTES: usize = 64;
 const DEFAULT_MESSAGE: &str = "AIShe could not complete the request.";
 const DEFAULT_NEXT_ACTION: &str = "Run `aishe doctor` and retry.";
 
+/// An error caused by user input or an unsupported invocation. [`UserError::from_error`]
+/// keeps its namespace and code instead of classifying it as `internal.unexpected`
+/// with a support-bundle suggestion.
+#[derive(Debug)]
+pub struct UserFacing {
+    pub namespace: ErrorNamespace,
+    pub name: &'static str,
+    pub message: String,
+    pub next_action: &'static str,
+}
+
+impl fmt::Display for UserFacing {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+
+impl Error for UserFacing {}
+
+impl UserFacing {
+    pub fn new(
+        namespace: ErrorNamespace,
+        name: &'static str,
+        message: impl Into<String>,
+        next_action: &'static str,
+    ) -> anyhow::Error {
+        anyhow::Error::new(Self {
+            namespace,
+            name,
+            message: message.into(),
+            next_action,
+        })
+    }
+
+    pub fn cli(
+        name: &'static str,
+        message: impl Into<String>,
+        next_action: &'static str,
+    ) -> anyhow::Error {
+        Self::new(ErrorNamespace::Cli, name, message, next_action)
+    }
+}
+
 /// Stable public error domains. The namespace determines the process exit code;
 /// adding a new error within a namespace does not change script behavior.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -265,6 +308,20 @@ impl UserError {
     /// redacted contract instead of falling back to ad hoc stderr.
     pub fn from_error(source: &(dyn Error + 'static)) -> Self {
         let chain = source_chain(source);
+        let mut current: Option<&(dyn Error + 'static)> = Some(source);
+        while let Some(candidate) = current {
+            if let Some(facing) = candidate.downcast_ref::<UserFacing>() {
+                return Self::classified(
+                    facing.namespace,
+                    facing.name,
+                    &facing.message,
+                    facing.next_action,
+                )
+                .expect("user-facing error code is valid")
+                .with_detail(chain);
+            }
+            current = candidate.source();
+        }
         let lower = chain.to_ascii_lowercase();
         let (namespace, name, message, next_action, retryable) = if contains_any(
             &lower,
@@ -703,6 +760,25 @@ mod tests {
 
     fn code(namespace: ErrorNamespace, name: &str) -> UserErrorCode {
         UserErrorCode::new(namespace, name).unwrap()
+    }
+
+
+    #[test]
+    fn user_facing_errors_keep_their_namespace_through_from_error() {
+        let error = UserFacing::cli(
+            "unknown_connection",
+            "Unknown connection or provider 'nope'.",
+            "Run `aishe connection list` to see the available ids.",
+        );
+        let public = UserError::from_error(error.as_ref());
+        assert_eq!(public.code().to_string(), "cli.unknown_connection");
+        assert_eq!(public.exit_code(), 2);
+        assert!(!public.render_text().contains("support bundle"));
+        let wrapped = error.context("selecting a connection");
+        assert_eq!(
+            UserError::from_error(wrapped.as_ref()).code().to_string(),
+            "cli.unknown_connection"
+        );
     }
 
     #[test]

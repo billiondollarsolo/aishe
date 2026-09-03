@@ -166,7 +166,11 @@ pub fn browse(config: &Config, json_output: bool) -> Result<u8> {
 
 pub fn reset(config: &Config) -> Result<u8> {
     if std::env::var_os("AISHE_SHELL_ID").is_none() {
-        anyhow::bail!("`aishe reset` must run inside an active AIShe shell");
+        return Err(crate::user_error::UserFacing::cli(
+            "shell_required",
+            "`aishe reset` only works inside an AIShe shell.",
+            "Start `aishe`, then run `/reset`.",
+        ));
     }
     let shell_id = crate::agent::controller::current_shell_id()?;
     let workspace = std::env::current_dir().context("resolving the current workspace")?;
@@ -268,7 +272,11 @@ pub fn command(config: &Config, command: &Action) -> Result<u8> {
 
 fn fork_managed(config: &Config, id: Option<&str>) -> Result<u8> {
     if std::env::var_os("AISHE_SHELL_ID").is_none() {
-        anyhow::bail!("`aishe session fork` must run inside an active AIShe shell");
+        return Err(crate::user_error::UserFacing::cli(
+            "shell_required",
+            "`aishe session fork` only works inside an AIShe shell.",
+            "Start `aishe`, then run `/fork`.",
+        ));
     }
     let shell_id = crate::agent::controller::current_shell_id()?;
     let cwd = crate::backend::opencode::session::SessionStore::resolve_workspace(

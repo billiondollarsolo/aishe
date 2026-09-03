@@ -1289,7 +1289,11 @@ impl Config {
             .collect();
         match matches.as_slice() {
             [id] => Ok((*id).clone()),
-            [] => anyhow::bail!("unknown connection or provider '{value}'"),
+            [] => Err(crate::user_error::UserFacing::cli(
+                "unknown_connection",
+                format!("Unknown connection or provider '{value}'."),
+                "Run `aishe connection list` to see the available ids.",
+            )),
             _ => anyhow::bail!(
                 "'{value}' matches multiple connections: {}",
                 matches

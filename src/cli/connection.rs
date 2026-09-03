@@ -238,14 +238,10 @@ pub fn model(
         if let Some(connection) = requested_connection {
             let id = match selected.resolve_connection_id(connection) {
                 Ok(id) => id,
-                Err(error) => {
-                    eprintln!("aishe: {error}");
-                    return 1;
-                }
+                Err(error) => return crate::cli::error_contract::emit_from(error.as_ref()),
             };
             if let Err(error) = selected.select_connection(&id) {
-                eprintln!("aishe: {error}");
-                return 1;
+                return crate::cli::error_contract::emit_from(error.as_ref());
             }
         }
         if let Some(value) = value {
@@ -808,14 +804,10 @@ pub fn set_or_show(field: &str, value: Option<&str>, effective: &Config) -> u8 {
         "provider" => {
             let id = match cfg.resolve_connection_id(value) {
                 Ok(id) => id,
-                Err(error) => {
-                    eprintln!("aishe: {error}");
-                    return 1;
-                }
+                Err(error) => return crate::cli::error_contract::emit_from(error.as_ref()),
             };
             if let Err(error) = cfg.select_connection(&id) {
-                eprintln!("aishe: {error}");
-                return 1;
+                return crate::cli::error_contract::emit_from(error.as_ref());
             }
         }
         "scope" => {

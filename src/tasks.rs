@@ -402,6 +402,17 @@ pub fn load(id: &str) -> Result<Record> {
 }
 
 fn load_path(path: &Path) -> Result<Record> {
+    if !path.exists() {
+        let id = path
+            .file_stem()
+            .and_then(|stem| stem.to_str())
+            .unwrap_or("unknown");
+        return Err(crate::user_error::UserFacing::cli(
+            "unknown_task",
+            format!("No task or session '{id}'."),
+            "Run `aishe sessions` to list what can be resumed.",
+        ));
+    }
     let record: Record = serde_json::from_slice(
         &std::fs::read(path).with_context(|| format!("reading task {}", path.display()))?,
     )?;

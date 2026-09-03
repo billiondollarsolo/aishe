@@ -172,8 +172,12 @@ pub fn coverage() -> (usize, usize) {
     )
 }
 
-pub fn emit_from(source: &(dyn Error + 'static)) {
-    eprintln!("{}", UserError::from_error(source).render_text());
+/// Print the classified error and return its contract exit code, so callers
+/// that hand back a `u8` cannot drift from the documented namespace codes.
+pub fn emit_from(source: &(dyn Error + 'static)) -> u8 {
+    let error = UserError::from_error(source);
+    eprintln!("{}", error.render_text());
+    error.exit_code()
 }
 
 pub fn emit_classified(
@@ -248,6 +252,9 @@ mod tests {
             "config.invalid",
             "io.operation_failed",
             "internal.unexpected",
+            "cli.unknown_connection",
+            "cli.unknown_task",
+            "cli.shell_required",
         ];
         for code in codes {
             let row = format!("| `{code}` |");
