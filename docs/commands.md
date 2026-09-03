@@ -161,56 +161,64 @@ is **task-first** (not a raw dump of every flag). Topics:
 
 The following block is rendered from the same command registry as zsh/bash
 dispatch and the top-level CLI, and is guarded by an exact-conformance test.
-“This shell by default” means the interactive picker or slash form is local
-unless its save/default flow is used.
+The State/effect column uses one six-value vocabulary:
+
+| Effect | Meaning |
+|---|---|
+| read-only | prints and exits |
+| this shell | changes this shell session only |
+| this shell · --default saves | changes this shell; `--default` also writes `config.toml` |
+| saves config | writes `config.toml` |
+| conversation | changes the active conversation or its sessions |
+| runs agent / edits files | runs an agent, executes commands, or edits files |
 
 <!-- BEGIN GENERATED COMMAND SURFACE -->
 | Slash command | Purpose | State/effect |
 |---|---|---|
 | `/help, /commands [TOPIC]` | Show task-oriented AIShe help | read-only |
-| `/connection, /provider [ID_OR_LABEL]` | Inspect or switch the active account connection | this shell by default |
+| `/connection, /provider [ID_OR_LABEL]` | Inspect or switch the active account connection | this shell · --default saves |
 | `/auth` | Show authentication state for the active connection | read-only |
-| `/model [MODEL]` | Inspect or select a model on the active connection | this shell by default |
-| `/mode [MODE [--default]…]` | Inspect or select suggest, auto, or yolo mode | may change state |
-| `/scope [SCOPE]` | Inspect or select workspace or host agent scope | durable; refreshes this shell |
-| `/network [allow\|deny]` | Inspect or select workspace-agent network policy | durable setting |
-| `/reasoning [LEVEL]` | Inspect or select reasoning effort | this shell by default |
+| `/model [MODEL]` | Inspect or select a model on the active connection | this shell · --default saves |
+| `/mode [MODE [--default]…]` | Inspect or select suggest, auto, or yolo mode | this shell |
+| `/scope [SCOPE]` | Inspect or select workspace or host agent scope | saves config |
+| `/network [allow\|deny]` | Inspect or select workspace-agent network policy | saves config |
+| `/reasoning [LEVEL]` | Inspect or select reasoning effort | this shell · --default saves |
 | `/details` | Toggle focused and detailed agent output for this shell | this shell |
 | `/status` | Show the effective connection, model, mode, scope, and usage | read-only |
 | `/usage` | Show token and estimated-cost usage | read-only |
 | `/log` | Show recent audit events and agent actions | read-only |
-| `/reset` | Start a fresh conversation without deleting the prior session | session |
-| `/settings` | Open the transactional settings editor | durable setting |
-| `/output [DENSITY]` | Inspect or save persistent agent transcript density | durable setting |
+| `/reset` | Start a fresh conversation without deleting the prior session | conversation |
+| `/settings` | Open the transactional settings editor | saves config |
+| `/output [DENSITY]` | Inspect or save persistent agent transcript density | saves config |
 | `/config` | Print the active AIShe configuration | read-only |
 | `/skills` | List model-invoked skills | read-only |
 | `/mcp` | List configured MCP tools and prompts | read-only |
-| `/palette` | Search AIShe actions from one focused menu | read-only |
-| `/agent [OPTIONS OBJECTIVE…]` | Launch a controlled foreground or background agent | may change state |
-| `/inbox` | Review agent work that needs attention | may change state |
-| `/sessions` | Browse, resume, inspect, or fork AI sessions | session |
-| `/resume [ID]` | Resume the latest interrupted task or a session by ID | session |
-| `/fork [SESSION_ID]` | Fork a managed conversation and switch this shell to it | session |
-| `/task [ACTION OPTIONS…]` | Start and manage isolated background agent tasks | may change state |
-| `/plan [TASK_ID]` | Inspect or edit a durable agent checklist | session |
-| `/replan [TASK_ID]` | Revise a checklist while retaining completed evidence | session |
-| `/context [OPTIONS…]` | Inspect exact model-visible local context and token estimates | may change state |
-| `/last [ACTION…]` | Explain, fix, retry, or clear the last shell failure | may change state |
-| `/role [ACTION OPTIONS…]` | Inspect or configure workload model roles | durable setting |
-| `/ask [OPTIONS QUESTION…]` | Ask a non-executing question with optional structured output | no effect |
-| `/index [OPTIONS…]` | Build or search the bounded repository index | may change state |
+| `/palette` | Search AIShe actions from one focused menu | runs agent / edits files |
+| `/agent [OPTIONS OBJECTIVE…]` | Launch a controlled foreground or background agent | runs agent / edits files |
+| `/inbox` | Review agent work that needs attention | runs agent / edits files |
+| `/sessions` | Browse, resume, inspect, or fork AI sessions | conversation |
+| `/resume [ID]` | Resume the latest interrupted task or a session by ID | conversation |
+| `/fork [SESSION_ID]` | Fork a managed conversation and switch this shell to it | conversation |
+| `/task [ACTION OPTIONS…]` | Start and manage isolated background agent tasks | runs agent / edits files |
+| `/plan [TASK_ID]` | Inspect or edit a durable agent checklist | conversation |
+| `/replan [TASK_ID]` | Revise a checklist while retaining completed evidence | conversation |
+| `/context [OPTIONS…]` | Inspect exact model-visible local context and token estimates | saves config |
+| `/last [ACTION…]` | Explain, fix, retry, or clear the last shell failure | runs agent / edits files |
+| `/role [ACTION OPTIONS…]` | Inspect or configure workload model roles | saves config |
+| `/ask [OPTIONS QUESTION…]` | Ask a non-executing question with optional structured output | runs agent / edits files |
+| `/index [OPTIONS…]` | Build or search the bounded repository index | runs agent / edits files |
 | `/capabilities` | Show capability evidence for the active model | read-only |
-| `/test [--live]` | Validate local UX or run paid live model/tool checks | read-only |
-| `/demo` | Run the safe guided first-session demonstration | session |
-| `/undo` | Undo the most recent journaled AI file change | may change state |
-| `/trust [PATH]` | Trust a project AIShe configuration, command, or skill | durable setting |
-| `/untrust [PATH]` | Remove trust from a project AIShe file | durable setting |
+| `/test [--live]` | Validate local UX or run paid live model/tool checks | runs agent / edits files |
+| `/demo` | Run the safe guided first-session demonstration | conversation |
+| `/undo` | Undo the most recent journaled AI file change | runs agent / edits files |
+| `/trust [PATH]` | Trust a project AIShe configuration, command, or skill | saves config |
+| `/untrust [PATH]` | Remove trust from a project AIShe file | saves config |
 
 Top-level CLI-only commands (no slash or hook form):
 
 | CLI command | Purpose | State/effect |
 |---|---|---|
-| `aishe hints [status [--json] \| reset]` | Inspect or reset local discovery-hint seen-state | may change state |
+| `aishe hints [status [--json] \| reset]` | Inspect or reset local discovery-hint seen-state | read-only |
 
 Removed names remain reserved for one compatibility window:
 

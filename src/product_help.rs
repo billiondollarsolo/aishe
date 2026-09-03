@@ -6,8 +6,7 @@
 use std::fmt::Write as _;
 
 use crate::command_surface::{
-    ArgumentPolicy, CommandSpec, Lifecycle, ShellLocalRequirement, SideEffectClass, Surface,
-    SurfaceSupport, COMMANDS,
+    ArgumentPolicy, CommandSpec, Lifecycle, Surface, SurfaceSupport, COMMANDS,
 };
 use crate::skills::Skill;
 
@@ -250,19 +249,7 @@ fn command_usage(spec: &CommandSpec) -> String {
 }
 
 pub fn effect_label(spec: &CommandSpec) -> &'static str {
-    match (spec.side_effects, spec.shell_local) {
-        (SideEffectClass::ReadOnly, _) => "read-only",
-        (SideEffectClass::ShellState, _) => "this shell",
-        (SideEffectClass::ConversationState, _) => "session",
-        (SideEffectClass::Credentials, _) => "credentials",
-        (SideEffectClass::PersistentConfig, ShellLocalRequirement::OptionalHandoff) => {
-            "durable; refreshes this shell"
-        }
-        (SideEffectClass::PersistentConfig, _) => "durable setting",
-        (SideEffectClass::Mixed, ShellLocalRequirement::OptionalHandoff) => "this shell by default",
-        (SideEffectClass::Mixed, _) => "may change state",
-        (SideEffectClass::None, _) => "no effect",
-    }
+    spec.effect.label()
 }
 
 fn append_terminal_commands(out: &mut String, topic: Option<&str>) {
@@ -511,6 +498,34 @@ pub fn looks_like_product_question(input: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn effect_labels_come_from_the_declared_effect() {
+        use crate::command_surface::{by_id, Effect};
+        for spec in COMMANDS.iter().filter(|spec| spec.is_active()) {
+            assert!(
+                [
+                    "read-only",
+                    "this shell",
+                    "this shell · --default saves",
+                    "saves config",
+                    "conversation",
+                    "runs agent / edits files",
+                ]
+                .contains(&effect_label(spec)),
+                "unexpected effect label for {}",
+                spec.id
+            );
+        }
+        // The labels the old derivation got wrong.
+        assert_eq!(by_id("ask").unwrap().effect, Effect::RunsAgent);
+        assert_eq!(by_id("undo").unwrap().effect, Effect::RunsAgent);
+        assert_eq!(by_id("test").unwrap().effect, Effect::RunsAgent);
+        assert_eq!(by_id("scope").unwrap().effect, Effect::SavesConfig);
+        assert_eq!(by_id("output").unwrap().effect, Effect::SavesConfig);
+        assert_eq!(by_id("model").unwrap().effect, Effect::ThisShellOrDefault);
+        assert_eq!(by_id("status").unwrap().effect, Effect::ReadOnly);
+    }
 
     #[test]
     fn product_skill_is_loadable() {

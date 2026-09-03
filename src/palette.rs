@@ -2,7 +2,7 @@
 
 use anyhow::{Context, Result};
 
-use crate::command_surface::{Lifecycle, SideEffectClass};
+use crate::command_surface::Lifecycle;
 use crate::config::Config;
 
 #[derive(Clone, Debug, serde::Serialize)]
@@ -67,7 +67,7 @@ pub fn entries(_config: &Config) -> Vec<Entry> {
                     crate::product_help::effect_label(spec)
                 ),
                 invocation,
-                effect: effect(spec.side_effects).into(),
+                effect: spec.effect.label().into(),
                 available: true,
                 note: None,
             })
@@ -160,18 +160,6 @@ fn filtered<'a>(entries: &'a [Entry], query: &str) -> Vec<&'a Entry> {
         .into_iter()
         .filter_map(|label| entries.iter().find(|entry| entry.label == label))
         .collect()
-}
-
-fn effect(effect: SideEffectClass) -> &'static str {
-    match effect {
-        SideEffectClass::ReadOnly => "read_only",
-        SideEffectClass::ShellState => "shell_state",
-        SideEffectClass::PersistentConfig => "persistent_config",
-        SideEffectClass::Credentials => "credentials",
-        SideEffectClass::ConversationState => "conversation_state",
-        SideEffectClass::Mixed => "mixed",
-        SideEffectClass::None => "none",
-    }
 }
 
 #[cfg(test)]
