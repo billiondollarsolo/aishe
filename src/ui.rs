@@ -549,7 +549,15 @@ pub fn cell_width(value: &str) -> usize {
 /// Truncate to terminal cells without splitting an extended grapheme cluster.
 /// ANSI styling is intentionally removed: layout should happen before paint.
 pub fn truncate_cells(value: &str, width: usize) -> String {
-    truncate_cells_with(value, width, TerminalCapabilities::detect_stdout().glyphs())
+    truncate_cells_with(value, width, stdout_glyphs())
+}
+
+/// The stdout glyph policy, resolved once. Detection reads the environment and
+/// asks the terminal for its size; `truncate_cells` runs per row inside the
+/// picker frame, where that cost is the whole frame budget.
+pub fn stdout_glyphs() -> Glyphs {
+    static CACHE: std::sync::OnceLock<Glyphs> = std::sync::OnceLock::new();
+    *CACHE.get_or_init(|| TerminalCapabilities::detect_stdout().glyphs())
 }
 
 /// Truncate to `width` cells using the caller's glyph policy, so an ASCII
