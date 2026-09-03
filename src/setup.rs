@@ -2157,7 +2157,7 @@ fn prompt_rate(label: &str) -> Result<PromptResult<f64>> {
 
 fn choose_status_items(draft: &mut Draft) -> Result<bool> {
     let choices = vec![
-        "Compact — identity, mode, scope, session cost, requests".into(),
+        "Compact — model, mode, scope, usage".into(),
         "Detailed — identity, mode, scope, last/session tokens and costs, requests".into(),
         "Identity — connection, auth, model, reasoning, and selection only".into(),
         "Custom ordered fields…".into(),
@@ -2171,7 +2171,7 @@ fn choose_status_items(draft: &mut Draft) -> Result<bool> {
     )? {
         MenuResult::Selected(0) => {
             draft.config.aishe.status_line_items =
-                ["identity", "mode", "scope", "session_cost", "requests"]
+                ["model", "mode", "scope", "session_tokens", "session_cost", "requests"]
                 .into_iter()
                 .map(str::to_string)
                 .collect();

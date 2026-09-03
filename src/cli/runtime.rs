@@ -612,6 +612,17 @@ fn record_managed_usage(outcome: &TurnOutcome, config: &Config) {
                     format!("context {} tok", crate::usage::group(tokens)),
                 ));
             }
+            if let Some(connection) = config.active_connection() {
+                if let crate::config::ConnectionAuth::OAuth { profile } = &connection.auth {
+                    if let Some(provider) =
+                        crate::oauth::OAuthProvider::from_base_url(&connection.settings.base_url)
+                    {
+                        if let Some(usage) = crate::oauth::plan_usage(provider, profile) {
+                            metadata.push(("plan", usage.summary));
+                        }
+                    }
+                }
+            }
             crate::usagelog::merge_status(std::path::Path::new(&status_path), &metadata);
         }
     }

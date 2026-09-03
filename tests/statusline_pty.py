@@ -236,6 +236,20 @@ def run_case(position, cols, expected_position=None):
                 "%s statusline did not refresh metrics:\n%s"
                 % (position, shell.transcript[-2500:])
             )
+        else:
+            shell.send(
+                "! print -r -- $'plan\\tweek 82% left' >> $AISHE_STATUS_FILE; "
+                "export AISHE_AUTH_KIND=oauth; AISHE_STATUS_ITEMS+=,plan; aishe_set_prompt; "
+                "[[ $_AISHE_STATUS_TEXT == *'week 82% left'* && "
+                "$_AISHE_STATUS_TEXT != *'session '* && "
+                "$_AISHE_STATUS_TEXT != *' req'* ]] && "
+                "print -r -- QUOTA_FILTER_''OK"
+            )
+            if not shell.expect("QUOTA_FILTER_OK"):
+                raise AssertionError(
+                    "subscription quota did not replace token/request noise:\n%s"
+                    % shell.transcript[-2500:]
+                )
         shell.send("export AISHE_FAKE_LLM=; exit")
         shell.drain(1)
         print("  ok   statusline %s (%d columns)" % (position, cols))

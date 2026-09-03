@@ -106,8 +106,6 @@ if [[ -o interactive && "${AISHE_PTY_PROMPT:-1}" == 1 ]]; then
         plan)
           if [[ -n "${AISHE_PLAN_LABEL:-}" ]]; then
             value="${AISHE_PLAN_LABEL}"
-          elif [[ "${AISHE_AUTH_KIND:-}" == oauth ]]; then
-            value="plan"
           else
             value="${metrics[plan]:-}"
           fi
@@ -121,6 +119,10 @@ if [[ -o interactive && "${AISHE_PTY_PROMPT:-1}" == 1 ]]; then
       for (( i = 1; i <= ${#item_values}; i++ )); do
         value="${item_values[$i]}"
         field="${item_keys[$i]}"
+        if [[ "${AISHE_AUTH_KIND:-}" == oauth && -n "${metrics[plan]:-}" &&
+              "$field" == (last_tokens|last_cost|session_tokens|session_cost|requests) ]]; then
+          continue
+        fi
         [[ -n "$value" ]] || continue
         case "$field" in
           reasoning) value="reason:$value" ;;

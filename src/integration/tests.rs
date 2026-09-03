@@ -112,7 +112,7 @@ fn generated_shell_artifacts_match_the_reviewed_byte_snapshots() {
         (
             "wrapper zshrc",
             wrapper_zshrc(),
-            "8b1f6dbaedd60ae04523b8fafd3d0a86e5e854eed86ef881c4f42d4859c7a7a9",
+            "9255c414c185d07ce35e448a789cdd649dc38cc84fa14e9c5b2d312f5dece218",
         ),
     ] {
         assert_eq!(digest(&rendered), expected, "unexpected {name} byte drift");

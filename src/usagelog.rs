@@ -244,9 +244,8 @@ fn status_values_for_connection(
                 total.requests,
                 if total.requests == 1 { "" } else { "s" }
             )),
-            // Subscription marker / future quota text. Shell also reads
-            // AISHE_PLAN_LABEL; this keeps the metric file self-describing.
-            "plan" => Some("plan".into()),
+            // Subscription quota is merged only from an authoritative provider.
+            "plan" => None,
             // model/mode/auth/connection are handled in the parent shell;
             // unknown fields are ignored for forward/backward compatibility.
             _ => None,

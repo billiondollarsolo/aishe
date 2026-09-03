@@ -220,15 +220,10 @@ fn run_zsh_inner(config: &Config, history_log: &std::path::Path, shell_id: Strin
         "AISHE_PROTECTED_PATTERNS",
         config.sandbox.protected_environment_patterns.join(":"),
     );
-    let oauth_plan = config.active_connection().and_then(|connection| {
-        let crate::config::ConnectionAuth::OAuth { profile } = &connection.auth else {
-            return None;
-        };
-        let provider = crate::oauth::OAuthProvider::from_base_url(&connection.settings.base_url)?;
-        Some(crate::oauth::plan_status_label(provider, profile))
-    });
-    if let Some(plan) = oauth_plan {
-        cmd.env("AISHE_PLAN_LABEL", plan);
+    if config
+        .active_connection()
+        .is_some_and(crate::config::ConnectionConfig::uses_oauth)
+    {
         cmd.env("AISHE_AUTH_KIND", "oauth");
     } else {
         cmd.env("AISHE_AUTH_KIND", "key");

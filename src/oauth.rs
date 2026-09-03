@@ -8,9 +8,11 @@
 use std::collections::BTreeMap;
 use std::fmt;
 use std::fs;
-use std::io::{IsTerminal, Read};
+use std::io::{BufRead, BufReader, IsTerminal, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use anyhow::{Context, Result};
 use clap::ValueEnum;
@@ -325,27 +327,151 @@ pub fn logout_profile(provider: OAuthProvider, profile: &str) -> Result<bool> {
     Ok(removed)
 }
 
-/// Optional plan-quota summary for subscription OAuth accounts.
-///
-/// ChatGPT/Codex and SuperGrok do not currently expose a stable, documented
-/// remaining 5-hour / weekly window through the managed OpenCode path AIShe
-/// uses. When a reliable signal appears, implement it here and surface it via
-/// the statusline `plan` item. Until then returns `None` so the UI shows a
-/// plain `plan` marker instead of inventing percentages.
+/// Optional authoritative quota summary for subscription OAuth accounts.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PlanUsage {
     pub summary: String,
 }
 
-pub fn plan_usage(_provider: OAuthProvider, _profile: &str) -> Option<PlanUsage> {
-    None
+pub fn plan_usage(provider: OAuthProvider, profile: &str) -> Option<PlanUsage> {
+    (provider == OAuthProvider::Openai)
+        .then(|| codex_plan_usage(profile).ok().flatten())
+        .flatten()
 }
 
-/// Compact statusline fragment for an OAuth connection (`plan` or future quota).
-pub fn plan_status_label(provider: OAuthProvider, profile: &str) -> String {
-    plan_usage(provider, profile)
-        .map(|usage| usage.summary)
-        .unwrap_or_else(|| "plan".into())
+fn codex_plan_usage(profile: &str) -> Result<Option<PlanUsage>> {
+    let values = load_from(&path_for(OAuthProvider::Openai, profile)?)?;
+    let Some(auth) = values.as_ref().and_then(|v| v.get("openai")) else {
+        return Ok(None);
+    };
+    let Some(access) = auth.get("access").and_then(Value::as_str) else {
+        return Ok(None);
+    };
+    let Some(account) = auth.get("accountId").and_then(Value::as_str) else {
+        return Ok(None);
+    };
+    if auth
+        .get("expires")
+        .and_then(Value::as_u64)
+        .is_some_and(|expires| expires <= now_ms())
+    {
+        return Ok(None);
+    }
+
+    let codex_home = std::env::temp_dir().join(format!(
+        "aishe-codex-quota-{}-{}",
+        std::process::id(),
+        rand::random::<u64>()
+    ));
+    fs::create_dir(&codex_home)?;
+    crate::config::set_private_dir(&codex_home);
+    let mut child = Command::new("codex")
+        .arg("app-server")
+        .env("CODEX_HOME", &codex_home)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()?;
+    let mut stdin = child
+        .stdin
+        .take()
+        .context("opening Codex app-server stdin")?;
+    let stdout = child
+        .stdout
+        .take()
+        .context("opening Codex app-server stdout")?;
+    let child = Arc::new(Mutex::new(child));
+    let deadline = Arc::clone(&child);
+    std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_secs(5));
+        if let Ok(mut child) = deadline.lock() {
+            let _ = child.kill();
+        }
+    });
+
+    let result = (|| -> Result<Option<PlanUsage>> {
+        let init = serde_json::json!({"method":"initialize","id":0,"params":{
+            "clientInfo":{"name":"aishe","title":"AIShe","version":env!("CARGO_PKG_VERSION")},
+            "capabilities":{"experimentalApi":true}
+        }});
+        let login = serde_json::json!({"method":"account/login/start","id":1,"params":{
+            "type":"chatgptAuthTokens","accessToken":access,"chatgptAccountId":account
+        }});
+        for message in [
+            init,
+            serde_json::json!({"method":"initialized","params":{}}),
+            login,
+        ] {
+            writeln!(stdin, "{message}")?;
+        }
+        stdin.flush()?;
+        let mut reader = BufReader::new(stdout);
+        let login = read_app_server_response(&mut reader, 1)?;
+        if login.get("error").is_some_and(|value| !value.is_null()) {
+            return Ok(None);
+        }
+        writeln!(
+            stdin,
+            "{}",
+            serde_json::json!({"method":"account/rateLimits/read","id":2,"params":{}})
+        )?;
+        stdin.flush()?;
+        let response = read_app_server_response(&mut reader, 2)?;
+        Ok(parse_codex_plan(&response, account))
+    })();
+
+    if let Ok(mut child) = child.lock() {
+        let _ = child.kill();
+        let _ = child.wait();
+    }
+    let _ = fs::remove_dir_all(codex_home);
+    result
+}
+
+fn read_app_server_response(reader: &mut impl BufRead, id: u64) -> Result<Value> {
+    let mut line = String::new();
+    loop {
+        line.clear();
+        if reader.read_line(&mut line)? == 0 {
+            anyhow::bail!("Codex app-server closed before response {id}");
+        }
+        let value: Value = serde_json::from_str(&line)?;
+        if value.get("id").and_then(Value::as_u64) == Some(id) {
+            return Ok(value);
+        }
+    }
+}
+
+fn parse_codex_plan(response: &Value, account: &str) -> Option<PlanUsage> {
+    let result = response.get("result")?;
+    (result.get("accountId")?.as_str()? == account).then_some(())?;
+    let limits = result.get("rateLimits")?;
+    let mut windows = [limits.get("primary"), limits.get("secondary")]
+        .into_iter()
+        .flatten()
+        .filter_map(|window| {
+            let used = window.get("usedPercent")?.as_f64()?;
+            let minutes = window.get("windowDurationMins")?.as_u64()?;
+            let label = match minutes {
+                300 => "5h".to_string(),
+                10_080 => "week".to_string(),
+                value if value % 60 == 0 => format!("{}h", value / 60),
+                value => format!("{value}m"),
+            };
+            Some((
+                minutes,
+                format!("{label} {:.0}% left", (100.0 - used).clamp(0.0, 100.0)),
+            ))
+        })
+        .collect::<Vec<_>>();
+    windows.sort_by_key(|window| window.0);
+    (!windows.is_empty()).then(|| PlanUsage {
+        summary: windows
+            .into_iter()
+            .map(|window| window.1)
+            .collect::<Vec<_>>()
+            .join(" · "),
+    })
 }
 
 fn status_from(file: &Path, provider: OAuthProvider, profile: &str) -> Result<OAuthStatus> {
@@ -483,6 +609,22 @@ fn now_ms() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn codex_quota_uses_remaining_percent_and_real_window_lengths() {
+        let response = serde_json::json!({"result": {
+            "accountId": "acct-1",
+            "rateLimits": {
+                "primary": {"usedPercent": 39, "windowDurationMins": 300},
+                "secondary": {"usedPercent": 14, "windowDurationMins": 10080}
+            }
+        }});
+        assert_eq!(
+            parse_codex_plan(&response, "acct-1").unwrap().summary,
+            "5h 61% left · week 86% left"
+        );
+        assert!(parse_codex_plan(&response, "another-account").is_none());
+    }
 
     fn file(label: &str) -> PathBuf {
         std::env::temp_dir().join(format!(

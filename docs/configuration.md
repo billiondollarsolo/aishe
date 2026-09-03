@@ -92,7 +92,7 @@ brevity. Read `~/.config/aishe/...` as `<config>/...` and
 | `show_usage` | bool | `true` | Record and display model-call usage in the interactive session. |
 | `status_line` | bool | `true` | Enable the branded prompt's live status display. |
 | `status_line_position` | string | `below` | Status placement: `below` or `off`; legacy `right` values load as `below`. |
-| `status_line_items` | array | `["connection","model","mode","scope","branch","environment","session_cost","requests","tasks"]` | Ordered fields. `identity` is the compact safe connection/account, provider endpoint, model, and reasoning disclosure without repeated auth/profile text. Individual identity fields plus `backend`, `branch`, `environment`, `task`, `tasks`, `elapsed`, `context`, token/cost, requests, network, sandbox, and plan are available. |
+| `status_line_items` | array | `["model","mode","scope","session_tokens","session_cost","requests"]` | Ordered fields. Subscription OAuth hides cost and shows authoritative quota windows when its provider exposes them; unavailable quota is omitted. `identity` and individual connection fields remain available for diagnostics or custom layouts. |
 | `budget_usd` | float | `0.0` | Stop calling the model past this session cost. `0` = unlimited. |
 | `memory` | bool | `true` | Remember recent natural-language turns so follow-ups have context. Clear at the aishe prompt with `reset`. |
 | `cache` | bool | `true` | Cache identical native suggest-mode responses briefly so repeats are instant and free. Configure through `aishe settings` or this file. |

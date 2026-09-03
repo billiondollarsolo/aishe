@@ -567,17 +567,29 @@ impl Config {
             .active_connection()
             .is_some_and(ConnectionConfig::uses_oauth);
         let mut items = self.aishe.status_line_items.clone();
+        if items.iter().map(String::as_str).eq([
+            "identity",
+            "mode",
+            "scope",
+            "session_cost",
+            "requests",
+        ]) || items.iter().map(String::as_str).eq([
+            "connection",
+            "model",
+            "mode",
+            "scope",
+            "branch",
+            "environment",
+            "session_cost",
+            "requests",
+            "tasks",
+        ]) {
+            items = default_status_line_items();
+        }
         if !oauth {
             return items;
         }
         items.retain(|item| !matches!(item.as_str(), "last_cost" | "session_cost"));
-        let has_account = items
-            .iter()
-            .any(|item| matches!(item.as_str(), "auth" | "connection" | "identity"));
-        if !has_account {
-            // Connection label is "Codex - OAuth · work" / "Grok - OAuth · …".
-            items.insert(0, "connection".into());
-        }
         if !items
             .iter()
             .any(|item| matches!(item.as_str(), "model" | "identity"))
@@ -700,15 +712,12 @@ fn default_hook_timeout_secs() -> u32 {
 }
 fn default_status_line_items() -> Vec<String> {
     vec![
-        "connection".to_string(),
         "model".to_string(),
         "mode".to_string(),
         "scope".to_string(),
-        "branch".to_string(),
-        "environment".to_string(),
+        "session_tokens".to_string(),
         "session_cost".to_string(),
         "requests".to_string(),
-        "tasks".to_string(),
     ]
 }
 fn default_protected_environment_patterns() -> Vec<String> {
@@ -1956,11 +1965,7 @@ mod tests {
             "Codex - OAuth · work"
         );
         let items = cfg.effective_status_line_items();
-        assert!(
-            items.contains(&"connection".into())
-                || items.contains(&"identity".into())
-                || items.contains(&"auth".into())
-        );
+        assert!(!items.contains(&"connection".into()));
         assert!(!items
             .iter()
             .any(|item| item == "last_cost" || item == "session_cost"));
