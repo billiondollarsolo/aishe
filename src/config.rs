@@ -1018,7 +1018,21 @@ impl Config {
             // never materialize an unverified default configuration as a side
             // effect of trying to run another command.
             if std::io::stdin().is_terminal() {
-                crate::setup::run(crate::setup::Options::default())?;
+                // The caller is about to launch the shell, so the epilogue must
+                // not print "Run: aishe"; pausing is a normal answer, not a
+                // broken configuration.
+                let outcome = crate::setup::run(crate::setup::Options {
+                    launch_follows: true,
+                    ..crate::setup::Options::default()
+                })?;
+                if !outcome.applied {
+                    return Err(crate::user_error::UserFacing::new(
+                        crate::user_error::ErrorNamespace::Config,
+                        "setup_incomplete",
+                        "Setup was paused before a configuration was saved.",
+                        "Run `aishe setup --resume` to continue, or `aishe setup --restart` to start over.",
+                    ));
+                }
                 return Self::load_quiet()?.context("setup did not create a configuration");
             } else {
                 anyhow::bail!(

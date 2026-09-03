@@ -64,6 +64,7 @@ the action did not resolve the problem.
 | `cli.unknown_connection` | a connection or provider id was not found in the active configuration | `aishe connection list`; use an exact id or label |
 | `cli.unknown_task` | the named task or session id does not exist | `aishe sessions`; resume an id from that list |
 | `cli.shell_required` | the command changes this shell's conversation and needs an AIShe shell | start `aishe`, then run the slash form |
+| `config.setup_incomplete` | setup was paused before it wrote a configuration | `aishe setup --resume`, or `aishe setup --restart` to begin again |
 
 Error namespaces also define stable domain statuses for automation; see
 [Automation and machine-readable contracts](automation.md#error-document-v1).

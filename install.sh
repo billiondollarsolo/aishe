@@ -7,13 +7,15 @@
 # Environment overrides:
 #   AISHE_VERSION   release tag to install (default: latest), e.g. v0.1.5
 #   AISHE_RELEASE_BASE_URL  release root override for mirrors/tests
-#   AISHE_BIN_DIR   install directory (default: /usr/local/bin, or ~/.local/bin
-#                   if that is not writable)
+#   AISHE_BIN_DIR   install directory (default: a writable Homebrew bin already
+#                   on PATH, else /usr/local/bin, else ~/.local/bin)
 #   AISHE_SKIP_ZSH  set to 1 to skip ensuring zsh is installed
 #   AISHE_SKIP_BACKEND set to 1 to install only the Aishe binary
 #   AISHE_RUNTIME_BASE_URL pinned-runtime mirror base URL
 #   AISHE_RUNTIME_FILE approved local pinned-runtime archive
 #   AISHE_INSTALL_SYSTEM_DEPS set to 1 to authorize zsh package installation
+#   AISHE_CONFIG_DIR  configuration directory override (see `aishe doctor`)
+#   AISHE_DATA_DIR    data directory override (history, runtime, sessions)
 # Arguments:
 #   --setup         run interactive setup after a fresh/updated install (TTY only)
 #
@@ -39,6 +41,31 @@ done
 
 err() { printf 'aishe-install: %s\n' "$1" >&2; exit 1; }
 note() { printf 'aishe-install: %s\n' "$1" >&2; }
+
+# Pick the install directory: explicit override, then a writable Homebrew bin
+# that is already on PATH (the usual arm64 macOS case, where /usr/local/bin does
+# not exist), then /usr/local/bin, then ~/.local/bin.
+choose_bindir() {
+  if [ -n "${AISHE_BIN_DIR:-}" ]; then printf '%s\n' "$AISHE_BIN_DIR"; return; fi
+  brew_bin="${AISHE_HOMEBREW_BIN:-/opt/homebrew/bin}"
+  case ":$PATH:" in
+    *":$brew_bin:"*)
+      if [ -d "$brew_bin" ] && [ -w "$brew_bin" ]; then printf '%s\n' "$brew_bin"; return; fi
+      ;;
+  esac
+  if [ -w /usr/local/bin ] 2>/dev/null || [ "$(id -u)" = "0" ]; then
+    printf '%s\n' /usr/local/bin
+    return
+  fi
+  printf '%s\n' "$HOME/.local/bin"
+}
+
+# Sourced by tests/installer_bindir.sh to exercise choose_bindir alone.
+# shellcheck disable=SC2317  # reached only when this file is sourced
+if [ "${AISHE_INSTALL_LIB_ONLY:-0}" = 1 ]; then
+  return 0 2>/dev/null || exit 0
+fi
+
 
 # Inventory only metadata (file count + allocated size), never names or
 # contents. This is proof that an update does not use config/data as scratch.
@@ -195,15 +222,7 @@ if [ "$want_fmt" = "Mach-O" ] && [ "$got_fmt" = "ELF" ]; then
 fi
 
 # --- choose an install dir --------------------------------------------------
-if [ -n "${AISHE_BIN_DIR:-}" ]; then
-  bindir="$AISHE_BIN_DIR"
-elif [ -w /usr/local/bin ] 2>/dev/null; then
-  bindir="/usr/local/bin"
-elif [ "$(id -u)" = "0" ]; then
-  bindir="/usr/local/bin"
-else
-  bindir="$HOME/.local/bin"
-fi
+bindir="$(choose_bindir)"
 mkdir -p "$bindir"
 
 existing=0
@@ -266,13 +285,6 @@ else
 fi
 state_inventory "config after install (preserved)" "$config_state"
 state_inventory "data after install (user state preserved; runtime may be added)" "$data_state"
-case ":$PATH:" in
-  *":$bindir:"*) : ;;
-  *)
-    note "$bindir is not on your PATH"
-    note "run: export PATH=\"$bindir:\$PATH\""
-    ;;
-esac
 
 # Best-effort man page: `aishe man` emits a roff page; install it if a standard
 # man dir is writable (system, then the per-user fallback). Never fatal.
@@ -304,7 +316,7 @@ if [ "$os" = "Linux" ] && ! command -v bwrap >/dev/null 2>&1; then
   fi
 fi
 
-if [ "$existing" = 1 ]; then
+if [ "$existing" = 1 ] && [ "$RUN_SETUP" != 1 ]; then
   note "Run \`aishe doctor\` to verify the upgraded installation."
 elif [ "$RUN_SETUP" = 1 ]; then
   note "starting guided setup"
@@ -319,6 +331,15 @@ if [ "$RUN_SETUP" = 1 ]; then
   if [ -t 1 ] && [ -r /dev/tty ] && [ -w /dev/tty ]; then
     "$bindir/aishe" setup </dev/tty
   else
-    err "--setup requires a terminal; install completed, run '$bindir/aishe setup' in a terminal"
+    note "--setup skipped: no terminal attached. Run '$bindir/aishe setup' from a terminal."
   fi
 fi
+
+case ":$PATH:" in
+  *":$bindir:"*) : ;;
+  *)
+    note "$bindir is not on your PATH. Add it to your shell rc:"
+    note "  export PATH=\"$bindir:\$PATH\""
+    note "until then, start AIShe with: $bindir/aishe"
+    ;;
+esac

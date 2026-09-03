@@ -104,6 +104,7 @@ fn run() -> Result<u8> {
     // to create, repair, or verify the config without invoking a legacy wizard.
     if let Some(Cmd::Setup(setup)) = &args.cmd {
         let outcome = match aishe::setup::run(aishe::setup::Options {
+            launch_follows: false,
             resume: setup.resume,
             restart: setup.restart,
             verify_only: setup.verify,

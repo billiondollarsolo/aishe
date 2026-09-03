@@ -255,6 +255,7 @@ mod tests {
             "cli.unknown_connection",
             "cli.unknown_task",
             "cli.shell_required",
+            "config.setup_incomplete",
         ];
         for code in codes {
             let row = format!("| `{code}` |");

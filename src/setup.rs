@@ -196,6 +196,9 @@ fn oauth_subscription_choice(provider: crate::oauth::OAuthProvider) -> &'static 
 
 #[derive(Clone, Debug, Default)]
 pub struct Options {
+    /// The caller launches the AIShe shell as soon as setup applies, so the
+    /// epilogue must not tell the user to run `aishe`.
+    pub launch_follows: bool,
     pub resume: bool,
     pub restart: bool,
     pub verify_only: bool,
@@ -229,6 +232,23 @@ pub struct Outcome {
     pub config_path: PathBuf,
     pub backup: Option<PathBuf>,
     pub report: Option<Report>,
+}
+
+/// What to do next once setup has applied. When the caller launches the shell
+/// itself, "Run: aishe" would be wrong: the shell is already starting.
+pub fn completion_next_steps(launch_follows: bool) -> String {
+    let mut out = String::from("\n");
+    if launch_follows {
+        out.push_str("  Starting your shell…\n");
+    } else {
+        out.push_str("  Run: aishe\n");
+    }
+    out.push_str("  Inside AIShe:\n");
+    out.push_str("    git status                 runs in zsh\n");
+    out.push_str("    explain this repository    asks the agent\n");
+    out.push_str("    ? install kubectl please   asks the agent, not /usr/bin/install\n");
+    out.push_str("\n  Run `aishe tour` when you are ready.\n");
+    out
 }
 
 pub fn run(options: Options) -> Result<Outcome> {
@@ -1545,13 +1565,7 @@ fn run_interactive(options: Options) -> Result<Outcome> {
                 {
                     crate::tour::run(crate::tour::Options::default())?;
                 } else {
-                    println!();
-                    println!("  Run: aishe");
-                    println!("  Inside AIShe:");
-                    println!("    git status                 runs in zsh");
-                    println!("    explain this repository    asks the agent");
-                    println!();
-                    println!("  Run `aishe tour` when you are ready.");
+                    print!("{}", completion_next_steps(options.launch_follows));
                 }
                 return Ok(Outcome {
                     exit_code: EXIT_OK,
@@ -3114,5 +3128,21 @@ mod tests {
         assert!(!config.exists());
         assert!(!credentials.exists());
         std::fs::remove_dir_all(root).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod epilogue_tests {
+    use super::completion_next_steps;
+
+    #[test]
+    fn epilogue_matches_what_happens_next() {
+        let launching = completion_next_steps(true);
+        assert!(launching.contains("Starting your shell"));
+        assert!(!launching.contains("Run: aishe"));
+        // The ? prefix is the trap the README calls out; name it where the
+        // user is about to hit it.
+        assert!(launching.contains("? install kubectl please"));
+        assert!(completion_next_steps(false).contains("Run: aishe"));
     }
 }
