@@ -23,14 +23,14 @@ _aishe_handle_nl() {
   [[ -z "$line" ]] && return
   case "${AISHE_MODE:-suggest}" in
     yolo)
-      AISHE_PENDING_FILE="$AISHE_PENDING_FILE" command aishe --yolo-line "$line" < /dev/tty > /dev/tty 2>&1
+      AISHE_PENDING_FILE="$AISHE_PENDING_FILE" command aishe --yolo-line "$line" <&$_AISHE_INPUT_FD
       ;;
     auto)
-      AISHE_PENDING_FILE="$AISHE_PENDING_FILE" command aishe --auto-line "$line" < /dev/tty > /dev/tty 2>&1
+      AISHE_PENDING_FILE="$AISHE_PENDING_FILE" command aishe --auto-line "$line" <&$_AISHE_INPUT_FD
       ;;
     *)
       local cmd
-      cmd="$(command aishe --suggest-line "$line" 2> /dev/tty)"
+      cmd="$(command aishe --suggest-line "$line")"
       [[ -n "$cmd" ]] && printf 'fill\n%s\n' "$cmd" > "$AISHE_PENDING_FILE"
       ;;
   esac
@@ -38,9 +38,9 @@ _aishe_handle_nl() {
 
 _aishe_show_auth() {
   if [[ -n "${AISHE_CONNECTION:-}" ]]; then
-    command aishe auth status --connection "$AISHE_CONNECTION" < /dev/tty > /dev/tty 2>&1
+    command aishe auth status --connection "$AISHE_CONNECTION" <&$_AISHE_INPUT_FD
   else
-    command aishe auth status < /dev/tty > /dev/tty 2>&1
+    command aishe auth status <&$_AISHE_INPUT_FD
   fi
 }
 
@@ -60,7 +60,7 @@ command_not_found_handler() {
     # Preserve absolute/relative path and custom/MCP slash precedence through
     # the canonical one-shot dispatcher. A missing path must not become model
     # input merely because zsh called command_not_found_handler for it.
-    command aishe -c "$line" < /dev/tty > /dev/tty 2>&1
+    command aishe -c "$line" <&$_AISHE_INPUT_FD
     return $?
   fi
   _aishe_handle_nl "$line"
@@ -275,7 +275,7 @@ aishe-edit-command() {
   fi
   local original="$BUFFER" edited
   zle -M "aishe: improving command…"
-  edited="$(command aishe --edit-line "$original" 2> /dev/tty)"
+  edited="$(command aishe --edit-line "$original")"
   if [[ -n "$edited" ]]; then
     BUFFER="$edited"
     CURSOR=${#BUFFER}
@@ -291,7 +291,7 @@ aishe-command-palette() {
   emulate -L zsh
   local handoff="${TMPDIR:-/tmp}/aishe-palette-${AISHE_SHELL_ID}"
   command rm -f "$handoff"
-  AISHE_PALETTE_FILE="$handoff" command aishe palette < /dev/tty > /dev/tty 2>&1
+  AISHE_PALETTE_FILE="$handoff" command aishe palette <&$_AISHE_INPUT_FD
   if [[ -r "$handoff" ]]; then
     BUFFER="$(<"$handoff")"
     CURSOR=${#BUFFER}
@@ -513,7 +513,7 @@ aishe-accept-line() {
   elif [[ "$BUFFER" == "reset" ]]; then
     local submitted="$BUFFER"
     print -s -- "$submitted"
-    command aishe reset < /dev/tty > /dev/tty 2>&1
+    command aishe reset <&$_AISHE_INPUT_FD
     BUFFER=""
     POSTDISPLAY="$submitted"
   elif [[ "$BUFFER" == "details" ]]; then
@@ -572,7 +572,7 @@ aishe-cycle-mode() {
     auto)
       # An interactive child owns the terminal until acceptance completes.
       zle -I
-      if command aishe --accept-yolo < /dev/tty > /dev/tty 2>&1; then
+      if command aishe --accept-yolo <&$_AISHE_INPUT_FD; then
         AISHE_MODE=yolo
       else
         AISHE_MODE=auto
@@ -592,6 +592,13 @@ aishe-cycle-mode() {
 if [[ -o interactive ]]; then
   autoload -Uz add-zsh-hook
   zmodload zsh/datetime 2>/dev/null   # $EPOCHSECONDS for history timestamps
+  # ZLE gives external commands launched inside widgets a non-terminal stdin.
+  # Preserve the real inner zsh PTY before entering any widget; /dev/tty is the
+  # outer proxy terminal under `aishe`, where competing readers split keys.
+  if [[ -z "${_AISHE_INPUT_FD:-}" ]]; then
+    typeset -gi _AISHE_INPUT_FD=-1
+    exec {_AISHE_INPUT_FD}<&0
+  fi
   add-zsh-hook precmd aishe_precmd
   add-zsh-hook zshexit aishe_zshexit   # remove per-shell temp files on exit
   # Last-command capture for the fix-it key. The exit capture must run before any

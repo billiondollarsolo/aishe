@@ -336,6 +336,11 @@ def theme_survives_mode_cycle():
         if not shell.expect("AIShe command palette", timeout=5):
             raise AssertionError("slash-Tab did not open the command palette")
         os.write(shell.master, b"\x1b")
+        time.sleep(0.05)
+        os.write(shell.master, b"OB")
+        if not shell.expect("selected 2/", timeout=5):
+            raise AssertionError("SS3 Down did not move the palette selection")
+        os.write(shell.master, b"\x1b")
         shell.drain(0.5)
         os.write(shell.master, b"\x15")
         shell.transcript = ""

@@ -109,7 +109,7 @@ pub fn filter_picker(title: &str, options: &[String], default: usize) -> Result<
     if capabilities.motion == Motion::Static {
         return static_filter_picker(options, default);
     }
-    // Read keys from an unbuffered /dev/tty (not StdinLock). A buffered stdin
+    // Read keys from an unbuffered stdin fd (not StdinLock). A buffered stdin
     // read of ESC leaves the rest of an arrow CSI in the user-space buffer
     // while poll(STDIN) sees an empty kernel buffer and treats ↑ as Esc cancel.
     let mut keys = PickerInput::open().context("opening picker input")?;
@@ -490,7 +490,7 @@ fn draw_raw_frame(lines: &[String], drawn_rows: &mut usize) {
     *drawn_rows = lines.len();
 }
 
-/// Unbuffered controlling-terminal input for the filter picker.
+/// Unbuffered terminal input for the filter picker.
 ///
 /// Important: do **not** read arrow keys through `std::io::stdin().lock()`
 /// (a `BufReader`). One `read_exact` of ESC can pull the entire CSI sequence
@@ -511,21 +511,13 @@ impl PickerInput {
     fn open() -> Result<Self> {
         #[cfg(unix)]
         {
-            let tty = std::fs::OpenOptions::new()
+            // The inherited fd is essential under the zsh-PTY front-end:
+            // /dev/tty names the outer proxy terminal, while stdin names the
+            // inner zsh PTY that must own the complete key sequence.
+            let file = std::fs::OpenOptions::new()
                 .read(true)
-                .write(true)
-                .open("/dev/tty");
-            // A process can have terminal stdin/stdout without owning a
-            // controlling terminal (notably a direct PTY child after setsid).
-            // Preserve unbuffered byte reads by opening the existing stdin fd
-            // rather than falling back to BufRead.
-            let file = match tty {
-                Ok(file) => file,
-                Err(_) => std::fs::OpenOptions::new()
-                    .read(true)
-                    .open("/dev/stdin")
-                    .context("opening terminal stdin for interactive keys")?,
-            };
+                .open("/dev/stdin")
+                .context("opening terminal stdin for interactive keys")?;
             Ok(Self {
                 file,
                 pending: Vec::new(),
@@ -1127,7 +1119,7 @@ fn parse_confirmation(line: &str, default: bool) -> ConfirmationResponse {
 /// Read a confirmation response from the controlling terminal when one is
 /// available. A picker immediately followed by a cooked `stdin().read_line()`
 /// can lose the first response byte inside a wrapped/nested PTY while terminal
-/// mode is being restored. Reusing the picker's unbuffered `/dev/tty` input
+/// mode is being restored. Reusing the picker's unbuffered stdin input
 /// keeps the transition deterministic. Piped/non-terminal setup input retains
 /// the existing line-oriented contract.
 fn read_confirmation_line() -> Result<Option<String>> {
