@@ -30,6 +30,7 @@ pub enum Action {
     },
     Gc {
         dry_run: bool,
+        kill_orphans: bool,
     },
 }
 
@@ -151,7 +152,10 @@ pub fn command(command: &Action) -> Result<u8> {
             crate::backend::supervisor::print_logs(*tail)?;
             Ok(0)
         }
-        Action::Gc { dry_run } => {
+        Action::Gc {
+            dry_run,
+            kill_orphans,
+        } => {
             let removed = manager.garbage_collect(*dry_run)?;
             for path in &removed {
                 println!(
@@ -160,7 +164,27 @@ pub fn command(command: &Action) -> Result<u8> {
                     path.display()
                 );
             }
-            if removed.is_empty() {
+            let orphans = orphaned_runtime_servers();
+            for orphan in &orphans {
+                if *kill_orphans && !*dry_run {
+                    // SAFETY: signalling a pid enumerated moments ago; a reused
+                    // pid is the same risk every process manager accepts.
+                    unsafe { libc::kill(orphan.pid as i32, libc::SIGTERM) };
+                    println!(
+                        "stopped orphaned runtime server pid {} (up {})",
+                        orphan.pid, orphan.elapsed
+                    );
+                } else {
+                    println!(
+                        "orphaned runtime server pid {} (up {})",
+                        orphan.pid, orphan.elapsed
+                    );
+                }
+            }
+            if !orphans.is_empty() && !*kill_orphans {
+                println!("Next: aishe backend gc --kill-orphans");
+            }
+            if removed.is_empty() && orphans.is_empty() {
                 println!("runtime cache is clean");
             }
             Ok(0)
@@ -425,4 +449,59 @@ pub fn route(words: &[String], json: bool) -> Result<u8> {
     let opposite = decision.opposite_route_override();
     println!("override: {}", opposite.guidance);
     Ok(0)
+}
+
+/// A loopback OpenCode server whose parent is init: a live supervisor never
+/// leaves one behind, so these come from crashed shells or test harnesses and
+/// hold a port and memory until the machine reboots.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct OrphanServer {
+    pub pid: u32,
+    pub elapsed: String,
+}
+
+pub fn parse_orphans(ps_output: &str) -> Vec<OrphanServer> {
+    ps_output
+        .lines()
+        .filter_map(|line| {
+            let mut parts = line.split_whitespace();
+            let pid = parts.next()?.parse::<u32>().ok()?;
+            let ppid = parts.next()?.parse::<u32>().ok()?;
+            let elapsed = parts.next()?.to_string();
+            let command = parts.collect::<Vec<_>>().join(" ");
+            (ppid == 1
+                && command.contains("opencode serve")
+                && command.contains("--hostname=127.0.0.1"))
+            .then_some(OrphanServer { pid, elapsed })
+        })
+        .collect()
+}
+
+pub fn orphaned_runtime_servers() -> Vec<OrphanServer> {
+    std::process::Command::new("ps")
+        .args(["-axo", "pid=,ppid=,etime=,command="])
+        .output()
+        .ok()
+        .filter(|output| output.status.success())
+        .map(|output| parse_orphans(&String::from_utf8_lossy(&output.stdout)))
+        .unwrap_or_default()
+}
+
+#[cfg(test)]
+mod orphan_tests {
+    use super::*;
+
+    #[test]
+    fn parse_orphans_keeps_only_parentless_loopback_servers() {
+        let ps = "\
+  101     1 31-09:44:59 opencode serve --hostname=127.0.0.1 --port=60833
+  202   150 00:04:32 /Users/x/runtime/opencode/1.18.27/opencode serve --hostname=127.0.0.1 --port=61112
+  303     1 00:00:10 vim notes.md
+  404     1 02:11:00 opencode serve --hostname=0.0.0.0 --port=9000
+";
+        let orphans = parse_orphans(ps);
+        assert_eq!(orphans.len(), 1);
+        assert_eq!(orphans[0].pid, 101);
+        assert_eq!(orphans[0].elapsed, "31-09:44:59");
+    }
 }

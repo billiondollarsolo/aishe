@@ -789,7 +789,10 @@ pub fn mode(effective: &Config, value: Option<&str>, save_default: bool) -> u8 {
         } else {
             "default for new shells"
         };
-        println!("mode: {} ({scope})", crate::commands::display_safe(&current));
+        println!(
+            "mode: {} ({scope})",
+            crate::commands::display_safe(&current)
+        );
         return 0;
     };
     let (hand_off, save) = mode_targets(in_shell, save_default);

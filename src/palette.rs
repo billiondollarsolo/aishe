@@ -186,8 +186,9 @@ mod tests {
         assert!(mode.label.starts_with("/mode — "), "{}", mode.label);
         assert!(mode.label.contains(" · "), "{}", mode.label);
         assert!(
-            entries.iter().all(|e| !e.label.starts_with("aishe ")
-                || e.invocation.starts_with("aishe ")),
+            entries
+                .iter()
+                .all(|e| !e.label.starts_with("aishe ") || e.invocation.starts_with("aishe ")),
             "slash-aliased commands must fill their slash form"
         );
     }

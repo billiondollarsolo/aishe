@@ -1051,8 +1051,12 @@ pub(crate) enum BackendCmd {
     },
     /// Remove inactive runtime staging/cache entries.
     Gc {
+        /// List what would be removed instead of removing it
         #[arg(long)]
         dry_run: bool,
+        /// Stop loopback runtime servers that no supervisor owns
+        #[arg(long)]
+        kill_orphans: bool,
     },
 }
 
@@ -1290,7 +1294,13 @@ pub(crate) fn backend_action(command: &BackendCmd) -> aishe::cli::backend::Actio
         BackendCmd::Rollback => Action::Rollback,
         BackendCmd::Stop => Action::Stop,
         BackendCmd::Logs { tail } => Action::Logs { tail: *tail },
-        BackendCmd::Gc { dry_run } => Action::Gc { dry_run: *dry_run },
+        BackendCmd::Gc {
+            dry_run,
+            kill_orphans,
+        } => Action::Gc {
+            dry_run: *dry_run,
+            kill_orphans: *kill_orphans,
+        },
     }
 }
 

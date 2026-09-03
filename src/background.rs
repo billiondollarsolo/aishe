@@ -1508,7 +1508,10 @@ fn validate_id(id: &str) -> Result<()> {
     {
         return Err(crate::user_error::UserFacing::cli(
             "unknown_task",
-            format!("No task or session '{}'.", crate::commands::display_safe(id)),
+            format!(
+                "No task or session '{}'.",
+                crate::commands::display_safe(id)
+            ),
             "Run `aishe sessions` to list what can be resumed.",
         ));
     }

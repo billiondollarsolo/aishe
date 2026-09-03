@@ -376,7 +376,10 @@ pub fn ensure_yolo_acceptance(config: &Config) -> Result<YoloAcceptance> {
             .ok()
             .filter(|value| !value.is_empty())
             .unwrap_or_else(|| config.aishe.mode.clone());
-        println!("yolo not enabled · mode stays {}", crate::commands::display_safe(&current));
+        println!(
+            "yolo not enabled · mode stays {}",
+            crate::commands::display_safe(&current)
+        );
         return Ok(YoloAcceptance::Declined);
     }
     persist_acceptance(scope)?;

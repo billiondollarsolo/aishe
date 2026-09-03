@@ -999,6 +999,33 @@ fn append_backend_checks(
             config.backend.max_instances
         ),
     ));
+    let orphans = crate::cli::backend::orphaned_runtime_servers();
+    checks.push(Check::new(
+        "backend.orphans",
+        if orphans.is_empty() {
+            Status::Pass
+        } else {
+            Status::Warn
+        },
+        Severity::Warning,
+        if orphans.is_empty() {
+            "orphaned runtime servers: none".to_string()
+        } else {
+            format!("orphaned runtime servers: {}", orphans.len())
+        },
+        if orphans.is_empty() {
+            "no loopback OpenCode server is running without a supervisor".to_string()
+        } else {
+            format!(
+                "pid(s) {} have no supervisor; stop them with `aishe backend gc --kill-orphans`",
+                orphans
+                    .iter()
+                    .map(|orphan| orphan.pid.to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )
+        },
+    ));
     let loopback = !verified_states.is_empty()
         && verified_states.iter().all(|state| {
             state.control_url.starts_with("http://127.0.0.1:")

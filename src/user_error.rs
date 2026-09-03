@@ -48,6 +48,9 @@ impl fmt::Display for UserFacing {
 impl Error for UserFacing {}
 
 impl UserFacing {
+    /// Returns an `anyhow::Error` rather than `Self`: every caller wants it in
+    /// an error position, and `from_error` finds it by downcast.
+    #[allow(clippy::new_ret_no_self)]
     pub fn new(
         namespace: ErrorNamespace,
         name: &'static str,
@@ -761,7 +764,6 @@ mod tests {
     fn code(namespace: ErrorNamespace, name: &str) -> UserErrorCode {
         UserErrorCode::new(namespace, name).unwrap()
     }
-
 
     #[test]
     fn user_facing_errors_keep_their_namespace_through_from_error() {

@@ -1901,11 +1901,12 @@ model = "gpt-x"
         .success()
         .stdout(contains("provider: anthropic"));
 
-    // Set and persist.
+    // Set and persist. Outside an AIShe shell there is no shell to hand off to,
+    // so `aishe mode` writes the default for new shells.
     run(&["mode", "auto"])
         .assert()
         .success()
-        .stdout(contains("saved to"));
+        .stdout(contains("default for new shells"));
     run(&["provider", "openai"]).assert().success();
     // `model` targets the now-active provider (openai).
     run(&["model", "gpt-z2"]).assert().success();

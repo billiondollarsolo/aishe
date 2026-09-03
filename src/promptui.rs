@@ -1070,10 +1070,11 @@ fn read_secret(keys: &mut PickerInput, max_bytes: usize) -> Result<Option<String
                 value.pop();
             }
             PickerKey::Cancel | PickerKey::Character('\u{4}') => return Ok(None),
-            PickerKey::Character(character) if !character.is_control() => {
-                if value.len() + character.len_utf8() <= max_bytes {
-                    value.push(character);
-                }
+            PickerKey::Character(character)
+                if !character.is_control()
+                    && value.len() + character.len_utf8() <= max_bytes =>
+            {
+                value.push(character);
             }
             _ => {}
         }
@@ -1226,7 +1227,10 @@ mod tests {
         let mut cancelled = PickerInput::from_bytes(b"secret\x03");
         assert_eq!(read_secret(&mut cancelled, 64).unwrap(), None);
         let mut bounded = PickerInput::from_bytes(b"abcdef\r");
-        assert_eq!(read_secret(&mut bounded, 3).unwrap().as_deref(), Some("abc"));
+        assert_eq!(
+            read_secret(&mut bounded, 3).unwrap().as_deref(),
+            Some("abc")
+        );
     }
 
     #[test]
