@@ -29,7 +29,7 @@ static AFTER_HELP: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| {
 )]
 pub(crate) struct Args {
     /// Override the interaction mode for this session.
-    #[arg(long, value_parser = ["suggest", "auto", "yolo"])]
+    #[arg(long, value_parser = ["suggest", "auto", "yolo"], global = true)]
     pub(crate) mode: Option<String>,
     /// Override the model for this session.
     #[arg(long)]
@@ -41,7 +41,7 @@ pub(crate) struct Args {
     #[arg(long)]
     pub(crate) connection: Option<String>,
     /// Run a single input non-interactively and exit.
-    #[arg(short = 'c')]
+    #[arg(short = 'c', value_name = "LINE")]
     pub(crate) command: Option<String>,
     /// (shell hook) Suggest a command for a natural-language line: prints the
     /// command to stdout and the explanation/answer to stderr.
@@ -214,7 +214,7 @@ pub(crate) enum Cmd {
     Setup(Box<SetupArgs>),
     /// Edit the current configuration through an interactive section hub.
     Settings {
-        /// Print effective fields and their provenance as JSON.
+        /// Print JSON instead of text
         #[arg(long)]
         json: bool,
     },
@@ -244,7 +244,8 @@ pub(crate) enum Cmd {
     },
     /// Print a shell integration snippet: `eval "$(aishe init zsh)"`.
     Init {
-        /// Shell to emit integration for (zsh or bash).
+        /// Shell to emit integration for
+        #[arg(value_parser = ["zsh", "bash"])]
         shell: String,
     },
     /// Launch your real interactive zsh (with all native plugins) under aishe.
@@ -258,7 +259,7 @@ pub(crate) enum Cmd {
         /// Run minimal live text, structured-output, tools, and streaming checks.
         #[arg(long)]
         live: bool,
-        /// Emit the structured report as JSON.
+        /// Print JSON instead of text
         #[arg(long)]
         json: bool,
         /// Apply safe, local, idempotent repairs (never installs packages).
@@ -340,6 +341,7 @@ pub(crate) enum Cmd {
     },
     /// Show or set the interaction mode for this shell; `--default` also saves it.
     Mode {
+        /// Interaction mode to select
         #[arg(value_parser = ["suggest", "auto", "yolo"])]
         value: Option<String>,
         /// Also save the mode as the default for new shells
@@ -348,21 +350,25 @@ pub(crate) enum Cmd {
     },
     /// Show or set the agent execution scope for future turns.
     Scope {
+        /// Execution scope for future agent turns
         #[arg(value_parser = ["workspace", "host"])]
         value: Option<String>,
     },
     /// Show or set network access for workspace-scoped agent turns.
     Network {
+        /// Network access for workspace-scoped agent turns
         #[arg(value_parser = ["allow", "deny"])]
         value: Option<String>,
     },
     /// Show or set persistent agent transcript density.
     Output {
+        /// Agent transcript density
         #[arg(value_parser = ["focus", "compact", "detailed"])]
         value: Option<String>,
     },
     /// Show or set reasoning effort for this shell; `auto` uses the model default.
     Reasoning {
+        /// Reasoning effort to select
         #[arg(value_parser = ["auto", "none", "low", "medium", "high", "xhigh", "max"])]
         value: Option<String>,
         /// Make the effort the default for new shells instead of this shell only.
@@ -376,6 +382,7 @@ pub(crate) enum Cmd {
     },
     /// Select a model for the active connection (this shell, or default for new shells).
     Model {
+        /// Model to select on the active connection
         value: Option<String>,
         /// Apply the model on a named connection (scripting; prefer `/connection` interactively).
         #[arg(long)]
@@ -407,7 +414,7 @@ pub(crate) enum Cmd {
         /// Ignore a cached capability record and request the endpoint again.
         #[arg(long)]
         refresh: bool,
-        /// Emit a schema-versioned JSON model-list document.
+        /// Print JSON instead of text
         #[arg(long)]
         json: bool,
     },
@@ -424,6 +431,7 @@ pub(crate) enum Cmd {
     /// Check whether autonomous mode is ready for real work.
     Readiness {
         #[arg(long)]
+        /// Print JSON instead of text
         json: bool,
     },
     /// Manage per-model token prices used for estimates and budgets.
@@ -436,7 +444,7 @@ pub(crate) enum Cmd {
         /// Include effective-value provenance after project overlays.
         #[arg(long)]
         effective: bool,
-        /// Emit JSON instead of TOML/text.
+        /// Print JSON instead of text
         #[arg(long)]
         json: bool,
     },
@@ -455,7 +463,7 @@ pub(crate) enum Cmd {
         /// List matching entries without opening the interactive picker.
         #[arg(long)]
         query: Option<String>,
-        /// Emit a schema-versioned entry list.
+        /// Print JSON instead of text
         #[arg(long)]
         json: bool,
     },
@@ -463,13 +471,13 @@ pub(crate) enum Cmd {
     Agent(AgentArgs),
     /// Show agent work that needs attention and act on it interactively.
     Inbox {
-        /// Emit stable JSON instead of opening the inbox.
+        /// Print JSON instead of text
         #[arg(long)]
         json: bool,
     },
     /// Show the active model's cached capability evidence.
     Capabilities {
-        /// Emit stable JSON.
+        /// Print JSON instead of text
         #[arg(long)]
         json: bool,
     },
@@ -478,13 +486,13 @@ pub(crate) enum Cmd {
         /// Make minimal paid model, structured-output, tool, and streaming requests.
         #[arg(long)]
         live: bool,
-        /// Emit stable JSON.
+        /// Print JSON instead of text
         #[arg(long)]
         json: bool,
     },
     /// Explain whether a line will run in the shell, reach the agent, or invoke a builtin.
     Route {
-        /// Emit the schema-versioned route decision as JSON.
+        /// Print JSON instead of text
         #[arg(long)]
         json: bool,
         /// The line to classify. Use `--` before lines that start with punctuation or options.
@@ -493,7 +501,7 @@ pub(crate) enum Cmd {
     },
     /// Show model, mode, scope, output, live spend, and audit-log state.
     Status {
-        /// Emit stable JSON.
+        /// Print JSON instead of text
         #[arg(long)]
         json: bool,
     },
@@ -527,7 +535,7 @@ pub(crate) enum Cmd {
         /// Show at most the last N entries.
         #[arg(short = 'n', long)]
         limit: Option<usize>,
-        /// Emit schema-versioned JSONL instead of a table.
+        /// Print JSON instead of text
         #[arg(long)]
         json: bool,
     },
@@ -551,7 +559,7 @@ pub(crate) enum Cmd {
     Suggest {
         /// The natural-language request (any number of words).
         query: Vec<String>,
-        /// Emit schema-versioned JSON instead of text.
+        /// Print JSON instead of text
         #[arg(long)]
         json: bool,
     },
@@ -560,7 +568,7 @@ pub(crate) enum Cmd {
         /// The natural-language request.
         #[arg(required = true)]
         query: Vec<String>,
-        /// Emit one versioned JSON document.
+        /// Print JSON instead of text
         #[arg(long)]
         json: bool,
         /// Require the answer to match this bounded JSON Schema subset.
@@ -589,7 +597,7 @@ pub(crate) enum Cmd {
         /// Maximum search matches.
         #[arg(short = 'n', long, default_value_t = 5, requires = "query")]
         limit: usize,
-        /// Emit a schema-versioned JSON document.
+        /// Print JSON instead of text
         #[arg(long)]
         json: bool,
     },
@@ -600,7 +608,7 @@ pub(crate) enum Cmd {
     },
     /// List durable AI task sessions.
     Sessions {
-        /// Emit JSON.
+        /// Print JSON instead of text
         #[arg(long)]
         json: bool,
     },
@@ -619,6 +627,7 @@ pub(crate) enum Cmd {
     },
     /// Resume the most recent interrupted task, or a specific task ID.
     Resume {
+        /// Task to resume
         id: Option<String>,
         /// Replacement working directory when the original no longer exists.
         #[arg(long, value_name = "PATH")]
@@ -641,7 +650,7 @@ pub(crate) enum Cmd {
         /// Include a proposed request in the token/cost estimate (text is not echoed).
         #[arg(long, value_name = "TEXT")]
         preview: Option<String>,
-        /// Emit stable metadata JSON; section contents are intentionally omitted.
+        /// Print JSON instead of text
         #[arg(long)]
         json: bool,
         /// Persistently exclude an optional section (repeatable).
@@ -655,7 +664,10 @@ pub(crate) enum Cmd {
         show: bool,
     },
     /// Interactively create or inspect a durable background-task plan.
-    Plan { id: Option<String> },
+    Plan {
+        /// Task whose plan to inspect or edit
+        id: Option<String>,
+    },
     /// Interactively replace a plan while retaining matching completed steps.
     #[command(hide = true)]
     Replan { id: Option<String> },
@@ -707,58 +719,81 @@ pub(crate) enum BackgroundTaskCmd {
     /// List background tasks.
     List {
         #[arg(long)]
+        /// Print JSON instead of text
         json: bool,
     },
     /// Show one task and its plan/budget.
     Show {
+        /// Connection, session, or task to show
         id: String,
         #[arg(long)]
+        /// Print JSON instead of text
         json: bool,
     },
     /// Print the bounded tail of a task's private activity log.
     Tail {
+        /// Task to follow
         id: String,
         #[arg(short = 'n', long, default_value_t = 100)]
         lines: usize,
     },
     /// Stop a running task after verifying its process identity.
-    Cancel { id: String },
+    Cancel {
+        /// Task to cancel
+        id: String,
+    },
     /// Resume an interrupted, failed, or cancelled task.
-    Resume { id: String },
+    Resume {
+        /// Task to resume
+        id: String,
+    },
     /// Show the patch in an isolated task worktree.
-    Review { id: String },
+    Review {
+        /// Task whose changes to review
+        id: String,
+    },
     /// Ask the agent to revise a completed or failed isolated task.
     Rework {
+        /// Task to send back for more work
         id: String,
         #[arg(required = true)]
         instructions: Vec<String>,
     },
     /// Apply an isolated task patch to its source repository.
     Apply {
+        /// Task whose changes to apply
         id: String,
         /// Apply only these numbered review hunks (repeatable).
         #[arg(long = "hunk")]
         hunks: Vec<usize>,
     },
     /// Remove an isolated task worktree after it stops.
-    Discard { id: String },
+    Discard {
+        /// Task whose changes to discard
+        id: String,
+    },
     /// Replace a task's durable checkpoint plan.
     Plan {
+        /// Task whose plan to inspect or edit
         id: String,
         #[arg(required = true)]
         steps: Vec<String>,
     },
     /// Replace a plan while retaining completed steps with identical text.
     Replan {
+        /// Task whose plan to replace
         id: String,
         #[arg(required = true)]
         steps: Vec<String>,
     },
     /// Set one durable checkpoint state.
     Step {
+        /// Task to update
         id: String,
+        /// Step number to update
         step: u32,
         #[arg(value_parser = ["pending", "active", "completed", "blocked"])]
+        /// New state for that step
         state: String,
         /// Evidence supporting this checkpoint state.
         #[arg(long)]
@@ -771,6 +806,7 @@ pub(crate) enum LastCmd {
     /// Show the bounded capsule without contacting a model.
     Show {
         #[arg(long)]
+        /// Print JSON instead of text
         json: bool,
     },
     /// Explain the recorded failure without executing anything.
@@ -780,6 +816,7 @@ pub(crate) enum LastCmd {
     /// Preview a retry, or execute only when the command is locally read-only.
     Retry {
         #[arg(long)]
+        /// Run the corrected command instead of printing it
         execute: bool,
     },
     /// Remove this shell's failure capsule.
@@ -791,21 +828,26 @@ pub(crate) enum RoleCmd {
     /// List all effective role bindings.
     List {
         #[arg(long)]
+        /// Print JSON instead of text
         json: bool,
     },
     /// Set one or more fields for a role.
     Set {
         #[arg(value_parser = ["compose", "answer", "build", "review", "embed"])]
+        /// Workload role to configure
         name: String,
         #[arg(long)]
+        /// Connection this role should use
         connection: Option<String>,
         #[arg(long)]
+        /// Model this role should use
         model: Option<String>,
         #[arg(long, value_parser = ["auto", "none", "low", "medium", "high", "xhigh", "max"])]
         reasoning: Option<String>,
     },
     /// Restore a role to the active selection.
     Remove {
+        /// Workload role to clear
         #[arg(value_parser = ["compose", "answer", "build", "review", "embed"])]
         name: String,
     },
@@ -816,36 +858,52 @@ pub(crate) enum McpCmd {
     /// List configured servers without resolving secret values.
     List {
         #[arg(long)]
+        /// Print JSON instead of text
         json: bool,
     },
     /// Show one redacted server definition.
     Show {
+        /// Configured MCP server name
         name: String,
         #[arg(long)]
+        /// Print JSON instead of text
         json: bool,
     },
     /// Add a stdio or HTTP server.
     Add {
+        /// Configured MCP server name
         name: String,
         #[command(flatten)]
         input: McpInput,
     },
     /// Replace an existing stdio or HTTP server definition.
     Edit {
+        /// Configured MCP server name
         name: String,
         #[command(flatten)]
         input: McpInput,
     },
     /// Remove one configured server.
-    Remove { name: String },
+    Remove {
+        /// Configured MCP server name
+        name: String,
+    },
     /// Enable one configured server.
-    Enable { name: String },
+    Enable {
+        /// Configured MCP server name
+        name: String,
+    },
     /// Disable one configured server without deleting it.
-    Disable { name: String },
+    Disable {
+        /// Configured MCP server name
+        name: String,
+    },
     /// Connect and inspect one server's advertised capabilities.
     Test {
+        /// Configured MCP server name
         name: String,
         #[arg(long)]
+        /// Print JSON instead of text
         json: bool,
     },
 }
@@ -855,16 +913,19 @@ pub(crate) enum UpdateCmd {
     /// Check the latest published release without changing anything.
     Check {
         #[arg(long)]
+        /// Print JSON instead of text
         json: bool,
     },
     /// Download, checksum, self-test, and atomically activate an update.
     Apply {
         #[arg(long)]
+        /// Skip the confirmation prompt
         yes: bool,
     },
     /// Restore the one verified previous binary.
     Rollback {
         #[arg(long)]
+        /// Skip the confirmation prompt
         yes: bool,
     },
 }
@@ -893,12 +954,15 @@ pub(crate) enum ConnectionCmd {
     /// List configured connections without exposing secrets.
     List {
         #[arg(long)]
+        /// Print JSON instead of text
         json: bool,
     },
     /// Show one connection and its authentication state.
     Show {
+        /// Connection, session, or task to show
         id: Option<String>,
         #[arg(long)]
+        /// Print JSON instead of text
         json: bool,
     },
     /// Interactively pick a connection for this shell (or default for new shells).
@@ -911,62 +975,88 @@ pub(crate) enum ConnectionCmd {
     },
     /// Add a connection.
     Add {
+        /// Connection id (letters, digits, and dashes)
         id: String,
         #[arg(long)]
+        /// Provider preset: anthropic, openai, xai, groq, openrouter, together, ollama, or custom
         provider: String,
         #[arg(long)]
+        /// Display label shown by /connection and the statusline
         label: Option<String>,
         #[arg(long)]
+        /// Provider base URL (host root, without /v1)
         base_url: Option<String>,
         #[arg(long)]
+        /// Default model for this connection
         model: Option<String>,
         #[arg(long, default_value = "auto", value_parser = ["auto", "responses", "chat"])]
+        /// API transport to use
         transport: String,
         #[arg(long, default_value = "api-key", value_parser = ["api-key", "oauth", "none", "auto"])]
+        /// How this connection authenticates
         auth: String,
         #[arg(long)]
+        /// OAuth profile name
         profile: Option<String>,
         #[arg(long)]
+        /// Saved credential profile to read the API key from
         credential: Option<String>,
         #[arg(long)]
+        /// Environment variable holding the API key
         key_env: Option<String>,
         #[arg(long, value_parser = ["auto", "none", "low", "medium", "high", "xhigh", "max"])]
+        /// Default reasoning effort for this connection
         reasoning: Option<String>,
     },
     /// Edit connection metadata, endpoint, model, or authentication binding.
     Edit {
+        /// Connection to edit
         id: String,
         #[arg(long)]
+        /// Display label shown by /connection and the statusline
         label: Option<String>,
         #[arg(long)]
+        /// Provider base URL (host root, without /v1)
         base_url: Option<String>,
         #[arg(long)]
+        /// Default model for this connection
         model: Option<String>,
         #[arg(long, value_parser = ["auto", "responses", "chat"])]
+        /// API transport to use
         transport: Option<String>,
         #[arg(long, value_parser = ["api-key", "oauth", "none", "auto"])]
+        /// How this connection authenticates
         auth: Option<String>,
         #[arg(long)]
+        /// OAuth profile name
         profile: Option<String>,
         #[arg(long)]
+        /// Saved credential profile to read the API key from
         credential: Option<String>,
         #[arg(long)]
+        /// Environment variable holding the API key
         key_env: Option<String>,
         #[arg(long, value_parser = ["auto", "none", "low", "medium", "high", "xhigh", "max"])]
+        /// Default reasoning effort for this connection
         reasoning: Option<String>,
     },
     /// Remove exactly one connection. Credentials remain in their stores.
     Remove {
+        /// Connection to remove; its credentials are kept
         id: String,
         #[arg(long)]
+        /// Skip the confirmation prompt
         yes: bool,
     },
     /// Select a connection in this shell or make it the default for new shells.
     Use {
+        /// Connection to select
         id: String,
         #[arg(long)]
+        /// Also select this model on that connection
         model: Option<String>,
         #[arg(long)]
+        /// Also save this as the default for new shells
         default: bool,
     },
 }
@@ -998,7 +1088,7 @@ pub(crate) enum HistoryCmd {
 pub(crate) enum HintsCmd {
     /// Show whether discovery hints are enabled and the launch hint was seen.
     Status {
-        /// Emit stable JSON.
+        /// Print JSON instead of text
         #[arg(long)]
         json: bool,
     },
@@ -1010,7 +1100,7 @@ pub(crate) enum HintsCmd {
 pub(crate) enum BackendCmd {
     /// Show the managed runtime and supervisor state.
     Status {
-        /// Emit stable JSON.
+        /// Print JSON instead of text
         #[arg(long)]
         json: bool,
     },
@@ -1022,7 +1112,7 @@ pub(crate) enum BackendCmd {
         /// Replace an already verified runtime.
         #[arg(long)]
         force: bool,
-        /// Emit stable JSON.
+        /// Print JSON instead of text
         #[arg(long)]
         json: bool,
     },
@@ -1031,7 +1121,7 @@ pub(crate) enum BackendCmd {
         /// Also start the authenticated server and run a health probe.
         #[arg(long)]
         live: bool,
-        /// Emit stable JSON.
+        /// Print JSON instead of text
         #[arg(long)]
         json: bool,
     },
@@ -1040,7 +1130,7 @@ pub(crate) enum BackendCmd {
         /// Use a previously downloaded archive.
         #[arg(long, value_name = "PATH")]
         from: Option<std::path::PathBuf>,
-        /// Emit stable JSON.
+        /// Print JSON instead of text
         #[arg(long)]
         json: bool,
     },
@@ -1068,16 +1158,29 @@ pub(crate) enum BackendCmd {
 pub(crate) enum TaskSessionCmd {
     /// Show one task record.
     Show {
+        /// Connection, session, or task to show
         id: String,
         #[arg(long)]
+        /// Print JSON instead of text
         json: bool,
     },
     /// Set a human-readable task name.
-    Rename { id: String, name: String },
+    Rename {
+        /// Session to rename
+        id: String,
+        /// New session name
+        name: String,
+    },
     /// Delete exactly one task record.
-    Delete { id: String },
+    Delete {
+        /// Session to delete
+        id: String,
+    },
     /// Fork a managed conversation, preserving its history and switching this shell to the fork.
-    Fork { id: Option<String> },
+    Fork {
+        /// Session to fork; defaults to the active one
+        id: Option<String>,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -1086,14 +1189,20 @@ pub(crate) enum PriceCmd {
     List,
     /// Set input/output USD per million tokens for an exact model ID.
     Set {
+        /// Exact model id to price
         model: String,
+        /// Input price in USD per million tokens
         #[arg(long)]
         input: f64,
+        /// Output price in USD per million tokens
         #[arg(long)]
         output: f64,
     },
     /// Remove an exact user price override.
-    Remove { model: String },
+    Remove {
+        /// Model whose price override to remove
+        model: String,
+    },
 }
 
 pub(crate) fn connection_action(command: &ConnectionCmd) -> aishe::cli::connection::Action {

@@ -310,12 +310,17 @@ fn run() -> Result<u8> {
                 print!("{s}");
                 Ok(0)
             }
+            // Unreachable: clap validates the shell name. Kept as a guard so
+            // adding a value_parser entry without an asset fails loudly.
             None => {
-                eprintln!(
-                    "aishe: no integration for '{shell}' (supported: {})",
-                    integration::SUPPORTED.join(", ")
+                aishe::cli::error_contract::emit_classified(
+                    aishe::user_error::ErrorNamespace::Cli,
+                    "unsupported_shell",
+                    format!("No shell integration for '{shell}'."),
+                    "Run `aishe init zsh` or `aishe init bash`.",
+                    None,
                 );
-                Ok(1)
+                Ok(aishe::user_error::ErrorNamespace::Cli.exit_code())
             }
         };
     }

@@ -248,6 +248,7 @@ mod tests {
             "cli.unknown_connection",
             "cli.unknown_task",
             "cli.shell_required",
+            "cli.unsupported_shell",
             "config.setup_incomplete",
         ];
         for code in codes {

@@ -628,11 +628,7 @@ mod tests {
             // A spec filed under the overview lives in the full table, which
             // is what the overview now points at.
             let topic = render_help(Some(spec.help_topic));
-            let listed = if topic == overview {
-                &full
-            } else {
-                &topic
-            };
+            let listed = if topic == overview { &full } else { &topic };
             assert!(
                 listed.contains(&command_usage(spec)),
                 "topic {} omitted exact usage for {}",
