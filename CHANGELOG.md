@@ -11,11 +11,6 @@ breaking changes can land in any release.
 Full release notes, compatibility boundaries, qualification evidence, and known
 limitations are in [docs/releases/v0.8.0.md](docs/releases/v0.8.0.md).
 
-### Fixed
-- The release workflow validated the pinned OpenCode runtime against a
-  hardcoded version that went stale at the 1.18.9 to 1.18.27 bump. It now
-  cross-checks the manifest against the version the crate's own test pins.
-
 ### Added
 - `/usage` and `aishe usage` report tokens in and out, prompt-cache read and
   write with a hit rate, thinking tokens, turns, model time, and cost, split by
@@ -42,6 +37,10 @@ limitations are in [docs/releases/v0.8.0.md](docs/releases/v0.8.0.md).
   plugin reads `/model` as an absolute path that does not exist and paints it the
   same red it gives a real typo; AIShe owns that namespace, so it now claims the
   span. An unregistered `/modle` stays red, where red is true.
+- The release pipeline validated the pinned OpenCode runtime against a version
+  hardcoded in the workflow, which went stale at the 1.18.9 to 1.18.27 bump and
+  failed publishing. It now cross-checks the manifest against the version the
+  crate's own test pins, so the two cannot drift apart silently.
 - Arrow keys move the selection in `/model`, `/connection`, and every other
   in-shell picker. Under the zsh-PTY front end `/dev/tty` names the *outer*
   proxy terminal, where AIShe's own forwarding loop also reads: it won the race
