@@ -6,6 +6,11 @@ breaking changes can land in any release.
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-09-03
+
+Full release notes, compatibility boundaries, qualification evidence, and known
+limitations are in [docs/releases/v0.8.0.md](docs/releases/v0.8.0.md).
+
 ### Added
 - `/usage` and `aishe usage` report tokens in and out, prompt-cache read and
   write with a hit rate, thinking tokens, turns, model time, and cost, split by

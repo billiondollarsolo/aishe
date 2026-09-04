@@ -117,9 +117,11 @@ Full routing, Option/Alt+Return, and Mac terminal Meta settings:
 - **Explicit context and automation.** Agent-only `@file`, `@dir`, `@diff`, and
   `@clipboard` attachments are bounded; `aishe index` searches tracked code
   locally; `aishe ask --json|--schema` produces validated machine output.
-- **Cost-aware.** Per-call and session metering, optional hard budget, native
-  right-prompt status. OAuth status prefers a `plan` marker over fake
-  dollar spend when prices are subscription-based.
+- **Cost-aware.** `/usage` reports tokens in and out, prompt-cache hit rate,
+  thinking tokens, turns, model time, and cost for this shell, today, and all
+  time, plus plan quota where the provider exposes it. A subscription says
+  `plan` rather than inventing a dollar figure. The numbers come from a
+  content-free ledger, so the report works without enabling the audit log.
 - **Durable AI tasks.** Checkpointed agent sessions; `aishe sessions` /
   `aishe resume` recover interrupted work without blind re-execution.
 - **Private by default.** API keys in a mode-`0600` credentials file; OAuth in
@@ -137,8 +139,8 @@ pressure, verify ports and DNS, operate containers, edit configuration, or carry
 a deployment through validation — the agent sees command results and can iterate.
 
 That power stays visible: compact status for the active command, full transcript
-with Ctrl-O / `/details`, live spend and policy with `/status`, optional redacted
-JSONL audit. Start in `suggest`, use `auto` for approval-gated work, grant `yolo`
+with Ctrl-O / `/details`, live spend and policy with `/status`, token and cache
+accounting with `/usage`, optional redacted JSONL audit. Start in `suggest`, use `auto` for approval-gated work, grant `yolo`
 host scope only when the task truly needs unrestricted system access.
 
 ---
@@ -247,12 +249,12 @@ aishe setup            guided configuration (--verify checks only)
 aishe settings         interactive settings hub
 aishe auth ...         API keys + OpenAI/xAI OAuth login/status/logout
 aishe connection ...   list/add/edit/remove/use/show/pick named accounts
-aishe tour|demo        safe first-session walkthrough
+aishe tour             safe first-session walkthrough
 aishe init zsh|bash    shell-hook snippet for ~/.zshrc / ~/.bashrc
 aishe doctor           diagnostics (--probe / --live / --json / --fix / --bundle)
 aishe backend ...      managed OpenCode install/verify/repair/rollback/logs
 aishe model [NAME]     shell-local model on active (or --connection) account
-aishe models           list models for a connection
+aishe usage            tokens, cache, cost, and plan usage (--by / --since / --json)
 aishe mode|scope|network|output|reasoning|status|config|mcp|role|…
 aishe agent            guided/scriptable foreground or isolated background agent
 aishe inbox            review, resume, rework, or inspect background work
@@ -269,26 +271,34 @@ Daily-driver examples and safety boundaries:
 ### In-shell slash commands
 
 ```
-/help [topic]   task-first help  (accounts · models · session · config)
+/help [topic]   task-first help  (accounts · models · agent · session · config · routing)
+/help all       every slash command with what it changes
 /connection     switch account   (↑/↓ · type to filter · Enter this shell)
 /model          models for *active* connection only
-/provider       alias for /connection
-/auth           auth state for the active connection
-/status         connection, model, mode, scope, spend/plan, audit
-/usage          live token/cost for this shell
-/log            recent audit events
+/mode           suggest, auto, or yolo for this shell (--default saves)
 /reasoning      shell-local reasoning effort
-/details        expand agent transcript (Ctrl-O)
-/               fuzzy command/session/task/model/MCP palette
-/agent          guided foreground/background agent launcher
-/inbox          agent work needing attention
-/sessions       browse/resume/fork durable conversations
-/context        inspect model-visible local context and token estimates
-/capabilities   show active-model capability evidence
-/test [--live]  offline checks or explicit paid end-to-end validation
+/details        cycle agent transcript density (Ctrl-O)
+/status         connection, model, mode, scope, spend/plan, audit
+/usage          tokens, cache hit rate, cost basis, and plan usage
+/log            recent audit events
+/scope          workspace or host agent scope
+/network        workspace-agent network policy
 /settings       interactive settings editor
 /reset          fresh conversation (prior session retained)
-/commands       same as /help
+/sessions       browse/resume/fork durable conversations
+/plan           inspect or edit a durable agent checklist
+/agent          guided foreground/background agent launcher
+/inbox          agent work needing attention
+/ask            non-executing question, optionally structured
+/last           explain, fix, retry, or clear the last shell failure
+/undo           revert the most recent journaled AI file change
+/context        inspect model-visible local context and token estimates
+/               palette of the above, with what each one changes
+
+Hidden aliases still dispatch and tab-complete without cluttering `/help`:
+`/commands`, `/provider`, `/output`, `/auth`, `/config`, `/skills`, `/mcp`,
+`/palette`, `/resume`, `/fork`, `/task`, `/replan`, `/role`, `/index`,
+`/capabilities`, `/test`, `/demo`, `/trust`, `/untrust`.
 ```
 
 **Shift-Tab** cycles modes · **Ctrl-O** toggles details · **`?`** forces NL ·
@@ -371,7 +381,7 @@ Startup aliases for delegated commands: `~/.aishrc` (portable) — see
 | Logging | [docs/logging.md](docs/logging.md) |
 | Troubleshooting | [docs/troubleshooting.md](docs/troubleshooting.md) |
 | Architecture | [docs/architecture.md](docs/architecture.md) |
-| Product plan | [v0.7.0 release record](docs/releases/v0.7.0.md) · [implementation evidence and next queue](docs/design/NEXT_PRODUCT_UX_RELIABILITY_PLAN.md) · [design lifecycle index](docs/design/README.md) |
+| Product plan | [v0.8.0 release record](docs/releases/v0.8.0.md) · [implementation evidence and next queue](docs/design/NEXT_PRODUCT_UX_RELIABILITY_PLAN.md) · [design lifecycle index](docs/design/README.md) |
 | **Index** | **[docs/README.md](docs/README.md)** |
 
 ## Development

@@ -50,23 +50,58 @@ spans models stays accurate; any models without a known price are disclosed as
 `(+N unpriced)`). It's gated on the same `show_usage` toggle and appears only when
 at least one model call was made.
 
-You can also ask for the total at any time:
+### The full report
 
-```sh
-aishe usage        # or /usage
-aishe status       # session settings plus live spend
+`/usage` (or `aishe usage`) is the detailed view:
+
+```
+AIShe usage
+  this shell  4,812 in · 331 out · 6 turns · plan · 88 thinking · 64% cached · 21.4s model time
+  today       26,782 in · 1,398 out · 20 turns · plan · 293 thinking · 62% cached · 107.3s model time
+  all time    27,549 in · 1,429 out · 22 turns · plan · 381 thinking · 61% cached · 114.3s model time
+  plan        5h 39% left · week 62% left (from your provider subscription)
+
+by model:
+  gpt-5.6-luna    24,743 in   1,332 out   21 req   plan   62% cached
+  TOTAL           27,549 in   1,429 out   22 req   plan   61% cached
 ```
 
-Both work in the non-interactive `-c` form too:
+Each line carries what the audit record already held: input and output tokens,
+prompt-cache reads and writes as a hit rate, thinking tokens, turn count, model
+time, and cost. Group with `--by model|connection|day|session`, narrow with
+`--since 2h` or `--connection ID`, and script it with `--json`.
+
+`aishe status` still prints the one-line session spend. Both work in the
+non-interactive `-c` form:
 
 ```sh
 aishe -c "/usage"
 ```
 
-When audit logging is enabled, `aishe usage --by
-model|connection|day|session` reads persisted totals. Add `--connection ID` to
-filter them. The prompt/statusline totals follow the active connection inside
-the live AIShe shell; the exit summary remains the whole shell session.
+### Where the numbers come from
+
+Two local files, for two different questions.
+
+`<data>/usage.jsonl` is the **usage ledger**: one line per model turn holding
+timestamp, session, model, connection, authentication kind, tokens, cache,
+thinking tokens, reported cost, and duration. It carries no prompt, answer,
+command, or path, so it is always written and needs no opt-in. `aishe usage`
+reads it, which is why the report works with audit logging off.
+
+`<data>/audit.jsonl` is the **audit log**, which stores prompts, answers, and
+executed commands, and is off by default. `aishe usage` falls back to it for
+history recorded before the ledger existed.
+
+The prompt and statusline totals follow the active connection inside the live
+AIShe shell; the exit summary remains the whole shell session.
+
+### Plan usage
+
+Where the provider exposes remaining subscription quota, `/usage` and the
+statusline show it. Today that is OpenAI subscriptions only, read through the
+locally installed `codex` CLI, and reported as best effort: a machine without
+`codex` simply shows no plan line rather than a wrong one. API-key connections
+have no plan quota; their spend is the cost column.
 
 ## How cost is estimated
 

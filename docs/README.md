@@ -51,7 +51,8 @@ live in the [root README](../README.md).
 - [Development](development.md) — building, testing, and the validation harness
 - [Release readiness and rollback](release-readiness.md) — required evidence, holds, state compatibility, and failed-rollout response
 - [Daily-driver agentic shell plan](design/DAILY_DRIVER_AGENTIC_SHELL_PLAN.md) — implementation contract for buffer AI, background agents, isolation, context, trust, and lifecycle
-- [v0.7.0 release record](releases/v0.7.0.md) — complete change summary, migration notes, qualification evidence, and accepted alpha risks
+- [v0.8.0 release record](releases/v0.8.0.md) — complete change summary, compatibility boundaries, qualification evidence, and known limitations
+- [v0.7.0 release record](releases/v0.7.0.md) — the previous milestone's record
 - [Legacy compatibility lifecycle](legacy-compatibility.md) — removed front-end tombstones, migration windows, and retained native/task fields
 - [Active product plan](design/NEXT_PRODUCT_UX_RELIABILITY_PLAN.md) — v0.7.0 implementation evidence and post-qualification work queue
 - [Design lifecycle index](design/README.md) — authoritative inventory of active, implemented, superseded, historical, and validation documents
