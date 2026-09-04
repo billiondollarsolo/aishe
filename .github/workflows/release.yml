@@ -250,7 +250,13 @@ jobs:
           set -euo pipefail
           manifest=assets/backend/opencode/runtime-manifest.json
           version="$(jq -r .version "$manifest")"
-          test "$version" = "1.18.9"
+          # Cross-check the manifest against the version the crate's own test
+          # pins, rather than a third copy here: the hardcoded 1.18.9 in this
+          # step went stale at the 1.18.27 bump and failed the v0.8.0 release.
+          pinned="$(grep -oE 'assert_eq!\(manifest\.version, "[^"]+"' src/backend/manifest.rs | grep -oE '"[^"]+"$' | tr -d '"')"
+          test -n "$version"
+          test -n "$pinned"
+          test "$version" = "$pinned"
           test "$(jq -r .runtime "$manifest")" = "opencode"
           test "$(jq '.assets | length' "$manifest")" -eq 6
           curl --fail --location --retry 3 \

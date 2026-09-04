@@ -11,6 +11,11 @@ breaking changes can land in any release.
 Full release notes, compatibility boundaries, qualification evidence, and known
 limitations are in [docs/releases/v0.8.0.md](docs/releases/v0.8.0.md).
 
+### Fixed
+- The release workflow validated the pinned OpenCode runtime against a
+  hardcoded version that went stale at the 1.18.9 to 1.18.27 bump. It now
+  cross-checks the manifest against the version the crate's own test pins.
+
 ### Added
 - `/usage` and `aishe usage` report tokens in and out, prompt-cache read and
   write with a hit rate, thinking tokens, turns, model time, and cost, split by
