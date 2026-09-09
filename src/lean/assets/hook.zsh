@@ -106,7 +106,7 @@ _aishe_routes_to_agent() {
   [[ "$line" == /* && "$line" != //* ]] && {
     local slash="${line%%[[:space:]]*}"
     case "$slash" in
-      /help|/mode|/status|/reset|/undo|/usage|/details|/model|/sessions) return 1 ;;
+      /help|/mode|/status|/reset|/undo|/usage|/details|/model|/connection|/sessions) return 1 ;;
     esac
   }
 
@@ -325,8 +325,9 @@ _aishe_lean_slash() {
       print -r -- 'aishe lean: typed commands run in zsh -f. English goes to the model.'
       print -r -- '  ? force NL   ! force shell   Ctrl-X ? show route'
       print -r -- '  empty ? explains last failure · Ctrl-X Ctrl-F suggests a fix'
-      print -r -- '  /mode ask|allow|agent   Shift-Tab cycles mode'
-      print -r -- '  /sessions list|clear|resume:<id>   /usage /reset /undo'
+      print -r -- '  /mode ask|allow|agent   Shift-Tab cycles (aliases suggest|auto|yolo)'
+      print -r -- '  /connection /model   list/pick for this shell'
+      print -r -- '  /sessions list|clear|resume:<id>   /usage /status /reset /undo'
       print -r -- '  Default mode is ask. allow/agent need one typed grant per shell.'
       ;;
     /mode)
@@ -359,7 +360,7 @@ _aishe_lean_slash() {
       aishe_set_prompt
       print -r -- "mode: ${AISHE_MODE}"
       ;;
-    /status|/reset|/undo|/usage|/details|/model|/sessions)
+    /status|/reset|/undo|/usage|/details|/model|/connection|/sessions)
       local reply
       reply="$(_aishe_lean_send "SLASH	${AISHE_MODE:-ask}	$PWD	$(_aishe_lean_flatten "$line")")" || return
       _aishe_lean_handle_reply "$reply"
@@ -571,7 +572,7 @@ _aishe_highlight_command() {
   local head="${rest%%[[:space:]]*}"
   if [[ "$head" == /help || "$head" == /mode || "$head" == /status ||
         "$head" == /reset || "$head" == /undo || "$head" == /usage || "$head" == /sessions ||
-        "$head" == /details || "$head" == /model ]]; then
+        "$head" == /details || "$head" == /model || "$head" == /connection ]]; then
     local slash_start=${#leading}
     local slash_end=$(( slash_start + ${#head} ))
     region_highlight+=("$slash_start $slash_end fg=cyan,bold")

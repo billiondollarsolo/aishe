@@ -53,7 +53,7 @@ or OpenCode (`dispatcher::fast_shell_line` in `src/main.rs`).
 
 ```bash
 source /root/.cargo/env
-cargo test --test lean_hotpath --test architecture_boundaries
+cargo test --test lean_hotpath --test lean_parity_wave1 --test lean_parity_wave2 --test lean_parity_wave3 --test architecture_boundaries
 cargo test                          # full Rust suite
 
 # release budgets (this is the SLO band; debug binaries are slower)
@@ -139,13 +139,33 @@ AISHE_SPY_WIRE_NS=/tmp/wire \
   contract, grok `auth.json` **presence** (never token print), bwrap, leanrc path,
   lean sessions root.
 
-### Still open (post–Wave 2)
+### Closed in Wave 3 (2026-09-09)
 
-- True token streaming (`CHUNK`/`END` or SSE into PTY) — Wave 1/2 deliver complete
-  multi-line answers, not token-at-a-time.
+- **F15 `/connection` + `/model`:** lean FIFO slash list/pick by id, label, or
+  `#`. Reuses connection store + provider catalog (no OpenCode model discovery).
+  Grok subscription remains the default happy path. Selection is shell-local via
+  `connection::write_shell_selection`.
+- **F16/F17 warm MCP + skills:** `LeanWarm` loads `SkillRegistry` +
+  `McpRegistry` once per live shell (lazy on first agent turn or `/status`).
+  `/status` prints skill count and MCP configured/tool hint.
+- **F09 CLI mode aliases:** `--mode` / `aishe mode` accept
+  `ask|allow|agent` and legacy `suggest|auto|yolo`. Durable save canonicalizes
+  to ask/allow/agent. Lean `/help` documents both.
+- **F32/F45 context + redaction audit:** lean NL uses `prepare_nl_prompt` →
+  `attachments::expand` (redacts bodies) then optional `redact::redact` on the
+  prompt; suggest/agent still pull `.aishe/context.md` via `context::build`
+  (already redacts history + project context).
+- **F27 docs:** lean default needs **no OpenCode payload**. Installer may still
+  ship a pinned runtime for LEGACY/heavy only.
+
+### Still open (post–Wave 3)
+
+- True token streaming (`CHUNK`/`END` or SSE into PTY) — F19 leftover; Wave 1–3
+  deliver complete multi-line answers, not token-at-a-time.
 - `init zsh` hook for people who will not leave their rc (post-MVP).
-- MCP / skills discovery UX, named connections switcher, overlay dry-run.
+- Overlay dry-run, background tasks, bash hook — CLI retained, not lean hot path.
 - Legacy Python PTY matrix remains LEGACY-only (world mismatch by design).
+
 
 ## Three control planes (design lock 2026-09-09)
 

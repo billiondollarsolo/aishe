@@ -1,7 +1,7 @@
 # Installation
 
 aishe ships as a native Rust binary plus a private, compatibility-pinned
-OpenCode agent runtime. The runtime is lazy: ordinary zsh commands never start
+OpenCode agent runtime (LEGACY / heavy specialist only). **Lean interactive default needs no OpenCode payload** — known commands and NL use in-process providers. The OpenCode runtime is lazy: ordinary zsh commands never start
 it, and its per-user supervisor exits when idle. The install script or first
 setup downloads the exact version supported by the AIShe build, verifies its
 size, SHA-256, executable version, license, and trusted integration, and keeps it

@@ -154,7 +154,7 @@ fn render_models() -> String {
 fn render_session() -> String {
     let mut out = String::from(
         "Session controls\n\n\
-           Shift-Tab                cycle suggest / auto / yolo\n\
+           Shift-Tab                cycle ask / allow / agent (aliases suggest/auto/yolo)\n\
            Ctrl-O                   focus ↔ detailed agent output\n\
            Alt-Enter                force this buffer to the agent (zsh)\n\
            Ctrl-X ?                 show a non-color route cue for the zsh buffer\n\
@@ -434,7 +434,7 @@ connection when none exists for that provider/profile (e.g. `xai-work` /
 
 ## Session controls
 - `/status`, `/usage`, `/log`, `/reset`, `/reasoning`
-- Shift-Tab: suggest → auto → yolo
+- Shift-Tab: ask -> allow -> agent (aliases suggest/auto/yolo)
 - Ctrl-O: focus ↔ detailed agent output
 - `/settings`, `aishe doctor`, `aishe tour`
 

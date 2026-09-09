@@ -29,7 +29,7 @@ static AFTER_HELP: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| {
 )]
 pub(crate) struct Args {
     /// Override the interaction mode for this session.
-    #[arg(long, value_parser = ["suggest", "auto", "yolo"], global = true)]
+    #[arg(long, value_parser = ["ask", "allow", "agent", "suggest", "auto", "yolo"], global = true)]
     pub(crate) mode: Option<String>,
     /// Override the model for this session.
     #[arg(long)]
@@ -341,8 +341,8 @@ pub(crate) enum Cmd {
     },
     /// Show or set the interaction mode for this shell; `--default` also saves it.
     Mode {
-        /// Interaction mode to select
-        #[arg(value_parser = ["suggest", "auto", "yolo"])]
+        /// Interaction mode to select (ask|allow|agent; aliases suggest|auto|yolo)
+        #[arg(value_parser = ["ask", "allow", "agent", "suggest", "auto", "yolo"])]
         value: Option<String>,
         /// Also save the mode as the default for new shells
         #[arg(long)]

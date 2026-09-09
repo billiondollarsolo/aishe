@@ -12,10 +12,11 @@ pub enum Mode {
 
 impl Mode {
     pub fn parse(value: &str) -> Option<Self> {
+        // Product names: ask / allow / agent. Legacy aliases: suggest / auto / yolo.
         match value.trim().to_ascii_lowercase().as_str() {
-            "suggest" => Some(Self::Suggest),
-            "auto" => Some(Self::Auto),
-            "yolo" => Some(Self::Yolo),
+            "suggest" | "ask" => Some(Self::Suggest),
+            "auto" | "allow" => Some(Self::Auto),
+            "yolo" | "agent" => Some(Self::Yolo),
             _ => None,
         }
     }
@@ -64,6 +65,9 @@ mod tests {
     #[test]
     fn policy_values_parse_fail_closed() {
         assert_eq!(Mode::parse("YOLO"), Some(Mode::Yolo));
+        assert_eq!(Mode::parse("ask"), Some(Mode::Suggest));
+        assert_eq!(Mode::parse("allow"), Some(Mode::Auto));
+        assert_eq!(Mode::parse("agent"), Some(Mode::Yolo));
         assert_eq!(
             ExecutionScope::parse("workspace"),
             Some(ExecutionScope::Workspace)

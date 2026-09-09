@@ -21,7 +21,7 @@ use std::time::Instant;
 pub use grant::{ensure_session_grant, grant_accepted, LeanGrant, LeanMode};
 pub use hook::{wrapper_zshenv, wrapper_zshrc, zsh_argv};
 pub use ipc::{spawn_ipc, IpcGuard};
-pub use nl::{handle_ipc_line, run_nl};
+pub use nl::{handle_ipc_line, run_nl, LeanWarm};
 pub use sessions::{list as list_lean_sessions, store_root as lean_sessions_root, Meta as LeanSessionMeta};
 pub use pty_out::PtyOut;
 

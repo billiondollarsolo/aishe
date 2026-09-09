@@ -23,6 +23,49 @@ use super::pty_out::PtyOut;
 use super::sessions::LeanSessionStore;
 use super::stdout_redirect::StdoutRedirect;
 
+/// Warm MCP + skills once per live lean shell (lazy on first agent/`/status`).
+#[derive(Default)]
+pub struct LeanWarm {
+    pub skills: Option<SkillRegistry>,
+    pub mcp: Option<crate::mcp::McpRegistry>,
+}
+
+impl LeanWarm {
+    pub fn ensure(&mut self, config: &Config) {
+        if self.skills.is_none() {
+            self.skills = Some(SkillRegistry::load());
+        }
+        if self.mcp.is_none() {
+            // Empty/disabled config → empty registry; never touches OpenCode.
+            self.mcp = Some(crate::mcp::McpRegistry::connect(&config.mcp_servers));
+        }
+    }
+
+    pub fn skills_len(&self) -> usize {
+        self.skills.as_ref().map(|s| s.len()).unwrap_or(0)
+    }
+
+    pub fn mcp_tool_len(&self) -> usize {
+        self.mcp.as_ref().map(|m| m.list().len()).unwrap_or(0)
+    }
+
+    pub fn mcp_server_hint(&self, config: &Config) -> String {
+        let configured = config
+            .mcp_servers
+            .iter()
+            .filter(|(_, c)| c.enabled)
+            .count();
+        if configured == 0 {
+            "none configured".into()
+        } else if self.mcp.is_none() {
+            format!("{configured} configured (not warmed)")
+        } else {
+            let tools = self.mcp_tool_len();
+            format!("{configured} configured · {tools} tool(s)")
+        }
+    }
+}
+
 /// `-c` / hook NL entry used when lean is on. Skips `backend::supervisor`.
 pub fn run_nl(
     nl: &str,
@@ -50,7 +93,7 @@ pub fn run_nl(
         );
         return Ok(());
     };
-    let nl = expand_attachments(nl, executor.cwd(), config);
+    let nl = prepare_nl_prompt(nl, executor.cwd(), config);
     match lean_mode {
         LeanMode::Agent => modes::yolo::run(
             &nl,
@@ -91,11 +134,12 @@ pub fn prepare_agent_executor(
 
 /// FIFO request from the PTY child. Returns a single-line **control** reply.
 pub fn handle_ipc_line(
-    config: &Config,
+    config: &mut Config,
     provider: &mut Option<Arc<dyn Provider>>,
     executor: &mut Executor,
     session: &mut Session,
     store: &mut Option<LeanSessionStore>,
+    warm: &mut LeanWarm,
     pty: &PtyOut,
     raw: &str,
 ) -> String {
@@ -115,9 +159,11 @@ pub fn handle_ipc_line(
                 }
             }
             match op {
-                "NL" => handle_nl(config, provider, executor, session, store, pty, mode, cwd, line),
+                "NL" => handle_nl(
+                    config, provider, executor, session, store, warm, pty, mode, cwd, line,
+                ),
                 "FIX" => handle_fix(config, provider, executor, session, store, pty, line),
-                _ => handle_slash(config, provider, session, store, pty, mode, line),
+                _ => handle_slash(config, provider, session, store, warm, pty, mode, line),
             }
         }
         "CONFIRM_YES" => run_confirmed(executor, rest.trim()),
@@ -147,6 +193,7 @@ fn handle_nl(
     executor: &mut Executor,
     session: &mut Session,
     store: &mut Option<LeanSessionStore>,
+    warm: &mut LeanWarm,
     pty: &PtyOut,
     mode: LeanMode,
     cwd: &str,
@@ -171,7 +218,7 @@ fn handle_nl(
     } else {
         PathBuf::from(cwd)
     };
-    let expanded = expand_attachments(line, &cwd_path, config);
+    let expanded = prepare_nl_prompt(line, &cwd_path, config);
     let reply = match mode {
         LeanMode::Ask => {
             suggest_reply(&expanded, provider_ref, executor, config, session, pty, false)
@@ -179,7 +226,9 @@ fn handle_nl(
         LeanMode::Allow => {
             suggest_reply(&expanded, provider_ref, executor, config, session, pty, true)
         }
-        LeanMode::Agent => agent_reply(&expanded, provider_ref, executor, config, session, pty),
+        LeanMode::Agent => {
+            agent_reply(&expanded, provider_ref, executor, config, session, warm, pty)
+        }
     };
     if reply == "OK" || reply == "RAN" || reply.starts_with("FILL_B64\t") || reply.starts_with("CONFIRM_B64\t")
     {
@@ -324,10 +373,12 @@ fn agent_reply(
     executor: &mut Executor,
     config: &Config,
     session: &mut Session,
+    warm: &mut LeanWarm,
     pty: &PtyOut,
 ) -> String {
-    let skills = SkillRegistry::load();
-    let mcp = crate::mcp::McpRegistry::connect(&config.mcp_servers);
+    warm.ensure(config);
+    let skills = warm.skills.as_ref().expect("skills warmed");
+    let mcp = warm.mcp.as_ref().expect("mcp warmed");
     let _redirect = StdoutRedirect::to_pty(pty.clone());
     match modes::yolo::run(
         line,
@@ -335,8 +386,8 @@ fn agent_reply(
         executor,
         config,
         &crate::agent::controller::INTERRUPTED,
-        &skills,
-        &mcp,
+        skills,
+        mcp,
         session,
     ) {
         Ok(()) => "RAN".into(),
@@ -345,10 +396,11 @@ fn agent_reply(
 }
 
 fn handle_slash(
-    config: &Config,
-    provider: &Option<Arc<dyn Provider>>,
+    config: &mut Config,
+    provider: &mut Option<Arc<dyn Provider>>,
     session: &mut Session,
     store: &mut Option<LeanSessionStore>,
+    warm: &mut LeanWarm,
     pty: &PtyOut,
     mode: LeanMode,
     line: &str,
@@ -358,18 +410,29 @@ fn handle_slash(
     let arg = parts.next().unwrap_or("");
     match name {
         "/status" => {
+            warm.ensure(config);
             let sid = store
                 .as_ref()
                 .map(|s| s.id().to_string())
                 .unwrap_or_else(|| "-".into());
+            let conn = config.active_connection_id();
             emit_text(
                 pty,
                 &format!(
-                    "lean {} · mode {} · model {} · session {}",
+                    "lean {} · mode {} · connection {} · model {} · session {}",
                     env!("CARGO_PKG_VERSION"),
                     mode.as_str(),
+                    crate::commands::display_safe(conn),
                     crate::commands::display_safe(config.active_model()),
                     crate::commands::display_safe(&sid)
+                ),
+            );
+            emit_text(
+                pty,
+                &format!(
+                    "skills: {} loaded · mcp: {}",
+                    warm.skills_len(),
+                    warm.mcp_server_hint(config)
                 ),
             );
             "OK".into()
@@ -407,9 +470,7 @@ fn handle_slash(
             }
             "OK".into()
         }
-        "/sessions" => {
-            handle_sessions_slash(session, store, pty, arg)
-        }
+        "/sessions" => handle_sessions_slash(session, store, pty, arg),
         "/details" => {
             emit_text(pty, "focus renderer is the lean default");
             "OK".into()
@@ -439,18 +500,169 @@ fn handle_slash(
             }
             Err(error) => format!("ERROR\t{}", one_line(&error.to_string())),
         },
-        "/model" => {
-            emit_text(
-                pty,
-                &format!(
-                    "model {}",
-                    crate::commands::display_safe(config.active_model())
-                ),
-            );
-            "OK".into()
-        }
+        "/model" => handle_model_slash(config, provider, pty, arg),
+        "/connection" => handle_connection_slash(config, provider, pty, arg),
         _ => format!("ERROR\tunknown slash {name}"),
     }
+}
+
+/// Lean-safe model list: connection + provider catalog + capability cache.
+/// Never starts OpenCode (unlike `capabilities::known_models` OAuth path).
+fn lean_known_models(config: &Config) -> Vec<String> {
+    let id = config.active_connection_id().to_string();
+    let mut models = Vec::new();
+    if let Some(connection) = config.active_connection() {
+        if !connection.settings.model.is_empty() {
+            models.push(connection.settings.model.clone());
+        }
+        let endpoint = crate::provider_catalog::normalize_base_url(&connection.settings.base_url);
+        models.extend(
+            crate::provider_catalog::SERVICES
+                .iter()
+                .filter(|service| {
+                    !service.model.is_empty()
+                        && crate::provider_catalog::normalize_base_url(service.base_url) == endpoint
+                })
+                .map(|service| service.model.to_string()),
+        );
+    }
+    if let Some(report) = crate::capabilities::load(config) {
+        if report.connection_id == id {
+            models.extend(report.models);
+            if !report.model.is_empty() {
+                models.push(report.model);
+            }
+        }
+    }
+    models.retain(|model| crate::connection::validate_model_id(model).is_ok());
+    models.sort();
+    models.dedup();
+    let active = config.active_model().to_string();
+    if let Some(position) = models.iter().position(|m| m == &active) {
+        models.swap(0, position);
+    } else if !active.is_empty() {
+        models.insert(0, active);
+    }
+    models
+}
+
+fn handle_model_slash(
+    config: &mut Config,
+    provider: &mut Option<Arc<dyn Provider>>,
+    pty: &PtyOut,
+    arg: &str,
+) -> String {
+    if arg.is_empty() {
+        let models = lean_known_models(config);
+        let active = config.active_model();
+        let mut out = format!(
+            "models for {} (active *):",
+            crate::commands::display_safe(config.active_connection_id())
+        );
+        if models.is_empty() {
+            out.push_str("\n  (none — set via /model NAME)");
+        } else {
+            for (i, model) in models.iter().enumerate() {
+                let mark = if model == active { " *" } else { "" };
+                out.push('\n');
+                out.push_str(&format!(
+                    "  {}. {}{}",
+                    i + 1,
+                    crate::commands::display_safe(model),
+                    mark
+                ));
+            }
+        }
+        out.push_str("\nusage: /model <name|#>");
+        emit_text(pty, &out);
+        return "OK".into();
+    }
+    let models = lean_known_models(config);
+    let chosen = if let Ok(n) = arg.parse::<usize>() {
+        if n >= 1 && n <= models.len() {
+            models[n - 1].clone()
+        } else {
+            emit_text(pty, &format!("no model #{n}"));
+            return "OK".into();
+        }
+    } else {
+        arg.to_string()
+    };
+    if let Err(error) = crate::connection::validate_model_id(&chosen) {
+        return format!("ERROR\t{}", one_line(&error.to_string()));
+    }
+    config.set_active_model(chosen.clone());
+    let _ = crate::connection::write_shell_selection(config, "shell");
+    *provider = providers::make(config).ok();
+    emit_text(
+        pty,
+        &format!(
+            "model {} (this shell)",
+            crate::commands::display_safe(config.active_model())
+        ),
+    );
+    "OK".into()
+}
+
+fn handle_connection_slash(
+    config: &mut Config,
+    provider: &mut Option<Arc<dyn Provider>>,
+    pty: &PtyOut,
+    arg: &str,
+) -> String {
+    if arg.is_empty() {
+        let active = config.active_connection_id();
+        let mut out = String::from(
+            "connections (* active; Grok subscription remains default happy path):",
+        );
+        if config.connections.is_empty() {
+            out.push_str("\n  (none configured — aishe setup)");
+        } else {
+            for (i, (id, connection)) in config.connections.iter().enumerate() {
+                let mark = if id.as_str() == active { " *" } else { "" };
+                out.push('\n');
+                out.push_str(&format!(
+                    "  {}. {}  {}  model={}{}",
+                    i + 1,
+                    crate::commands::display_safe(id),
+                    crate::commands::display_safe(&connection.label),
+                    crate::commands::display_safe(&connection.settings.model),
+                    mark
+                ));
+            }
+        }
+        out.push_str("\nusage: /connection <id|label|#>");
+        emit_text(pty, &out);
+        return "OK".into();
+    }
+    let ids: Vec<String> = config.connections.keys().cloned().collect();
+    let id = if let Ok(n) = arg.parse::<usize>() {
+        if n >= 1 && n <= ids.len() {
+            ids[n - 1].clone()
+        } else {
+            emit_text(pty, &format!("no connection #{n}"));
+            return "OK".into();
+        }
+    } else {
+        match config.resolve_connection_id(arg) {
+            Ok(id) => id,
+            Err(error) => return format!("ERROR\t{}", one_line(&error.to_string())),
+        }
+    };
+    if let Err(error) = config.select_connection(&id) {
+        return format!("ERROR\t{}", one_line(&error.to_string()));
+    }
+    let _ = crate::connection::write_shell_selection(config, "shell");
+    *provider = providers::make(config).ok();
+    emit_text(
+        pty,
+        &format!(
+            "connection {} · model {} (this shell)",
+            crate::commands::display_safe(config.active_connection_id()),
+            crate::commands::display_safe(config.active_model())
+        ),
+    );
+    "OK".into()
 }
 
 fn handle_sessions_slash(
@@ -541,6 +753,18 @@ fn expand_attachments(line: &str, cwd: &Path, config: &Config) -> String {
     }
 }
 
+/// Attachments go through `attachments::expand` (redacts file bodies when enabled).
+/// Suggest/agent then pull `.aishe/context.md` via `context::build` (also redacts).
+/// Extra pass here scrubs secret shapes in the raw user prompt itself.
+fn prepare_nl_prompt(line: &str, cwd: &Path, config: &Config) -> String {
+    let expanded = expand_attachments(line, cwd, config);
+    if config.aishe.redact_secrets {
+        crate::redact::redact(&expanded)
+    } else {
+        expanded
+    }
+}
+
 fn run_confirmed(executor: &mut Executor, command: &str) -> String {
     let decoded = decode_confirm_payload(command);
     let command = decoded.split(" (").next().unwrap_or(decoded.as_str()).trim();
@@ -623,18 +847,20 @@ mod tests {
             "AISHE_FAKE_LLM",
             "{\"type\":\"answer\",\"command\":null,\"explanation\":\"line1\\nline2\\n\\n```\\ncode\\n```\"}",
         );
-        let config = test_config();
+        let mut config = test_config();
         let mut provider = providers::make(&config).ok();
         let mut executor = Executor::new().expect("executor");
         let mut session = Session::new(true);
         let pty = PtyOut::capture();
         with_store(|store| {
+            let mut warm = LeanWarm::default();
             let reply = handle_ipc_line(
-                &config,
+                &mut config,
                 &mut provider,
                 &mut executor,
                 &mut session,
                 store,
+                &mut warm,
                 &pty,
                 "NL\task\t/tmp\twhat is lean",
             );
@@ -654,7 +880,7 @@ mod tests {
 
     #[test]
     fn reset_clears_session_history_and_durable() {
-        let config = test_config();
+        let mut config = test_config();
         let mut provider = None;
         let mut executor = Executor::new().expect("executor");
         let mut session = Session::new(true);
@@ -664,12 +890,14 @@ mod tests {
         let pty = PtyOut::capture();
         with_store(|store| {
             store.as_mut().unwrap().persist(&session);
+            let mut warm = LeanWarm::default();
             let reply = handle_ipc_line(
-                &config,
+                &mut config,
                 &mut provider,
                 &mut executor,
                 &mut session,
                 store,
+                &mut warm,
                 &pty,
                 "SLASH\task\t/tmp\t/reset",
             );
@@ -689,28 +917,32 @@ mod tests {
             "{\"type\":\"answer\",\"command\":null,\"explanation\":\"ok\"}",
         );
         std::env::set_var("AISHE_FAKE_USAGE", "12,4");
-        let config = test_config();
+        let mut config = test_config();
         let mut provider = providers::make(&config).ok();
         let mut executor = Executor::new().expect("executor");
         let mut session = Session::new(true);
         let pty = PtyOut::capture();
         with_store(|store| {
+            let mut warm = LeanWarm::default();
             let _ = handle_ipc_line(
-                &config,
+                &mut config,
                 &mut provider,
                 &mut executor,
                 &mut session,
                 store,
+                &mut warm,
                 &pty,
                 "NL\task\t/tmp\thello",
             );
             let _ = pty.take_capture();
+            let mut warm = LeanWarm::default();
             let reply = handle_ipc_line(
-                &config,
+                &mut config,
                 &mut provider,
                 &mut executor,
                 &mut session,
                 store,
+                &mut warm,
                 &pty,
                 "SLASH\task\t/tmp\t/usage",
             );
@@ -736,18 +968,20 @@ mod tests {
             "AISHE_FAKE_LLM",
             "{\"type\":\"command\",\"command\":\"printf 'hi\\nthere'\",\"explanation\":\"say hi\"}",
         );
-        let config = test_config();
+        let mut config = test_config();
         let mut provider = providers::make(&config).ok();
         let mut executor = Executor::new().expect("executor");
         let mut session = Session::new(true);
         let pty = PtyOut::capture();
         with_store(|store| {
+            let mut warm = LeanWarm::default();
             let reply = handle_ipc_line(
-                &config,
+                &mut config,
                 &mut provider,
                 &mut executor,
                 &mut session,
                 store,
+                &mut warm,
                 &pty,
                 "NL\task\t/tmp\tplease print hi",
             );
@@ -790,12 +1024,14 @@ mod tests {
         let pty = PtyOut::capture();
         let line = format!("summarize @file:{}", file.display());
         with_store(|store| {
+            let mut warm = LeanWarm::default();
             let reply = handle_ipc_line(
-                &config,
+                &mut config,
                 &mut provider,
                 &mut executor,
                 &mut session,
                 store,
+                &mut warm,
                 &pty,
                 &format!("NL\task\t{}\t{line}", dir.display()),
             );
@@ -817,4 +1053,142 @@ mod tests {
         std::env::remove_var("AISHE_FAKE_LLM");
         let _ = std::fs::remove_dir_all(&dir);
     }
+
+    #[test]
+    fn connection_lists_and_model_pick() {
+        let mut config = test_config();
+        assert!(!config.connections.is_empty());
+        let mut provider = None;
+        let mut executor = Executor::new().expect("executor");
+        let mut session = Session::new(true);
+        let pty = PtyOut::capture();
+        with_store(|store| {
+            let mut warm = LeanWarm::default();
+            let reply = handle_ipc_line(
+                &mut config,
+                &mut provider,
+                &mut executor,
+                &mut session,
+                store,
+                &mut warm,
+                &pty,
+                "SLASH\task\t/tmp\t/connection",
+            );
+            assert_eq!(reply, "OK");
+            let shown = pty.take_capture();
+            assert!(
+                shown.contains("connections") && shown.contains("usage: /connection"),
+                "expected connection list, got {shown:?}"
+            );
+
+            let reply = handle_ipc_line(
+                &mut config,
+                &mut provider,
+                &mut executor,
+                &mut session,
+                store,
+                &mut warm,
+                &pty,
+                "SLASH\task\t/tmp\t/model",
+            );
+            assert_eq!(reply, "OK");
+            let shown = pty.take_capture();
+            assert!(
+                shown.contains("models for") && shown.contains("usage: /model"),
+                "expected model list, got {shown:?}"
+            );
+
+            let active = config.active_model().to_string();
+            let reply = handle_ipc_line(
+                &mut config,
+                &mut provider,
+                &mut executor,
+                &mut session,
+                store,
+                &mut warm,
+                &pty,
+                &format!("SLASH\task\t/tmp\t/model {active}"),
+            );
+            assert_eq!(reply, "OK");
+            assert_eq!(config.active_model(), active);
+        });
+    }
+
+    #[test]
+    fn status_warms_skills_and_mcp_once() {
+        let mut config = test_config();
+        let mut provider = None;
+        let mut executor = Executor::new().expect("executor");
+        let mut session = Session::new(true);
+        let pty = PtyOut::capture();
+        with_store(|store| {
+            let mut warm = LeanWarm::default();
+            assert!(warm.skills.is_none());
+            let reply = handle_ipc_line(
+                &mut config,
+                &mut provider,
+                &mut executor,
+                &mut session,
+                store,
+                &mut warm,
+                &pty,
+                "SLASH\task\t/tmp\t/status",
+            );
+            assert_eq!(reply, "OK");
+            assert!(warm.skills.is_some());
+            assert!(warm.mcp.is_some());
+            let shown = pty.take_capture();
+            assert!(
+                shown.contains("skills:") && shown.contains("mcp:"),
+                "status must surface skills/mcp: {shown:?}"
+            );
+            assert!(
+                shown.contains("connection") && shown.contains("model"),
+                "status must show connection+model: {shown:?}"
+            );
+        });
+    }
+
+    #[test]
+    fn lean_nl_redacts_secret_shapes_when_enabled() {
+        let _guard = fake_llm_lock();
+        std::env::set_var(
+            "AISHE_FAKE_LLM",
+            "{\"type\":\"answer\",\"command\":null,\"explanation\":\"ok\"}",
+        );
+        let mut config = test_config();
+        config.aishe.redact_secrets = true;
+        let mut provider = providers::make(&config).ok();
+        let mut executor = Executor::new().expect("executor");
+        let mut session = Session::new(true);
+        let pty = PtyOut::capture();
+        with_store(|store| {
+            let mut warm = LeanWarm::default();
+            let reply = handle_ipc_line(
+                &mut config,
+                &mut provider,
+                &mut executor,
+                &mut session,
+                store,
+                &mut warm,
+                &pty,
+                "NL\task\t/tmp\texport API_TOKEN=supersecretvalue123 please explain",
+            );
+            assert_eq!(reply, "OK");
+            let hist = session.history();
+            let user = hist
+                .iter()
+                .find_map(|m| match m {
+                    crate::providers::Msg::User(t) => Some(t.as_str()),
+                    _ => None,
+                })
+                .unwrap_or("");
+            assert!(
+                user.contains("<redacted>") || !user.contains("supersecretvalue123"),
+                "lean NL must redact secret shapes before record: {user:?}"
+            );
+        });
+        std::env::remove_var("AISHE_FAKE_LLM");
+    }
+
 }

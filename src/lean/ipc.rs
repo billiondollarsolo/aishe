@@ -14,6 +14,7 @@ use crate::config::Config;
 use crate::executor::Executor;
 use crate::session::Session;
 
+use super::nl::LeanWarm;
 use super::pty_out::PtyOut;
 use super::sessions::LeanSessionStore;
 
@@ -63,6 +64,8 @@ pub fn spawn_ipc(config: Config, pty: PtyOut) -> Result<IpcGuard> {
             let mut session = Session::new(true);
             let mut store = Some(LeanSessionStore::create(&cwd, &model));
             let mut provider = None;
+            let mut warm = LeanWarm::default();
+            let mut config = config;
             let mut reader = BufReader::new(req);
             let mut line = String::new();
             while !stop_thread.load(Ordering::Relaxed) {
@@ -83,11 +86,12 @@ pub fn spawn_ipc(config: Config, pty: PtyOut) -> Result<IpcGuard> {
                     break;
                 }
                 let reply = crate::lean::handle_ipc_line(
-                    &config,
+                    &mut config,
                     &mut provider,
                     &mut executor,
                     &mut session,
                     &mut store,
+                    &mut warm,
                     &pty,
                     raw,
                 );
