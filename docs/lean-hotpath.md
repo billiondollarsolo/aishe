@@ -81,10 +81,11 @@ CI must not gate the 5 ms band on unoptimized binaries.
 | Path | Target p95 | Measured p50 / p95 | Verdict |
 |---|---:|---:|---|
 | `aishe --version` | ≤ 5 ms (fail > 8 ms) | 5.35 / **6.36** ms (min 2.22) | Under the 8 ms fail-build line. Slightly over 5 ms on this noisy host; min shows the C band is reachable. |
-| `aishe -c true` | ≤ 2 ms *overhead* vs executor | 12.57 / 13.96 ms | New process + clap. `dash -c true` 1.85 / 2.82; `zsh -f -c true` 4.17 / 5.03. Overhead ≈ 9 ms vs zsh -f — **not** the live PTY proxy. Live known-cmd is a byte copy (target ≤ 2 ms; not a new `execve(aishe)`). |
+| `aishe -c true` | ≤ 2 ms *overhead* vs executor | 12.57 / 13.96 ms | New process + clap. `dash -c true` 1.85 / 2.82; `zsh -f -c true` 4.17 / 5.03. Overhead ≈ 9 ms vs zsh -f — **not** the live PTY proxy. |
 | `aishe -c 'printf hi'` | same | 12.68 / 13.85 ms | Spy: no Provider, no OpenCode. |
 | First child prompt (`zsh -f -o RCS -o NO_GLOBAL_RCS -i`) | ≤ 25 ms | 4.86 / **5.33** ms | Child spawn is well under budget. Parent PTY setup is extra and one-time. |
 | Warm NL first-ready (fake provider; TTFB excluded) | ≤ 10 ms | **6.83 ms** (`AISHE_SPY_WIRE_NS`) | In budget. Full `aishe -c '?…'` wall is ~40 ms because `-c` is a cold process (config + Provider construct). Live shell reuses the parent client. |
+| **Live PTY known-cmd roundtrip** (`printf` marker) | ≈ bare `zsh -f` (no FIFO tax) | **6.31** min / **10.61** p50 / **16.84** p95 ms (n=39) | F01 Wave 5: release `portable_pty` bench (`lean_parity_wave5`). Same-host bare `zsh -f -i` ≈10 ms. No FIFO/Provider/OpenCode. The old ≤2 ms line was proxy-overhead aspiration; wall-clock includes ZLE accept-line. |
 | OpenCode on known-cmd / lean NL | forbidden | spy file absent | Pass. |
 
 How the spies were run:
@@ -170,12 +171,25 @@ AISHE_SPY_WIRE_NS=/tmp/wire \
 - **F28 dual-gate:** remaining obvious Python PTY world-mismatch suites call
   `require_legacy_opencode_world` (LEGACY-gated).
 
-### Still open (post–Wave 4 / daily-driver leftovers)
+### Closed in Wave 5 (2026-09-09)
+
+- **F01 live PTY known-cmd latency:** `tests/lean_parity_wave5.rs` benches
+  interactive lean PTY `printf` marker roundtrips; p50/p95 recorded in the
+  Budgets table above. Known-cmd stays in-child (no FIFO / Provider / OpenCode).
+- **F34 `/details` + Ctrl-O:** cycles `focus → compact → detailed` on
+  `config.backend.output`, emits `details: … (this shell)` via `PtyOut`, syncs
+  `AISHE_AGENT_OUTPUT` / `AISHE_OUTPUT_FILE`, and maps `detailed` →
+  `yolo_verbose` for lean agent tool dumps. Hook binds `AISHE_DETAILS_KEY` (default `^O`).
+- **F16/F17 `/mcp` + `/skills`:** list **names** (servers/tools/skills), not just
+  `/status` counts. Warm-on-first-use unchanged.
+
+### Still open (post–Wave 5 / daily-driver leftovers)
 
 - `init zsh` FIFO port for people who will not leave their rc (post-MVP).
 - Overlay dry-run, background tasks, bash hook — CLI retained, not lean hot path.
 - Palette/TUI/tour — CLI-only.
-- Live interactive latency bench (PTY roundtrip) and richer MCP/skills UX.
+- MCP trust/project discovery UX beyond name lists (light).
+- Native OAuth without OpenCode for non-Grok providers (F14 partial).
 - Full product parity for org policy, semantic history, custom slash-commands
   (explicitly post-MVP).
 

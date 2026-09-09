@@ -106,7 +106,7 @@ _aishe_routes_to_agent() {
   [[ "$line" == /* && "$line" != //* ]] && {
     local slash="${line%%[[:space:]]*}"
     case "$slash" in
-      /help|/mode|/status|/reset|/undo|/usage|/details|/model|/connection|/sessions|/backend) return 1 ;;
+      /help|/mode|/status|/reset|/undo|/usage|/details|/mcp|/skills|/model|/connection|/sessions|/backend) return 1 ;;
     esac
   }
 
@@ -328,6 +328,8 @@ _aishe_lean_slash() {
       print -r -- '  /mode ask|allow|agent   Shift-Tab cycles (aliases suggest|auto|yolo)'
       print -r -- '  /connection /model   list/pick for this shell'
       print -r -- '  /sessions list|clear|resume:<id>   /usage /status /reset /undo'
+      print -r -- '  /details or Ctrl-O   cycle focus|compact|detailed (this shell)'
+      print -r -- '  /mcp /skills   list names (not just /status counts)'
       print -r -- '  /backend   heavy specialist opt-in note (no auto OpenCode)'
       print -r -- '  Default mode is ask. allow/agent need one typed grant per shell.'
       ;;
@@ -361,7 +363,7 @@ _aishe_lean_slash() {
       aishe_set_prompt
       print -r -- "mode: ${AISHE_MODE}"
       ;;
-    /status|/reset|/undo|/usage|/details|/model|/connection|/sessions|/backend)
+    /status|/reset|/undo|/usage|/details|/mcp|/skills|/model|/connection|/sessions|/backend)
       local reply
       reply="$(_aishe_lean_send "SLASH	${AISHE_MODE:-ask}	$PWD	$(_aishe_lean_flatten "$line")")" || return
       _aishe_lean_handle_reply "$reply"
@@ -447,6 +449,30 @@ aishe-fix-command() {
       zle -M "aishe: no fix available"
       ;;
   esac
+}
+
+
+# Density toggle (default Ctrl-O; override with AISHE_DETAILS_KEY). Parent owns
+# config.backend.output + PtyOut message; child syncs AISHE_AGENT_OUTPUT.
+aishe-toggle-agent-details() {
+  emulate -L zsh
+  local reply
+  reply="$(_aishe_lean_send "SLASH	${AISHE_MODE:-ask}	$PWD	/details")" || {
+    zle -M "aishe: details toggle failed"
+    return
+  }
+  if [[ -n "${AISHE_OUTPUT_FILE:-}" && -r "$AISHE_OUTPUT_FILE" ]]; then
+    IFS= read -r AISHE_AGENT_OUTPUT < "$AISHE_OUTPUT_FILE" || true
+    export AISHE_AGENT_OUTPUT
+  else
+    case "${AISHE_AGENT_OUTPUT:-focus}" in
+      focus)   AISHE_AGENT_OUTPUT=compact ;;
+      compact) AISHE_AGENT_OUTPUT=detailed ;;
+      *)       AISHE_AGENT_OUTPUT=focus ;;
+    esac
+    export AISHE_AGENT_OUTPUT
+  fi
+  zle -M "details: ${AISHE_AGENT_OUTPUT:-focus} (this shell)"
 }
 
 aishe-show-route() {
@@ -573,7 +599,8 @@ _aishe_highlight_command() {
   local head="${rest%%[[:space:]]*}"
   if [[ "$head" == /help || "$head" == /mode || "$head" == /status || "$head" == /backend ||
         "$head" == /reset || "$head" == /undo || "$head" == /usage || "$head" == /sessions ||
-        "$head" == /details || "$head" == /model || "$head" == /connection ]]; then
+        "$head" == /details || "$head" == /mcp || "$head" == /skills ||
+        "$head" == /model || "$head" == /connection ]]; then
     local slash_start=${#leading}
     local slash_end=$(( slash_start + ${#head} ))
     region_highlight+=("$slash_start $slash_end fg=cyan,bold")
@@ -601,6 +628,7 @@ if [[ -o interactive ]]; then
   zle -N aishe-fix-command
 zle -N aishe-show-route
   zle -N aishe-cycle-mode
+  zle -N aishe-toggle-agent-details
   zle -N _aishe_highlight_command
   if (( ${+widgets[accept-line]} )); then
     typeset -g _aishe_orig_accept_line="${widgets[accept-line]#-}"
@@ -615,4 +643,5 @@ bindkey "${AISHE_ROUTE_KEY:-^X?}" aishe-show-route
     typeset -g _AISHE_ORIG_MODE_WIDGET=reverse-menu-complete
   fi
   bindkey "${AISHE_MODE_KEY:-^[[Z}" aishe-cycle-mode
+  bindkey "${AISHE_DETAILS_KEY:-^O}" aishe-toggle-agent-details
 fi

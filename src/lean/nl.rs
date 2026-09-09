@@ -65,6 +65,32 @@ impl LeanWarm {
             format!("{configured} configured · {tools} tool(s)")
         }
     }
+
+    /// Skill names for `/skills` (empty when none / not warmed).
+    pub fn skill_names(&self) -> Vec<String> {
+        self.skills
+            .as_ref()
+            .map(|s| s.list().into_iter().map(|(n, _)| n).collect())
+            .unwrap_or_default()
+    }
+
+    /// Enabled MCP server ids from config (names, not just counts).
+    pub fn mcp_server_names(config: &Config) -> Vec<String> {
+        config
+            .mcp_servers
+            .iter()
+            .filter(|(_, c)| c.enabled)
+            .map(|(n, _)| n.clone())
+            .collect()
+    }
+
+    /// Connected MCP tool names after warm (may be empty if servers down).
+    pub fn mcp_tool_names(&self) -> Vec<String> {
+        self.mcp
+            .as_ref()
+            .map(|m| m.list().into_iter().map(|(n, _)| n).collect())
+            .unwrap_or_default()
+    }
 }
 
 /// `-c` / hook NL entry used when lean is on. Skips `backend::supervisor`.
@@ -554,7 +580,57 @@ fn handle_slash(
         }
         "/sessions" => handle_sessions_slash(session, store, pty, arg),
         "/details" => {
-            emit_text(pty, "focus renderer is the lean default");
+            let next = cycle_details_density(&mut config.backend.output);
+            // Lean agent (modes::yolo) dumps full tool stdout when verbose.
+            config.aishe.yolo_verbose = next == "detailed";
+            std::env::set_var("AISHE_AGENT_OUTPUT", next);
+            if let Ok(path) = std::env::var("AISHE_OUTPUT_FILE") {
+                if !path.is_empty() {
+                    let _ = std::fs::write(&path, next);
+                }
+            }
+            emit_text(pty, &format!("details: {next} (this shell)"));
+            "OK".into()
+        }
+        "/skills" => {
+            warm.ensure(config);
+            let names = warm.skill_names();
+            if names.is_empty() {
+                emit_text(pty, "skills: (none loaded)");
+            } else {
+                emit_text(pty, &format!("skills ({}):", names.len()));
+                for name in names.iter().take(64) {
+                    emit_text(pty, &format!("  {name}"));
+                }
+                if names.len() > 64 {
+                    emit_text(pty, &format!("  … +{} more", names.len() - 64));
+                }
+            }
+            "OK".into()
+        }
+        "/mcp" => {
+            warm.ensure(config);
+            let servers = LeanWarm::mcp_server_names(config);
+            let tools = warm.mcp_tool_names();
+            if servers.is_empty() {
+                emit_text(pty, "mcp: none configured");
+            } else {
+                emit_text(pty, &format!("mcp servers ({}):", servers.len()));
+                for name in &servers {
+                    emit_text(pty, &format!("  {name}"));
+                }
+            }
+            if tools.is_empty() {
+                emit_text(pty, "mcp tools: (none connected)");
+            } else {
+                emit_text(pty, &format!("mcp tools ({}):", tools.len()));
+                for name in tools.iter().take(64) {
+                    emit_text(pty, &format!("  {name}"));
+                }
+                if tools.len() > 64 {
+                    emit_text(pty, &format!("  … +{} more", tools.len() - 64));
+                }
+            }
             "OK".into()
         }
         "/undo" => match crate::undo::undo_last() {
@@ -888,6 +964,16 @@ fn decode_confirm_payload(raw: &str) -> String {
 fn run_now(executor: &mut Executor, command: &str) -> String {
     let code = executor.run(command);
     format!("RAN\texit {code}")
+}
+
+fn cycle_details_density(current: &mut String) -> &'static str {
+    let next = match current.trim().to_ascii_lowercase().as_str() {
+        "focus" => "compact",
+        "compact" => "detailed",
+        _ => "focus",
+    };
+    *current = next.to_string();
+    next
 }
 
 fn emit_text(pty: &PtyOut, text: &str) {
@@ -1344,6 +1430,101 @@ mod tests {
         std::env::remove_var("AISHE_FAKE_STREAM_CHUNK");
         std::env::remove_var("AISHE_SPY_STREAM_CHUNKS");
         let _ = std::fs::remove_file(&chunk_spy);
+    }
+
+    #[test]
+    fn details_cycles_density_into_pty_and_config() {
+        let mut config = test_config();
+        config.backend.output = "focus".into();
+        config.aishe.yolo_verbose = false;
+        let mut provider = None;
+        let mut executor = Executor::new().expect("executor");
+        let mut session = Session::new(true);
+        let pty = PtyOut::capture();
+        with_store(|store| {
+            let mut warm = LeanWarm::default();
+            for expect in ["compact", "detailed", "focus"] {
+                let reply = handle_ipc_line(
+                    &mut config,
+                    &mut provider,
+                    &mut executor,
+                    &mut session,
+                    store,
+                    &mut warm,
+                    &pty,
+                    "SLASH\task\t/tmp\t/details",
+                );
+                assert_eq!(reply, "OK");
+                assert_eq!(config.backend.output, expect);
+                assert_eq!(config.aishe.yolo_verbose, expect == "detailed");
+                let shown = pty.take_capture();
+                assert!(
+                    shown.contains(&format!("details: {expect}")),
+                    "pty missing density: {shown:?}"
+                );
+            }
+        });
+    }
+
+    #[test]
+    fn skills_and_mcp_slashes_list_names_not_just_counts() {
+        let mut config = test_config();
+        let mut provider = None;
+        let mut executor = Executor::new().expect("executor");
+        let mut session = Session::new(true);
+        let pty = PtyOut::capture();
+        with_store(|store| {
+            let mut warm = LeanWarm::default();
+            let reply = handle_ipc_line(
+                &mut config,
+                &mut provider,
+                &mut executor,
+                &mut session,
+                store,
+                &mut warm,
+                &pty,
+                "SLASH\task\t/tmp\t/skills",
+            );
+            assert_eq!(reply, "OK");
+            let shown = pty.take_capture();
+            assert!(
+                shown.contains("skills"),
+                "skills slash must list names header: {shown:?}"
+            );
+            assert!(
+                shown.contains("aishe-product") || shown.contains("(none loaded)"),
+                "expected skill names or empty marker: {shown:?}"
+            );
+
+            let reply = handle_ipc_line(
+                &mut config,
+                &mut provider,
+                &mut executor,
+                &mut session,
+                store,
+                &mut warm,
+                &pty,
+                "SLASH\task\t/tmp\t/mcp",
+            );
+            assert_eq!(reply, "OK");
+            let shown = pty.take_capture();
+            assert!(
+                shown.contains("mcp"),
+                "mcp slash must list servers/tools: {shown:?}"
+            );
+            assert!(
+                shown.contains("none configured") || shown.contains("mcp servers"),
+                "mcp must name servers or say none: {shown:?}"
+            );
+        });
+    }
+
+    #[test]
+    fn cycle_details_density_order_is_focus_compact_detailed() {
+        let mut cur = "focus".to_string();
+        assert_eq!(cycle_details_density(&mut cur), "compact");
+        assert_eq!(cycle_details_density(&mut cur), "detailed");
+        assert_eq!(cycle_details_density(&mut cur), "focus");
     }
 
     #[test]
