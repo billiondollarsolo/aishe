@@ -38,10 +38,12 @@ _aishe_lean_glyph() {
 }
 
 aishe_set_prompt() {
-  local glyph
+  local glyph mode
   glyph="$(_aishe_lean_glyph)"
-  PROMPT="%1~ ${glyph} "
-  RPROMPT="${AISHE_MODE:-ask}"
+  mode="${AISHE_MODE:-ask}"
+  # Mode stays in PROMPT so narrow PTYs (no usable RPROMPT) still show it.
+  PROMPT="%1~ ${mode} ${glyph} "
+  RPROMPT="${mode}"
 }
 
 # Tiny owned prompt. No theme compatibility matrix.
@@ -54,6 +56,26 @@ if [[ -n "${AISHE_LEANRC:-}" && -r "${AISHE_LEANRC}" ]]; then
   source "${AISHE_LEANRC}"
 elif [[ -r "${HOME}/.aishe/leanrc" ]]; then
   source "${HOME}/.aishe/leanrc"
+fi
+
+
+# Bounded compsys (F18). Dump + cache under private ZDOTDIR only — no user
+# plugins, no ~/.zshrc. First interactive start may rebuild .zcompdump (tens to
+# low hundreds of ms); subsequent prompts use `compinit -C` and stay fast.
+if [[ -o interactive ]]; then
+  autoload -Uz compinit 2>/dev/null || true
+  if (( $+functions[compinit] )); then
+    typeset -g _AISHE_COMPDUMP="${ZDOTDIR:-${HOME}}/.zcompdump"
+    typeset -g _AISHE_COMPCACHE="${ZDOTDIR:-${HOME}}/.zcompcache"
+    mkdir -p "${_AISHE_COMPCACHE}" 2>/dev/null || true
+    zstyle ':completion:*' use-cache on
+    zstyle ':completion:*' cache-path "${_AISHE_COMPCACHE}"
+    if [[ -s "${_AISHE_COMPDUMP}" ]]; then
+      compinit -d "${_AISHE_COMPDUMP}" -C
+    else
+      compinit -d "${_AISHE_COMPDUMP}"
+    fi
+  fi
 fi
 
 # __AISHE_GENERATED_QUESTION_GRAMMAR__
@@ -206,6 +228,11 @@ _aishe_lean_take_grant() {
   return 0
 }
 
+_aishe_lean_b64_decode() {
+  # Decode STANDARD base64 from parent FILL_B64 / CONFIRM_B64 payloads.
+  print -r -- "$1" | base64 -d 2>/dev/null
+}
+
 _aishe_lean_handle_reply() {
   emulate -L zsh
   local reply="$1"
@@ -213,12 +240,25 @@ _aishe_lean_handle_reply() {
   local rest="${reply#*$'\t'}"
   [[ "$kind" == "$reply" ]] && rest=""
   case "$kind" in
+    OK)
+      # Parent already wrote multi-line answer / slash text onto the PTY master.
+      ;;
     ANSWER)
+      # Legacy one-liner fallback.
       [[ -n "$rest" ]] && print -r -- "$rest"
       ;;
-    FILL)
+    ANSWER_B64)
+      local text
+      text="$(_aishe_lean_b64_decode "$rest")"
+      [[ -n "$text" ]] && print -r -- "$text"
+      ;;
+    FILL|FILL_B64)
+      local cmd="$rest"
+      if [[ "$kind" == FILL_B64 ]]; then
+        cmd="$(_aishe_lean_b64_decode "$rest")"
+      fi
       typeset -g _AISHE_STAGED_SUGGESTION=1
-      print -z -- "$rest"
+      print -z -- "$cmd"
       ;;
     RAN)
       [[ -n "$rest" ]] && print -r -- "$rest"
@@ -226,8 +266,12 @@ _aishe_lean_handle_reply() {
     ERROR)
       print -u2 -- "aishe: $rest"
       ;;
-    CONFIRM)
-      print -r -- "Dangerous / unknown: $rest"
+    CONFIRM|CONFIRM_B64)
+      local body="$rest"
+      if [[ "$kind" == CONFIRM_B64 ]]; then
+        body="$(_aishe_lean_b64_decode "$rest")"
+      fi
+      print -r -- "Dangerous / unknown: $body"
       print -n -- "Type yes to run: "
       local ans
       if [[ -n "${_AISHE_INPUT_FD:-}" && "_AISHE_INPUT_FD" -ge 0 ]]; then
@@ -236,8 +280,13 @@ _aishe_lean_handle_reply() {
         IFS= read -r ans
       fi
       if [[ "$ans" == yes ]]; then
-        local again
-        again="$(_aishe_lean_send "CONFIRM_YES	$(_aishe_lean_flatten "$rest")")"
+        local again payload
+        if [[ "$kind" == CONFIRM_B64 ]]; then
+          payload="$rest"
+        else
+          payload="$(_aishe_lean_flatten "$body")"
+        fi
+        again="$(_aishe_lean_send "CONFIRM_YES	$payload")"
         _aishe_lean_handle_reply "$again"
       else
         print -r -- "cancelled"
@@ -363,8 +412,17 @@ aishe-nl-widget() {
 
 aishe-cycle-mode() {
   emulate -L zsh
+  # With text on the line, Shift-Tab delegates to completion (F18 compsys).
+  # Mode cycling is empty-buffer only — matches keys_pty contract without
+  # stealing completion.
   if [[ -n "$BUFFER" ]]; then
-    zle "${_AISHE_ORIG_MODE_WIDGET:-reverse-menu-complete}" 2>/dev/null || true
+    if (( ${+widgets[reverse-menu-complete]} )); then
+      zle reverse-menu-complete
+    elif (( ${+widgets[menu-complete]} )); then
+      zle menu-complete
+    else
+      zle expand-or-complete 2>/dev/null || true
+    fi
     return
   fi
   zle -I
