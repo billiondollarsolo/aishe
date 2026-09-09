@@ -183,15 +183,21 @@ AISHE_SPY_WIRE_NS=/tmp/wire \
 - **F16/F17 `/mcp` + `/skills`:** list **names** (servers/tools/skills), not just
   `/status` counts. Warm-on-first-use unchanged.
 
-### Still open (post–Wave 5 / daily-driver leftovers)
+### Wave 6 — 1.0 closure (2026-09-09)
 
-- `init zsh` FIFO port for people who will not leave their rc (post-MVP).
-- Overlay dry-run, background tasks, bash hook — CLI retained, not lean hot path.
-- Palette/TUI/tour — CLI-only.
-- MCP trust/project discovery UX beyond name lists (light).
-- Native OAuth without OpenCode for non-Grok providers (F14 partial).
-- Full product parity for org policy, semantic history, custom slash-commands
-  (explicitly post-MVP).
+- **F40 custom slash-commands:** reuse `CommandRegistry` (no new DSL); FIFO +
+  allowlist; `/help` `/commands` + Tab list customs.
+- **1.0 acceptance:** see [`docs/lean-1.0.md`](lean-1.0.md). Crate `1.0.0-rc.1`.
+- **F14 honesty:** Grok CLI OAuth + API-key fallback; OpenAI OAuth LEGACY only.
+
+### Still open (post-1.0)
+
+- `init zsh` FIFO port (F22), overlay (F12), background tasks (F25), bash hook (F23).
+- Palette/TUI/tour (F24) — CLI-only.
+- Org policy (F41), semantic history (F42).
+- Native OpenAI OAuth without OpenCode (F14 remainder).
+- MCP/skills trust/project discovery UX beyond name lists (light).
+
 
 
 ## Three control planes (design lock 2026-09-09)

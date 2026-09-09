@@ -47,6 +47,43 @@ aishe_set_prompt() {
 }
 
 # Tiny owned prompt. No theme compatibility matrix.
+
+# Tab completion for lean builtins + custom cmds (AISHE_LEAN_CMDS_FILE).
+aishe-slash-tab() {
+  emulate -L zsh
+  setopt extendedglob
+  local trimmed="${BUFFER##[[:space:]]#}"
+  if [[ "$trimmed" != /* || "$trimmed" == *$'\n'* ]]; then
+    zle expand-or-complete
+    return
+  fi
+  local -a cmds
+  cmds=(help mode status reset undo usage details mcp skills model connection sessions backend commands)
+  if [[ -n "${AISHE_LEAN_CMDS_FILE:-}" && -r "$AISHE_LEAN_CMDS_FILE" ]]; then
+    local custom
+    while IFS= read -r custom; do
+      [[ -n "$custom" ]] && cmds+=("$custom")
+    done < "$AISHE_LEAN_CMDS_FILE"
+  fi
+  local prefix="${trimmed#/}"
+  prefix="${prefix%%[[:space:]]*}"
+  local -a matches
+  local c
+  for c in "${cmds[@]}"; do
+    [[ "$c" == ${prefix}* ]] && matches+=("/$c")
+  done
+  if (( ${#matches} == 0 )); then
+    zle -M "aishe: no slash matches for /$prefix"
+    return
+  fi
+  if (( ${#matches} == 1 )); then
+    BUFFER="${matches[1]} "
+    CURSOR=${#BUFFER}
+    return
+  fi
+  zle -M "aishe slashes: ${(j: :)matches}"
+}
+
 if [[ -o interactive ]]; then
   aishe_set_prompt
 fi
@@ -106,7 +143,10 @@ _aishe_routes_to_agent() {
   [[ "$line" == /* && "$line" != //* ]] && {
     local slash="${line%%[[:space:]]*}"
     case "$slash" in
-      /help|/mode|/status|/reset|/undo|/usage|/details|/mcp|/skills|/model|/connection|/sessions|/backend) return 1 ;;
+      /help|/mode|/status|/reset|/undo|/usage|/details|/mcp|/skills|/model|/connection|/sessions|/backend|/commands) return 1 ;;
+      # Single-segment /name -> custom markdown slash (FIFO), not PATH/NL.
+      /*/*) ;;
+      /[[:alnum:]_-]##) return 1 ;;
     esac
   }
 
@@ -321,18 +361,6 @@ _aishe_lean_slash() {
   local arg="${line#"$name"}"
   arg="${arg##[[:space:]]#}"
   case "$name" in
-    /help)
-      print -r -- 'aishe lean: typed commands run in zsh -f. English goes to the model.'
-      print -r -- '  ? force NL   ! force shell   Ctrl-X ? show route'
-      print -r -- '  empty ? explains last failure · Ctrl-X Ctrl-F suggests a fix'
-      print -r -- '  /mode ask|allow|agent   Shift-Tab cycles (aliases suggest|auto|yolo)'
-      print -r -- '  /connection /model   list/pick for this shell'
-      print -r -- '  /sessions list|clear|resume:<id>   /usage /status /reset /undo'
-      print -r -- '  /details or Ctrl-O   cycle focus|compact|detailed (this shell)'
-      print -r -- '  /mcp /skills   list names (not just /status counts)'
-      print -r -- '  /backend   heavy specialist opt-in note (no auto OpenCode)'
-      print -r -- '  Default mode is ask. allow/agent need one typed grant per shell.'
-      ;;
     /mode)
       if [[ -z "$arg" ]]; then
         print -r -- "mode: ${AISHE_MODE:-ask}"
@@ -363,7 +391,17 @@ _aishe_lean_slash() {
       aishe_set_prompt
       print -r -- "mode: ${AISHE_MODE}"
       ;;
-    /status|/reset|/undo|/usage|/details|/mcp|/skills|/model|/connection|/sessions|/backend)
+    /help|/commands|/status|/reset|/undo|/usage|/details|/mcp|/skills|/model|/connection|/sessions|/backend)
+      local reply
+      reply="$(_aishe_lean_send "SLASH	${AISHE_MODE:-ask}	$PWD	$(_aishe_lean_flatten "$line")")" || return
+      _aishe_lean_handle_reply "$reply"
+      ;;
+    /*/*)
+      # Absolute path with extra segments — leave to shell.
+      return 1
+      ;;
+    /[[:alnum:]_-]##)
+      # Custom markdown slash-command → FIFO (F40).
       local reply
       reply="$(_aishe_lean_send "SLASH	${AISHE_MODE:-ask}	$PWD	$(_aishe_lean_flatten "$line")")" || return
       _aishe_lean_handle_reply "$reply"
@@ -374,6 +412,7 @@ _aishe_lean_slash() {
   esac
   return 0
 }
+
 
 # Unknown command: do not spawn aishe. Route the accepted line as NL.
 command_not_found_handler() {
@@ -600,7 +639,8 @@ _aishe_highlight_command() {
   if [[ "$head" == /help || "$head" == /mode || "$head" == /status || "$head" == /backend ||
         "$head" == /reset || "$head" == /undo || "$head" == /usage || "$head" == /sessions ||
         "$head" == /details || "$head" == /mcp || "$head" == /skills ||
-        "$head" == /model || "$head" == /connection ]]; then
+        "$head" == /model || "$head" == /connection || "$head" == /commands ||
+        ( "$head" == /[[:alnum:]_-]## && "$head" != /*/* ) ]]; then
     local slash_start=${#leading}
     local slash_end=$(( slash_start + ${#head} ))
     region_highlight+=("$slash_start $slash_end fg=cyan,bold")
@@ -629,6 +669,7 @@ if [[ -o interactive ]]; then
 zle -N aishe-show-route
   zle -N aishe-cycle-mode
   zle -N aishe-toggle-agent-details
+  zle -N aishe-slash-tab
   zle -N _aishe_highlight_command
   if (( ${+widgets[accept-line]} )); then
     typeset -g _aishe_orig_accept_line="${widgets[accept-line]#-}"
@@ -644,4 +685,5 @@ bindkey "${AISHE_ROUTE_KEY:-^X?}" aishe-show-route
   fi
   bindkey "${AISHE_MODE_KEY:-^[[Z}" aishe-cycle-mode
   bindkey "${AISHE_DETAILS_KEY:-^O}" aishe-toggle-agent-details
+  bindkey "^I" aishe-slash-tab
 fi

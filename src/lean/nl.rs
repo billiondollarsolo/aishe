@@ -17,6 +17,7 @@ use crate::modes::suggest::Suggestion;
 use crate::providers::{self, Provider};
 use crate::safety::{self, Risk};
 use crate::session::Session;
+use crate::commands::CommandRegistry;
 use crate::skills::SkillRegistry;
 
 use super::grant::{ensure_session_grant, LeanGrant, LeanMode};
@@ -24,11 +25,13 @@ use super::pty_out::PtyOut;
 use super::sessions::LeanSessionStore;
 use super::stdout_redirect::StdoutRedirect;
 
-/// Warm MCP + skills once per live lean shell (lazy on first agent/`/status`).
+/// Warm MCP + skills + custom slash-commands once per live lean shell
+/// (lazy on first agent/`/status`/`/help`/custom slash).
 #[derive(Default)]
 pub struct LeanWarm {
     pub skills: Option<SkillRegistry>,
     pub mcp: Option<crate::mcp::McpRegistry>,
+    pub commands: Option<CommandRegistry>,
 }
 
 impl LeanWarm {
@@ -40,6 +43,25 @@ impl LeanWarm {
             // Empty/disabled config → empty registry; never touches OpenCode.
             self.mcp = Some(crate::mcp::McpRegistry::connect(&config.mcp_servers));
         }
+        if self.commands.is_none() {
+            self.commands = Some(CommandRegistry::load());
+            refresh_custom_cmds_file(self.commands.as_ref());
+        }
+    }
+
+    /// Custom slash-command names for `/help` / `/commands` / tab file.
+    pub fn command_names(&self) -> Vec<String> {
+        self.commands
+            .as_ref()
+            .map(|c| c.list().into_iter().map(|(n, _)| n).collect())
+            .unwrap_or_default()
+    }
+
+    pub fn command_list(&self) -> Vec<(String, String)> {
+        self.commands
+            .as_ref()
+            .map(|c| c.list())
+            .unwrap_or_default()
     }
 
     pub fn skills_len(&self) -> usize {
@@ -91,6 +113,26 @@ impl LeanWarm {
             .map(|m| m.list().into_iter().map(|(n, _)| n).collect())
             .unwrap_or_default()
     }
+}
+
+/// Publish custom slash names for lean tab completion (`AISHE_LEAN_CMDS_FILE`).
+fn refresh_custom_cmds_file(commands: Option<&CommandRegistry>) {
+    let Ok(path) = std::env::var("AISHE_LEAN_CMDS_FILE") else {
+        return;
+    };
+    if path.is_empty() {
+        return;
+    }
+    let body = commands
+        .map(|c| {
+            c.list()
+                .into_iter()
+                .map(|(n, _)| n)
+                .collect::<Vec<_>>()
+                .join("\n")
+        })
+        .unwrap_or_default();
+    let _ = std::fs::write(path, body);
 }
 
 /// `-c` / hook NL entry used when lean is on. Skips `backend::supervisor`.
@@ -190,7 +232,9 @@ pub fn handle_ipc_line(
                     config, provider, executor, session, store, warm, pty, mode, cwd, line,
                 ),
                 "FIX" => handle_fix(config, provider, executor, session, store, pty, line),
-                _ => handle_slash(config, provider, session, store, warm, pty, mode, line),
+                _ => handle_slash(
+                    config, provider, executor, session, store, warm, pty, mode, cwd, line,
+                ),
             }
         }
         "CONFIRM_YES" => run_confirmed(executor, rest.trim()),
@@ -506,17 +550,26 @@ fn agent_reply(
 fn handle_slash(
     config: &mut Config,
     provider: &mut Option<Arc<dyn Provider>>,
+    executor: &mut Executor,
     session: &mut Session,
     store: &mut Option<LeanSessionStore>,
     warm: &mut LeanWarm,
     pty: &PtyOut,
     mode: LeanMode,
+    cwd: &str,
     line: &str,
 ) -> String {
     let mut parts = line.split_whitespace();
     let name = parts.next().unwrap_or("");
     let arg = parts.next().unwrap_or("");
+    // Remaining args after the slash name (for custom commands).
+    let rest_args: Vec<&str> = line.split_whitespace().skip(1).collect();
     match name {
+        "/help" | "/commands" => {
+            warm.ensure(config);
+            emit_lean_help(warm, pty, name == "/commands");
+            "OK".into()
+        }
         "/status" => {
             warm.ensure(config);
             let sid = store
@@ -538,9 +591,10 @@ fn handle_slash(
             emit_text(
                 pty,
                 &format!(
-                    "skills: {} loaded · mcp: {}",
+                    "skills: {} loaded · mcp: {} · custom: {}",
                     warm.skills_len(),
-                    warm.mcp_server_hint(config)
+                    warm.mcp_server_hint(config),
+                    warm.command_names().len()
                 ),
             );
             "OK".into()
@@ -581,7 +635,6 @@ fn handle_slash(
         "/sessions" => handle_sessions_slash(session, store, pty, arg),
         "/details" => {
             let next = cycle_details_density(&mut config.backend.output);
-            // Lean agent (modes::yolo) dumps full tool stdout when verbose.
             config.aishe.yolo_verbose = next == "detailed";
             std::env::set_var("AISHE_AGENT_OUTPUT", next);
             if let Ok(path) = std::env::var("AISHE_OUTPUT_FILE") {
@@ -599,8 +652,8 @@ fn handle_slash(
                 emit_text(pty, "skills: (none loaded)");
             } else {
                 emit_text(pty, &format!("skills ({}):", names.len()));
-                for name in names.iter().take(64) {
-                    emit_text(pty, &format!("  {name}"));
+                for skill in names.iter().take(64) {
+                    emit_text(pty, &format!("  {skill}"));
                 }
                 if names.len() > 64 {
                     emit_text(pty, &format!("  … +{} more", names.len() - 64));
@@ -616,16 +669,16 @@ fn handle_slash(
                 emit_text(pty, "mcp: none configured");
             } else {
                 emit_text(pty, &format!("mcp servers ({}):", servers.len()));
-                for name in &servers {
-                    emit_text(pty, &format!("  {name}"));
+                for sname in &servers {
+                    emit_text(pty, &format!("  {sname}"));
                 }
             }
             if tools.is_empty() {
                 emit_text(pty, "mcp tools: (none connected)");
             } else {
                 emit_text(pty, &format!("mcp tools ({}):", tools.len()));
-                for name in tools.iter().take(64) {
-                    emit_text(pty, &format!("  {name}"));
+                for tname in tools.iter().take(64) {
+                    emit_text(pty, &format!("  {tname}"));
                 }
                 if tools.len() > 64 {
                     emit_text(pty, &format!("  … +{} more", tools.len() - 64));
@@ -675,7 +728,180 @@ fn handle_slash(
             );
             "OK".into()
         }
-        _ => format!("ERROR\tunknown slash {name}"),
+        _ => handle_custom_or_unknown(
+            config,
+            provider,
+            executor,
+            session,
+            store,
+            warm,
+            pty,
+            mode,
+            cwd,
+            name,
+            &rest_args,
+        ),
+    }
+}
+
+fn emit_lean_help(warm: &LeanWarm, pty: &PtyOut, commands_only: bool) {
+    if !commands_only {
+        emit_text(
+            pty,
+            "aishe lean: typed commands run in zsh -f. English goes to the model.",
+        );
+        emit_text(pty, "  ? force NL   ! force shell   Ctrl-X ? show route");
+        emit_text(pty, "  empty ? explains last failure · Ctrl-X Ctrl-F suggests a fix");
+        emit_text(
+            pty,
+            "  /mode ask|allow|agent   Shift-Tab cycles (aliases suggest|auto|yolo)",
+        );
+        emit_text(pty, "  /connection /model   list/pick for this shell");
+        emit_text(
+            pty,
+            "  /sessions list|clear|resume:<id>   /usage /status /reset /undo",
+        );
+        emit_text(
+            pty,
+            "  /details or Ctrl-O   cycle focus|compact|detailed (this shell)",
+        );
+        emit_text(pty, "  /mcp /skills   list names (not just /status counts)");
+        emit_text(pty, "  /commands   list custom markdown slash-commands");
+        emit_text(
+            pty,
+            "  /backend   heavy specialist opt-in note (no auto OpenCode)",
+        );
+        emit_text(
+            pty,
+            "  Default mode is ask. allow/agent need one typed grant per shell.",
+        );
+        emit_text(
+            pty,
+            "  Auth: Grok CLI OAuth (~/.grok/auth.json) · API-key fallback · OpenAI OAuth is LEGACY",
+        );
+    }
+    let list = warm.command_list();
+    if list.is_empty() {
+        let hint = crate::commands::user_dir()
+            .map(|p| p.display().to_string())
+            .unwrap_or_else(|| "~/.config/aishe/commands".into());
+        emit_text(
+            pty,
+            &format!(
+                "custom slash-commands: none (add *.md under {})",
+                crate::commands::display_safe(&hint)
+            ),
+        );
+    } else {
+        emit_text(pty, &format!("custom slash-commands ({}):", list.len()));
+        for (cname, desc) in list.iter().take(64) {
+            let d = if desc.is_empty() {
+                String::new()
+            } else {
+                format!(" — {}", crate::commands::display_safe(desc))
+            };
+            emit_text(pty, &format!("  /{cname}{d}"));
+        }
+        if list.len() > 64 {
+            emit_text(pty, &format!("  … +{} more", list.len() - 64));
+        }
+    }
+}
+
+fn custom_cmd_trusted(cmd: &crate::commands::CustomCommand) -> bool {
+    match cmd.source.as_deref() {
+        None => true,
+        Some(src) => {
+            let contents = std::fs::read_to_string(src).unwrap_or_default();
+            crate::trust::is_trusted(src, &contents)
+        }
+    }
+}
+
+fn handle_custom_or_unknown(
+    config: &Config,
+    provider: &mut Option<Arc<dyn Provider>>,
+    executor: &mut Executor,
+    session: &mut Session,
+    store: &mut Option<LeanSessionStore>,
+    warm: &mut LeanWarm,
+    pty: &PtyOut,
+    mode: LeanMode,
+    cwd: &str,
+    name: &str,
+    args: &[&str],
+) -> String {
+    // Only single-segment /name (reuse discovery; not a path like /usr/bin/x).
+    let bare = name.strip_prefix('/').unwrap_or("");
+    if bare.is_empty()
+        || bare.contains('/')
+        || !bare
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+    {
+        return format!("ERROR\tunknown slash {name}");
+    }
+    warm.ensure(config);
+    let Some(cmd) = warm
+        .commands
+        .as_ref()
+        .and_then(|reg| reg.get(bare))
+        .cloned()
+    else {
+        return format!("ERROR\tunknown slash {name}");
+    };
+    let ex = cmd.expand(args);
+    if ex.text.is_empty() {
+        emit_text(pty, &format!("/{bare}: empty expansion"));
+        return "OK".into();
+    }
+    let trusted = custom_cmd_trusted(&cmd);
+    if ex.shell {
+        if cmd.needs_trust_confirm(trusted) {
+            let shown = cmd
+                .source
+                .as_ref()
+                .map(|p| crate::commands::display_safe(&p.display().to_string()))
+                .unwrap_or_else(|| "(project)".into());
+            emit_text(
+                pty,
+                &format!("untrusted project command /{bare} — run: aishe trust {shown}"),
+            );
+            emit_text(
+                pty,
+                &format!("would run: {}", crate::commands::display_safe(&ex.text)),
+            );
+            return "OK".into();
+        }
+        match safety::assess(&ex.text) {
+            Risk::Safe => run_now(executor, &ex.text),
+            Risk::Dangerous(reason) | Risk::Unknown(reason) => {
+                format!("CONFIRM_B64\t{}", b64(&format!("{} ({reason})", ex.text)))
+            }
+        }
+    } else {
+        // Frontmatter still uses suggest|auto|yolo; map current lean mode for
+        // escalation checks, then parse back to LeanMode for the NL turn.
+        let configured_legacy = match mode {
+            LeanMode::Ask => "suggest",
+            LeanMode::Allow => "auto",
+            LeanMode::Agent => "yolo",
+        };
+        let effective = cmd.effective_mode(configured_legacy, trusted);
+        if let Some(want) = ex.mode.as_deref().filter(|w| *w != effective) {
+            emit_text(
+                pty,
+                &format!(
+                    "aishe: ignoring untrusted project command mode '{}' — running in '{}'",
+                    crate::commands::display_safe(want),
+                    crate::commands::display_safe(effective)
+                ),
+            );
+        }
+        let run_mode = LeanMode::parse(effective);
+        handle_nl(
+            config, provider, executor, session, store, warm, pty, run_mode, cwd, &ex.text,
+        )
     }
 }
 
@@ -1558,4 +1784,78 @@ mod tests {
             );
         });
     }
+
+    #[test]
+    fn custom_markdown_slash_runs_shell_true_via_fifo() {
+        let home = std::env::temp_dir().join(format!(
+            "aishe-lean-custom-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let cmds = home.join("aishe").join("commands");
+        std::fs::create_dir_all(&cmds).unwrap();
+        std::fs::write(
+            cmds.join("leanping.md"),
+            "---\ndescription: lean custom\nshell: true\n---\ntrue\n",
+        )
+        .unwrap();
+        let prev_cfg = std::env::var_os("AISHE_CONFIG_DIR");
+        let prev_xdg = std::env::var_os("XDG_CONFIG_HOME");
+        std::env::set_var("AISHE_CONFIG_DIR", &home);
+        std::env::set_var("XDG_CONFIG_HOME", &home);
+
+        let mut config = test_config();
+        let mut provider = None;
+        let mut executor = Executor::new().expect("executor");
+        let mut session = Session::new(true);
+        let pty = PtyOut::capture();
+        with_store(|store| {
+            let mut warm = LeanWarm::default();
+            let reply = handle_ipc_line(
+                &mut config,
+                &mut provider,
+                &mut executor,
+                &mut session,
+                store,
+                &mut warm,
+                &pty,
+                "SLASH\task\t/tmp\t/commands",
+            );
+            assert_eq!(reply, "OK");
+            let shown = pty.take_capture();
+            assert!(
+                shown.contains("/leanping"),
+                "commands list must include /leanping: {shown:?}"
+            );
+
+            let reply = handle_ipc_line(
+                &mut config,
+                &mut provider,
+                &mut executor,
+                &mut session,
+                store,
+                &mut warm,
+                &pty,
+                "SLASH\task\t/tmp\t/leanping",
+            );
+            assert!(
+                reply.starts_with("RAN") || reply.starts_with("CONFIRM_B64"),
+                "expected RAN/CONFIRM for shell custom, got {reply}"
+            );
+        });
+
+        match prev_cfg {
+            Some(v) => std::env::set_var("AISHE_CONFIG_DIR", v),
+            None => std::env::remove_var("AISHE_CONFIG_DIR"),
+        }
+        match prev_xdg {
+            Some(v) => std::env::set_var("XDG_CONFIG_HOME", v),
+            None => std::env::remove_var("XDG_CONFIG_HOME"),
+        }
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
 }

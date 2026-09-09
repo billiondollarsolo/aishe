@@ -649,10 +649,13 @@ fn lean_hotpath_checks() -> Vec<Check> {
         Severity::Warning,
         match &auth_path {
             Some(p) if auth_present => format!("grok auth.json: present at {}", p.display()),
-            Some(p) => format!("grok auth.json: missing at {}", p.display()),
-            None => "grok auth.json: HOME unset".into(),
+            Some(p) => format!(
+                "grok auth.json: missing at {} — next: run `grok` login (or API-key via `aishe auth`)",
+                p.display()
+            ),
+            None => "grok auth.json: HOME unset — next: run `grok` login".into(),
         },
-        "lean live LLM prefers Grok Build subscription OAuth; token values are never displayed",
+        "lean happy path: Grok CLI OAuth (~/.grok/auth.json). API-key fallback via aishe auth / env. OpenAI/Codex OAuth remains LEGACY (AISHE_LEGACY_OPENCODE). Tokens never displayed.",
     ));
 
     #[cfg(target_os = "linux")]

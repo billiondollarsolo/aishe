@@ -25,6 +25,23 @@ breaking changes can land in any release.
 - Optional `~/.aishe/leanrc` (or `$AISHE_LEANRC`) for aliases you choose to keep
   in this shell. It is never `~/.zshrc` by default.
 
+## [1.0.0-rc.1] - 2026-09-09
+
+Lean CSH hot-path **1.0 RC** on `feat/lean-csh-hotpath` (do not treat as `main` merge).
+
+### Added
+- **F40 custom slash-commands on lean:** existing `commands.rs` markdown discovery
+  wired into lean allowlist + FIFO handler; `/help` / `/commands` list them; Tab
+  completes builtins + `AISHE_LEAN_CMDS_FILE`.
+- **1.0 acceptance:** `docs/lean-1.0.md` capability checklist mapped to wave1–6
+  + gated live OAuth; `tests/lean_parity_wave6.rs`.
+
+### Changed
+- Crate version `0.8.0` → `1.0.0-rc.1` (honest RC for lean daily-driver).
+- **F14 honesty:** doctor next-step points at `grok` login; docs state Grok OAuth
+  happy path + API-key fallback; OpenAI/Codex OAuth remains LEGACY/heavy.
+- Matrix: F40 **done**; F12/F22/F24/F25/F41/F42 marked post-1.0.
+
 ## [0.8.0] - 2026-09-03
 
 Full release notes, compatibility boundaries, qualification evidence, and known

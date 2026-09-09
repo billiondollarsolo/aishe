@@ -127,6 +127,7 @@ fn run_zsh_inner(config: &Config, history_log: &std::path::Path, shell_id: Strin
             config.aishe.mode.clone()
         },
     );
+    let mut _cmds_guard: Option<FileGuard> = None;
     if lean {
         cmd.env("AISHE_LEAN", "1");
         cmd.env("AISHE_BACKEND", "native");
@@ -134,6 +135,10 @@ fn run_zsh_inner(config: &Config, history_log: &std::path::Path, shell_id: Strin
             cmd.env("AISHE_LEAN_REQ", ipc.req_path.display().to_string());
             cmd.env("AISHE_LEAN_REP", ipc.rep_path.display().to_string());
         }
+        let cmds_file = std::env::temp_dir().join(format!("aishe-lean-cmds-{shell_id}"));
+        let _ = std::fs::File::create(&cmds_file);
+        cmd.env("AISHE_LEAN_CMDS_FILE", cmds_file.display().to_string());
+        _cmds_guard = Some(FileGuard(cmds_file));
     }
     // The prompt paints from the same palette as the Rust renderers, and goes
     // colorless under NO_COLOR/TERM=dumb/ui.theme = "none" like everything else.

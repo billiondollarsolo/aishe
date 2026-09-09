@@ -60,12 +60,16 @@ fn lean_hook_surfaces_connection_and_mode_aliases() {
         "lean hook must route /connection on FIFO"
     );
     assert!(
-        hook.contains("suggest|auto|yolo"),
-        "lean /help must mention mode aliases"
+        hook.contains("ask|suggest") && hook.contains("allow|auto") && hook.contains("agent|yolo"),
+        "lean /mode must accept product+legacy aliases"
     );
     assert!(
-        hook.contains("/connection /model") || hook.contains("/model"),
-        "lean /help must mention /model"
+        hook.contains("/help|/commands") || hook.contains("/commands"),
+        "lean hook must FIFO-route /help and /commands"
+    );
+    assert!(
+        hook.contains("/connection") && hook.contains("/model"),
+        "lean hook must route /connection and /model"
     );
 }
 
