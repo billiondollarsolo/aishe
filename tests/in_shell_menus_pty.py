@@ -28,6 +28,8 @@ def check_menu(shell, command, expected_row, marker):
 
 
 def main():
+    from pty_helper import require_legacy_opencode_world
+    require_legacy_opencode_world()
     _, env = environment("menus")
     shell = Pty(env)
     try:

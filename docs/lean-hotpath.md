@@ -101,13 +101,34 @@ AISHE_SPY_WIRE_NS=/tmp/wire \
 # /tmp/np exists, /tmp/no does not, /tmp/wire is nanoseconds to provider.complete
 ```
 
-## Remaining gaps (not W1)
+## Remaining gaps
 
-- Full compsys / completion dump on first prompt.
-- Streaming tokens into the PTY (ask currently returns a complete answer/fill).
-- Agent-mode IPC output is parent-stdout, not inner-PTY stdio.
-- `init zsh` hook for people who will not leave their rc (still post-MVP).
-- MCP, skills, OAuth, named connections, overlay dry-run.
+### Closed in Wave 1 (2026-09-09)
+
+- **F19/F35 multi-line answers:** parent writes formatted text to the PTY master
+  via `lean::PtyOut`; FIFO returns control `OK`. FILL/CONFIRM use `*_B64` so
+  newlines survive. Ask/suggest no longer flatten answers to spaces.
+- **F05/F46 agent transcript:** `StdoutRedirect` splices agent `println!`
+  output into the same PTY master; FIFO returns `RAN` only. No OpenCode on the
+  default agent path.
+- **F18 compsys:** bounded `compinit` + `.zcompdump` / `.zcompcache` under the
+  private ZDOTDIR. First interactive start may rebuild the dump (tens–low
+  hundreds of ms); later prompts use `compinit -C`. No user plugins / `~/.zshrc`.
+- **F10/F11 `/reset` / `/undo`:** `/reset` clears the in-process FIFO `Session`;
+  `/undo` calls `undo::undo_last` and prints the summary into the PTY.
+- **F28 lean smoke:** `tests/lean_hotpath.rs` + `tests/lean_parity_wave1.rs`
+  (spies, multi-line ask, compsys, `/reset` unit coverage). Legacy Python PTY
+  suites that assume `~/.zshrc` / OpenCode stay **LEGACY-gated**
+  (`AISHE_LEGACY_OPENCODE=1`) — not lean blockers.
+
+### Still open (post–Wave 1 / Wave 2)
+
+- True token streaming (`CHUNK`/`END` or SSE into PTY) — Wave 1 delivers complete
+  multi-line answers, not token-at-a-time.
+- `init zsh` hook for people who will not leave their rc (post-MVP).
+- MCP / skills discovery UX, named connections switcher, overlay dry-run.
+- Lean-specific `aishe doctor` section; durable session JSONL / `sessions list`.
+- Legacy Python PTY matrix remains LEGACY-only (world mismatch by design).
 
 ## Three control planes (design lock 2026-09-09)
 
