@@ -137,21 +137,25 @@ See `src/lean/heavy.rs`. Not wired as the default controller. Call sites must
 opt in explicitly; the lean PTY/NL path must never auto-select them.
 
 
-## Live xAI / Grok (real LLM)
+## Live Grok (subscription OAuth)
 
-Catalog entry (`src/provider_catalog.rs`): provider `xai`, base
-`https://api.x.ai`, model `grok-4.5`, env **`XAI_API_KEY`**.
+Happy path uses the **same Grok Build subscription OAuth** as `/usr/local/bin/grok`
+on the builder — not an API key.
 
-Grok Build CLI OAuth (`~/.grok/auth.json`) is **not** the same credential.
-Export an API key from the xAI console:
+1. Log in once so `~/.grok/auth.json` exists (device / browser login via `grok`).
+2. Lean reads the OIDC access token (`key`) and calls `https://api.x.ai` with
+   `Authorization: Bearer …` (Responses transport, catalog model `grok-4.5`).
+3. Optional override: `AISHE_GROK_AUTH=/path/to/auth.json` or `GROK_HOME=…`.
 
 ```bash
-export XAI_API_KEY=...          # required for live calls
+# Ensure CLI session exists (already true on grokbot-builder-node1)
+# grok   # interactive login if needed
+
 source /root/.cargo/env
 cd /builderbot-code/aishe-research/aishe
 cargo build --release
 
-# Lean auto-prefers the xAI catalog entry when XAI_API_KEY is set.
+# Lean auto-prefers Grok subscription OAuth when ~/.grok/auth.json is present.
 ./target/release/aishe -c "? Reply with exactly one word: pong"
 
 # Interactive
@@ -159,8 +163,12 @@ cargo build --release
 # then: ? what is eating disk
 ```
 
-Gated live smoke (skipped in normal CI):
+Gated live smoke (skipped in normal CI; needs CLI session, **not** `XAI_API_KEY`):
 
 ```bash
-AISHE_LIVE_LLM=1 XAI_API_KEY=... cargo test --test lean_live_xai -- --nocapture
+AISHE_LIVE_LLM=1 cargo test --test lean_live_xai -- --nocapture
 ```
+
+Escape hatch only: if no CLI session is available, a non-empty `XAI_API_KEY` still
+wires the catalog `xai` entry. Prefer Grok login for the documented path. Never
+commit tokens or `auth.json`.

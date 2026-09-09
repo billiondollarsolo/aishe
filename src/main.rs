@@ -334,7 +334,7 @@ fn run() -> Result<u8> {
     ) {
         let mut config = Config::load_quiet()?.unwrap_or_default();
         if aishe::lean::enabled() {
-            aishe::lean::prefer_xai_api_from_env(&mut config);
+            aishe::lean::prefer_grok_live_auth(&mut config);
         }
         let _project_overlay = std::env::current_dir()
             .ok()
@@ -392,7 +392,7 @@ fn run() -> Result<u8> {
 
     let mut config = Config::load_or_init()?;
     if aishe::lean::enabled() {
-        aishe::lean::prefer_xai_api_from_env(&mut config);
+        aishe::lean::prefer_grok_live_auth(&mut config);
     }
     // A project-local `.aishe/config.toml` overrides the user config (safe keys
     // always; sensitive keys only when the file is trusted). Applied before flags

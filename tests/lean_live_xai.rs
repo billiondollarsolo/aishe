@@ -1,8 +1,11 @@
-//! Live xAI / Grok smoke for lean NL. Gated behind AISHE_LIVE_LLM=1.
+//! Live Grok subscription smoke for lean NL. Gated behind AISHE_LIVE_LLM=1.
 //!
-//! Not run in default CI. Requires XAI_API_KEY and network access to api.x.ai.
+//! Not run in default CI. Requires a Grok Build CLI login (`~/.grok/auth.json`)
+//! and network access to api.x.ai — not an API key.
 //!
-//!   AISHE_LIVE_LLM=1 XAI_API_KEY=... cargo test --test lean_live_xai -- --nocapture
+//!   AISHE_LIVE_LLM=1 cargo test --test lean_live_xai -- --nocapture
+//!
+//! Optional: AISHE_GROK_AUTH=/path/to/auth.json
 
 use std::io::Write;
 use std::path::PathBuf;
@@ -22,45 +25,20 @@ fn temp_root(label: &str) -> PathBuf {
     dir
 }
 
-fn xai_config_home() -> PathBuf {
+fn lean_config_home() -> PathBuf {
     let dir = temp_root("config");
     let cfg_dir = dir.join("aishe");
     std::fs::create_dir_all(&cfg_dir).unwrap();
     let mut file = std::fs::File::create(cfg_dir.join("config.toml")).unwrap();
-    // Catalog-aligned Grok - API connection (provider_catalog::xai).
+    // Minimal config — prefer_grok_live_auth rewrites the xAI connection at startup.
     writeln!(
         file,
         r#"[aishe]
 mode = "suggest"
-provider = "xai"
-connection = "xai"
 stream = false
 
 [backend]
 engine = "opencode"
-
-[providers.openai]
-base_url = "https://api.x.ai"
-api_key_env = "XAI_API_KEY"
-model = "grok-4.5"
-credential = "xai"
-transport = "responses"
-auth_required = true
-
-[connections.xai]
-provider = "xai"
-label = "Grok - API"
-
-[connections.xai.settings]
-base_url = "https://api.x.ai"
-api_key_env = "XAI_API_KEY"
-model = "grok-4.5"
-credential = "xai"
-transport = "responses"
-auth_required = true
-
-[connections.xai.auth]
-type = "api_key"
 "#
     )
     .unwrap();
@@ -77,24 +55,42 @@ fn live_enabled() -> bool {
     )
 }
 
+fn grok_auth_present() -> bool {
+    if let Ok(p) = std::env::var("AISHE_GROK_AUTH") {
+        let p = p.trim();
+        if !p.is_empty() {
+            return std::path::Path::new(p).is_file();
+        }
+    }
+    if let Ok(home) = std::env::var("GROK_HOME") {
+        let home = home.trim();
+        if !home.is_empty() {
+            return std::path::Path::new(home).join("auth.json").is_file();
+        }
+    }
+    if let Ok(home) = std::env::var("HOME") {
+        return std::path::Path::new(&home).join(".grok").join("auth.json").is_file();
+    }
+    false
+}
+
 #[test]
-fn live_xai_lean_nl_smoke() {
+fn live_grok_subscription_lean_nl_smoke() {
     if !live_enabled() {
-        eprintln!("skip: set AISHE_LIVE_LLM=1 to run live xAI smoke");
+        eprintln!("skip: set AISHE_LIVE_LLM=1 to run live Grok subscription smoke");
         return;
     }
-    let key = std::env::var("XAI_API_KEY").unwrap_or_default();
     assert!(
-        !key.trim().is_empty(),
-        "AISHE_LIVE_LLM=1 requires XAI_API_KEY (Grok API key for https://api.x.ai). \
-         Grok Build CLI OAuth is not the same credential."
+        grok_auth_present(),
+        "AISHE_LIVE_LLM=1 requires a Grok Build CLI session (~/.grok/auth.json). \
+         Log in with `grok` / device login on this host. Do not use XAI_API_KEY for the happy path."
     );
 
     let started = Instant::now();
     let mut cmd = CargoCommand::cargo_bin("aishe").unwrap();
-    cmd.env("XDG_CONFIG_HOME", xai_config_home())
+    cmd.env("XDG_CONFIG_HOME", lean_config_home())
         .env("XDG_DATA_HOME", temp_root("data"))
-        .env("XAI_API_KEY", &key)
+        .env_remove("XAI_API_KEY")
         .env_remove("AISHE_FAKE_LLM")
         .env_remove("AISHE_FAKE_LLM_FILE")
         .env_remove("AISHE_LEGACY_OPENCODE")
@@ -107,7 +103,7 @@ fn live_xai_lean_nl_smoke() {
     let elapsed = started.elapsed();
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
-    eprintln!("live xAI elapsed={elapsed:?}");
+    eprintln!("live Grok subscription elapsed={elapsed:?}");
     eprintln!("stdout:\n{stdout}");
     if !stderr.is_empty() {
         eprintln!("stderr:\n{stderr}");
@@ -122,6 +118,5 @@ fn live_xai_lean_nl_smoke() {
         lower.contains("pong"),
         "expected model answer to contain 'pong', got: {stdout}"
     );
-    // Soft latency note — network-bound; not a CI gate.
     eprintln!("live smoke ok in {elapsed:?}");
 }
