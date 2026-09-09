@@ -333,6 +333,9 @@ fn run() -> Result<u8> {
         Some(Cmd::Log { .. } | Cmd::Usage { .. } | Cmd::Runbook { .. })
     ) {
         let mut config = Config::load_quiet()?.unwrap_or_default();
+        if aishe::lean::enabled() {
+            aishe::lean::prefer_xai_api_from_env(&mut config);
+        }
         let _project_overlay = std::env::current_dir()
             .ok()
             .and_then(|cwd| config.apply_project_overlay(&cwd));
@@ -388,6 +391,9 @@ fn run() -> Result<u8> {
     }
 
     let mut config = Config::load_or_init()?;
+    if aishe::lean::enabled() {
+        aishe::lean::prefer_xai_api_from_env(&mut config);
+    }
     // A project-local `.aishe/config.toml` overrides the user config (safe keys
     // always; sensitive keys only when the file is trusted). Applied before flags
     // so precedence is: CLI flags > project overlay > user config > defaults.

@@ -164,3 +164,34 @@ mod tests {
         ));
     }
 }
+
+/// If `XAI_API_KEY` is set, point the active lean config at the catalog xAI /
+/// Grok - API entry (`https://api.x.ai`, model `grok-4.5`, env `XAI_API_KEY`).
+/// Does nothing when the env var is empty. Never reads or writes secrets to disk.
+pub fn prefer_xai_api_from_env(config: &mut crate::config::Config) {
+    let Ok(key) = std::env::var("XAI_API_KEY") else {
+        return;
+    };
+    if key.trim().is_empty() {
+        return;
+    }
+    let Some(service) = crate::provider_catalog::find("xai") else {
+        return;
+    };
+    crate::provider_catalog::apply(service, &mut config.providers.openai);
+    config.aishe.provider = "xai".into();
+    config.aishe.connection = "xai".into();
+    let mut settings = config.providers.openai.clone();
+    settings.api_key_env = service.key_env.to_string();
+    let connection = crate::config::ConnectionConfig {
+        provider: "xai".into(),
+        label: "Grok - API".into(),
+        settings,
+        auth: crate::config::ConnectionAuth::ApiKey {
+            credential: Some(service.credential.to_string()),
+            api_key_env: Some(service.key_env.to_string()),
+        },
+        reasoning_effort: None,
+    };
+    config.connections.insert("xai".into(), connection);
+}

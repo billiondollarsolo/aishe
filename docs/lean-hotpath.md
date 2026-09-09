@@ -135,3 +135,32 @@ multi-step work. Controllers are layered:
 
 See `src/lean/heavy.rs`. Not wired as the default controller. Call sites must
 opt in explicitly; the lean PTY/NL path must never auto-select them.
+
+
+## Live xAI / Grok (real LLM)
+
+Catalog entry (`src/provider_catalog.rs`): provider `xai`, base
+`https://api.x.ai`, model `grok-4.5`, env **`XAI_API_KEY`**.
+
+Grok Build CLI OAuth (`~/.grok/auth.json`) is **not** the same credential.
+Export an API key from the xAI console:
+
+```bash
+export XAI_API_KEY=...          # required for live calls
+source /root/.cargo/env
+cd /builderbot-code/aishe-research/aishe
+cargo build --release
+
+# Lean auto-prefers the xAI catalog entry when XAI_API_KEY is set.
+./target/release/aishe -c "? Reply with exactly one word: pong"
+
+# Interactive
+./target/release/aishe
+# then: ? what is eating disk
+```
+
+Gated live smoke (skipped in normal CI):
+
+```bash
+AISHE_LIVE_LLM=1 XAI_API_KEY=... cargo test --test lean_live_xai -- --nocapture
+```
