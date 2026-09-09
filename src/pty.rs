@@ -78,12 +78,6 @@ fn run_zsh_inner(config: &Config, history_log: &std::path::Path, shell_id: Strin
             .map(|h| h.display().to_string())
             .unwrap_or_else(|| "/".to_string())
     });
-    let _ipc = if lean {
-        Some(crate::lean::spawn_ipc(config.clone()).context("starting lean NL ipc")?)
-    } else {
-        None
-    };
-
     let (cols, rows) = crossterm::terminal::size().unwrap_or((80, 24));
     let pty_system = native_pty_system();
     let pair = pty_system
@@ -94,6 +88,22 @@ fn run_zsh_inner(config: &Config, history_log: &std::path::Path, shell_id: Strin
             pixel_height: 0,
         })
         .map_err(|e| anyhow!("openpty failed: {e}"))?;
+
+    // Take the master writer before spawn so lean IPC can print into the same
+    // TTY the user sees (answers / agent transcript). FIFO stays control-only.
+    let writer = pair
+        .master
+        .take_writer()
+        .map_err(|e| anyhow!("pty writer: {e}"))?;
+    let pty_out = crate::lean::PtyOut::from_writer(writer);
+    let _ipc = if lean {
+        Some(
+            crate::lean::spawn_ipc(config.clone(), pty_out.clone())
+                .context("starting lean NL ipc")?,
+        )
+    } else {
+        None
+    };
 
     let mut cmd = CommandBuilder::new(&zsh);
     if lean {
@@ -323,10 +333,6 @@ fn run_zsh_inner(config: &Config, history_log: &std::path::Path, shell_id: Strin
         .master
         .try_clone_reader()
         .map_err(|e| anyhow!("pty reader: {e}"))?;
-    let mut writer = pair
-        .master
-        .take_writer()
-        .map_err(|e| anyhow!("pty writer: {e}"))?;
     let master = pair.master;
 
     // Raw mode so keystrokes pass straight through to zsh's ZLE.
@@ -352,6 +358,7 @@ fn run_zsh_inner(config: &Config, history_log: &std::path::Path, shell_id: Strin
     // stdin -> pty
     {
         let done = Arc::clone(&done);
+        let pty_stdin = pty_out.clone();
         std::thread::spawn(move || {
             let mut stdin = std::io::stdin();
             let mut buf = [0u8; 4096];
@@ -359,7 +366,7 @@ fn run_zsh_inner(config: &Config, history_log: &std::path::Path, shell_id: Strin
                 match stdin.read(&mut buf) {
                     Ok(0) => break,
                     Ok(n) => {
-                        if writer.write_all(&buf[..n]).is_err() || writer.flush().is_err() {
+                        if pty_stdin.write_all(&buf[..n]).is_err() {
                             break;
                         }
                     }

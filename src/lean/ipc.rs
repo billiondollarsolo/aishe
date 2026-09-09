@@ -14,6 +14,8 @@ use crate::config::Config;
 use crate::executor::Executor;
 use crate::session::Session;
 
+use super::pty_out::PtyOut;
+
 pub struct IpcGuard {
     pub req_path: PathBuf,
     pub rep_path: PathBuf,
@@ -21,7 +23,7 @@ pub struct IpcGuard {
     thread: Option<JoinHandle<()>>,
 }
 
-pub fn spawn_ipc(config: Config) -> Result<IpcGuard> {
+pub fn spawn_ipc(config: Config, pty: PtyOut) -> Result<IpcGuard> {
     let dir = std::env::temp_dir();
     let id = std::process::id();
     let req_path = dir.join(format!("aishe-lean-{id}.req"));
@@ -79,6 +81,7 @@ pub fn spawn_ipc(config: Config) -> Result<IpcGuard> {
                     &mut provider,
                     &mut executor,
                     &mut session,
+                    &pty,
                     raw,
                 );
                 let _ = writeln!(rep, "{reply}");
