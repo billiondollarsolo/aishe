@@ -2,7 +2,7 @@
 
 **Branch:** `feat/lean-csh-hotpath`  
 **Date:** 2026-09-09  
-**Crate version:** see `Cargo.toml` (`1.0.0-rc.1` on this branch). Product is **1.0-ready** on lean default; do not merge `main` from this doc alone.
+**Crate version:** `1.0.0` (tag `v1.0.0` on `feat/lean-csh-hotpath`). Product is **1.0** on lean default; do not merge `main` from this doc alone.
 
 Capability ≠ mechanism. Lean hot path never requires OpenCode. Grok subscription OAuth is the happy path; API keys are fallback. No secrets in docs or tests.
 

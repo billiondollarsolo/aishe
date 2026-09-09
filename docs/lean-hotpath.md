@@ -187,7 +187,7 @@ AISHE_SPY_WIRE_NS=/tmp/wire \
 
 - **F40 custom slash-commands:** reuse `CommandRegistry` (no new DSL); FIFO +
   allowlist; `/help` `/commands` + Tab list customs.
-- **1.0 acceptance:** see [`docs/lean-1.0.md`](lean-1.0.md). Crate `1.0.0-rc.1`.
+- **1.0 acceptance:** see [`docs/lean-1.0.md`](lean-1.0.md). Crate `1.0.0`.
 - **F14 honesty:** Grok CLI OAuth + API-key fallback; OpenAI OAuth LEGACY only.
 
 ### Still open (post-1.0)
