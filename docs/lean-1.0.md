@@ -12,7 +12,7 @@ Capability ≠ mechanism. Lean hot path never requires OpenCode. Grok subscripti
 |---|---|---|---|
 | F01 | Known cmds in-process | child `zsh -f`, no FIFO/Provider | `lean_parity_wave5` live PTY latency |
 | F02 | `?` / `!` / grammar | lean hook + Rust table | wave1–2 + hook corpus |
-| F03–F05 | ask / allow / agent | FIFO NL → suggest / confirm / yolo | wave1 smoke + lib `lean::nl` |
+| F03–F05 | ask / allow / agent | FIFO NL → suggest / confirm / yolo | wave1 smoke + lib `lean::nl` + **wave7** noninteractive agent (`run_nl` + `AISHE_ACCEPTANCE_FILE` + FakeProvider) |
 | F06–F07 | Tools + safety | yolo + `safety::assess` | lib + allow CONFIRM |
 | F08–F09 | Grants + mode names | Shift-Tab / typed grant | wave3 aliases |
 | F10–F11 | Sessions + undo | lean JSONL + `/undo` | wave2 |
@@ -65,7 +65,7 @@ Reuse existing markdown discovery (`~/.config/aishe/commands/*.md`, project `.ai
 export PATH=/root/.cargo/bin:$PATH
 cargo test --lib
 cargo test --test lean_parity_wave1 --test lean_parity_wave2 --test lean_parity_wave3 \
-  --test lean_parity_wave4 --test lean_parity_wave5 --test lean_parity_wave6
+  --test lean_parity_wave4 --test lean_parity_wave5 --test lean_parity_wave6 --test lean_parity_wave7
 # optional live:
 # AISHE_LIVE_LLM=1 cargo test --test lean_live_xai -- --nocapture
 ```

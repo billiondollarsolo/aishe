@@ -1612,7 +1612,8 @@ pub fn one_shot(
             }
             match provider {
                 Some(p) => {
-                    if config.aishe.mode == "yolo" {
+                    // Product name "agent"; legacy alias "yolo". Lean never starts OpenCode here.
+                    if matches!(config.aishe.mode.as_str(), "yolo" | "agent") {
                         modes::yolo::run(
                             &nl,
                             p.as_ref(),
