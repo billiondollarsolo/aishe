@@ -121,13 +121,30 @@ AISHE_SPY_WIRE_NS=/tmp/wire \
   suites that assume `~/.zshrc` / OpenCode stay **LEGACY-gated**
   (`AISHE_LEGACY_OPENCODE=1`) — not lean blockers.
 
-### Still open (post–Wave 1 / Wave 2)
+### Closed in Wave 2 (2026-09-09)
 
-- True token streaming (`CHUNK`/`END` or SSE into PTY) — Wave 1 delivers complete
+- **F10 durable lean sessions:** JSON/JSONL under
+  `$XDG_DATA_HOME/aishe/lean-sessions/` (override `AISHE_LEAN_SESSIONS`). Owned by
+  the lean FIFO parent. `/reset` clears in-memory + durable current transcript.
+  `/sessions list|clear|resume:<id>` and `aishe sessions` list lean entries
+  (no OpenCode session map).
+- **F30 failure capsule → empty `?` / fix-last:** lean hook records capsules via
+  `aishe --record-failure`; bare `?` explains last failure on the FIFO path;
+  Ctrl-X Ctrl-F (`FIX` IPC) prefills a corrected command (`FILL_B64`).
+- **F31 `@file` / `@diff`:** parent expands attachments with `attachments::expand`
+  before suggest/agent NL (same bounds as legacy).
+- **F33 real `/usage`:** prints `usage::summary` from the warm provider meter
+  (not a stub); optional budget line.
+- **F26 `aishe doctor` lean section:** `lean.enabled`, FIFO temp dir, compsys dump
+  contract, grok `auth.json` **presence** (never token print), bwrap, leanrc path,
+  lean sessions root.
+
+### Still open (post–Wave 2)
+
+- True token streaming (`CHUNK`/`END` or SSE into PTY) — Wave 1/2 deliver complete
   multi-line answers, not token-at-a-time.
 - `init zsh` hook for people who will not leave their rc (post-MVP).
 - MCP / skills discovery UX, named connections switcher, overlay dry-run.
-- Lean-specific `aishe doctor` section; durable session JSONL / `sessions list`.
 - Legacy Python PTY matrix remains LEGACY-only (world mismatch by design).
 
 ## Three control planes (design lock 2026-09-09)

@@ -106,7 +106,7 @@ _aishe_routes_to_agent() {
   [[ "$line" == /* && "$line" != //* ]] && {
     local slash="${line%%[[:space:]]*}"
     case "$slash" in
-      /help|/mode|/status|/reset|/undo|/usage|/details|/model) return 1 ;;
+      /help|/mode|/status|/reset|/undo|/usage|/details|/model|/sessions) return 1 ;;
     esac
   }
 
@@ -324,7 +324,9 @@ _aishe_lean_slash() {
     /help)
       print -r -- 'aishe lean: typed commands run in zsh -f. English goes to the model.'
       print -r -- '  ? force NL   ! force shell   Ctrl-X ? show route'
+      print -r -- '  empty ? explains last failure · Ctrl-X Ctrl-F suggests a fix'
       print -r -- '  /mode ask|allow|agent   Shift-Tab cycles mode'
+      print -r -- '  /sessions list|clear|resume:<id>   /usage /reset /undo'
       print -r -- '  Default mode is ask. allow/agent need one typed grant per shell.'
       ;;
     /mode)
@@ -357,7 +359,7 @@ _aishe_lean_slash() {
       aishe_set_prompt
       print -r -- "mode: ${AISHE_MODE}"
       ;;
-    /status|/reset|/undo|/usage|/details|/model)
+    /status|/reset|/undo|/usage|/details|/model|/sessions)
       local reply
       reply="$(_aishe_lean_send "SLASH	${AISHE_MODE:-ask}	$PWD	$(_aishe_lean_flatten "$line")")" || return
       _aishe_lean_handle_reply "$reply"
@@ -380,11 +382,69 @@ command_not_found_handler() {
 _aishe_capture_exit() {
   AISHE_LAST_EXIT=$?
   typeset -g _AISHE_ACCEPTED_LINE=""
+  if [[ "$AISHE_LAST_EXIT" != 0 && "$AISHE_LAST_EXIT" != 130 && -n "$AISHE_LAST_CMD" ]]; then
+    local elapsed=""
+    if [[ -n "${_AISHE_COMMAND_STARTED:-}" && -n "${EPOCHREALTIME:-}" ]]; then
+      elapsed=$(( (EPOCHREALTIME - _AISHE_COMMAND_STARTED) * 1000 ))
+      elapsed=${elapsed%.*}
+    fi
+    # Capsule write is local JSON only — not OpenCode. Backgrounded so prompts stay fast.
+    AISHE_LAST_DURATION_MS="$elapsed" command aishe --record-failure "$AISHE_LAST_CMD" >/dev/null 2>&1 &!
+    typeset -g _AISHE_FAILURE_ACTIVE=1
+    if [[ "${AISHE_FAILURE_HINTS:-1}" == 1 ]]; then
+      print -P "%F{244}aishe: exit ${AISHE_LAST_EXIT} — ? explain · Ctrl-X Ctrl-F fix%f"
+    fi
+  elif [[ "${_AISHE_FAILURE_ACTIVE:-0}" == 1 ]]; then
+    command aishe last clear >/dev/null 2>&1
+    typeset -g _AISHE_FAILURE_ACTIVE=""
+  fi
 }
 _aishe_capture_cmd() {
   typeset -g _AISHE_STAGED_SUGGESTION=""
   AISHE_LAST_CMD="$1"
   typeset -g _AISHE_ACCEPTED_LINE="$1"
+  typeset -g _AISHE_COMMAND_STARTED="${EPOCHREALTIME:-}"
+}
+
+
+# Fix-the-last-command (Ctrl-X Ctrl-F). Prefills a corrected command; never auto-runs.
+aishe-fix-command() {
+  emulate -L zsh
+  if [[ "${AISHE_LAST_EXIT:-0}" == 0 || -z "${AISHE_LAST_CMD:-}" ]]; then
+    zle -M "aishe: no failed command to fix"
+    return
+  fi
+  zle -M "aishe: asking for a fix…"
+  local reply
+  reply="$(_aishe_lean_send "FIX	${AISHE_MODE:-ask}	$PWD	fix")" || {
+    zle -M "aishe: fix request failed"
+    return
+  }
+  local kind="${reply%%	*}"
+  local rest="${reply#*$'	'}"
+  [[ "$kind" == "$reply" ]] && rest=""
+  case "$kind" in
+    FILL_B64)
+      local decoded
+      decoded="$(print -r -- "$rest" | base64 -d 2>/dev/null)" || decoded=""
+      if [[ -n "$decoded" ]]; then
+        BUFFER="$decoded"
+        CURSOR=${#BUFFER}
+        zle -M "aishe: fix ready — review before Enter"
+      else
+        zle -M "aishe: no fix available"
+      fi
+      ;;
+    OK)
+      zle -M "aishe: see explanation above"
+      ;;
+    ERROR)
+      zle -M "aishe: ${rest:-fix failed}"
+      ;;
+    *)
+      zle -M "aishe: no fix available"
+      ;;
+  esac
 }
 
 aishe-show-route() {
@@ -469,12 +529,16 @@ aishe-accept-line() {
 
   if _aishe_routes_to_agent "$trimmed"; then
     local body="$trimmed"
-    [[ "${body[1]}" == '?' ]] && body="${body#?}"
+    local was_q=0
+    [[ "${body[1]}" == '?' ]] && { body="${body#?}"; was_q=1 }
     body="${body##[[:space:]]#}"
     print -s -- "$trimmed"
+    zle -I
     if [[ -n "$body" ]]; then
-      zle -I
       _aishe_lean_nl "$body"
+    elif (( was_q )); then
+      # Empty `?` → explain last failure capsule (lean-native, no OpenCode).
+      _aishe_lean_nl "?"
     fi
     BUFFER=""
     POSTDISPLAY="$trimmed"
@@ -506,7 +570,7 @@ _aishe_highlight_command() {
   local rest="${BUFFER#$leading}"
   local head="${rest%%[[:space:]]*}"
   if [[ "$head" == /help || "$head" == /mode || "$head" == /status ||
-        "$head" == /reset || "$head" == /undo || "$head" == /usage ||
+        "$head" == /reset || "$head" == /undo || "$head" == /usage || "$head" == /sessions ||
         "$head" == /details || "$head" == /model ]]; then
     local slash_start=${#leading}
     local slash_end=$(( slash_start + ${#head} ))
@@ -532,7 +596,8 @@ if [[ -o interactive ]]; then
   add-zsh-hook preexec _aishe_capture_cmd
   zle -N aishe-accept-line
   zle -N aishe-nl-widget
-  zle -N aishe-show-route
+  zle -N aishe-fix-command
+zle -N aishe-show-route
   zle -N aishe-cycle-mode
   zle -N _aishe_highlight_command
   if (( ${+widgets[accept-line]} )); then
@@ -542,7 +607,8 @@ if [[ -o interactive ]]; then
   autoload -Uz add-zle-hook-widget 2>/dev/null
   add-zle-hook-widget zle-line-pre-redraw _aishe_highlight_command 2>/dev/null || true
   bindkey "${AISHE_NL_KEY:-^[^M}" aishe-nl-widget
-  bindkey "${AISHE_ROUTE_KEY:-^X?}" aishe-show-route
+  bindkey "${AISHE_FIX_KEY:-^X^F}" aishe-fix-command
+bindkey "${AISHE_ROUTE_KEY:-^X?}" aishe-show-route
   if (( ${+widgets[reverse-menu-complete]} )); then
     typeset -g _AISHE_ORIG_MODE_WIDGET=reverse-menu-complete
   fi

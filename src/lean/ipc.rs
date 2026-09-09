@@ -15,6 +15,7 @@ use crate::executor::Executor;
 use crate::session::Session;
 
 use super::pty_out::PtyOut;
+use super::sessions::LeanSessionStore;
 
 pub struct IpcGuard {
     pub req_path: PathBuf,
@@ -47,6 +48,10 @@ pub fn spawn_ipc(config: Config, pty: PtyOut) -> Result<IpcGuard> {
     let stop = Arc::new(AtomicBool::new(false));
     let stop_thread = Arc::clone(&stop);
     let req_path_thread = req_path.clone();
+    let cwd = std::env::current_dir()
+        .map(|p| p.display().to_string())
+        .unwrap_or_else(|_| "/".into());
+    let model = config.active_model().to_string();
     let thread = std::thread::Builder::new()
         .name("aishe-lean-ipc".into())
         .spawn(move || {
@@ -56,6 +61,7 @@ pub fn spawn_ipc(config: Config, pty: PtyOut) -> Result<IpcGuard> {
             };
             crate::context::init(executor.shell());
             let mut session = Session::new(true);
+            let mut store = Some(LeanSessionStore::create(&cwd, &model));
             let mut provider = None;
             let mut reader = BufReader::new(req);
             let mut line = String::new();
@@ -81,6 +87,7 @@ pub fn spawn_ipc(config: Config, pty: PtyOut) -> Result<IpcGuard> {
                     &mut provider,
                     &mut executor,
                     &mut session,
+                    &mut store,
                     &pty,
                     raw,
                 );

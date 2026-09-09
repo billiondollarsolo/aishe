@@ -4,7 +4,7 @@
 //! `ERROR`). Multi-line answers and agent tool transcripts are written by the
 //! parent onto the PTY master via [`PtyOut`] so newlines/markdown survive.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use anyhow::Result;
@@ -20,6 +20,7 @@ use crate::skills::SkillRegistry;
 
 use super::grant::{ensure_session_grant, LeanGrant, LeanMode};
 use super::pty_out::PtyOut;
+use super::sessions::LeanSessionStore;
 use super::stdout_redirect::StdoutRedirect;
 
 /// `-c` / hook NL entry used when lean is on. Skips `backend::supervisor`.
@@ -49,9 +50,10 @@ pub fn run_nl(
         );
         return Ok(());
     };
+    let nl = expand_attachments(nl, executor.cwd(), config);
     match lean_mode {
         LeanMode::Agent => modes::yolo::run(
-            nl,
+            &nl,
             provider,
             executor,
             config,
@@ -61,10 +63,10 @@ pub fn run_nl(
             session,
         )?,
         LeanMode::Allow => {
-            modes::suggest::run(nl, provider, executor, config, false, true, session)?
+            modes::suggest::run(&nl, provider, executor, config, false, true, session)?
         }
         LeanMode::Ask => {
-            modes::suggest::run(nl, provider, executor, config, false, false, session)?
+            modes::suggest::run(&nl, provider, executor, config, false, false, session)?
         }
     }
     Ok(())
@@ -93,21 +95,29 @@ pub fn handle_ipc_line(
     provider: &mut Option<Arc<dyn Provider>>,
     executor: &mut Executor,
     session: &mut Session,
+    store: &mut Option<LeanSessionStore>,
     pty: &PtyOut,
     raw: &str,
 ) -> String {
     super::mark_nl_turn_start();
     let (op, rest) = raw.split_once('\t').unwrap_or((raw, ""));
     match op {
-        "NL" | "SLASH" => {
+        "NL" | "SLASH" | "FIX" => {
             let mut parts = rest.splitn(3, '\t');
             let mode = LeanMode::parse(parts.next().unwrap_or("ask"));
             let cwd = parts.next().unwrap_or("");
             let line = parts.next().unwrap_or("").trim();
-            if op == "NL" {
-                handle_nl(config, provider, executor, session, pty, mode, cwd, line)
-            } else {
-                handle_slash(config, session, pty, mode, line)
+            ensure_store(store, cwd, config);
+            if !cwd.is_empty() {
+                let path = PathBuf::from(cwd);
+                if path.is_dir() {
+                    executor.redirect_cwd(path);
+                }
+            }
+            match op {
+                "NL" => handle_nl(config, provider, executor, session, store, pty, mode, cwd, line),
+                "FIX" => handle_fix(config, provider, executor, session, store, pty, line),
+                _ => handle_slash(config, provider, session, store, pty, mode, line),
             }
         }
         "CONFIRM_YES" => run_confirmed(executor, rest.trim()),
@@ -116,39 +126,151 @@ pub fn handle_ipc_line(
     }
 }
 
+fn ensure_store(store: &mut Option<LeanSessionStore>, cwd: &str, config: &Config) {
+    if store.is_none() {
+        *store = Some(LeanSessionStore::create(
+            if cwd.is_empty() { "/" } else { cwd },
+            config.active_model(),
+        ));
+    }
+}
+
+fn persist_store(store: &mut Option<LeanSessionStore>, session: &Session) {
+    if let Some(store) = store.as_mut() {
+        store.persist(session);
+    }
+}
+
 fn handle_nl(
     config: &Config,
     provider: &mut Option<Arc<dyn Provider>>,
     executor: &mut Executor,
     session: &mut Session,
+    store: &mut Option<LeanSessionStore>,
     pty: &PtyOut,
     mode: LeanMode,
     cwd: &str,
     line: &str,
 ) -> String {
-    if line.is_empty() {
-        return "OK".into();
-    }
-    if !cwd.is_empty() {
-        let path = PathBuf::from(cwd);
-        if path.is_dir() {
-            executor.redirect_cwd(path);
-        }
+    // Empty `?` (hook sends "?" or "") → explain last failure capsule.
+    if line.is_empty() || line == "?" {
+        return explain_last_failure(config, provider, executor, session, store, pty);
     }
     if provider.is_none() {
         *provider = providers::make(config).ok();
     }
-    let Some(provider) = provider.as_deref() else {
+    let Some(provider_ref) = provider.as_deref() else {
         return "ERROR\tno provider configured (set an API key, or AISHE_FAKE_LLM for tests)"
             .into();
     };
     if mode != LeanMode::Ask {
         let _ = prepare_agent_executor(executor, config, mode);
     }
-    match mode {
-        LeanMode::Ask => suggest_reply(line, provider, executor, config, session, pty, false),
-        LeanMode::Allow => suggest_reply(line, provider, executor, config, session, pty, true),
-        LeanMode::Agent => agent_reply(line, provider, executor, config, session, pty),
+    let cwd_path = if cwd.is_empty() {
+        executor.cwd().to_path_buf()
+    } else {
+        PathBuf::from(cwd)
+    };
+    let expanded = expand_attachments(line, &cwd_path, config);
+    let reply = match mode {
+        LeanMode::Ask => {
+            suggest_reply(&expanded, provider_ref, executor, config, session, pty, false)
+        }
+        LeanMode::Allow => {
+            suggest_reply(&expanded, provider_ref, executor, config, session, pty, true)
+        }
+        LeanMode::Agent => agent_reply(&expanded, provider_ref, executor, config, session, pty),
+    };
+    if reply == "OK" || reply == "RAN" || reply.starts_with("FILL_B64\t") || reply.starts_with("CONFIRM_B64\t")
+    {
+        persist_store(store, session);
+    }
+    reply
+}
+
+fn explain_last_failure(
+    config: &Config,
+    provider: &mut Option<Arc<dyn Provider>>,
+    executor: &mut Executor,
+    session: &mut Session,
+    store: &mut Option<LeanSessionStore>,
+    pty: &PtyOut,
+) -> String {
+    let capsule = match crate::failure::current() {
+        Ok(c) => c,
+        Err(_) => {
+            emit_text(pty, "no failed command to explain (run a command, then ?)");
+            return "OK".into();
+        }
+    };
+    let prompt = format!(
+        "Explain why this shell command failed with exit status {} and suggest safe next steps. Do not execute anything.\nCommand: {}",
+        capsule.exit_status, capsule.command
+    );
+    if provider.is_none() {
+        *provider = providers::make(config).ok();
+    }
+    let Some(provider_ref) = provider.as_deref() else {
+        return "ERROR\tno provider configured".into();
+    };
+    let reply = suggest_reply(&prompt, provider_ref, executor, config, session, pty, false);
+    persist_store(store, session);
+    reply
+}
+
+fn handle_fix(
+    config: &Config,
+    provider: &mut Option<Arc<dyn Provider>>,
+    executor: &mut Executor,
+    session: &mut Session,
+    store: &mut Option<LeanSessionStore>,
+    pty: &PtyOut,
+    _line: &str,
+) -> String {
+    let capsule = match crate::failure::current() {
+        Ok(c) => c,
+        Err(_) => {
+            emit_text(pty, "no failed command to fix");
+            return "OK".into();
+        }
+    };
+    if capsule.redacted {
+        emit_text(pty, "fix disabled: stored command was redacted");
+        return "OK".into();
+    }
+    if provider.is_none() {
+        *provider = providers::make(config).ok();
+    }
+    let Some(provider_ref) = provider.as_deref() else {
+        return "ERROR\tno provider configured".into();
+    };
+    let ctx = crate::fix::error_context(&capsule.command, config.aishe.fix_capture_stderr);
+    let prompt = crate::fix::build_prompt(
+        &capsule.command,
+        &capsule.exit_status.to_string(),
+        ctx.as_deref(),
+    );
+    match modes::suggest::request(&prompt, provider_ref, executor, config, Vec::new()) {
+        Ok(Suggestion::Command {
+            command,
+            explanation,
+        }) => {
+            session.record_user(&format!("fix: {}", capsule.command));
+            session.record_assistant(&command);
+            if !explanation.trim().is_empty() {
+                emit_text(pty, &explanation);
+            }
+            persist_store(store, session);
+            format!("FILL_B64\t{}", b64(&command))
+        }
+        Ok(Suggestion::Answer { explanation }) => {
+            session.record_user(&format!("fix: {}", capsule.command));
+            session.record_assistant(&explanation);
+            emit_text(pty, &explanation);
+            persist_store(store, session);
+            "OK".into()
+        }
+        Err(error) => format!("ERROR\t{}", one_line(&error.to_string())),
     }
 }
 
@@ -224,33 +346,69 @@ fn agent_reply(
 
 fn handle_slash(
     config: &Config,
+    provider: &Option<Arc<dyn Provider>>,
     session: &mut Session,
+    store: &mut Option<LeanSessionStore>,
     pty: &PtyOut,
     mode: LeanMode,
     line: &str,
 ) -> String {
-    let name = line.split_whitespace().next().unwrap_or("");
+    let mut parts = line.split_whitespace();
+    let name = parts.next().unwrap_or("");
+    let arg = parts.next().unwrap_or("");
     match name {
         "/status" => {
+            let sid = store
+                .as_ref()
+                .map(|s| s.id().to_string())
+                .unwrap_or_else(|| "-".into());
             emit_text(
                 pty,
                 &format!(
-                    "lean {} · mode {} · model {}",
+                    "lean {} · mode {} · model {} · session {}",
                     env!("CARGO_PKG_VERSION"),
                     mode.as_str(),
-                    crate::commands::display_safe(config.active_model())
+                    crate::commands::display_safe(config.active_model()),
+                    crate::commands::display_safe(&sid)
                 ),
             );
             "OK".into()
         }
         "/reset" => {
-            session.clear();
+            if let Some(store) = store.as_mut() {
+                store.clear(session);
+            } else {
+                session.clear();
+            }
             emit_text(pty, "session cleared");
             "OK".into()
         }
         "/usage" => {
-            emit_text(pty, "/usage is a stub on the lean W1 path");
+            let msg = match provider.as_deref() {
+                Some(p) => {
+                    let snap = p.meter().snapshot();
+                    if snap.is_empty() {
+                        "usage: no model calls yet this session".into()
+                    } else {
+                        format!(
+                            "usage: {}",
+                            crate::usage::summary(snap, config.active_model(), &config.pricing)
+                        )
+                    }
+                }
+                None => "usage: no model calls yet this session".into(),
+            };
+            emit_text(pty, &msg);
+            if config.aishe.budget_usd > 0.0 {
+                emit_text(
+                    pty,
+                    &format!("budget: ${:.2}", config.aishe.budget_usd),
+                );
+            }
             "OK".into()
+        }
+        "/sessions" => {
+            handle_sessions_slash(session, store, pty, arg)
         }
         "/details" => {
             emit_text(pty, "focus renderer is the lean default");
@@ -292,6 +450,94 @@ fn handle_slash(
             "OK".into()
         }
         _ => format!("ERROR\tunknown slash {name}"),
+    }
+}
+
+fn handle_sessions_slash(
+    session: &mut Session,
+    store: &mut Option<LeanSessionStore>,
+    pty: &PtyOut,
+    arg: &str,
+) -> String {
+    match arg {
+        "" | "list" => {
+            let listed = super::sessions::list();
+            if listed.is_empty() {
+                emit_text(pty, "no lean sessions");
+            } else {
+                let mut out = String::from("lean sessions (oldest first):");
+                for meta in listed.iter().rev().take(20).collect::<Vec<_>>().into_iter().rev() {
+                    out.push('\n');
+                    out.push_str(&format!(
+                        "  {}  turns={}  {}",
+                        crate::commands::display_safe(&meta.id),
+                        meta.turns,
+                        crate::commands::display_safe(
+                            if meta.title.is_empty() {
+                                meta.cwd.as_str()
+                            } else {
+                                meta.title.as_str()
+                            }
+                        )
+                    ));
+                }
+                emit_text(pty, &out);
+            }
+            "OK".into()
+        }
+        "clear" => {
+            if let Some(store) = store.as_mut() {
+                store.clear(session);
+            } else {
+                session.clear();
+            }
+            emit_text(pty, "current lean session cleared");
+            "OK".into()
+        }
+        other if other.starts_with("resume") || !other.is_empty() => {
+            let id = other.strip_prefix("resume:").unwrap_or(other);
+            let id = id.strip_prefix("resume").unwrap_or(id).trim_matches(':').trim();
+            if id.is_empty() {
+                emit_text(pty, "usage: /sessions resume:<id>");
+                return "OK".into();
+            }
+            match super::sessions::load_session(id) {
+                Some(loaded) => {
+                    *session = loaded;
+                    if let Some(store) = store.as_mut() {
+                        // Keep current store id; re-persist resumed transcript under it.
+                        store.persist(session);
+                    }
+                    emit_text(
+                        pty,
+                        &format!(
+                            "resumed {} ({} turns)",
+                            crate::commands::display_safe(id),
+                            session.turns()
+                        ),
+                    );
+                    "OK".into()
+                }
+                None => {
+                    emit_text(pty, &format!("unknown lean session {id}"));
+                    "OK".into()
+                }
+            }
+        }
+        _ => {
+            emit_text(pty, "usage: /sessions [list|clear|resume:<id>]");
+            "OK".into()
+        }
+    }
+}
+
+fn expand_attachments(line: &str, cwd: &Path, config: &Config) -> String {
+    match crate::attachments::expand(line, cwd, config) {
+        Ok(expanded) => expanded.prompt,
+        Err(error) => {
+            // Soft-fail: keep original line so NL still runs; surface error inline.
+            format!("{line}\n\n[attachment error: {}]", one_line(&error.to_string()))
+        }
     }
 }
 
@@ -341,13 +587,38 @@ fn one_line(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{Mutex, OnceLock};
+
+    fn fake_llm_lock() -> std::sync::MutexGuard<'static, ()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(())).lock().unwrap_or_else(|e| e.into_inner())
+    }
 
     fn test_config() -> Config {
         Config::default()
     }
 
+    fn with_store<F: FnOnce(&mut Option<LeanSessionStore>) -> T, T>(f: F) -> T {
+        let _sessions_guard = crate::lean::sessions::test_env_lock();
+        let root = std::env::temp_dir().join(format!(
+            "aishe-lean-nl-store-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::env::set_var("AISHE_LEAN_SESSIONS", &root);
+        let mut store = Some(LeanSessionStore::create("/tmp", "test"));
+        let out = f(&mut store);
+        std::env::remove_var("AISHE_LEAN_SESSIONS");
+        let _ = std::fs::remove_dir_all(&root);
+        out
+    }
+
     #[test]
     fn answer_preserves_newlines_on_pty_and_returns_ok() {
+        let _guard = fake_llm_lock();
         std::env::set_var(
             "AISHE_FAKE_LLM",
             "{\"type\":\"answer\",\"command\":null,\"explanation\":\"line1\\nline2\\n\\n```\\ncode\\n```\"}",
@@ -357,29 +628,32 @@ mod tests {
         let mut executor = Executor::new().expect("executor");
         let mut session = Session::new(true);
         let pty = PtyOut::capture();
-        let reply = handle_ipc_line(
-            &config,
-            &mut provider,
-            &mut executor,
-            &mut session,
-            &pty,
-            "NL\task\t/tmp\twhat is lean",
-        );
-        assert_eq!(reply, "OK");
-        let shown = pty.take_capture();
-        assert!(
-            shown.contains("line1") && shown.contains("line2"),
-            "pty lost multi-line answer: {shown:?}"
-        );
-        assert!(
-            shown.contains('\n') || shown.contains("\r\n"),
-            "newlines flattened away: {shown:?}"
-        );
+        with_store(|store| {
+            let reply = handle_ipc_line(
+                &config,
+                &mut provider,
+                &mut executor,
+                &mut session,
+                store,
+                &pty,
+                "NL\task\t/tmp\twhat is lean",
+            );
+            assert_eq!(reply, "OK");
+            let shown = pty.take_capture();
+            assert!(
+                shown.contains("line1") && shown.contains("line2"),
+                "pty lost multi-line answer: {shown:?}"
+            );
+            assert!(
+                shown.contains('\n') || shown.contains("\r\n"),
+                "newlines flattened away: {shown:?}"
+            );
+        });
         std::env::remove_var("AISHE_FAKE_LLM");
     }
 
     #[test]
-    fn reset_clears_session_history() {
+    fn reset_clears_session_history_and_durable() {
         let config = test_config();
         let mut provider = None;
         let mut executor = Executor::new().expect("executor");
@@ -388,21 +662,76 @@ mod tests {
         session.record_assistant("prior-answer");
         assert!(!session.history().is_empty());
         let pty = PtyOut::capture();
-        let reply = handle_ipc_line(
-            &config,
-            &mut provider,
-            &mut executor,
-            &mut session,
-            &pty,
-            "SLASH\task\t/tmp\t/reset",
+        with_store(|store| {
+            store.as_mut().unwrap().persist(&session);
+            let reply = handle_ipc_line(
+                &config,
+                &mut provider,
+                &mut executor,
+                &mut session,
+                store,
+                &pty,
+                "SLASH\task\t/tmp\t/reset",
+            );
+            assert_eq!(reply, "OK");
+            assert!(session.history().is_empty(), "session not cleared");
+            assert!(pty.take_capture().contains("session cleared"));
+            let loaded = Session::load_persisted(store.as_ref().unwrap().path());
+            assert!(loaded.history().is_empty(), "durable not cleared");
+        });
+    }
+
+    #[test]
+    fn usage_reports_meter_not_stub() {
+        let _guard = fake_llm_lock();
+        std::env::set_var(
+            "AISHE_FAKE_LLM",
+            "{\"type\":\"answer\",\"command\":null,\"explanation\":\"ok\"}",
         );
-        assert_eq!(reply, "OK");
-        assert!(session.history().is_empty(), "session not cleared");
-        assert!(pty.take_capture().contains("session cleared"));
+        std::env::set_var("AISHE_FAKE_USAGE", "12,4");
+        let config = test_config();
+        let mut provider = providers::make(&config).ok();
+        let mut executor = Executor::new().expect("executor");
+        let mut session = Session::new(true);
+        let pty = PtyOut::capture();
+        with_store(|store| {
+            let _ = handle_ipc_line(
+                &config,
+                &mut provider,
+                &mut executor,
+                &mut session,
+                store,
+                &pty,
+                "NL\task\t/tmp\thello",
+            );
+            let _ = pty.take_capture();
+            let reply = handle_ipc_line(
+                &config,
+                &mut provider,
+                &mut executor,
+                &mut session,
+                store,
+                &pty,
+                "SLASH\task\t/tmp\t/usage",
+            );
+            assert_eq!(reply, "OK");
+            let shown = pty.take_capture();
+            assert!(
+                shown.contains("usage:") && !shown.contains("stub"),
+                "expected real usage, got {shown:?}"
+            );
+            assert!(
+                shown.contains("12") || shown.contains("in"),
+                "meter missing from /usage: {shown:?}"
+            );
+        });
+        std::env::remove_var("AISHE_FAKE_LLM");
+        std::env::remove_var("AISHE_FAKE_USAGE");
     }
 
     #[test]
     fn fill_uses_b64_not_flatten() {
+        let _guard = fake_llm_lock();
         std::env::set_var(
             "AISHE_FAKE_LLM",
             "{\"type\":\"command\",\"command\":\"printf 'hi\\nthere'\",\"explanation\":\"say hi\"}",
@@ -412,23 +741,80 @@ mod tests {
         let mut executor = Executor::new().expect("executor");
         let mut session = Session::new(true);
         let pty = PtyOut::capture();
-        let reply = handle_ipc_line(
-            &config,
-            &mut provider,
-            &mut executor,
-            &mut session,
-            &pty,
-            "NL\task\t/tmp\tplease print hi",
-        );
-        assert!(
-            reply.starts_with("FILL_B64\t"),
-            "expected FILL_B64, got {reply}"
-        );
-        let payload = reply.trim_start_matches("FILL_B64\t");
-        let bytes = base64::Engine::decode(&base64::engine::general_purpose::STANDARD, payload)
-            .expect("b64");
-        let cmd = String::from_utf8(bytes).unwrap();
-        assert!(cmd.contains("printf"), "{cmd}");
+        with_store(|store| {
+            let reply = handle_ipc_line(
+                &config,
+                &mut provider,
+                &mut executor,
+                &mut session,
+                store,
+                &pty,
+                "NL\task\t/tmp\tplease print hi",
+            );
+            assert!(
+                reply.starts_with("FILL_B64\t"),
+                "expected FILL_B64, got {reply}"
+            );
+            let payload = reply.trim_start_matches("FILL_B64\t");
+            let bytes = base64::Engine::decode(&base64::engine::general_purpose::STANDARD, payload)
+                .expect("b64");
+            let cmd = String::from_utf8(bytes).unwrap();
+            assert!(cmd.contains("printf"), "{cmd}");
+        });
         std::env::remove_var("AISHE_FAKE_LLM");
+    }
+
+    #[test]
+    fn at_file_expands_before_nl() {
+        let _guard = fake_llm_lock();
+        let dir = std::env::temp_dir().join(format!(
+            "aishe-lean-attach-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("note.txt");
+        std::fs::write(&file, "secret-payload-xyz").unwrap();
+        std::env::set_var(
+            "AISHE_FAKE_LLM",
+            "{\"type\":\"answer\",\"command\":null,\"explanation\":\"saw-it\"}",
+        );
+        let mut config = test_config();
+        config.backend.default_scope = "host".into();
+        let mut provider = providers::make(&config).ok();
+        let mut executor = Executor::new().expect("executor");
+        let mut session = Session::new(true);
+        let pty = PtyOut::capture();
+        let line = format!("summarize @file:{}", file.display());
+        with_store(|store| {
+            let reply = handle_ipc_line(
+                &config,
+                &mut provider,
+                &mut executor,
+                &mut session,
+                store,
+                &pty,
+                &format!("NL\task\t{}\t{line}", dir.display()),
+            );
+            assert_eq!(reply, "OK");
+            // User turn recorded should include attachment expansion.
+            let hist = session.history();
+            let user = hist
+                .iter()
+                .find_map(|m| match m {
+                    crate::providers::Msg::User(t) => Some(t.as_str()),
+                    _ => None,
+                })
+                .unwrap_or("");
+            assert!(
+                user.contains("secret-payload-xyz") || user.contains("Explicit attachments"),
+                "attachment not expanded into NL prompt: {user:?}"
+            );
+        });
+        std::env::remove_var("AISHE_FAKE_LLM");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
