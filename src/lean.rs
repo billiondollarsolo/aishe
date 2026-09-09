@@ -213,9 +213,4 @@ fn apply_xai_connection(config: &mut crate::config::Config, api_key_env: &str, l
     config.connections.insert("xai".into(), connection);
 }
 
-/// Deprecated name — use [`prefer_grok_live_auth`].
-#[deprecated(note = "use prefer_grok_live_auth")]
-pub fn prefer_xai_api_from_env(config: &mut crate::config::Config) {
-    prefer_grok_live_auth(config);
-}
 

@@ -48,6 +48,9 @@ pub fn access_token() -> Option<String> {
     if !path.is_file() {
         return None;
     }
+    if !owner_only_regular_file(&path) {
+        return None;
+    }
     let raw = fs::read_to_string(&path).ok()?;
     let mut store: Value = serde_json::from_str(&raw).ok()?;
     let map = store.as_object_mut()?;
@@ -256,6 +259,38 @@ fn url_encode(s: &str) -> String {
     out
 }
 
+
+/// Refuse symlinks and group/other-readable auth stores (same spirit as `oauth.rs`).
+fn owner_only_regular_file(path: &Path) -> bool {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        let meta = match fs::symlink_metadata(path) {
+            Ok(m) => m,
+            Err(_) => return false,
+        };
+        if !meta.file_type().is_file() {
+            return false;
+        }
+        if meta.mode() & 0o077 != 0 {
+            return false;
+        }
+        if let Some(home) = std::env::var_os("HOME") {
+            if let Ok(hm) = fs::metadata(home) {
+                if meta.uid() != hm.uid() {
+                    return false;
+                }
+            }
+        }
+        true
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = path;
+        true
+    }
+}
+
 fn write_store(path: &Path, store: &Value) -> std::io::Result<()> {
     let parent = path.parent().unwrap_or_else(|| Path::new("."));
     let tmp = parent.join(format!(".auth.json.{}.tmp", std::process::id()));
@@ -300,6 +335,12 @@ mod tests {
             r#"{"https://auth.x.ai::abc":{"auth_mode":"oidc","oidc_issuer":"https://auth.x.ai","oidc_client_id":"abc","key":"tok-live","refresh_token":"rt","expires_at":"2099-01-01T00:00:00Z"}}"#,
         )
         .unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
+        }
+
         std::env::set_var("AISHE_GROK_AUTH", &path);
         let tok = access_token().expect("token");
         assert_eq!(tok, "tok-live");

@@ -169,6 +169,7 @@ Gated live smoke (skipped in normal CI; needs CLI session, **not** `XAI_API_KEY`
 AISHE_LIVE_LLM=1 cargo test --test lean_live_xai -- --nocapture
 ```
 
-Escape hatch only: if no CLI session is available, a non-empty `XAI_API_KEY` still
-wires the catalog `xai` entry. Prefer Grok login for the documented path. Never
-commit tokens or `auth.json`.
+API-key fallback (CI / strangers only): if no `~/.grok/auth.json` session exists,
+a non-empty `XAI_API_KEY` can still wire the catalog `xai` entry. **Not used on
+m j's builder** — subscription OAuth is required there. Never commit tokens or
+`auth.json`.
