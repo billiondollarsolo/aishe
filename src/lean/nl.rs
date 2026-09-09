@@ -182,6 +182,10 @@ fn suggest_reply(
     }
 }
 
+/// Complex NL: warm in-process ReAct/tool loop (), not OpenCode.
+/// Heavy specialists live in  and must be opted into.
+/// Complex NL: warm in-process ReAct/tool loop (modes::yolo), not OpenCode.
+/// Heavy specialists live in lean::heavy and must be opted into.
 fn agent_reply(
     line: &str,
     provider: &dyn Provider,

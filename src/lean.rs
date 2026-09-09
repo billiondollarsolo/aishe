@@ -8,6 +8,7 @@ mod grant;
 mod hook;
 mod ipc;
 mod nl;
+mod heavy;
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;

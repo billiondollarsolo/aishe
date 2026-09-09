@@ -108,3 +108,30 @@ AISHE_SPY_WIRE_NS=/tmp/wire \
 - Agent-mode IPC output is parent-stdout, not inner-PTY stdio.
 - `init zsh` hook for people who will not leave their rc (still post-MVP).
 - MCP, skills, OAuth, named connections, overlay dry-run.
+
+## Three control planes (design lock 2026-09-09)
+
+Dropping OpenCode from the **default hot path** does **not** drop agentic
+multi-step work. Controllers are layered:
+
+| Tier | When | Controller | Sidecar? |
+|---|---|---|---|
+| **1. Hot path** | Known shell cmds; simple NL in **ask** / **allow** | Child `zsh -f` for typed cmds; in-process `src/providers/*` HTTP for one-shot suggest/answer | Never |
+| **2. Agent path** | Complex NL in **agent** / **agent-host** (after one typed grant) | Warm in-process ReAct / tool loop: `modes::yolo::run` → `Provider::complete_with_tools*` + aishe tool bridge (`run_command`, file tools, `fetch_url`, MCP, skills) | Never on the default path |
+| **3. Heavy specialist (optional)** | Explicit hard jobs only | OpenCode / Codex / Claude Code as a *named* backend tool or `AISHE_LEGACY_OPENCODE=1` escape hatch | Yes — cold-start allowed here only |
+
+### Agent path details
+
+- Entry: `src/lean/nl.rs::agent_reply` / `run_nl(LeanMode::Agent)`.
+- Loop: `src/modes/yolo.rs` — multi-step tool calls until the model stops with
+  a no-tool turn. Same tools and safety gate as legacy yolo; executor prefers
+  `dash -c` (fallback `zsh -f -c`) and Linux workspace bwrap when available.
+- Provider is constructed once per live shell (FIFO parent) and kept warm —
+  no per-turn `backend::supervisor::ensure_running`, no 45–63 MB OpenCode boot.
+- Ask/allow stay one-shot (suggest). Escalate to agent with Shift-Tab / grant
+  when the job needs iteration.
+
+### Heavy specialist
+
+See `src/lean/heavy.rs`. Not wired as the default controller. Call sites must
+opt in explicitly; the lean PTY/NL path must never auto-select them.
