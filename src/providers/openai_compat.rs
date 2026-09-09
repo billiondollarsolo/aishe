@@ -1082,6 +1082,7 @@ fn post_with_retry(url: &str, api_key: &str, body: &Value) -> Result<Value, Prov
         if !api_key.is_empty() {
             request = request.header("Authorization", format!("Bearer {api_key}"));
         }
+        crate::lean::mark_nl_wire_ready();
         let result = request.send_json(body.clone());
 
         match result {

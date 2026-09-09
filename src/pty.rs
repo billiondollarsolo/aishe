@@ -1,12 +1,14 @@
-//! PTY front-end: launch the user's *real* interactive zsh inside a
+//! PTY front-end.
+//!
+//! **Lean (default):** launch `zsh -f -i` (with RCS re-enabled only for an
+//! isolated ZDOTDIR) so the child never sources the user's `~/.zshrc` or plugin
+//! stack. A tiny hook classifies `?` / `!` / PATH-known / NL and sends NL to
+//! the parent over a FIFO. Restore the historical "your zsh + OpenCode" path
+//! with `AISHE_LEGACY_OPENCODE=1`.
+//!
+//! **Legacy:** launch the user's *real* interactive zsh (`zsh -i`) inside a
 //! pseudo-terminal, with their full configuration and plugins loaded, plus the
 //! aishe AI hook injected.
-//!
-//! This is how `aishe` supports *every* zsh extension — zsh-autosuggestions,
-//! zsh-syntax-highlighting, fzf-tab, powerlevel10k, oh-my-zsh — without forking
-//! or reimplementing any of them: it runs the genuine zsh ZLE and merely proxies
-//! the terminal. Natural-language interception happens inside that zsh via the
-//! injected `command_not_found_handler`, which calls back into `aishe`.
 
 use std::io::{Read, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -66,17 +68,21 @@ fn run_zsh_inner(config: &Config, history_log: &std::path::Path, shell_id: Strin
         anyhow!("zsh not found on $PATH — the interactive front-end requires zsh (install it, or use `aishe -c …` / the bash hook)")
     })?;
 
-    // Build an isolated ZDOTDIR whose startup files load the user's real config
-    // and then append the aishe hook. The guard removes the temp dir on every
-    // return path (normal exit, `?` error, or panic-unwind); it must outlive zsh,
-    // so it's bound for the whole function.
-    let zdotdir = make_zdotdir().context("preparing zsh integration dir")?;
+    // Isolated ZDOTDIR. Lean writes only the tiny hook (no user rc). Legacy
+    // sources the real `.zshrc` then appends the historical hook.
+    let lean = crate::lean::enabled();
+    let zdotdir = make_zdotdir(lean).context("preparing zsh integration dir")?;
     let _zdotdir_guard = ZdotdirGuard(zdotdir.clone());
     let real_zdotdir = std::env::var("ZDOTDIR").unwrap_or_else(|_| {
         dirs::home_dir()
             .map(|h| h.display().to_string())
             .unwrap_or_else(|| "/".to_string())
     });
+    let _ipc = if lean {
+        Some(crate::lean::spawn_ipc(config.clone()).context("starting lean NL ipc")?)
+    } else {
+        None
+    };
 
     let (cols, rows) = crossterm::terminal::size().unwrap_or((80, 24));
     let pty_system = native_pty_system();
@@ -90,12 +96,35 @@ fn run_zsh_inner(config: &Config, history_log: &std::path::Path, shell_id: Strin
         .map_err(|e| anyhow!("openpty failed: {e}"))?;
 
     let mut cmd = CommandBuilder::new(&zsh);
-    cmd.arg("-i");
+    if lean {
+        for arg in crate::lean::zsh_argv() {
+            cmd.arg(*arg);
+        }
+    } else {
+        cmd.arg("-i");
+    }
     cmd.env("ZDOTDIR", &zdotdir);
     cmd.env("AISHE_OUR_ZDOTDIR", &zdotdir);
-    cmd.env("AISHE_REAL_ZDOTDIR", &real_zdotdir);
+    if !lean {
+        cmd.env("AISHE_REAL_ZDOTDIR", &real_zdotdir);
+    }
     cmd.env("AISHE_SHELL_ID", &shell_id);
-    cmd.env("AISHE_MODE", &config.aishe.mode);
+    cmd.env(
+        "AISHE_MODE",
+        if lean {
+            crate::lean::session_mode(config)
+        } else {
+            config.aishe.mode.clone()
+        },
+    );
+    if lean {
+        cmd.env("AISHE_LEAN", "1");
+        cmd.env("AISHE_BACKEND", "native");
+        if let Some(ipc) = _ipc.as_ref() {
+            cmd.env("AISHE_LEAN_REQ", ipc.req_path.display().to_string());
+            cmd.env("AISHE_LEAN_REP", ipc.rep_path.display().to_string());
+        }
+    }
     // The prompt paints from the same palette as the Rust renderers, and goes
     // colorless under NO_COLOR/TERM=dumb/ui.theme = "none" like everything else.
     let terminal = crate::ui::TerminalCapabilities::detect_stdout();
@@ -111,7 +140,9 @@ fn run_zsh_inner(config: &Config, history_log: &std::path::Path, shell_id: Strin
         },
     );
     cmd.env("AISHE_SCOPE", &config.backend.default_scope);
-    cmd.env("AISHE_BACKEND", &config.backend.engine);
+    if !lean {
+        cmd.env("AISHE_BACKEND", &config.backend.engine);
+    }
     cmd.env("AISHE_AGENT_OUTPUT", &config.backend.output);
     let output_file = std::env::temp_dir().join(format!("aishe-output-{shell_id}"));
     std::fs::remove_file(&output_file).ok();
@@ -453,13 +484,17 @@ impl Drop for FileGuard {
     }
 }
 
-/// Create a temp ZDOTDIR containing `.zshenv` and `.zshrc` that load the user's
-/// real config and then the aishe hook.
-fn make_zdotdir() -> Result<std::path::PathBuf> {
+/// Create a temp ZDOTDIR containing `.zshenv` and `.zshrc`.
+fn make_zdotdir(lean: bool) -> Result<std::path::PathBuf> {
     let dir = std::env::temp_dir().join(format!("aishe-zdotdir-{}", std::process::id()));
     std::fs::create_dir_all(&dir)?;
-    std::fs::write(dir.join(".zshenv"), integration::WRAPPER_ZSHENV)?;
-    std::fs::write(dir.join(".zshrc"), integration::wrapper_zshrc())?;
+    if lean {
+        std::fs::write(dir.join(".zshenv"), crate::lean::wrapper_zshenv())?;
+        std::fs::write(dir.join(".zshrc"), crate::lean::wrapper_zshrc())?;
+    } else {
+        std::fs::write(dir.join(".zshenv"), integration::WRAPPER_ZSHENV)?;
+        std::fs::write(dir.join(".zshrc"), integration::wrapper_zshrc())?;
+    }
     Ok(dir)
 }
 

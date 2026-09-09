@@ -6,6 +6,25 @@ breaking changes can land in any release.
 
 ## [Unreleased]
 
+### Changed
+- Interactive `aishe` now launches a **lean** child: `zsh -f -i` with an isolated
+  `ZDOTDIR` that does **not** source `~/.zshrc` or plugin stacks. Natural language
+  is handled in-process over a FIFO by the warm provider HTTP client; OpenCode is
+  off the interactive/NL hot path. Restore the historical PTY + OpenCode sidecar
+  with `AISHE_LEGACY_OPENCODE=1`. See [docs/lean-hotpath.md](docs/lean-hotpath.md).
+- Default lean mode is **ask** (confirm proposals). **allow** / **agent** take
+  one typed grant per shell (`allow`, `agent`, or `agent-host`). Dangerous and
+  unknown model-proposed commands still require typing `yes`. Typed commands and
+  `!` remain ungated.
+- Agent `run_command` on the lean path prefers `dash -c`, falling back to
+  `zsh -f -c`, and wraps with bubblewrap when an agent workspace grant is active
+  on Linux.
+
+### Added
+- `AISHE_LEAN=0` disables the lean path (same as `AISHE_LEGACY_OPENCODE=1`).
+- Optional `~/.aishe/leanrc` (or `$AISHE_LEANRC`) for aliases you choose to keep
+  in this shell. It is never `~/.zshrc` by default.
+
 ## [0.8.0] - 2026-09-03
 
 Full release notes, compatibility boundaries, qualification evidence, and known

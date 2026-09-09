@@ -1,0 +1,4 @@
+# aishe lean PTY .zshenv
+# Isolated ZDOTDIR. Do not source the user's ~/.zshenv or ~/.zshrc.
+# GLOBAL_RCS is already off via `zsh -f -o RCS -o NO_GLOBAL_RCS`.
+unsetopt GLOBAL_RCS 2>/dev/null || true

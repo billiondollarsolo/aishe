@@ -9,6 +9,24 @@ fn repository_file(relative: &str) -> String {
 }
 
 #[test]
+fn known_command_admission_stays_above_provider_and_backend() {
+    let main = repository_file("src/main.rs");
+    let fast = main
+        .find("dispatcher::fast_shell_line")
+        .expect("fast_shell_line");
+    let provider = main.find("providers::make").expect("providers::make");
+    assert!(
+        fast < provider,
+        "aishe -c known commands must admit before Provider construction"
+    );
+    let runtime = repository_file("src/cli/runtime.rs");
+    assert!(
+        runtime.contains("if crate::lean::enabled()"),
+        "lean NL must short-circuit before managed OpenCode"
+    );
+}
+
+#[test]
 fn binary_remains_below_the_orchestration_line_budget() {
     let main = repository_file("src/main.rs");
     assert!(

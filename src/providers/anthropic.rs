@@ -377,6 +377,7 @@ fn post_with_retry(url: &str, api_key: &str, body: &Value) -> Result<Value, Prov
             None,
             None,
         );
+        crate::lean::mark_nl_wire_ready();
         let result = agent
             .post(url)
             .header("x-api-key", api_key)

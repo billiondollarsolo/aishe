@@ -499,6 +499,9 @@ fn managed_turn(
     mode: AgentMode,
     render: bool,
 ) -> Result<Option<TurnOutcome>> {
+    if crate::lean::enabled() {
+        return Ok(None);
+    }
     if config.backend.engine != "opencode" {
         return Ok(None);
     }
@@ -1584,6 +1587,9 @@ pub fn one_shot(
         }
         Dispatch::NaturalLanguage(nl) => {
             let nl = crate::attachments::expand(&nl, executor.cwd(), config)?.prompt;
+            if crate::lean::enabled() {
+                crate::lean::mark_nl_turn_start();
+            }
             let agent_mode = AgentMode::parse(&config.aishe.mode).unwrap_or(AgentMode::Suggest);
             if config.backend.engine == "opencode" {
                 let render = agent_mode != AgentMode::Suggest;
@@ -1803,6 +1809,18 @@ fn run_nl(
     session: &mut Session,
 ) -> Result<()> {
     let nl = crate::attachments::expand(nl, executor.cwd(), config)?.prompt;
+    if crate::lean::enabled() {
+        return crate::lean::run_nl(
+            nl.as_str(),
+            mode,
+            provider,
+            executor,
+            config,
+            skills,
+            mcp,
+            session,
+        );
+    }
     let agent_mode = AgentMode::parse(mode).unwrap_or(AgentMode::Suggest);
     if config.backend.engine == "opencode" {
         let render = agent_mode != AgentMode::Suggest;

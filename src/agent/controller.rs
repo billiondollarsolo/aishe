@@ -119,6 +119,11 @@ pub fn run_turn(
 ) -> std::result::Result<TurnOutcome, TurnFailure> {
     let started_at = std::time::Instant::now();
     INTERRUPTED.store(false, Ordering::SeqCst);
+    if crate::lean::enabled() {
+        return Err(TurnFailure::PreAdmission(anyhow::anyhow!(
+            "lean hot path does not start OpenCode"
+        )));
+    }
     if config.backend.engine != "opencode" {
         return Err(TurnFailure::PreAdmission(anyhow::anyhow!(
             "managed agent engine is disabled"

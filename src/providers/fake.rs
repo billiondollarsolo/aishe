@@ -101,6 +101,7 @@ impl Provider for FakeProvider {
         _format: &ResponseFormat,
     ) -> Result<String, ProviderError> {
         self.delay_for_test();
+        crate::lean::mark_nl_wire_ready();
         if let Some(error) = self.error_for_test() {
             return Err(error);
         }
