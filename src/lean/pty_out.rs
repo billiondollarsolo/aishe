@@ -1,6 +1,6 @@
 //! Shared sink for parent → PTY master writes (lean control plane).
 //!
-//! FIFO carries control only (`OK` / `FILL_B64` / `CONFIRM_B64` / `RAN` / `ERROR`).
+//! FIFO carries control only (`OK` / `STREAM_END` / `FILL_B64` / `CONFIRM_B64` / `RAN` / `ERROR`).
 //! Multi-line answers and agent transcripts are written here so the interactive
 //! child TTY sees them without flattening through a one-line FIFO reply.
 
@@ -110,5 +110,28 @@ impl PtyOut {
             }
             _ => String::new(),
         }
+    }
+}
+
+/// [`std::io::Write`] adapter so modes streamers can push deltas into the PTY.
+pub struct PtyWrite<'a> {
+    pty: &'a PtyOut,
+}
+
+impl<'a> PtyWrite<'a> {
+    pub fn new(pty: &'a PtyOut) -> Self {
+        Self { pty }
+    }
+}
+
+impl Write for PtyWrite<'_> {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        let text = String::from_utf8_lossy(buf);
+        self.pty.write_user_text(&text);
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
     }
 }

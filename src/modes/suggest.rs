@@ -233,6 +233,8 @@ struct AnswerStreamer {
     full: String,
     /// Whether the persistent assistant-authorship boundary was emitted.
     answer_started: bool,
+    /// Lean PTY path: skip stdout authorship chrome (parent owns the TTY).
+    plain: bool,
 }
 
 impl AnswerStreamer {
@@ -242,6 +244,14 @@ impl AnswerStreamer {
             pending: String::new(),
             full: String::new(),
             answer_started: false,
+            plain: false,
+        }
+    }
+
+    fn new_plain() -> Self {
+        Self {
+            plain: true,
+            ..Self::new()
         }
     }
 
@@ -249,8 +259,12 @@ impl AnswerStreamer {
         if self.answer_started {
             return;
         }
-        let capabilities = TerminalCapabilities::detect_stdout();
-        let _ = writeln!(out, "\n{}", capabilities.assistant_answer_header());
+        if self.plain {
+            let _ = write!(out, "\n");
+        } else {
+            let capabilities = TerminalCapabilities::detect_stdout();
+            let _ = writeln!(out, "\n{}", capabilities.assistant_answer_header());
+        }
         self.answer_started = true;
     }
 
@@ -426,6 +440,91 @@ pub fn request_strict(
             Err(e)
         }
     }
+}
+
+/// Streaming suggest request for lean PTY (and any caller with a custom sink).
+///
+/// Uses the CMD:/prose sentinel protocol + [`Provider::complete_stream`]. Answer
+/// deltas are written to `out` as they arrive; commands are withheld from `out`
+/// and returned as [`Suggestion::Command`] so the caller can FILL/CONFIRM via
+/// control IPC. Does **not** print to stdout or re-render markdown (lean owns
+/// the PTY master via [`crate::lean::PtyOut`]).
+pub fn request_streamed<W: std::io::Write>(
+    input: &str,
+    provider: &dyn Provider,
+    executor: &Executor,
+    config: &Config,
+    history: Vec<Msg>,
+    out: &mut W,
+) -> Result<Suggestion> {
+    let ctx = context::build(executor, config);
+    let shell = executor
+        .shell()
+        .file_name()
+        .map(|s| s.to_string_lossy().to_string())
+        .unwrap_or_else(|| "sh".to_string());
+    let system = super::suggest_stream_system_prompt(&shell, std::env::consts::OS);
+    let mut messages = history;
+    let mut user = format!("{ctx}\nUser request: {input}");
+    if crate::product_help::looks_like_product_question(input) {
+        user.push_str(&crate::product_help::suggest_product_reference(
+            "Answer in prose with exact commands (no CMD:).",
+        ));
+    }
+    messages.push(Msg::User(user));
+
+    let model = config.active_model();
+    let mode = config.aishe.mode.as_str();
+    crate::audit::ai_request(mode, model, input);
+    let before = provider.meter().snapshot();
+    let mut streamer = AnswerStreamer::new_plain();
+    let result =
+        provider.complete_stream(&system, &messages, &ResponseFormat::Text, &mut |delta| {
+            streamer.push(delta, out);
+        });
+    let full = match result {
+        Ok(f) => f,
+        Err(e) => {
+            crate::audit::ai_error(mode, model, &e.to_string());
+            let message = format!(
+                "AIShe error: {}",
+                crate::providers::actionable_error(&e)
+            );
+            let _ = writeln!(out, "{message}");
+            return Ok(Suggestion::Answer {
+                explanation: String::new(),
+            });
+        }
+    };
+    let after = provider.meter().snapshot();
+    let is_command = streamer.finish(out);
+    let suggestion = if is_command {
+        let (command, explanation) = parse_cmd_protocol(&full);
+        if command.is_empty() {
+            Suggestion::Answer {
+                explanation: full.trim().to_string(),
+            }
+        } else {
+            Suggestion::Command {
+                command,
+                explanation,
+            }
+        }
+    } else {
+        // Ensure a trailing newline on the PTY after a streamed answer.
+        let _ = writeln!(out);
+        Suggestion::Answer {
+            explanation: full.trim().to_string(),
+        }
+    };
+    crate::audit::ai_response(
+        mode,
+        model,
+        &suggestion_summary(&suggestion),
+        after.input.saturating_sub(before.input),
+        after.output.saturating_sub(before.output),
+    );
+    Ok(suggestion)
 }
 
 /// One-line summary of a suggestion for the audit log.

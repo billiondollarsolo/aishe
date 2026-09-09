@@ -1,8 +1,9 @@
 //! In-process NL turn: warm provider HTTP, never OpenCode.
 //!
-//! Lean IPC replies are **control** (`OK` / `FILL_B64` / `CONFIRM_B64` / `RAN` /
-//! `ERROR`). Multi-line answers and agent tool transcripts are written by the
-//! parent onto the PTY master via [`PtyOut`] so newlines/markdown survive.
+//! Lean IPC replies are **control** (`OK` / `STREAM_END` / `FILL_B64` /
+//! `CONFIRM_B64` / `RAN` / `ERROR`). Token streams and multi-line answers are
+//! written by the parent onto the PTY master via [`PtyOut`] as they arrive;
+//! the FIFO stays control-only (never carries answer body).
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -230,7 +231,11 @@ fn handle_nl(
             agent_reply(&expanded, provider_ref, executor, config, session, warm, pty)
         }
     };
-    if reply == "OK" || reply == "RAN" || reply.starts_with("FILL_B64\t") || reply.starts_with("CONFIRM_B64\t")
+    if reply == "OK"
+        || reply == "STREAM_END"
+        || reply == "RAN"
+        || reply.starts_with("FILL_B64\t")
+        || reply.starts_with("CONFIRM_B64\t")
     {
         persist_store(store, session);
     }
@@ -332,6 +337,20 @@ fn suggest_reply(
     pty: &PtyOut,
     auto_run_safe: bool,
 ) -> String {
+    // Lean default: stream ask answers via complete_stream into PtyOut.
+    // Allow streams when config.aishe.stream is on. Commands stay FILL/CONFIRM.
+    let stream = should_stream_lean_ask(config, auto_run_safe);
+    if stream {
+        return suggest_reply_streamed(
+            line,
+            provider,
+            executor,
+            config,
+            session,
+            pty,
+            auto_run_safe,
+        );
+    }
     match modes::suggest::request(line, provider, executor, config, session.history()) {
         Ok(suggestion) => match suggestion {
             Suggestion::Answer { explanation } => {
@@ -363,6 +382,69 @@ fn suggest_reply(
         },
         Err(error) => format!("ERROR\t{}", one_line(&error.to_string())),
     }
+}
+
+/// Lean ask (and allow-when-stream) path: provider SSE / `complete_stream` into
+/// the PTY master; FIFO returns `STREAM_END` (answer) or FILL/CONFIRM (command).
+fn suggest_reply_streamed(
+    line: &str,
+    provider: &dyn Provider,
+    executor: &mut Executor,
+    config: &Config,
+    session: &mut Session,
+    pty: &PtyOut,
+    auto_run_safe: bool,
+) -> String {
+    let mut out = super::PtyWrite::new(pty);
+    match modes::suggest::request_streamed(
+        line,
+        provider,
+        executor,
+        config,
+        session.history(),
+        &mut out,
+    ) {
+        Ok(suggestion) => match suggestion {
+            Suggestion::Answer { explanation } => {
+                session.record_user(line);
+                session.record_assistant(&explanation);
+                // Deltas already on PTY; control only.
+                "STREAM_END".into()
+            }
+            Suggestion::Command {
+                command,
+                explanation,
+            } => {
+                session.record_user(line);
+                session.record_assistant(&command);
+                // Command path withheld stream body; optional WHY on PTY.
+                if !explanation.trim().is_empty() {
+                    emit_text(pty, &explanation);
+                }
+                if auto_run_safe {
+                    match safety::assess(&command) {
+                        Risk::Safe => run_now(executor, &command),
+                        Risk::Dangerous(reason) | Risk::Unknown(reason) => {
+                            format!("CONFIRM_B64\t{}", b64(&format!("{command} ({reason})")))
+                        }
+                    }
+                } else {
+                    format!("FILL_B64\t{}", b64(&command))
+                }
+            }
+        },
+        Err(error) => format!("ERROR\t{}", one_line(&error.to_string())),
+    }
+}
+
+/// Lean streams ask answers by default (capability: live tokens). `config.stream`
+/// additionally enables streaming on allow. Never involves OpenCode.
+fn should_stream_lean_ask(config: &Config, auto_run_safe: bool) -> bool {
+    if config.aishe.stream {
+        return true;
+    }
+    // Lean default for ask answers.
+    !auto_run_safe
 }
 
 /// Complex NL: warm in-process ReAct/tool loop (`modes::yolo`), not OpenCode.
@@ -502,6 +584,21 @@ fn handle_slash(
         },
         "/model" => handle_model_slash(config, provider, pty, arg),
         "/connection" => handle_connection_slash(config, provider, pty, arg),
+        "/backend" => {
+            emit_text(
+                pty,
+                "heavy specialist backends are opt-in only — never auto on known-cmd or default NL",
+            );
+            emit_text(
+                pty,
+                "escape hatch: AISHE_LEGACY_OPENCODE=1 (or AISHE_LEAN=0) · see src/lean/heavy.rs",
+            );
+            emit_text(
+                pty,
+                "named backends (not default controller): opencode | codex | claude-code",
+            );
+            "OK".into()
+        }
         _ => format!("ERROR\tunknown slash {name}"),
     }
 }
@@ -864,7 +961,10 @@ mod tests {
                 &pty,
                 "NL\task\t/tmp\twhat is lean",
             );
-            assert_eq!(reply, "OK");
+            assert!(
+                reply == "OK" || reply == "STREAM_END",
+                "expected OK/STREAM_END, got {reply}"
+            );
             let shown = pty.take_capture();
             assert!(
                 shown.contains("line1") && shown.contains("line2"),
@@ -946,7 +1046,7 @@ mod tests {
                 &pty,
                 "SLASH\task\t/tmp\t/usage",
             );
-            assert_eq!(reply, "OK");
+            assert!(reply == "OK" || reply == "STREAM_END", "expected OK/STREAM_END, got {reply}");
             let shown = pty.take_capture();
             assert!(
                 shown.contains("usage:") && !shown.contains("stub"),
@@ -1035,7 +1135,7 @@ mod tests {
                 &pty,
                 &format!("NL\task\t{}\t{line}", dir.display()),
             );
-            assert_eq!(reply, "OK");
+            assert!(reply == "OK" || reply == "STREAM_END", "expected OK/STREAM_END, got {reply}");
             // User turn recorded should include attachment expansion.
             let hist = session.history();
             let user = hist
@@ -1174,7 +1274,7 @@ mod tests {
                 &pty,
                 "NL\task\t/tmp\texport API_TOKEN=supersecretvalue123 please explain",
             );
-            assert_eq!(reply, "OK");
+            assert!(reply == "OK" || reply == "STREAM_END", "expected OK/STREAM_END, got {reply}");
             let hist = session.history();
             let user = hist
                 .iter()
@@ -1191,4 +1291,90 @@ mod tests {
         std::env::remove_var("AISHE_FAKE_LLM");
     }
 
+
+    #[test]
+    fn ask_streams_answer_chunks_into_pty_and_returns_stream_end() {
+        let _guard = fake_llm_lock();
+        std::env::set_var(
+            "AISHE_FAKE_LLM",
+            r#"{"type":"answer","command":null,"explanation":"alpha beta gamma delta"}"#,
+        );
+        std::env::set_var("AISHE_FAKE_STREAM_CHUNK", "5");
+        let chunk_spy = std::env::temp_dir().join(format!(
+            "aishe-stream-chunks-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::env::set_var("AISHE_SPY_STREAM_CHUNKS", &chunk_spy);
+        let mut config = test_config();
+        config.aishe.stream = false; // lean ask still streams by default
+        let mut provider = providers::make(&config).ok();
+        let mut executor = Executor::new().expect("executor");
+        let mut session = Session::new(true);
+        let pty = PtyOut::capture();
+        with_store(|store| {
+            let mut warm = LeanWarm::default();
+            let reply = handle_ipc_line(
+                &mut config,
+                &mut provider,
+                &mut executor,
+                &mut session,
+                store,
+                &mut warm,
+                &pty,
+                "NL\task\t/tmp\tstream please",
+            );
+            assert_eq!(reply, "STREAM_END");
+            let shown = pty.take_capture();
+            assert!(
+                shown.contains("alpha") && shown.contains("delta"),
+                "pty missing streamed answer: {shown:?}"
+            );
+        });
+        let n: u64 = std::fs::read_to_string(&chunk_spy)
+            .unwrap_or_default()
+            .trim()
+            .parse()
+            .unwrap_or(0);
+        assert!(n > 1, "fake complete_stream should chunk, got {n}");
+        std::env::remove_var("AISHE_FAKE_LLM");
+        std::env::remove_var("AISHE_FAKE_STREAM_CHUNK");
+        std::env::remove_var("AISHE_SPY_STREAM_CHUNKS");
+        let _ = std::fs::remove_file(&chunk_spy);
+    }
+
+    #[test]
+    fn backend_slash_documents_opt_in_heavy_no_auto() {
+        let mut config = test_config();
+        let mut provider = None;
+        let mut executor = Executor::new().expect("executor");
+        let mut session = Session::new(true);
+        let pty = PtyOut::capture();
+        with_store(|store| {
+            let mut warm = LeanWarm::default();
+            let reply = handle_ipc_line(
+                &mut config,
+                &mut provider,
+                &mut executor,
+                &mut session,
+                store,
+                &mut warm,
+                &pty,
+                "SLASH\task\t/tmp\t/backend",
+            );
+            assert_eq!(reply, "OK");
+            let shown = pty.take_capture().to_ascii_lowercase();
+            assert!(
+                shown.contains("opt-in") && shown.contains("legacy"),
+                "expected heavy opt-in docs, got {shown:?}"
+            );
+            assert!(
+                shown.contains("opencode") || shown.contains("heavy"),
+                "expected backend names, got {shown:?}"
+            );
+        });
+    }
 }

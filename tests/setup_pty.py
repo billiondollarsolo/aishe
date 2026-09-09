@@ -920,6 +920,8 @@ def tour_pause_resume_skip_restart_and_complete(root, env):
 
 
 def main():
+    from pty_helper import require_legacy_opencode_world
+    require_legacy_opencode_world()
     if not os.path.exists(BINARY):
         raise SystemExit("FAIL: binary not found: " + BINARY)
     root = tempfile.mkdtemp(prefix="aishe-setup-pty-")

@@ -26,6 +26,8 @@ def run_case(label, zshrc, expect, absent, extra=None):
 
 
 def main():
+    from pty_helper import require_legacy_opencode_world
+    require_legacy_opencode_world()
     run_case("theme", "unset HISTFILE\nPROMPT='THEME> '\n", ["THEME> "], ["»"])
     run_case("stock", "unset HISTFILE\n", ["»"], ["THEME> "])
     run_case(

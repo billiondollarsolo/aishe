@@ -158,13 +158,26 @@ AISHE_SPY_WIRE_NS=/tmp/wire \
 - **F27 docs:** lean default needs **no OpenCode payload**. Installer may still
   ship a pinned runtime for LEGACY/heavy only.
 
-### Still open (post–Wave 3)
+### Closed in Wave 4 (2026-09-09)
 
-- True token streaming (`CHUNK`/`END` or SSE into PTY) — F19 leftover; Wave 1–3
-  deliver complete multi-line answers, not token-at-a-time.
-- `init zsh` hook for people who will not leave their rc (post-MVP).
+- **F19 token streaming into PTY:** lean ask answers use provider
+  `complete_stream` / SSE (fake provider chunks without network). Parent writes
+  token deltas to the PTY master via `PtyOut` / `PtyWrite`; FIFO returns
+  `STREAM_END` (or `FILL_B64` / `CONFIRM_B64` for commands). Lean defaults
+  streaming for ask; `config.stream` also enables allow. No OpenCode.
+- **Heavy specialist opt-in:** lean `/backend` + `src/lean/heavy.rs` docs point at
+  `AISHE_LEGACY_OPENCODE=1` — never auto on known-cmd / default NL.
+- **F28 dual-gate:** remaining obvious Python PTY world-mismatch suites call
+  `require_legacy_opencode_world` (LEGACY-gated).
+
+### Still open (post–Wave 4 / daily-driver leftovers)
+
+- `init zsh` FIFO port for people who will not leave their rc (post-MVP).
 - Overlay dry-run, background tasks, bash hook — CLI retained, not lean hot path.
-- Legacy Python PTY matrix remains LEGACY-only (world mismatch by design).
+- Palette/TUI/tour — CLI-only.
+- Live interactive latency bench (PTY roundtrip) and richer MCP/skills UX.
+- Full product parity for org policy, semantic history, custom slash-commands
+  (explicitly post-MVP).
 
 
 ## Three control planes (design lock 2026-09-09)

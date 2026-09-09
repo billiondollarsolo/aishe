@@ -9,7 +9,7 @@ mod hook;
 mod ipc;
 mod nl;
 mod sessions;
-mod heavy;
+pub mod heavy;
 mod grok_oauth;
 mod pty_out;
 mod stdout_redirect;
@@ -23,7 +23,7 @@ pub use hook::{wrapper_zshenv, wrapper_zshrc, zsh_argv};
 pub use ipc::{spawn_ipc, IpcGuard};
 pub use nl::{handle_ipc_line, run_nl, LeanWarm};
 pub use sessions::{list as list_lean_sessions, store_root as lean_sessions_root, Meta as LeanSessionMeta};
-pub use pty_out::PtyOut;
+pub use pty_out::{PtyOut, PtyWrite};
 
 static NL_TURN_START_NS: AtomicU64 = AtomicU64::new(0);
 static NL_WIRE_READY_NS: AtomicU64 = AtomicU64::new(0);

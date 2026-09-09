@@ -106,7 +106,7 @@ _aishe_routes_to_agent() {
   [[ "$line" == /* && "$line" != //* ]] && {
     local slash="${line%%[[:space:]]*}"
     case "$slash" in
-      /help|/mode|/status|/reset|/undo|/usage|/details|/model|/connection|/sessions) return 1 ;;
+      /help|/mode|/status|/reset|/undo|/usage|/details|/model|/connection|/sessions|/backend) return 1 ;;
     esac
   }
 
@@ -240,8 +240,8 @@ _aishe_lean_handle_reply() {
   local rest="${reply#*$'\t'}"
   [[ "$kind" == "$reply" ]] && rest=""
   case "$kind" in
-    OK)
-      # Parent already wrote multi-line answer / slash text onto the PTY master.
+    OK|STREAM_END)
+      # Parent already wrote multi-line / streamed answer onto the PTY master.
       ;;
     ANSWER)
       # Legacy one-liner fallback.
@@ -328,6 +328,7 @@ _aishe_lean_slash() {
       print -r -- '  /mode ask|allow|agent   Shift-Tab cycles (aliases suggest|auto|yolo)'
       print -r -- '  /connection /model   list/pick for this shell'
       print -r -- '  /sessions list|clear|resume:<id>   /usage /status /reset /undo'
+      print -r -- '  /backend   heavy specialist opt-in note (no auto OpenCode)'
       print -r -- '  Default mode is ask. allow/agent need one typed grant per shell.'
       ;;
     /mode)
@@ -360,7 +361,7 @@ _aishe_lean_slash() {
       aishe_set_prompt
       print -r -- "mode: ${AISHE_MODE}"
       ;;
-    /status|/reset|/undo|/usage|/details|/model|/connection|/sessions)
+    /status|/reset|/undo|/usage|/details|/model|/connection|/sessions|/backend)
       local reply
       reply="$(_aishe_lean_send "SLASH	${AISHE_MODE:-ask}	$PWD	$(_aishe_lean_flatten "$line")")" || return
       _aishe_lean_handle_reply "$reply"
@@ -570,7 +571,7 @@ _aishe_highlight_command() {
   local leading="${BUFFER%%[^[:space:]]*}"
   local rest="${BUFFER#$leading}"
   local head="${rest%%[[:space:]]*}"
-  if [[ "$head" == /help || "$head" == /mode || "$head" == /status ||
+  if [[ "$head" == /help || "$head" == /mode || "$head" == /status || "$head" == /backend ||
         "$head" == /reset || "$head" == /undo || "$head" == /usage || "$head" == /sessions ||
         "$head" == /details || "$head" == /model || "$head" == /connection ]]; then
     local slash_start=${#leading}

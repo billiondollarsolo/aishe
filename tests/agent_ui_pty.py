@@ -67,6 +67,8 @@ def read_until(fd, transcript, needle, timeout):
 
 
 def main():
+    from pty_helper import require_legacy_opencode_world
+    require_legacy_opencode_world()
     fixture = fixture_path()
     master, slave = pty.openpty()
     set_size(slave, 24, 40)

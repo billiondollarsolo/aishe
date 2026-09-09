@@ -13,6 +13,9 @@
 //!
 //! Until a call site opts in, select_default returns None and lean keeps
 //! using the warm in-process agent loop.
+//!
+//! Interactive note: lean `/backend` (and `docs/lean-hotpath.md`) point here.
+//! There is **no** auto OpenCode on known-cmd or default NL.
 
 #![allow(dead_code)]
 
