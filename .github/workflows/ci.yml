@@ -67,11 +67,20 @@ jobs:
       # the cli tests that assert `doctor` succeeds failed only there.
       - name: Install zsh (ubuntu)
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y zsh bubblewrap shellcheck
+        run: |
+          sudo apt-get update && sudo apt-get install -y zsh bubblewrap shellcheck
+          # Match pty-smoke: group-writable zsh dirs make compinit interactive.
+          sudo chmod -R go-w /usr/share/zsh /usr/local/share/zsh 2>/dev/null || true
 
       - name: Install shellcheck (macOS)
         if: runner.os == 'macOS'
         run: brew install shellcheck
+
+      # Group-writable zsh dirs make stock `compinit` interactive; lean hook
+      # now passes `-u`, but harden the image too (mirrors the ubuntu step).
+      - name: Harden zsh dirs (macOS)
+        if: runner.os == 'macOS'
+        run: sudo chmod -R go-w /usr/share/zsh /usr/local/share/zsh 2>/dev/null || true
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -105,6 +114,8 @@ jobs:
           target/debug/aishe backend verify --live
 
       - name: Test
+        # Bound the step so a nested-PTY deadlock cannot burn ~15m then cancel.
+        timeout-minutes: 10
         run: cargo test --all-targets --verbose --locked
 
       - name: Installer transaction and fault contract

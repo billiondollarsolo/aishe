@@ -120,8 +120,20 @@ fn lean_hotpath_doc_marks_f01_live_pty_and_f34() {
 
 /// Hang-detection smoke: spawn lean interactive PTY, time known-cmd roundtrips.
 /// Release budgets live in docs/lean-hotpath.md; debug builds only fail on hangs.
+///
+/// Critical: every wait is bounded and the child is killed on the overall
+/// ceiling. macOS CI previously deadlocked here when `compinit` prompted about
+/// insecure dirs inside a nested PTY (outer write blocked → cargo test hung
+/// until the job cancelled ~15m later).
 #[test]
 fn live_pty_known_cmd_roundtrip_hang_ceiling() {
+    let overall = if std::env::var_os("CI").is_some() {
+        Duration::from_secs(45)
+    } else {
+        Duration::from_secs(90)
+    };
+    let test_started = Instant::now();
+
     let config_home = temp_config_home();
     let data_home = temp_root("data");
     let hist = temp_root("hist").join("histfile");
@@ -140,6 +152,8 @@ fn live_pty_known_cmd_roundtrip_hang_ceiling() {
     let mut cmd = CommandBuilder::new(bin_path());
     cmd.env("XDG_CONFIG_HOME", config_home.as_os_str());
     cmd.env("XDG_DATA_HOME", data_home.as_os_str());
+    cmd.env("AISHE_CONFIG_DIR", config_home.as_os_str());
+    cmd.env("AISHE_DATA_DIR", data_home.as_os_str());
     cmd.env("HOME", temp_root("home").as_os_str());
     cmd.env("AISHE_LEAN", "1");
     cmd.env("AISHE_UNICODE", "ascii");
@@ -154,6 +168,8 @@ fn live_pty_known_cmd_roundtrip_hang_ceiling() {
 
     let mut child = pair.slave.spawn_command(cmd).expect("spawn aishe");
     drop(pair.slave);
+    let mut killer = child.clone_killer();
+    let mut watchdog_killer = child.clone_killer();
 
     let mut reader = pair.master.try_clone_reader().expect("clone reader");
     let mut writer = pair.master.take_writer().expect("take writer");
@@ -177,9 +193,37 @@ fn live_pty_known_cmd_roundtrip_hang_ceiling() {
         });
     }
 
+    // Watchdog: if the nested PTY deadlocks (e.g. interactive compinit prompt),
+    // kill the child so this test fails fast instead of hanging the macOS job.
+    {
+        let done = Arc::clone(&done);
+        std::thread::spawn(move || {
+            while test_started.elapsed() < overall {
+                if done.load(Ordering::Relaxed) {
+                    return;
+                }
+                std::thread::sleep(Duration::from_millis(100));
+            }
+            let _ = watchdog_killer.kill();
+        });
+    }
+
+    let remaining = |started: Instant, budget: Duration| -> Duration {
+        budget.saturating_sub(started.elapsed())
+    };
+
     assert!(
-        wait_for(&collected, "ask", Duration::from_secs(25)),
-        "lean PTY never showed ask prompt within 25s: {:?}",
+        wait_for(
+            &collected,
+            "ask",
+            remaining(test_started, overall).min(Duration::from_secs(25))
+        ),
+        "lean PTY never showed ask prompt within budget: {:?}",
+        snapshot(&collected)
+    );
+    assert!(
+        test_started.elapsed() < overall,
+        "live PTY hung before roundtrips; buf={:?}",
         snapshot(&collected)
     );
 
@@ -191,13 +235,23 @@ fn live_pty_known_cmd_roundtrip_hang_ceiling() {
         .and_then(|v| v.parse::<usize>().ok())
     {
         Some(n) if n >= 4 => n,
+        _ if std::env::var_os("CI").is_some() => 8,
         _ => 16,
     };
     let mut samples_ms = Vec::new();
     for i in 0..iters {
+        assert!(
+            test_started.elapsed() < overall,
+            "live PTY overall ceiling hit at iter {i}; buf={:?}",
+            snapshot(&collected)
+        );
         // Wait until a prompt is visible so each sample starts from a settled shell.
         assert!(
-            wait_for(&collected, "ask", Duration::from_secs(5)),
+            wait_for(
+                &collected,
+                "ask",
+                remaining(test_started, overall).min(Duration::from_secs(5))
+            ),
             "prompt lost before iter {i}: {:?}",
             snapshot(&collected)
         );
@@ -209,7 +263,11 @@ fn live_pty_known_cmd_roundtrip_hang_ceiling() {
         writer.write_all(cmd_line.as_bytes()).expect("write cmd");
         let _ = writer.flush();
         assert!(
-            wait_for(&collected, &marker, Duration::from_secs(5)),
+            wait_for(
+                &collected,
+                &marker,
+                remaining(test_started, overall).min(Duration::from_secs(5))
+            ),
             "marker {marker} not seen; buf={:?}",
             snapshot(&collected)
         );
@@ -218,8 +276,30 @@ fn live_pty_known_cmd_roundtrip_hang_ceiling() {
 
     let _ = writer.write_all(b"exit\r");
     let _ = writer.flush();
+    drop(writer); // EOF on PTY master helps the child unwind
     done.store(true, Ordering::Relaxed);
-    let _ = child.wait();
+
+    // Bounded reaping — never call unbounded child.wait() on CI.
+    let reap_deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) => break,
+            Ok(None) if Instant::now() < reap_deadline => {
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            _ => {
+                let _ = killer.kill();
+                let hard = Instant::now() + Duration::from_secs(2);
+                while Instant::now() < hard {
+                    if matches!(child.try_wait(), Ok(Some(_))) {
+                        break;
+                    }
+                    std::thread::sleep(Duration::from_millis(20));
+                }
+                break;
+            }
+        }
+    }
 
     samples_ms.sort_by(|a, b| a.partial_cmp(b).unwrap());
     let steady = if samples_ms.len() > 2 {
@@ -258,8 +338,12 @@ fn known_cmd_still_skips_provider_after_wave5() {
     let provider_spy = root.join("provider");
     let opencode_spy = root.join("opencode");
     let mut cmd = CargoCommand::cargo_bin("aishe").unwrap();
-    cmd.env("XDG_CONFIG_HOME", temp_config_home())
-        .env("XDG_DATA_HOME", temp_root("data"))
+    let config_home = temp_config_home();
+    let data_home = temp_root("data");
+    cmd.env("XDG_CONFIG_HOME", &config_home)
+        .env("XDG_DATA_HOME", &data_home)
+        .env("AISHE_CONFIG_DIR", &config_home)
+        .env("AISHE_DATA_DIR", &data_home)
         .env_remove("AISHE_LEGACY_OPENCODE")
         .env("AISHE_LEAN", "1")
         .env("AISHE_SPY_PROVIDER_MAKE", &provider_spy)

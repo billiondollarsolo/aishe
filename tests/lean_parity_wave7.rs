@@ -6,7 +6,7 @@
 use std::io::Write;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use assert_cmd::Command as CargoCommand;
 
@@ -17,6 +17,9 @@ use aishe::mcp::McpRegistry;
 use aishe::providers::fake::FakeProvider;
 use aishe::session::Session;
 use aishe::skills::SkillRegistry;
+
+/// Process-global env + grant atomics are shared across #[test] threads.
+static GRANT_TEST_LOCK: Mutex<()> = Mutex::new(());
 
 fn temp_root(label: &str) -> PathBuf {
     static NEXT: AtomicU64 = AtomicU64::new(1);
@@ -70,6 +73,7 @@ fn bin() -> CargoCommand {
 /// Preload session grant via `AISHE_ACCEPTANCE_FILE` (documented test/CI hook).
 #[test]
 fn acceptance_file_preloads_agent_grant() {
+    let _guard = GRANT_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let root = temp_root("grant");
     let accept = root.join("accept");
     std::fs::write(&accept, "agent\n").unwrap();
@@ -84,6 +88,7 @@ fn acceptance_file_preloads_agent_grant() {
 /// `lean::run_nl` agent mode + FakeProvider tool call — no TTY, no OpenCode.
 #[test]
 fn lean_run_nl_agent_smoke_with_fake_tool_and_acceptance() {
+    let _guard = GRANT_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let root = temp_root("run-nl-agent");
     let accept = root.join("accept");
     let opencode_spy = root.join("opencode");
@@ -138,8 +143,12 @@ fn lean_run_nl_agent_smoke_with_fake_tool_and_acceptance() {
 /// FIFO `NL` agent mode uses in-process yolo (same FakeProvider tool hook).
 #[test]
 fn lean_fifo_agent_nl_smoke_no_opencode() {
+    let _guard = GRANT_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let root = temp_root("fifo-agent");
+    let accept = root.join("accept");
     let opencode_spy = root.join("opencode");
+    std::fs::write(&accept, "agent\n").unwrap();
+    std::env::set_var("AISHE_ACCEPTANCE_FILE", &accept);
     std::env::set_var("AISHE_SPY_OPENCODE", &opencode_spy);
     std::env::set_var("AISHE_FAKE_TOOL", "true");
     std::env::set_var("AISHE_FAKE_LLM", "fifo-agent-done");
@@ -191,6 +200,7 @@ fn lean_fifo_agent_nl_smoke_no_opencode() {
         executor.history
     );
 
+    std::env::remove_var("AISHE_ACCEPTANCE_FILE");
     std::env::remove_var("AISHE_SPY_OPENCODE");
     std::env::remove_var("AISHE_FAKE_TOOL");
     std::env::remove_var("AISHE_FAKE_LLM");
