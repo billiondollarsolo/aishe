@@ -100,6 +100,7 @@ def qualify(binary, runtime_dir, session_count):
         base_env = os.environ.copy()
         base_env.update(
             {
+                "AISHE_LEGACY_OPENCODE": "1",  # managed OpenCode suite; lean default skips sidecar
                 "AISHE_CONFIG_DIR": str(config_home),
                 "AISHE_DATA_DIR": str(data_home),
                 "AISHE_RUNTIME_DIR": str(runtime_dir),

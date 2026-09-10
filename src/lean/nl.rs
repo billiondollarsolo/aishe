@@ -129,6 +129,7 @@ fn refresh_custom_cmds_file(commands: Option<&CommandRegistry>) {
 }
 
 /// `-c` / hook NL entry used when lean is on. Skips `backend::supervisor`.
+#[allow(clippy::too_many_arguments)]
 pub fn run_nl(
     nl: &str,
     mode: &str,
@@ -195,6 +196,7 @@ pub fn prepare_agent_executor(
 }
 
 /// FIFO request from the PTY child. Returns a single-line **control** reply.
+#[allow(clippy::too_many_arguments)]
 pub fn handle_ipc_line(
     config: &mut Config,
     provider: &mut Option<Arc<dyn Provider>>,
@@ -251,6 +253,7 @@ fn persist_store(store: &mut Option<LeanSessionStore>, session: &Session) {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn handle_nl(
     config: &Config,
     provider: &mut Option<Arc<dyn Provider>>,
@@ -558,6 +561,7 @@ fn agent_reply(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn handle_slash(
     config: &mut Config,
     provider: &mut Option<Arc<dyn Provider>>,
@@ -819,6 +823,7 @@ fn custom_cmd_trusted(cmd: &crate::commands::CustomCommand) -> bool {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn handle_custom_or_unknown(
     config: &Config,
     provider: &mut Option<Arc<dyn Provider>>,

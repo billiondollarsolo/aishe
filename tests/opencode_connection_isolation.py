@@ -202,6 +202,7 @@ def main():
         env = os.environ.copy()
         env.update(
             {
+                "AISHE_LEGACY_OPENCODE": "1",  # managed OpenCode suite; lean default skips sidecar
                 "AISHE_CONFIG_DIR": str(config_home),
                 "AISHE_DATA_DIR": str(data_home),
                 "AISHE_RUNTIME_DIR": str(pathlib.Path(runtime).resolve()),

@@ -3,7 +3,7 @@
 use std::fs::OpenOptions;
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::ffi::OsStrExt;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::thread::JoinHandle;
@@ -123,7 +123,7 @@ impl Drop for IpcGuard {
     }
 }
 
-fn mkfifo(path: &PathBuf) -> Result<()> {
+fn mkfifo(path: &Path) -> Result<()> {
     let cstr = std::ffi::CString::new(path.as_os_str().as_bytes())
         .map_err(|_| anyhow!("fifo path contains NUL"))?;
     let rc = unsafe { libc::mkfifo(cstr.as_ptr(), 0o600) };
