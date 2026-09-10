@@ -120,6 +120,16 @@ impl AgentBackend for OpenCodeBackend {
                     self.sessions.bind(&request.shell_id, &session, binding)?;
                     return Ok(session);
                 }
+            } else {
+                // Mode/scope/network rotated: abort the stale conversation so a
+                // stuck provider/tool turn cannot block the fresh authority
+                // session that follows (workspace→host yolo is the CI canary).
+                let stale = BackendSession {
+                    id: mapping.backend_session_id.clone(),
+                    workspace: mapping.workspace.clone(),
+                    backend: "opencode".into(),
+                };
+                let _ = self.client.abort(&stale);
             }
         }
         self.sessions.serialize_creation(|| {
@@ -141,6 +151,13 @@ impl AgentBackend for OpenCodeBackend {
                         self.sessions.bind(&request.shell_id, &session, binding)?;
                         return Ok(session);
                     }
+                } else {
+                    let stale = BackendSession {
+                        id: mapping.backend_session_id.clone(),
+                        workspace: mapping.workspace.clone(),
+                        backend: "opencode".into(),
+                    };
+                    let _ = self.client.abort(&stale);
                 }
             }
             let session = self.client.create_session(
