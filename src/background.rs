@@ -1386,19 +1386,43 @@ fn branch_label(record: &Record) -> String {
 }
 
 fn reconcile(record: &mut Record) -> Result<()> {
-    if record.state == State::Running {
-        let live = record
+    if record.state != State::Running {
+        return Ok(());
+    }
+    let live = record
+        .pid
+        .is_some_and(|pid| same_process(pid, record.process_start.as_deref()));
+    if live {
+        return Ok(());
+    }
+    // Process looks dead relative to the caller's snapshot. Take the record lock
+    // and reload before writing Interrupted so a concurrent finish() checkpoint
+    // (Completed/Failed) is never overwritten — a TOCTOU that flakes under fast
+    // FAKE_LLM workers plus `task show` polling on Linux CI.
+    let id = record.id.clone();
+    let lock_path = task_dir(&id)?.join("record.lock");
+    let lock = OpenOptions::new()
+        .create(true)
+        .write(true)
+        .truncate(false)
+        .open(&lock_path)?;
+    set_private(&lock_path, 0o600);
+    lock.lock_exclusive()?;
+    let mut fresh = load(&id)?;
+    if fresh.state == State::Running {
+        let still_live = fresh
             .pid
-            .is_some_and(|pid| same_process(pid, record.process_start.as_deref()));
-        if !live {
-            record.state = State::Interrupted;
-            record.pid = None;
-            record.process_start = None;
-            record.updated_at_ms = now_ms();
-            record.error = Some("background process ended without a final checkpoint".into());
-            save(record)?;
+            .is_some_and(|pid| same_process(pid, fresh.process_start.as_deref()));
+        if !still_live {
+            fresh.state = State::Interrupted;
+            fresh.pid = None;
+            fresh.process_start = None;
+            fresh.updated_at_ms = now_ms();
+            fresh.error = Some("background process ended without a final checkpoint".into());
+            save(&fresh)?;
         }
     }
+    *record = fresh;
     Ok(())
 }
 
