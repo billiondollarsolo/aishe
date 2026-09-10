@@ -91,8 +91,12 @@ fn live_grok_subscription_lean_nl_smoke() {
 
     let started = Instant::now();
     let mut cmd = CargoCommand::cargo_bin("aishe").unwrap();
-    cmd.env("XDG_CONFIG_HOME", lean_config_home())
-        .env("XDG_DATA_HOME", temp_root("data"))
+    let config_home = lean_config_home();
+    let data_home = temp_root("data");
+    cmd.env("XDG_CONFIG_HOME", &config_home)
+        .env("XDG_DATA_HOME", &data_home)
+        .env("AISHE_CONFIG_DIR", &config_home)
+        .env("AISHE_DATA_DIR", &data_home)
         .env_remove("XAI_API_KEY")
         .env_remove("AISHE_FAKE_LLM")
         .env_remove("AISHE_FAKE_LLM_FILE")

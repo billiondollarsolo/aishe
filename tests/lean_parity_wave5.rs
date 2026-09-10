@@ -140,6 +140,8 @@ fn live_pty_known_cmd_roundtrip_hang_ceiling() {
     let mut cmd = CommandBuilder::new(bin_path());
     cmd.env("XDG_CONFIG_HOME", config_home.as_os_str());
     cmd.env("XDG_DATA_HOME", data_home.as_os_str());
+    cmd.env("AISHE_CONFIG_DIR", config_home.as_os_str());
+    cmd.env("AISHE_DATA_DIR", data_home.as_os_str());
     cmd.env("HOME", temp_root("home").as_os_str());
     cmd.env("AISHE_LEAN", "1");
     cmd.env("AISHE_UNICODE", "ascii");
@@ -258,8 +260,12 @@ fn known_cmd_still_skips_provider_after_wave5() {
     let provider_spy = root.join("provider");
     let opencode_spy = root.join("opencode");
     let mut cmd = CargoCommand::cargo_bin("aishe").unwrap();
-    cmd.env("XDG_CONFIG_HOME", temp_config_home())
-        .env("XDG_DATA_HOME", temp_root("data"))
+    let config_home = temp_config_home();
+    let data_home = temp_root("data");
+    cmd.env("XDG_CONFIG_HOME", &config_home)
+        .env("XDG_DATA_HOME", &data_home)
+        .env("AISHE_CONFIG_DIR", &config_home)
+        .env("AISHE_DATA_DIR", &data_home)
         .env_remove("AISHE_LEGACY_OPENCODE")
         .env("AISHE_LEAN", "1")
         .env("AISHE_SPY_PROVIDER_MAKE", &provider_spy)
