@@ -99,6 +99,9 @@ fi
 # Bounded compsys (F18). Dump + cache under private ZDOTDIR only — no user
 # plugins, no ~/.zshrc. First interactive start may rebuild .zcompdump (tens to
 # low hundreds of ms); subsequent prompts use `compinit -C` and stay fast.
+# Always pass `-u`: CI images (esp. macOS runners) ship group-writable
+# /usr/share/zsh; plain `compinit` then prompts on a TTY and deadlocks nested
+# PTY tests that cannot answer the security question.
 if [[ -o interactive ]]; then
   autoload -Uz compinit 2>/dev/null || true
   if (( $+functions[compinit] )); then
@@ -108,9 +111,9 @@ if [[ -o interactive ]]; then
     zstyle ':completion:*' use-cache on
     zstyle ':completion:*' cache-path "${_AISHE_COMPCACHE}"
     if [[ -s "${_AISHE_COMPDUMP}" ]]; then
-      compinit -d "${_AISHE_COMPDUMP}" -C
+      compinit -u -d "${_AISHE_COMPDUMP}" -C
     else
-      compinit -d "${_AISHE_COMPDUMP}"
+      compinit -u -d "${_AISHE_COMPDUMP}"
     fi
   fi
 fi

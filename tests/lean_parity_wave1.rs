@@ -99,6 +99,10 @@ fn lean_hook_sources_compinit() {
         hook.contains(".zcompdump"),
         "compinit dump must live under private ZDOTDIR"
     );
+    assert!(
+        hook.contains("compinit -u"),
+        "compinit must use -u so insecure system dirs never prompt/deadlock PTYs"
+    );
     let live: String = hook
         .lines()
         .map(str::trim_start)
