@@ -1887,6 +1887,13 @@ model = "gpt-x"
             .env("AISHE_CONFIG_DIR", &dir)
             .env("AISHE_DATA_DIR", dir.join("data"))
             .env("AISHE_MODEL_FILE", &model_file)
+            // Isolate from host Grok CLI OAuth / XAI key so lean prefer_grok
+            // cannot rewrite the active connection under test.
+            .env_remove("XAI_API_KEY")
+            .env_remove("AISHE_GROK_SUBSCRIPTION_TOKEN")
+            .env("AISHE_GROK_AUTH", dir.join("no-such-grok-auth.json"))
+            .env("HOME", &dir)
+            .env("GROK_HOME", dir.join("no-grok-home"))
             .args(args);
         c
     };
@@ -1913,10 +1920,11 @@ model = "gpt-x"
     assert_eq!(std::fs::read_to_string(&model_file).unwrap(), "gpt-z2");
 
     // The effective config reflects the persisted changes.
+    // `aishe mode auto` canonicalizes to lean/product alias `allow`.
     run(&["config"])
         .assert()
         .success()
-        .stdout(contains("mode = \"auto\""))
+        .stdout(contains("mode = \"allow\""))
         .stdout(contains("provider = \"openai\""))
         .stdout(contains("gpt-z2"));
 

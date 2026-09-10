@@ -1156,7 +1156,7 @@ def main():
     # exit-code propagation, and pipe/script mode.
     report.append("\n**CLI & distribution:**\n")
     rc, out, err = run([BIN, "--version"], env_local)
-    add("cli: --version has build metadata", rc == 0 and out.startswith("aishe 0.") and "(" in out,
+    add("cli: --version has build metadata", rc == 0 and out.startswith("aishe ") and "(" in out and not out.startswith("aishe unknown"),
         f"→ `{out.strip()}`")
     rc, out, err = run([BIN, "completions", "zsh"], env_local)
     add("cli: completions zsh emits a script", rc == 0 and "_aishe" in out)
