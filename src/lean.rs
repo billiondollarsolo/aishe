@@ -113,6 +113,56 @@ fn monotonic_ns() -> u64 {
         .min(u64::MAX as u128) as u64
 }
 
+/// Prefer live xAI/Grok for lean using Grok Build subscription OAuth.
+///
+/// Happy path: read the CLI session at `~/.grok/auth.json` (or `AISHE_GROK_AUTH` /
+/// `$GROK_HOME/auth.json`), inject the OIDC access token into the process-local
+/// env [`grok_oauth::SUBSCRIPTION_TOKEN_ENV`], and point the active connection at
+/// the catalog `xai` entry. Never writes secrets to config or git.
+///
+/// Escape hatch: if no CLI session is available but `XAI_API_KEY` is set, fall
+/// back to that API-key connection (not the documented happy path).
+pub fn prefer_grok_live_auth(config: &mut crate::config::Config) {
+    if let Some(token) = grok_oauth::access_token() {
+        std::env::set_var(grok_oauth::SUBSCRIPTION_TOKEN_ENV, token);
+        apply_xai_connection(
+            config,
+            grok_oauth::SUBSCRIPTION_TOKEN_ENV,
+            "Grok - subscription (CLI OAuth)",
+        );
+        return;
+    }
+    let Ok(key) = std::env::var("XAI_API_KEY") else {
+        return;
+    };
+    if key.trim().is_empty() {
+        return;
+    }
+    apply_xai_connection(config, "XAI_API_KEY", "Grok - API");
+}
+
+fn apply_xai_connection(config: &mut crate::config::Config, api_key_env: &str, label: &str) {
+    let Some(service) = crate::provider_catalog::find("xai") else {
+        return;
+    };
+    crate::provider_catalog::apply(service, &mut config.providers.openai);
+    config.aishe.provider = "xai".into();
+    config.aishe.connection = "xai".into();
+    let mut settings = config.providers.openai.clone();
+    settings.api_key_env = api_key_env.to_string();
+    let connection = crate::config::ConnectionConfig {
+        provider: "xai".into(),
+        label: label.into(),
+        settings,
+        auth: crate::config::ConnectionAuth::ApiKey {
+            credential: Some(service.credential.to_string()),
+            api_key_env: Some(api_key_env.to_string()),
+        },
+        reasoning_effort: None,
+    };
+    config.connections.insert("xai".into(), connection);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -121,7 +171,7 @@ mod tests {
     fn lean_is_on_by_default() {
         // The process may inherit flags from the harness; the parser itself is
         // covered by the explicit env_flag helper.
-        assert!(env_flag_is("AISHE_LEAN_TEST_UNSET_VAR_XXXX", &["1"]) == false);
+        assert!(!env_flag_is("AISHE_LEAN_TEST_UNSET_VAR_XXXX", &["1"]));
         assert!(LeanMode::parse("suggest") == LeanMode::Ask);
         assert!(LeanMode::parse("auto") == LeanMode::Allow);
         assert!(LeanMode::parse("yolo") == LeanMode::Agent);
@@ -174,54 +224,4 @@ mod tests {
             crate::safety::Risk::Safe
         ));
     }
-}
-
-/// Prefer live xAI/Grok for lean using Grok Build subscription OAuth.
-///
-/// Happy path: read the CLI session at `~/.grok/auth.json` (or `AISHE_GROK_AUTH` /
-/// `$GROK_HOME/auth.json`), inject the OIDC access token into the process-local
-/// env [`grok_oauth::SUBSCRIPTION_TOKEN_ENV`], and point the active connection at
-/// the catalog `xai` entry. Never writes secrets to config or git.
-///
-/// Escape hatch: if no CLI session is available but `XAI_API_KEY` is set, fall
-/// back to that API-key connection (not the documented happy path).
-pub fn prefer_grok_live_auth(config: &mut crate::config::Config) {
-    if let Some(token) = grok_oauth::access_token() {
-        std::env::set_var(grok_oauth::SUBSCRIPTION_TOKEN_ENV, token);
-        apply_xai_connection(
-            config,
-            grok_oauth::SUBSCRIPTION_TOKEN_ENV,
-            "Grok - subscription (CLI OAuth)",
-        );
-        return;
-    }
-    let Ok(key) = std::env::var("XAI_API_KEY") else {
-        return;
-    };
-    if key.trim().is_empty() {
-        return;
-    }
-    apply_xai_connection(config, "XAI_API_KEY", "Grok - API");
-}
-
-fn apply_xai_connection(config: &mut crate::config::Config, api_key_env: &str, label: &str) {
-    let Some(service) = crate::provider_catalog::find("xai") else {
-        return;
-    };
-    crate::provider_catalog::apply(service, &mut config.providers.openai);
-    config.aishe.provider = "xai".into();
-    config.aishe.connection = "xai".into();
-    let mut settings = config.providers.openai.clone();
-    settings.api_key_env = api_key_env.to_string();
-    let connection = crate::config::ConnectionConfig {
-        provider: "xai".into(),
-        label: label.into(),
-        settings,
-        auth: crate::config::ConnectionAuth::ApiKey {
-            credential: Some(service.credential.to_string()),
-            api_key_env: Some(api_key_env.to_string()),
-        },
-        reasoning_effort: None,
-    };
-    config.connections.insert("xai".into(), connection);
 }

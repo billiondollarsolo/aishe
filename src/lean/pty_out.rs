@@ -13,19 +13,15 @@ pub struct PtyOut {
     inner: Arc<Mutex<Inner>>,
 }
 
+#[derive(Default)]
 enum Inner {
     /// Discard (unit tests that only care about FIFO control, or pre-attach).
+    #[default]
     Null,
     /// Live PTY master writer (or any sink).
     Writer(Box<dyn Write + Send>),
     /// In-memory capture for tests.
     Capture(Vec<u8>),
-}
-
-impl Default for Inner {
-    fn default() -> Self {
-        Inner::Null
-    }
 }
 
 impl PtyOut {

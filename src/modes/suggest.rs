@@ -260,7 +260,7 @@ impl AnswerStreamer {
             return;
         }
         if self.plain {
-            let _ = write!(out, "\n");
+            let _ = writeln!(out);
         } else {
             let capabilities = TerminalCapabilities::detect_stdout();
             let _ = writeln!(out, "\n{}", capabilities.assistant_answer_header());
