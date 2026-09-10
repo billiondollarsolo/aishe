@@ -10,6 +10,7 @@ use std::sync::Arc;
 
 use anyhow::Result;
 
+use crate::commands::CommandRegistry;
 use crate::config::Config;
 use crate::executor::Executor;
 use crate::modes;
@@ -17,7 +18,6 @@ use crate::modes::suggest::Suggestion;
 use crate::providers::{self, Provider};
 use crate::safety::{self, Risk};
 use crate::session::Session;
-use crate::commands::CommandRegistry;
 use crate::skills::SkillRegistry;
 
 use super::grant::{ensure_session_grant, LeanGrant, LeanMode};
@@ -58,10 +58,7 @@ impl LeanWarm {
     }
 
     pub fn command_list(&self) -> Vec<(String, String)> {
-        self.commands
-            .as_ref()
-            .map(|c| c.list())
-            .unwrap_or_default()
+        self.commands.as_ref().map(|c| c.list()).unwrap_or_default()
     }
 
     pub fn skills_len(&self) -> usize {
@@ -73,11 +70,7 @@ impl LeanWarm {
     }
 
     pub fn mcp_server_hint(&self, config: &Config) -> String {
-        let configured = config
-            .mcp_servers
-            .iter()
-            .filter(|(_, c)| c.enabled)
-            .count();
+        let configured = config.mcp_servers.iter().filter(|(_, c)| c.enabled).count();
         if configured == 0 {
             "none configured".into()
         } else if self.mcp.is_none() {
@@ -291,15 +284,33 @@ fn handle_nl(
     };
     let expanded = prepare_nl_prompt(line, &cwd_path, config);
     let reply = match mode {
-        LeanMode::Ask => {
-            suggest_reply(&expanded, provider_ref, executor, config, session, pty, false)
-        }
-        LeanMode::Allow => {
-            suggest_reply(&expanded, provider_ref, executor, config, session, pty, true)
-        }
-        LeanMode::Agent => {
-            agent_reply(&expanded, provider_ref, executor, config, session, warm, pty)
-        }
+        LeanMode::Ask => suggest_reply(
+            &expanded,
+            provider_ref,
+            executor,
+            config,
+            session,
+            pty,
+            false,
+        ),
+        LeanMode::Allow => suggest_reply(
+            &expanded,
+            provider_ref,
+            executor,
+            config,
+            session,
+            pty,
+            true,
+        ),
+        LeanMode::Agent => agent_reply(
+            &expanded,
+            provider_ref,
+            executor,
+            config,
+            session,
+            warm,
+            pty,
+        ),
     };
     if reply == "OK"
         || reply == "STREAM_END"
@@ -625,10 +636,7 @@ fn handle_slash(
             };
             emit_text(pty, &msg);
             if config.aishe.budget_usd > 0.0 {
-                emit_text(
-                    pty,
-                    &format!("budget: ${:.2}", config.aishe.budget_usd),
-                );
+                emit_text(pty, &format!("budget: ${:.2}", config.aishe.budget_usd));
             }
             "OK".into()
         }
@@ -729,17 +737,7 @@ fn handle_slash(
             "OK".into()
         }
         _ => handle_custom_or_unknown(
-            config,
-            provider,
-            executor,
-            session,
-            store,
-            warm,
-            pty,
-            mode,
-            cwd,
-            name,
-            &rest_args,
+            config, provider, executor, session, store, warm, pty, mode, cwd, name, &rest_args,
         ),
     }
 }
@@ -751,7 +749,10 @@ fn emit_lean_help(warm: &LeanWarm, pty: &PtyOut, commands_only: bool) {
             "aishe lean: typed commands run in zsh -f. English goes to the model.",
         );
         emit_text(pty, "  ? force NL   ! force shell   Ctrl-X ? show route");
-        emit_text(pty, "  empty ? explains last failure · Ctrl-X Ctrl-F suggests a fix");
+        emit_text(
+            pty,
+            "  empty ? explains last failure · Ctrl-X Ctrl-F suggests a fix",
+        );
         emit_text(
             pty,
             "  /mode ask|allow|agent   Shift-Tab cycles (aliases suggest|auto|yolo)",
@@ -1011,9 +1012,8 @@ fn handle_connection_slash(
 ) -> String {
     if arg.is_empty() {
         let active = config.active_connection_id();
-        let mut out = String::from(
-            "connections (* active; Grok subscription remains default happy path):",
-        );
+        let mut out =
+            String::from("connections (* active; Grok subscription remains default happy path):");
         if config.connections.is_empty() {
             out.push_str("\n  (none configured — aishe setup)");
         } else {
@@ -1077,19 +1077,24 @@ fn handle_sessions_slash(
                 emit_text(pty, "no lean sessions");
             } else {
                 let mut out = String::from("lean sessions (oldest first):");
-                for meta in listed.iter().rev().take(20).collect::<Vec<_>>().into_iter().rev() {
+                for meta in listed
+                    .iter()
+                    .rev()
+                    .take(20)
+                    .collect::<Vec<_>>()
+                    .into_iter()
+                    .rev()
+                {
                     out.push('\n');
                     out.push_str(&format!(
                         "  {}  turns={}  {}",
                         crate::commands::display_safe(&meta.id),
                         meta.turns,
-                        crate::commands::display_safe(
-                            if meta.title.is_empty() {
-                                meta.cwd.as_str()
-                            } else {
-                                meta.title.as_str()
-                            }
-                        )
+                        crate::commands::display_safe(if meta.title.is_empty() {
+                            meta.cwd.as_str()
+                        } else {
+                            meta.title.as_str()
+                        })
                     ));
                 }
                 emit_text(pty, &out);
@@ -1107,7 +1112,11 @@ fn handle_sessions_slash(
         }
         other if other.starts_with("resume") || !other.is_empty() => {
             let id = other.strip_prefix("resume:").unwrap_or(other);
-            let id = id.strip_prefix("resume").unwrap_or(id).trim_matches(':').trim();
+            let id = id
+                .strip_prefix("resume")
+                .unwrap_or(id)
+                .trim_matches(':')
+                .trim();
             if id.is_empty() {
                 emit_text(pty, "usage: /sessions resume:<id>");
                 return "OK".into();
@@ -1147,7 +1156,10 @@ fn expand_attachments(line: &str, cwd: &Path, config: &Config) -> String {
         Ok(expanded) => expanded.prompt,
         Err(error) => {
             // Soft-fail: keep original line so NL still runs; surface error inline.
-            format!("{line}\n\n[attachment error: {}]", one_line(&error.to_string()))
+            format!(
+                "{line}\n\n[attachment error: {}]",
+                one_line(&error.to_string())
+            )
         }
     }
 }
@@ -1166,7 +1178,11 @@ fn prepare_nl_prompt(line: &str, cwd: &Path, config: &Config) -> String {
 
 fn run_confirmed(executor: &mut Executor, command: &str) -> String {
     let decoded = decode_confirm_payload(command);
-    let command = decoded.split(" (").next().unwrap_or(decoded.as_str()).trim();
+    let command = decoded
+        .split(" (")
+        .next()
+        .unwrap_or(decoded.as_str())
+        .trim();
     if command.is_empty() {
         return "ERROR\tnothing to run".into();
     }
@@ -1207,10 +1223,7 @@ fn emit_text(pty: &PtyOut, text: &str) {
 }
 
 fn b64(text: &str) -> String {
-    base64::Engine::encode(
-        &base64::engine::general_purpose::STANDARD,
-        text.as_bytes(),
-    )
+    base64::Engine::encode(&base64::engine::general_purpose::STANDARD, text.as_bytes())
 }
 
 fn one_line(text: &str) -> String {
@@ -1224,7 +1237,9 @@ mod tests {
 
     fn fake_llm_lock() -> std::sync::MutexGuard<'static, ()> {
         static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-        LOCK.get_or_init(|| Mutex::new(())).lock().unwrap_or_else(|e| e.into_inner())
+        LOCK.get_or_init(|| Mutex::new(()))
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
     }
 
     fn test_config() -> Config {
@@ -1358,7 +1373,10 @@ mod tests {
                 &pty,
                 "SLASH\task\t/tmp\t/usage",
             );
-            assert!(reply == "OK" || reply == "STREAM_END", "expected OK/STREAM_END, got {reply}");
+            assert!(
+                reply == "OK" || reply == "STREAM_END",
+                "expected OK/STREAM_END, got {reply}"
+            );
             let shown = pty.take_capture();
             assert!(
                 shown.contains("usage:") && !shown.contains("stub"),
@@ -1447,7 +1465,10 @@ mod tests {
                 &pty,
                 &format!("NL\task\t{}\t{line}", dir.display()),
             );
-            assert!(reply == "OK" || reply == "STREAM_END", "expected OK/STREAM_END, got {reply}");
+            assert!(
+                reply == "OK" || reply == "STREAM_END",
+                "expected OK/STREAM_END, got {reply}"
+            );
             // User turn recorded should include attachment expansion.
             let hist = session.history();
             let user = hist
@@ -1586,7 +1607,10 @@ mod tests {
                 &pty,
                 "NL\task\t/tmp\texport API_TOKEN=supersecretvalue123 please explain",
             );
-            assert!(reply == "OK" || reply == "STREAM_END", "expected OK/STREAM_END, got {reply}");
+            assert!(
+                reply == "OK" || reply == "STREAM_END",
+                "expected OK/STREAM_END, got {reply}"
+            );
             let hist = session.history();
             let user = hist
                 .iter()
@@ -1602,7 +1626,6 @@ mod tests {
         });
         std::env::remove_var("AISHE_FAKE_LLM");
     }
-
 
     #[test]
     fn ask_streams_answer_chunks_into_pty_and_returns_stream_end() {
@@ -1857,5 +1880,4 @@ mod tests {
         }
         let _ = std::fs::remove_dir_all(&home);
     }
-
 }

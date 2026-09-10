@@ -579,7 +579,6 @@ pub fn inspect(version: &str, options: &Options) -> Report {
     }
 }
 
-
 /// Lean CSH hot-path checks (FIFO/ZDOTDIR, Grok auth present, compsys, bwrap, leanrc).
 /// Never prints tokens or auth.json contents.
 fn lean_hotpath_checks() -> Vec<Check> {
@@ -587,11 +586,7 @@ fn lean_hotpath_checks() -> Vec<Check> {
     let lean_on = crate::lean::enabled();
     checks.push(Check::new(
         "lean.enabled",
-        if lean_on {
-            Status::Pass
-        } else {
-            Status::Warn
-        },
+        if lean_on { Status::Pass } else { Status::Warn },
         Severity::Info,
         if lean_on {
             "lean hot path: enabled (default)"
@@ -603,12 +598,10 @@ fn lean_hotpath_checks() -> Vec<Check> {
 
     let fifo_dir = std::env::temp_dir();
     let probe = fifo_dir.join(format!("aishe-lean-doctor-{}.probe", std::process::id()));
-    let fifo_ok = fifo_dir.is_dir()
-        && std::fs::write(&probe, b"ok").is_ok()
-        && {
-            let _ = std::fs::remove_file(&probe);
-            true
-        };
+    let fifo_ok = fifo_dir.is_dir() && std::fs::write(&probe, b"ok").is_ok() && {
+        let _ = std::fs::remove_file(&probe);
+        true
+    };
     checks.push(Check::new(
         "lean.fifo",
         if fifo_ok { Status::Pass } else { Status::Fail },
@@ -632,10 +625,7 @@ fn lean_hotpath_checks() -> Vec<Check> {
     ));
 
     let auth_path = crate::lean::grok_auth_path();
-    let auth_present = auth_path
-        .as_ref()
-        .map(|p| p.is_file())
-        .unwrap_or(false);
+    let auth_present = auth_path.as_ref().map(|p| p.is_file()).unwrap_or(false);
     // Presence only — never read or print token material here.
     checks.push(Check::new(
         "lean.grok_auth",
@@ -717,7 +707,6 @@ fn lean_hotpath_checks() -> Vec<Check> {
 
     checks
 }
-
 
 /// Warn when setup/Doctor is run through a different executable than the one
 /// `aishe` resolves to for the next ordinary shell command.

@@ -69,7 +69,10 @@ fn grok_auth_present() -> bool {
         }
     }
     if let Ok(home) = std::env::var("HOME") {
-        return std::path::Path::new(&home).join(".grok").join("auth.json").is_file();
+        return std::path::Path::new(&home)
+            .join(".grok")
+            .join("auth.json")
+            .is_file();
     }
     false
 }
@@ -95,10 +98,7 @@ fn live_grok_subscription_lean_nl_smoke() {
         .env_remove("AISHE_FAKE_LLM_FILE")
         .env_remove("AISHE_LEGACY_OPENCODE")
         .env("AISHE_LEAN", "1")
-        .args([
-            "-c",
-            "? Reply with exactly one word: pong. No punctuation.",
-        ]);
+        .args(["-c", "? Reply with exactly one word: pong. No punctuation."]);
     let output = cmd.output().expect("spawn aishe");
     let elapsed = started.elapsed();
     let stdout = String::from_utf8_lossy(&output.stdout);

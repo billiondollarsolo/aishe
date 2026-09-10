@@ -5,15 +5,17 @@
 //! also disables it.
 
 mod grant;
+mod grok_oauth;
+pub mod heavy;
 mod hook;
 mod ipc;
 mod nl;
-mod sessions;
-pub mod heavy;
-mod grok_oauth;
 mod pty_out;
+mod sessions;
 mod stdout_redirect;
-pub use grok_oauth::{SUBSCRIPTION_TOKEN_ENV, available as grok_subscription_available, auth_path as grok_auth_path};
+pub use grok_oauth::{
+    auth_path as grok_auth_path, available as grok_subscription_available, SUBSCRIPTION_TOKEN_ENV,
+};
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
@@ -22,8 +24,10 @@ pub use grant::{ensure_session_grant, grant_accepted, LeanGrant, LeanMode};
 pub use hook::{wrapper_zshenv, wrapper_zshrc, zsh_argv};
 pub use ipc::{spawn_ipc, IpcGuard};
 pub use nl::{handle_ipc_line, run_nl, LeanWarm};
-pub use sessions::{list as list_lean_sessions, store_root as lean_sessions_root, Meta as LeanSessionMeta};
 pub use pty_out::{PtyOut, PtyWrite};
+pub use sessions::{
+    list as list_lean_sessions, store_root as lean_sessions_root, Meta as LeanSessionMeta,
+};
 
 static NL_TURN_START_NS: AtomicU64 = AtomicU64::new(0);
 static NL_WIRE_READY_NS: AtomicU64 = AtomicU64::new(0);
@@ -184,7 +188,11 @@ mod tests {
 pub fn prefer_grok_live_auth(config: &mut crate::config::Config) {
     if let Some(token) = grok_oauth::access_token() {
         std::env::set_var(grok_oauth::SUBSCRIPTION_TOKEN_ENV, token);
-        apply_xai_connection(config, grok_oauth::SUBSCRIPTION_TOKEN_ENV, "Grok - subscription (CLI OAuth)");
+        apply_xai_connection(
+            config,
+            grok_oauth::SUBSCRIPTION_TOKEN_ENV,
+            "Grok - subscription (CLI OAuth)",
+        );
         return;
     }
     let Ok(key) = std::env::var("XAI_API_KEY") else {
@@ -217,5 +225,3 @@ fn apply_xai_connection(config: &mut crate::config::Config, api_key_env: &str, l
     };
     config.connections.insert("xai".into(), connection);
 }
-
-

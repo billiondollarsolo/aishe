@@ -68,9 +68,15 @@ mod tests {
 
     #[test]
     fn parse_names() {
-        assert_eq!(HeavyBackend::parse("opencode"), Some(HeavyBackend::OpenCode));
+        assert_eq!(
+            HeavyBackend::parse("opencode"),
+            Some(HeavyBackend::OpenCode)
+        );
         assert_eq!(HeavyBackend::parse("codex"), Some(HeavyBackend::Codex));
-        assert_eq!(HeavyBackend::parse("claude-code"), Some(HeavyBackend::ClaudeCode));
+        assert_eq!(
+            HeavyBackend::parse("claude-code"),
+            Some(HeavyBackend::ClaudeCode)
+        );
         assert_eq!(HeavyBackend::parse("nope"), None);
     }
 }

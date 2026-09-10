@@ -258,7 +258,9 @@ mod tests {
 
     pub(crate) fn env_lock() -> std::sync::MutexGuard<'static, ()> {
         static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-        LOCK.get_or_init(|| Mutex::new(())).lock().unwrap_or_else(|e| e.into_inner())
+        LOCK.get_or_init(|| Mutex::new(()))
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
     }
 
     #[test]
@@ -285,7 +287,11 @@ mod tests {
         assert!(session.history().is_empty());
         let again = Session::load_persisted(store.path());
         assert!(again.history().is_empty());
-        assert!(clear_session(&id), "clear_session should remove {id} under {}", root.display());
+        assert!(
+            clear_session(&id),
+            "clear_session should remove {id} under {}",
+            root.display()
+        );
         std::env::remove_var("AISHE_LEAN_SESSIONS");
         let _ = fs::remove_dir_all(&root);
     }

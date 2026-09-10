@@ -246,6 +246,17 @@ fn run() -> Result<u8> {
         };
     }
 
+    // CLI markdown is clap-tree reflection only — no config / lean init.
+    // Kept ahead of load_or_init so isolated AISHE_RUNTIME_DIR / non-tty CI
+    // (docs_cli_block_test) cannot fail with config.invalid exit 3.
+    if let Some(Cmd::Commands {
+        cli_markdown: true, ..
+    }) = &args.cmd
+    {
+        println!("{}", args::cli_markdown());
+        return Ok(0);
+    }
+
     // `completions <shell>` prints a completion script and exits.
     if let Some(Cmd::Completions { shell }) = args.cmd {
         use clap::CommandFactory;

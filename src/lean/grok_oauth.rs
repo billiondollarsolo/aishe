@@ -90,10 +90,7 @@ fn is_xai_entry(store_key: &str, entry: &Value) -> bool {
     let Some(obj) = entry.as_object() else {
         return false;
     };
-    let issuer = obj
-        .get("oidc_issuer")
-        .and_then(Value::as_str)
-        .unwrap_or("");
+    let issuer = obj.get("oidc_issuer").and_then(Value::as_str).unwrap_or("");
     let mode = obj.get("auth_mode").and_then(Value::as_str).unwrap_or("");
     mode.eq_ignore_ascii_case("oidc") && issuer.contains("auth.x.ai")
 }
@@ -252,13 +249,14 @@ fn url_encode(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     for b in s.bytes() {
         match b {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => out.push(b as char),
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(b as char)
+            }
             _ => out.push_str(&format!("%{b:02X}")),
         }
     }
     out
 }
-
 
 /// Refuse symlinks and group/other-readable auth stores (same spirit as `oauth.rs`).
 fn owner_only_regular_file(path: &Path) -> bool {
@@ -350,10 +348,7 @@ mod tests {
 
     #[test]
     fn available_false_when_missing() {
-        std::env::set_var(
-            "AISHE_GROK_AUTH",
-            "/tmp/aishe-definitely-missing-auth.json",
-        );
+        std::env::set_var("AISHE_GROK_AUTH", "/tmp/aishe-definitely-missing-auth.json");
         assert!(!available());
         std::env::remove_var("AISHE_GROK_AUTH");
     }

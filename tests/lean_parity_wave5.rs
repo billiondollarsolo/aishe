@@ -203,10 +203,7 @@ fn live_pty_known_cmd_roundtrip_hang_ceiling() {
         );
         std::thread::sleep(Duration::from_millis(5));
         let marker = format!("AISHE_RT_{i}");
-        collected
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .clear();
+        collected.lock().unwrap_or_else(|e| e.into_inner()).clear();
         let cmd_line = format!("printf '%s\n' {marker}\r");
         let start = Instant::now();
         writer.write_all(cmd_line.as_bytes()).expect("write cmd");
