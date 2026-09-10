@@ -12,7 +12,7 @@ use assert_cmd::Command as CargoCommand;
 
 use aishe::config::Config;
 use aishe::executor::Executor;
-use aishe::lean::{self, handle_ipc_line, grant_accepted, LeanMode, LeanWarm, PtyOut};
+use aishe::lean::{self, grant_accepted, handle_ipc_line, LeanMode, LeanWarm, PtyOut};
 use aishe::mcp::McpRegistry;
 use aishe::providers::fake::FakeProvider;
 use aishe::session::Session;
@@ -176,7 +176,8 @@ fn lean_fifo_agent_nl_smoke_no_opencode() {
         &format!("NL\tagent\t{cwd_s}\tplease run true"),
     );
     assert_eq!(
-        reply, "RAN",
+        reply,
+        "RAN",
         "FIFO agent NL should return RAN, got {reply:?}; pty={}",
         pty.take_capture()
     );
@@ -231,6 +232,9 @@ fn known_cmd_spies_still_green_after_agent_helpers() {
         .args(["-c", "true"])
         .assert()
         .success();
-    assert!(!provider_spy.exists(), "known cmd must not build a Provider");
+    assert!(
+        !provider_spy.exists(),
+        "known cmd must not build a Provider"
+    );
     assert!(!opencode_spy.exists(), "known cmd must not start OpenCode");
 }

@@ -362,6 +362,18 @@ def wait_for(
     raise ContractFailure(f"timed out waiting for {description}; transcript tail:\n{tail}")
 
 
+
+def has_ready_prompt(text: str) -> bool:
+    """Legacy zsh-pty uses ZP>; lean default uses mode + glyph in PROMPT."""
+    if "ZP>" in text:
+        return True
+    # Product-correct lean glyphs: ask/allow/agent with > ❯ » *
+    return (
+        re.search(r"\b(?:ask|allow|auto|agent|yolo)\s+(?:❯|»|>>|[>*])", text)
+        is not None
+    )
+
+
 def exercise_contract(
     transport: PtyTransport | TmuxTransport | ScreenTransport,
     prefix: str,
@@ -369,7 +381,7 @@ def exercise_contract(
     checks: list[str] = []
     # Multiplexer pane capture trims trailing prompt spaces, so the stable
     # observable is the prompt token rather than its final padding byte.
-    wait_for(transport, lambda text: "ZP>" in text, "the initial prompt", timeout=20)
+    wait_for(transport, has_ready_prompt, "the initial prompt", timeout=20)
 
     ready = f"{prefix}_READY_"
     transport.sendline(f"printf '%s%s\\n' {ready} OK")

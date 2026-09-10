@@ -230,7 +230,6 @@ fn stream_chunk_size() -> usize {
         .min(64)
 }
 
-
 /// Dimensionality of the fake embedding (small but enough to keep token
 /// collisions rare for short commands).
 const FAKE_DIM: usize = 256;

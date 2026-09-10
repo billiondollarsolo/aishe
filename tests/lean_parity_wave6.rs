@@ -167,4 +167,3 @@ fn doctor_mentions_grok_auth() {
         "doctor must point at grok login when missing: {stdout}"
     );
 }
-

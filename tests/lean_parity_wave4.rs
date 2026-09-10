@@ -72,8 +72,7 @@ fn lean_hotpath_doc_marks_wave4_streaming() {
         "lean-hotpath.md must document Wave 4 streaming"
     );
     assert!(
-        doc.to_ascii_lowercase().contains("no opencode")
-            || doc.contains("AISHE_LEGACY_OPENCODE"),
+        doc.to_ascii_lowercase().contains("no opencode") || doc.contains("AISHE_LEGACY_OPENCODE"),
         "must keep no-OpenCode / LEGACY hatch language"
     );
 }

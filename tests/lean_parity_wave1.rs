@@ -100,8 +100,10 @@ fn lean_hook_sources_compinit() {
         .map(str::trim_start)
         .filter(|l| !l.starts_with('#'))
         .collect::<Vec<_>>()
-        .join("
-");
+        .join(
+            "
+",
+        );
     assert!(
         !live.contains("source ~/.zshrc") && !live.contains("AISHE_REAL_ZDOTDIR"),
         "must not pull user plugin stack"
@@ -126,10 +128,7 @@ fn lean_zdotdir_compinit_defines_compdef() {
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
-    assert!(
-        output.status.success(),
-        "zsh failed: {combined}"
-    );
+    assert!(output.status.success(), "zsh failed: {combined}");
     // Interactive -c may skip .zshrc on some zsh builds; force source.
     let output2 = Command::new("zsh")
         .args(["-f", "-o", "RCS", "-o", "NO_GLOBAL_RCS", "-i", "-c"])
@@ -162,9 +161,18 @@ fn shift_tab_delegates_when_buffer_nonempty() {
 
 #[test]
 fn mode_aliases_accepted_in_hook_and_rust() {
-    assert_eq!(aishe::lean::LeanMode::parse("suggest"), aishe::lean::LeanMode::Ask);
-    assert_eq!(aishe::lean::LeanMode::parse("auto"), aishe::lean::LeanMode::Allow);
-    assert_eq!(aishe::lean::LeanMode::parse("yolo"), aishe::lean::LeanMode::Agent);
+    assert_eq!(
+        aishe::lean::LeanMode::parse("suggest"),
+        aishe::lean::LeanMode::Ask
+    );
+    assert_eq!(
+        aishe::lean::LeanMode::parse("auto"),
+        aishe::lean::LeanMode::Allow
+    );
+    assert_eq!(
+        aishe::lean::LeanMode::parse("yolo"),
+        aishe::lean::LeanMode::Agent
+    );
     let hook = aishe::lean::wrapper_zshrc();
     assert!(hook.contains("ask|suggest"));
     assert!(hook.contains("allow|auto"));

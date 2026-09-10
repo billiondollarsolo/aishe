@@ -486,10 +486,7 @@ pub fn request_streamed<W: std::io::Write>(
         Ok(f) => f,
         Err(e) => {
             crate::audit::ai_error(mode, model, &e.to_string());
-            let message = format!(
-                "AIShe error: {}",
-                crate::providers::actionable_error(&e)
-            );
+            let message = format!("AIShe error: {}", crate::providers::actionable_error(&e));
             let _ = writeln!(out, "{message}");
             return Ok(Suggestion::Answer {
                 explanation: String::new(),

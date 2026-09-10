@@ -59,13 +59,11 @@ pub fn list(json_output: bool) -> u8 {
                 "  {}  turns={}  {}",
                 crate::commands::display_safe(&meta.id),
                 meta.turns,
-                crate::commands::display_safe(
-                    if meta.title.is_empty() {
-                        meta.cwd.as_str()
-                    } else {
-                        meta.title.as_str()
-                    }
-                )
+                crate::commands::display_safe(if meta.title.is_empty() {
+                    meta.cwd.as_str()
+                } else {
+                    meta.title.as_str()
+                })
             );
         }
     }

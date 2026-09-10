@@ -1,6 +1,6 @@
 # Lean CSH hot path
 
-Week-1 skeleton of the [CSH MVP](../../csh-mvp-scope.md) redesign, shipped
+Week-1 skeleton of the [CSH MVP lean redesign](lean-1.0.md), shipped
 inside the existing **aishe** binary. Product name stays `aishe`.
 
 ## What changed
