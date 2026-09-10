@@ -54,6 +54,8 @@ def final_color(line):
 
 
 def main():
+    from pty_helper import require_legacy_opencode_world
+    require_legacy_opencode_world()
     recognized = final_color("/model")
     if recognized != "cyan":
         raise AssertionError("a registered /model reads as %s, not recognized" % recognized)

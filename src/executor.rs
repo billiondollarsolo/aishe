@@ -194,6 +194,9 @@ pub struct Executor {
     /// Cooperative cancellation for foreground agent commands. Ordinary shell
     /// execution leaves this unset.
     cancel: Option<Arc<AtomicBool>>,
+    /// Skip user rc / `.aishrc`. Lean agent `run_command` uses `dash -c` or
+    /// `zsh -f -c`.
+    norc: bool,
 }
 
 impl Executor {
@@ -222,6 +225,7 @@ impl Executor {
             history_log: None,
             sandbox_wrap: Vec::new(),
             cancel: None,
+            norc: false,
         })
     }
 
@@ -238,7 +242,20 @@ impl Executor {
         executor
             .env
             .retain(|name, _| agent_environment_allowed(name, denied_environment));
+        if crate::lean::enabled() {
+            executor.prefer_posix_capture();
+        }
         Ok(executor)
+    }
+
+    /// Prefer `dash -c` (fallback `zsh -f -c`) and never source user rc. Used
+    /// for model-proposed `run_command` on the lean hot path.
+    pub fn prefer_posix_capture(&mut self) {
+        self.session_rc = None;
+        self.norc = true;
+        if let Some(dash) = which("dash") {
+            self.shell = dash;
+        }
     }
 
     /// Set (or clear, with an empty vec) the sandbox wrapper argv prepended before
@@ -321,6 +338,19 @@ impl Executor {
     /// `source rc; greet` would parse `greet` before the alias exists, whereas
     /// `eval "$AISHE_CMD"` re-parses at runtime once the alias is defined.
     fn apply_rc(&self, cmd: &mut Command, line: &str) {
+        if self.norc {
+            if self
+                .shell
+                .file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name == "zsh")
+            {
+                cmd.arg("-f");
+            }
+            cmd.arg("-c");
+            cmd.arg(line);
+            return;
+        }
         cmd.arg("-c");
         match &self.session_rc {
             Some(rc) => {

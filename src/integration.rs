@@ -51,6 +51,11 @@ pub fn zsh_script() -> String {
     templates::zsh_script(&zsh_hook())
 }
 
+/// Conservative two-word question grammar shared by the PTY hooks.
+pub fn question_grammar() -> String {
+    registry::render_question_grammar()
+}
+
 /// `.zshenv` for the PTY wrapper's isolated `ZDOTDIR`.
 pub const WRAPPER_ZSHENV: &str = templates::WRAPPER_ZSHENV;
 

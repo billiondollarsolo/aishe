@@ -1,10 +1,62 @@
 # Changelog
 
 All notable changes to **aishe** are documented here. The format loosely follows
-[Keep a Changelog](https://keepachangelog.com/); this project is pre-1.0, so
-breaking changes can land in any release.
+[Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
+
+## [1.0.0] - 2026-09-09
+
+AISHE **1.0.0** lean daily-driver release on `feat/lean-csh-hotpath` (tag `v1.0.0`).
+Lean CSH hot path is the default interactive experience; OpenCode is no longer on
+the default path.
+
+### Added
+- Lean interactive shell: `zsh -f -i` with an isolated `ZDOTDIR` that does **not**
+  source `~/.zshrc` or plugin stacks. Natural language is handled in-process over
+  a FIFO by the warm provider HTTP client.
+- Grok subscription OAuth happy path (`~/.grok/auth.json`); API-key fallback via
+  `aishe auth` / provider env. Doctor next-step points at `grok` login.
+- Wave 1-7 lean parity: ask/allow/agent modes, sessions/undo, `/connection` /
+  `/model`, MCP/skills names, compsys, token stream, doctor lean, custom slash
+  commands (F40), noninteractive agent smoke (`--mode agent -c`).
+- Optional `~/.aishe/leanrc` (or `$AISHE_LEANRC`) for chosen aliases; never
+  `~/.zshrc` by default.
+- `AISHE_LEAN=0` / `AISHE_LEGACY_OPENCODE=1` restores the historical PTY +
+  OpenCode sidecar.
+- 1.0 acceptance checklist: `docs/lean-1.0.md`.
+
+### Changed
+- Default lean mode is **ask** (confirm proposals). **allow** / **agent** take
+  one typed grant per shell; dangerous/unknown model-proposed commands still
+  require typing `yes`. Typed commands and `!` remain ungated.
+- Agent `run_command` on the lean path prefers `dash -c`, falling back to
+  `zsh -f -c`, and wraps with bubblewrap when an agent workspace grant is active
+  on Linux.
+- Crate version `1.0.0-rc.1` -> `1.0.0`.
+- F14 honesty: OpenAI/Codex OAuth remains LEGACY/heavy, not claimed on lean.
+
+### Fixed
+- Noninteractive agent path: `--mode agent -c` smoke + acceptance-file wiring
+  (Wave 7).
+
+## [1.0.0-rc.1] - 2026-09-09
+
+
+Lean CSH hot-path **1.0 RC** on `feat/lean-csh-hotpath` (do not treat as `main` merge).
+
+### Added
+- **F40 custom slash-commands on lean:** existing `commands.rs` markdown discovery
+  wired into lean allowlist + FIFO handler; `/help` / `/commands` list them; Tab
+  completes builtins + `AISHE_LEAN_CMDS_FILE`.
+- **1.0 acceptance:** `docs/lean-1.0.md` capability checklist mapped to wave1–6
+  + gated live OAuth; `tests/lean_parity_wave6.rs`.
+
+### Changed
+- Crate version `0.8.0` → `1.0.0-rc.1` (honest RC for lean daily-driver).
+- **F14 honesty:** doctor next-step points at `grok` login; docs state Grok OAuth
+  happy path + API-key fallback; OpenAI/Codex OAuth remains LEGACY/heavy.
+- Matrix: F40 **done**; F12/F22/F24/F25/F41/F42 marked post-1.0.
 
 ## [0.8.0] - 2026-09-03
 

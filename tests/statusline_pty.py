@@ -385,6 +385,8 @@ def theme_survives_mode_cycle():
 
 
 def main():
+    from pty_helper import require_legacy_opencode_world
+    require_legacy_opencode_world()
     if shutil.which("zsh") is None:
         print("SKIP: zsh not on PATH")
         return

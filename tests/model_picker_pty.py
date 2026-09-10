@@ -199,6 +199,8 @@ def select_model(shell, filter_text="", save=False):
             pass
 
 def main():
+    from pty_helper import require_legacy_opencode_world
+    require_legacy_opencode_world()
     if not os.path.exists(BINARY):
         raise SystemExit("binary not found: " + BINARY)
     if shutil.which("zsh") is None:

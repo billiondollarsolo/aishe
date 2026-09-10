@@ -807,28 +807,35 @@ pub fn mode(effective: &Config, value: Option<&str>, save_default: bool) -> u8 {
         );
         return 0;
     };
+    let lowered = value.trim().to_ascii_lowercase();
+    let canonical = match lowered.as_str() {
+        "ask" | "suggest" => "ask",
+        "allow" | "auto" => "allow",
+        "agent" | "yolo" => "agent",
+        other => other,
+    };
     let (hand_off, save) = mode_targets(in_shell, save_default);
     if hand_off {
         if let Some(path) = std::env::var_os("AISHE_PENDING_FILE").filter(|p| !p.is_empty()) {
-            if let Err(error) = std::fs::write(&path, format!("mode\n{value}\n")) {
+            if let Err(error) = std::fs::write(&path, format!("mode\n{canonical}\n")) {
                 eprintln!("aishe: {error}");
                 return 1;
             }
         }
-        println!("mode: {value} (this shell)");
+        println!("mode: {canonical} (this shell)");
     }
     if save {
         let mut cfg = match Config::load_or_init() {
             Ok(cfg) => cfg,
             Err(error) => return crate::cli::error_contract::emit_from(error.as_ref()),
         };
-        cfg.aishe.mode = value.to_string();
+        cfg.aishe.mode = canonical.to_string();
         cfg.aishe.safety_profile = "custom".to_string();
         if let Err(error) = cfg.save() {
             eprintln!("aishe: {error}");
             return 1;
         }
-        println!("mode: {value} (default for new shells)");
+        println!("mode: {canonical} (default for new shells)");
     }
     0
 }

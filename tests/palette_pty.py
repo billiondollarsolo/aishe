@@ -5,6 +5,8 @@ from pty_helper import Pty, environment
 
 
 def main():
+    from pty_helper import require_legacy_opencode_world
+    require_legacy_opencode_world()
     _, env = environment("palette")
     shell = Pty(env)
     try:

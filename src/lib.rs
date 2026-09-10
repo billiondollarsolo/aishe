@@ -29,6 +29,7 @@ pub mod hints;
 pub mod histlog;
 pub mod index;
 pub mod integration;
+pub mod lean;
 pub mod lifecycle;
 pub mod mcp;
 pub mod mcp_config;

@@ -185,6 +185,8 @@ def fail(msg, sh):
 
 
 def main():
+    from pty_helper import require_legacy_opencode_world
+    require_legacy_opencode_world()
     if shutil.which("zsh") is None:
         sys.stderr.write("SKIP: zsh not on PATH\n")
         sys.exit(0)

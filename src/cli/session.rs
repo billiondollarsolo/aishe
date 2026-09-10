@@ -34,11 +34,13 @@ pub fn list(json_output: bool) -> u8 {
     let managed = crate::backend::opencode::session::SessionStore::from_default_root()
         .and_then(|store| store.records(None))
         .unwrap_or_default();
+    let lean = crate::lean::list_lean_sessions();
     if json_output {
         println!(
             "{}",
             serde_json::to_string_pretty(&serde_json::json!({
                 "schema_version": 1,
+                "lean": lean,
                 "managed": managed,
                 "legacy": records,
             }))
@@ -46,9 +48,26 @@ pub fn list(json_output: bool) -> u8 {
         );
         return 0;
     }
-    if records.is_empty() && managed.is_empty() {
+    if records.is_empty() && managed.is_empty() && lean.is_empty() {
         println!("no AI sessions");
         return 0;
+    }
+    if !lean.is_empty() {
+        println!("lean sessions (durable JSONL, no OpenCode):");
+        for meta in &lean {
+            println!(
+                "  {}  turns={}  {}",
+                crate::commands::display_safe(&meta.id),
+                meta.turns,
+                crate::commands::display_safe(
+                    if meta.title.is_empty() {
+                        meta.cwd.as_str()
+                    } else {
+                        meta.title.as_str()
+                    }
+                )
+            );
+        }
     }
     if !managed.is_empty() {
         println!("managed OpenCode sessions (newest mapping last):");

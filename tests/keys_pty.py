@@ -12,6 +12,8 @@ ZSHRC = (
 
 
 def main():
+    from pty_helper import require_legacy_opencode_world
+    require_legacy_opencode_world()
     _, env = environment("keys", zshrc=ZSHRC)
     shell = Pty(env)
     try:

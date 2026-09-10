@@ -543,6 +543,7 @@ pub(crate) fn stream_post(
         for (k, v) in headers {
             req = req.header(*k, *v);
         }
+        crate::lean::mark_nl_wire_ready();
         match req.send_json(body.clone()) {
             Ok(resp) if status_is_accepted(resp.status()) => return Ok(resp),
             Ok(resp) => {
@@ -694,6 +695,7 @@ pub(crate) fn error_message(mut resp: HttpResponse) -> String {
 /// Returned behind an `Arc` so it can be shared with the ghost-text worker.
 pub fn make(config: &Config) -> Result<std::sync::Arc<dyn Provider>> {
     use std::sync::Arc;
+    crate::lean::note_provider_make();
     // Test hook: a deterministic fake provider (no network, no API key) when
     // AISHE_FAKE_LLM[_FILE] is set. Inert otherwise.
     if let Some(p) = fake_from_env() {

@@ -101,11 +101,50 @@ impl Provider for FakeProvider {
         _format: &ResponseFormat,
     ) -> Result<String, ProviderError> {
         self.delay_for_test();
+        crate::lean::mark_nl_wire_ready();
         if let Some(error) = self.error_for_test() {
             return Err(error);
         }
         self.meter_fake_usage();
         Ok(self.body())
+    }
+
+    fn complete_stream(
+        &self,
+        system: &str,
+        messages: &[Msg],
+        format: &ResponseFormat,
+        sink: &mut dyn FnMut(&str),
+    ) -> Result<String, ProviderError> {
+        let _ = (system, messages, format);
+        self.delay_for_test();
+        crate::lean::mark_nl_wire_ready();
+        if let Some(error) = self.error_for_test() {
+            return Err(error);
+        }
+        self.meter_fake_usage();
+        let full = stream_body_for_fake(&self.body());
+        let chunk = stream_chunk_size();
+        let mut i = 0;
+        let mut n = 0u64;
+        while i < full.len() {
+            let mut end = (i + chunk).min(full.len());
+            while end < full.len() && !full.is_char_boundary(end) {
+                end += 1;
+            }
+            if end == i {
+                end = full.len();
+            }
+            sink(&full[i..end]);
+            n += 1;
+            i = end;
+        }
+        if let Ok(path) = std::env::var("AISHE_SPY_STREAM_CHUNKS") {
+            if !path.is_empty() {
+                let _ = std::fs::write(path, n.to_string());
+            }
+        }
+        Ok(full)
     }
 
     fn complete_with_tools(
@@ -153,6 +192,45 @@ impl Provider for FakeProvider {
     }
 }
 
+/// Convert a structured fake JSON suggestion into the CMD:/prose stream protocol
+/// when present; otherwise return the raw body. Lets lean ask streaming tests
+/// exercise `complete_stream` without a network.
+fn stream_body_for_fake(body: &str) -> String {
+    let trimmed = body.trim();
+    if let Ok(v) = serde_json::from_str::<serde_json::Value>(trimmed) {
+        let kind = v.get("type").and_then(|x| x.as_str()).unwrap_or("");
+        let explanation = v
+            .get("explanation")
+            .and_then(|x| x.as_str())
+            .unwrap_or("")
+            .to_string();
+        if kind == "command" {
+            let cmd = v
+                .get("command")
+                .and_then(|x| x.as_str())
+                .unwrap_or("")
+                .trim();
+            if !cmd.is_empty() {
+                return format!("CMD: {cmd}\nWHY: {explanation}");
+            }
+        }
+        if kind == "answer" || kind == "command" {
+            return explanation;
+        }
+    }
+    body.to_string()
+}
+
+fn stream_chunk_size() -> usize {
+    std::env::var("AISHE_FAKE_STREAM_CHUNK")
+        .ok()
+        .and_then(|s| s.parse::<usize>().ok())
+        .filter(|&n| n > 0)
+        .unwrap_or(4)
+        .min(64)
+}
+
+
 /// Dimensionality of the fake embedding (small but enough to keep token
 /// collisions rare for short commands).
 const FAKE_DIM: usize = 256;
@@ -191,5 +269,43 @@ mod tests {
             sim_shared > sim_unrelated,
             "overlapping query should score higher: {sim_shared} vs {sim_unrelated}"
         );
+    }
+
+    #[test]
+    fn complete_stream_emits_multiple_chunks_for_answer_json() {
+        std::env::set_var(
+            "AISHE_FAKE_LLM",
+            r#"{"type":"answer","command":null,"explanation":"hello streaming world"}"#,
+        );
+        std::env::remove_var("AISHE_FAKE_STREAM_CHUNK");
+        let p = FakeProvider::new(std::env::var("AISHE_FAKE_LLM").unwrap());
+        let mut chunks = Vec::new();
+        let full = p
+            .complete_stream("sys", &[], &ResponseFormat::Text, &mut |d| {
+                chunks.push(d.to_string());
+            })
+            .unwrap();
+        assert_eq!(full, "hello streaming world");
+        assert!(
+            chunks.len() > 1,
+            "expected chunked sink calls, got {}",
+            chunks.len()
+        );
+        assert_eq!(chunks.concat(), full);
+        std::env::remove_var("AISHE_FAKE_LLM");
+    }
+
+    #[test]
+    fn complete_stream_converts_command_json_to_cmd_protocol() {
+        let p = FakeProvider::new(
+            r#"{"type":"command","command":"ls -la","explanation":"list"}"#.into(),
+        );
+        let mut got = String::new();
+        let full = p
+            .complete_stream("sys", &[], &ResponseFormat::Text, &mut |d| got.push_str(d))
+            .unwrap();
+        assert!(full.starts_with("CMD: ls -la"), "{full}");
+        assert!(full.contains("WHY: list"), "{full}");
+        assert_eq!(got, full);
     }
 }

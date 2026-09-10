@@ -23,6 +23,32 @@ from harness_identity import require_current_binary
 CSI = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]")
 
 
+def lean_default_active(env=None):
+    """True when the process would take the lean PTY path (no user zshrc)."""
+    e = env if env is not None else os.environ
+    legacy = str(e.get("AISHE_LEGACY_OPENCODE", "")).strip().lower()
+    if legacy in ("1", "true", "yes", "on"):
+        return False
+    lean = str(e.get("AISHE_LEAN", "1")).strip().lower()
+    return lean not in ("0", "false", "no", "off")
+
+
+def require_legacy_opencode_world(reason=None):
+    """Skip suites that assume ~/.zshrc + historical OpenCode hook.
+
+    Lean default intentionally does not source user rc. Run these with
+    `AISHE_LEGACY_OPENCODE=1` (or set AISHE_LEAN=0). Not a lean Wave-1 failure.
+    """
+    if lean_default_active():
+        msg = reason or (
+            "legacy PTY suite expects user zshrc / OpenCode-shaped UX; "
+            "re-run with AISHE_LEGACY_OPENCODE=1"
+        )
+        print("SKIP (LEGACY-gated): " + msg)
+        sys.exit(0)
+
+
+
 def binary():
     return require_current_binary(
         os.path.abspath(sys.argv[1] if len(sys.argv) > 1 else "target/release/aishe")

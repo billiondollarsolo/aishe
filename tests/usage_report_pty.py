@@ -57,6 +57,8 @@ def run(env, *args):
 
 
 def main():
+    from pty_helper import require_legacy_opencode_world
+    require_legacy_opencode_world()
     home, env = environment("usagereport")
     # Audit logging stays off: the report must not depend on it.
     ledger = os.path.join(home, ".local", "share", "aishe", "usage.jsonl")

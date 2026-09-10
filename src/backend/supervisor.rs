@@ -331,6 +331,7 @@ fn remove_disposable_path(path: &Path) -> Result<bool> {
 /// Return a verified compatible supervisor, starting one without inheriting
 /// provider credentials in its environment when necessary.
 pub fn ensure_running(config: &crate::config::Config) -> Result<SupervisorState> {
+    crate::lean::note_opencode_start();
     let manager = RuntimeManager::new()?;
     let launch = ProviderLaunch::from_aishe(config)?;
     let supervisor_key = launch.spec.launch_identity.clone();

@@ -7,6 +7,8 @@ from pty_helper import Pty, environment
 
 
 def main():
+    from pty_helper import require_legacy_opencode_world
+    require_legacy_opencode_world()
     home, env = environment("width")
     deep = os.path.join(home, "a-directory-name-that-is-long", "another-long-segment", "and-one-more")
     os.makedirs(deep)

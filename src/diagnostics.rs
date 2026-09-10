@@ -566,6 +566,8 @@ pub fn inspect(version: &str, options: &Options) -> Report {
         checks.push(apply_safe_fixes(&paths, config_valid));
     }
 
+    checks.extend(lean_hotpath_checks());
+
     Report {
         schema_version: REPORT_SCHEMA_VERSION,
         generated_at_ms: now_ms(),
@@ -576,6 +578,146 @@ pub fn inspect(version: &str, options: &Options) -> Report {
         capability_report,
     }
 }
+
+
+/// Lean CSH hot-path checks (FIFO/ZDOTDIR, Grok auth present, compsys, bwrap, leanrc).
+/// Never prints tokens or auth.json contents.
+fn lean_hotpath_checks() -> Vec<Check> {
+    let mut checks = Vec::new();
+    let lean_on = crate::lean::enabled();
+    checks.push(Check::new(
+        "lean.enabled",
+        if lean_on {
+            Status::Pass
+        } else {
+            Status::Warn
+        },
+        Severity::Info,
+        if lean_on {
+            "lean hot path: enabled (default)"
+        } else {
+            "lean hot path: disabled (LEGACY OpenCode / AISHE_LEAN=0)"
+        },
+        "interactive aishe uses clean zsh -f + in-process provider HTTP when lean is on",
+    ));
+
+    let fifo_dir = std::env::temp_dir();
+    let probe = fifo_dir.join(format!("aishe-lean-doctor-{}.probe", std::process::id()));
+    let fifo_ok = fifo_dir.is_dir()
+        && std::fs::write(&probe, b"ok").is_ok()
+        && {
+            let _ = std::fs::remove_file(&probe);
+            true
+        };
+    checks.push(Check::new(
+        "lean.fifo",
+        if fifo_ok { Status::Pass } else { Status::Fail },
+        Severity::Critical,
+        format!("lean FIFO dir: {}", fifo_dir.display()),
+        "parent↔child NL IPC uses mkfifo under the process temp dir (aishe-lean-<pid>.req/.rep)",
+    ));
+
+    let hook = crate::lean::wrapper_zshrc();
+    let compsys = hook.contains("compinit") && hook.contains(".zcompdump");
+    checks.push(Check::new(
+        "lean.compsys",
+        if compsys { Status::Pass } else { Status::Fail },
+        Severity::Warning,
+        if compsys {
+            "lean compsys: bounded compinit + .zcompdump under private ZDOTDIR"
+        } else {
+            "lean compsys: hook missing compinit dump"
+        },
+        "completions live in the lean ZDOTDIR only; user ~/.zshrc plugins are never sourced",
+    ));
+
+    let auth_path = crate::lean::grok_auth_path();
+    let auth_present = auth_path
+        .as_ref()
+        .map(|p| p.is_file())
+        .unwrap_or(false);
+    // Presence only — never read or print token material here.
+    checks.push(Check::new(
+        "lean.grok_auth",
+        if auth_present {
+            Status::Pass
+        } else if lean_on {
+            Status::Warn
+        } else {
+            Status::Skipped
+        },
+        Severity::Warning,
+        match &auth_path {
+            Some(p) if auth_present => format!("grok auth.json: present at {}", p.display()),
+            Some(p) => format!(
+                "grok auth.json: missing at {} — next: run `grok` login (or API-key via `aishe auth`)",
+                p.display()
+            ),
+            None => "grok auth.json: HOME unset — next: run `grok` login".into(),
+        },
+        "lean happy path: Grok CLI OAuth (~/.grok/auth.json). API-key fallback via aishe auth / env. OpenAI/Codex OAuth remains LEGACY (AISHE_LEGACY_OPENCODE). Tokens never displayed.",
+    ));
+
+    #[cfg(target_os = "linux")]
+    {
+        let bwrap = crate::sandbox::bwrap_available();
+        checks.push(Check::new(
+            "lean.bwrap",
+            if bwrap { Status::Pass } else { Status::Warn },
+            Severity::Warning,
+            if bwrap {
+                "bubblewrap: available (workspace agent sandbox)"
+            } else {
+                "bubblewrap: not found (agent-host still works; workspace agent unconfined)"
+            },
+            "lean agent wraps run_command with bwrap when scope is workspace and bwrap is installed",
+        ));
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        checks.push(Check::new(
+            "lean.bwrap",
+            Status::Skipped,
+            Severity::Info,
+            "bubblewrap: not applicable on this OS",
+            "bwrap sandbox is Linux-only",
+        ));
+    }
+
+    let leanrc = std::env::var_os("AISHE_LEANRC")
+        .map(PathBuf::from)
+        .filter(|p| !p.as_os_str().is_empty())
+        .or_else(|| {
+            std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".aishe").join("leanrc"))
+        });
+    let leanrc_state = match &leanrc {
+        Some(p) if p.is_file() => (Status::Pass, format!("leanrc: {}", p.display())),
+        Some(p) => (
+            Status::Pass,
+            format!("leanrc: not created at {} (optional)", p.display()),
+        ),
+        None => (Status::Skipped, "leanrc: HOME unset".into()),
+    };
+    checks.push(Check::new(
+        "lean.leanrc",
+        leanrc_state.0,
+        Severity::Info,
+        leanrc_state.1,
+        "optional aliases for the clean zsh -f child; set AISHE_LEANRC to override ~/.aishe/leanrc",
+    ));
+
+    let sessions_root = crate::lean::lean_sessions_root();
+    checks.push(Check::new(
+        "lean.sessions",
+        Status::Pass,
+        Severity::Info,
+        format!("lean sessions: {}", sessions_root.display()),
+        "durable JSON/JSONL owned by the lean parent (not the OpenCode session map)",
+    ));
+
+    checks
+}
+
 
 /// Warn when setup/Doctor is run through a different executable than the one
 /// `aishe` resolves to for the next ordinary shell command.
