@@ -130,13 +130,62 @@ fn lean_zdotdir_compinit_defines_compdef() {
     );
     assert!(output.status.success(), "zsh failed: {combined}");
     // Interactive -c may skip .zshrc on some zsh builds; force source.
-    let output2 = Command::new("zsh")
-        .args(["-f", "-o", "RCS", "-o", "NO_GLOBAL_RCS", "-i", "-c"])
-        .arg("source $ZDOTDIR/.zshrc; whence -v compdef >/dev/null && print COMPDEF_OK")
-        .env("ZDOTDIR", &zdot)
-        .env("HOME", temp_root("home-comp2"))
+    // CI runners often lack a TTY; `script` provides a pty so compinit does not
+    // abort with "not interactive and can't open terminal". Extra `compinit -u`
+    // covers group-writable /usr/share/zsh on Ubuntu images.
+    let home2 = temp_root("home-comp2");
+    let runner = zdot.join("compdef-check.zsh");
+    std::fs::write(
+        &runner,
+        "source \"$ZDOTDIR/.zshrc\"\n\
+autoload -Uz compinit 2>/dev/null || true\n\
+compinit -u -d \"${ZDOTDIR}/.zcompdump\" 2>/dev/null || true\n\
+whence -v compdef >/dev/null && print COMPDEF_OK\n",
+    )
+    .unwrap();
+    let linux_script = Command::new("script")
+        .args(["-q", "-c", "true", "/dev/null"])
         .output()
-        .expect("zsh2");
+        .map(|o| o.status.success())
+        .unwrap_or(false);
+    let output2 = if linux_script {
+        let cmd = format!("zsh -f -o RCS -o NO_GLOBAL_RCS -i {}", runner.display());
+        Command::new("script")
+            .args(["-q", "-c", &cmd, "/dev/null"])
+            .env("ZDOTDIR", &zdot)
+            .env("HOME", &home2)
+            .env("TERM", "xterm")
+            .output()
+            .expect("zsh2-script-linux")
+    } else {
+        Command::new("script")
+            .args([
+                "-q",
+                "/dev/null",
+                "zsh",
+                "-f",
+                "-o",
+                "RCS",
+                "-o",
+                "NO_GLOBAL_RCS",
+                "-i",
+                runner.to_str().unwrap(),
+            ])
+            .env("ZDOTDIR", &zdot)
+            .env("HOME", &home2)
+            .env("TERM", "xterm")
+            .output()
+            .or_else(|_| {
+                Command::new("zsh")
+                    .args(["-f", "-o", "RCS", "-o", "NO_GLOBAL_RCS", "-i"])
+                    .arg(&runner)
+                    .env("ZDOTDIR", &zdot)
+                    .env("HOME", &home2)
+                    .env("TERM", "xterm")
+                    .output()
+            })
+            .expect("zsh2")
+    };
     let combined2 = format!(
         "{}{}",
         String::from_utf8_lossy(&output2.stdout),

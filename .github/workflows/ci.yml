@@ -67,7 +67,10 @@ jobs:
       # the cli tests that assert `doctor` succeeds failed only there.
       - name: Install zsh (ubuntu)
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y zsh bubblewrap shellcheck
+        run: |
+          sudo apt-get update && sudo apt-get install -y zsh bubblewrap shellcheck
+          # Match pty-smoke: group-writable zsh dirs make compinit interactive.
+          sudo chmod -R go-w /usr/share/zsh /usr/local/share/zsh 2>/dev/null || true
 
       - name: Install shellcheck (macOS)
         if: runner.os == 'macOS'

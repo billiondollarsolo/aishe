@@ -47,8 +47,14 @@ model = "claude-x"
 
 fn bin() -> CargoCommand {
     let mut cmd = CargoCommand::cargo_bin("aishe").unwrap();
-    cmd.env("XDG_CONFIG_HOME", temp_config_home())
-        .env("XDG_DATA_HOME", temp_root("data"))
+    let config_home = temp_config_home();
+    let data_home = temp_root("data");
+    // aishe honors AISHE_CONFIG_DIR / AISHE_DATA_DIR. On macOS, dirs::config_dir
+    // ignores XDG_CONFIG_HOME (Application Support), so XDG alone is not hermetic.
+    cmd.env("XDG_CONFIG_HOME", &config_home)
+        .env("XDG_DATA_HOME", &data_home)
+        .env("AISHE_CONFIG_DIR", &config_home)
+        .env("AISHE_DATA_DIR", &data_home)
         .env_remove("AISHE_LEGACY_OPENCODE")
         .env("AISHE_LEAN", "1");
     cmd
