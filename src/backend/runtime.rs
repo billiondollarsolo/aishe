@@ -2,6 +2,7 @@ use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Write};
 use std::path::{Component, Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::time::Duration;
 
 use anyhow::{Context, Result};
 use flate2::read::GzDecoder;
@@ -467,18 +468,18 @@ impl RuntimeManager {
 
     fn verify_binary(&self, binary: &Path) -> Result<String> {
         reject_symlink(binary)?;
-        let output = Command::new(binary)
-            .arg("--version")
-            .stdin(Stdio::null())
-            .output()
-            .map_err(|error| {
-                let platform = RuntimeManifest::platform_key().unwrap_or("unknown");
-                anyhow::anyhow!(
-                    "cannot start {} --version for {platform}: {error}; \
-                     verify that this host's libc loader can execute the selected runtime",
-                    binary.display()
-                )
-            })?;
+        // Quiesce the inode before exec. On Linux, probing `--version` immediately
+        // after extract/rename can hit ETXTBSY (ExecutableFileBusy) while the kernel
+        // still considers the text file busy.
+        sync_file(binary)?;
+        let output = run_version_probe(binary).map_err(|error| {
+            let platform = RuntimeManifest::platform_key().unwrap_or("unknown");
+            anyhow::anyhow!(
+                "cannot start {} --version for {platform}: {error}; \
+                 verify that this host's libc loader can execute the selected runtime",
+                binary.display()
+            )
+        })?;
         if !output.status.success() {
             anyhow::bail!(
                 "OpenCode runtime version probe failed with {}",
@@ -686,6 +687,40 @@ fn reject_symlink(path: &Path) -> Result<()> {
         anyhow::bail!("refusing symlink at {}", path.display());
     }
     Ok(())
+}
+
+fn sync_file(path: &Path) -> Result<()> {
+    let file = File::open(path).with_context(|| format!("opening {} for sync", path.display()))?;
+    file.sync_all()
+        .with_context(|| format!("fsync {}", path.display()))?;
+    Ok(())
+}
+
+fn run_version_probe(binary: &Path) -> std::io::Result<std::process::Output> {
+    // Linux can return ETXTBSY briefly after writing/extracting an executable.
+    const ATTEMPTS: u32 = 8;
+    let mut delay = Duration::from_millis(5);
+    let mut last_error = None;
+    for attempt in 0..ATTEMPTS {
+        match Command::new(binary)
+            .arg("--version")
+            .stdin(Stdio::null())
+            .output()
+        {
+            Ok(output) => return Ok(output),
+            Err(error) if is_executable_file_busy(&error) && attempt + 1 < ATTEMPTS => {
+                last_error = Some(error);
+                std::thread::sleep(delay);
+                delay = (delay * 2).min(Duration::from_millis(50));
+            }
+            Err(error) => return Err(error),
+        }
+    }
+    Err(last_error.expect("ETXTBSY retry loop exhausted without capturing an error"))
+}
+
+fn is_executable_file_busy(error: &std::io::Error) -> bool {
+    error.kind() == std::io::ErrorKind::ExecutableFileBusy
 }
 
 fn set_executable(path: &Path) -> Result<()> {
