@@ -309,7 +309,7 @@ pub fn self_test(config: &Config, live: bool, json: bool) -> Result<u8> {
             "provider": report,
         }))?;
     } else {
-        println!("AIShe self-test · {} ms", elapsed_ms);
+        println!("AIShe self-test · {elapsed_ms} ms");
         println!("  ✓ config parsed");
         println!(
             "  {} secret redaction",

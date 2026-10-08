@@ -12,9 +12,9 @@ use std::sync::Arc;
 use serde_json::{json, Value};
 
 use super::{
-    external_http_agent, read_sse, status_is_accepted, stream_post, usage_from_value, Completion,
+    provider_http_agent, read_sse, status_is_accepted, stream_post, usage_from_value, Completion,
     HttpResponse, Msg, Provider, ProviderError, ResponseFormat, ToolCall, ToolDef,
-    HTTP_TIMEOUT_SECS, MAX_PROVIDER_BODY_BYTES, MAX_TOKENS,
+    MAX_PROVIDER_BODY_BYTES, MAX_TOKENS,
 };
 use crate::usage::UsageMeter;
 
@@ -22,6 +22,7 @@ pub struct OpenAiProvider {
     base_url: String,
     api_key: String,
     model: String,
+    agent: ureq::Agent,
     meter: Arc<UsageMeter>,
     token_limit_param: AtomicU8,
     token_limit_known: AtomicU8,
@@ -79,6 +80,7 @@ impl OpenAiProvider {
             base_url: base_url.trim_end_matches('/').to_string(),
             api_key,
             model,
+            agent: provider_http_agent(),
             meter: Arc::new(UsageMeter::default()),
             token_limit_param: AtomicU8::new(token_limit_param as u8),
             token_limit_known: AtomicU8::new(u8::from(stored.is_some())),
@@ -203,7 +205,7 @@ impl OpenAiProvider {
     }
 
     fn post_chat(&self, body: &Value) -> Result<Value, ProviderError> {
-        let resp = post_with_retry(&self.chat_endpoint(), &self.api_key, body)?;
+        let resp = post_with_retry(&self.agent, &self.chat_endpoint(), &self.api_key, body)?;
         let (i, o) = usage_from_value(&resp);
         self.meter.record(i, o);
         Ok(resp)
@@ -295,7 +297,8 @@ impl OpenAiProvider {
     }
 
     fn post_responses(&self, body: &Value) -> Result<Value, ProviderError> {
-        let response = post_with_retry(&self.responses_endpoint(), &self.api_key, body)?;
+        let response =
+            post_with_retry(&self.agent, &self.responses_endpoint(), &self.api_key, body)?;
         let (input, output) = usage_from_value(&response);
         self.meter.record(input, output);
         Ok(response)
@@ -382,7 +385,7 @@ impl OpenAiProvider {
         let response = loop {
             let mut body = self.build_responses_body(system, messages, tools, &current_format);
             body["stream"] = json!(true);
-            match stream_post(&self.responses_endpoint(), &headers, &body) {
+            match stream_post(&self.agent, &self.responses_endpoint(), &headers, &body) {
                 Ok(response) => break response,
                 Err(ProviderError::Api {
                     status: 400,
@@ -704,7 +707,7 @@ impl Provider for OpenAiProvider {
                 self.build_chat_body(system, messages, tools, &ResponseFormat::Text);
             body["stream"] = json!(true);
             body["stream_options"] = json!({"include_usage": true});
-            match stream_post(&self.chat_endpoint(), &headers, &body) {
+            match stream_post(&self.agent, &self.chat_endpoint(), &headers, &body) {
                 Ok(r) => {
                     self.remember_accepted_token_limit(token_limit_param);
                     break r;
@@ -825,7 +828,7 @@ impl Provider for OpenAiProvider {
             // Ask for a trailing usage chunk (supported by OpenAI, Groq, …);
             // servers that ignore it simply omit usage.
             body["stream_options"] = json!({"include_usage": true});
-            match stream_post(&self.chat_endpoint(), &headers, &body) {
+            match stream_post(&self.agent, &self.chat_endpoint(), &headers, &body) {
                 Ok(r) => {
                     self.remember_accepted_token_limit(token_limit_param);
                     break r;
@@ -884,7 +887,7 @@ impl Provider for OpenAiProvider {
         }
         let url = format!("{}/v1/embeddings", self.base_url);
         let body = json!({ "model": model, "input": texts });
-        let resp = post_with_retry(&url, &self.api_key, &body)?;
+        let resp = post_with_retry(&self.agent, &url, &self.api_key, &body)?;
         let data = resp
             .get("data")
             .and_then(|d| d.as_array())
@@ -1068,22 +1071,21 @@ impl OpenAiProvider {
     }
 }
 
-fn post_with_retry(url: &str, api_key: &str, body: &Value) -> Result<Value, ProviderError> {
+fn post_with_retry(
+    agent: &ureq::Agent,
+    url: &str,
+    api_key: &str,
+    body: &Value,
+) -> Result<Value, ProviderError> {
     use super::{backoff, is_retryable_status, retry_after_secs, MAX_RETRIES};
     let mut attempt = 0;
     loop {
-        let agent = external_http_agent(
-            std::time::Duration::from_secs(HTTP_TIMEOUT_SECS),
-            Some(std::time::Duration::from_secs(HTTP_TIMEOUT_SECS)),
-            None,
-            None,
-        );
         let mut request = agent.post(url).header("content-type", "application/json");
         if !api_key.is_empty() {
             request = request.header("Authorization", format!("Bearer {api_key}"));
         }
         crate::lean::mark_nl_wire_ready();
-        let result = request.send_json(body.clone());
+        let result = request.send_json(body);
 
         match result {
             Ok(mut resp) if status_is_accepted(resp.status()) => {
@@ -1107,6 +1109,7 @@ fn post_with_retry(url: &str, api_key: &str, body: &Value) -> Result<Value, Prov
                 }
                 if is_retryable_status(status) && attempt < MAX_RETRIES {
                     let wait = backoff(attempt + 1, retry_after_secs(&resp));
+                    drop(resp);
                     attempt += 1;
                     std::thread::sleep(wait);
                     continue;

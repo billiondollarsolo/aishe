@@ -188,7 +188,7 @@ fn try_refresh(entry: &mut serde_json::Map<String, Value>) -> Result<(), String>
         .map_err(|e| e.to_string())?;
     let status = response.status();
     if !status.is_success() {
-        return Err(format!("refresh HTTP {}", status));
+        return Err(format!("refresh HTTP {status}"));
     }
     let v: Value = response
         .into_body()

@@ -305,10 +305,7 @@ pub fn ensure_yolo_acceptance(config: &Config) -> Result<YoloAcceptance> {
         return Ok(YoloAcceptance::Accepted);
     }
     if !std::io::stdin().is_terminal() || !std::io::stdout().is_terminal() {
-        anyhow::bail!(
-            "yolo {:?} requires one interactive acceptance in each AIShe shell",
-            scope
-        );
+        anyhow::bail!("yolo {scope:?} requires one interactive acceptance in each AIShe shell");
     }
 
     let workspace = std::env::current_dir()
@@ -1219,10 +1216,7 @@ pub fn ask_command(
     let query = crate::attachments::expand(query, executor.cwd(), config)?.prompt;
     let schema = schema_path.map(read_answer_schema).transpose()?;
     let schema_instruction = schema.as_ref().map_or_else(String::new, |value| {
-        format!(
-            " Return only JSON matching this schema, without markdown fences: {}",
-            value
-        )
+        format!(" Return only JSON matching this schema, without markdown fences: {value}")
     });
     let prompt = format!(
         "Answer the request directly. Do not run commands or request tools. Be concise and factual.{schema_instruction}\n\n{query}"

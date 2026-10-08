@@ -465,9 +465,7 @@ fn request_stop_state(state: Option<SupervisorState>) -> Result<bool> {
                         std::thread::sleep(Duration::from_millis(25));
                     }
                     anyhow::bail!(
-                        "backend stop retry failed: {}; first attempt: {}",
-                        second_error,
-                        first_error
+                        "backend stop retry failed: {second_error}; first attempt: {first_error}"
                     )
                 }
             }

@@ -1348,7 +1348,7 @@ fn restrict_background_environment(child: &mut Command, config: &Config) {
 
 fn command_bytes(command: &mut Command, allow_diff_exit: bool) -> Result<Vec<u8>> {
     let output = command.output()?;
-    if !output.status.success() && !(allow_diff_exit && output.status.code() == Some(1)) {
+    if !(output.status.success() || allow_diff_exit && output.status.code() == Some(1)) {
         anyhow::bail!(
             "git command failed: {}",
             crate::commands::display_safe(&String::from_utf8_lossy(&output.stderr))

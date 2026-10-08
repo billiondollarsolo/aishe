@@ -1,6 +1,7 @@
 //! Bounded, incremental repository index for explicit local code retrieval.
 
-use std::collections::BTreeMap;
+use std::cmp::Reverse;
+use std::collections::{BTreeMap, BinaryHeap};
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -136,18 +137,24 @@ pub fn build(cwd: &Path, rebuild: bool) -> Result<(Index, usize)> {
     let mut total = 0usize;
     let mut changed = 0usize;
 
-    for relative in tracked_files(&root)?.into_iter().take(MAX_FILES + 1) {
-        if files.len() == MAX_FILES {
-            anyhow::bail!("repository exceeds the {MAX_FILES}-file index limit");
-        }
+    for relative in tracked_files(&root)? {
         let path = root.join(&relative);
-        let metadata = std::fs::symlink_metadata(&path)?;
+        let metadata = match std::fs::symlink_metadata(&path) {
+            Ok(metadata) => metadata,
+            // A tracked file may be deleted in the working tree. Drop it from
+            // the refreshed index instead of making all retrieval unavailable.
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) => return Err(error.into()),
+        };
         if !metadata.file_type().is_file() || metadata.len() > MAX_FILE_BYTES {
             continue;
         }
         let bytes = std::fs::read(&path)?;
         if bytes.contains(&0) {
             continue;
+        }
+        if files.len() == MAX_FILES {
+            anyhow::bail!("repository exceeds the {MAX_FILES}-file index limit");
         }
         total = total.saturating_add(bytes.len());
         if total > MAX_INDEX_BYTES {
@@ -205,28 +212,62 @@ pub fn search(index: &Index, query: &str, limit: usize) -> Vec<Match> {
     if terms.is_empty() || limit == 0 {
         return Vec::new();
     }
-    let mut hits = Vec::new();
-    for file in &index.files {
+    // Rank borrowed locations, retaining only the requested results. Cloning
+    // every matching chunk before truncation can duplicate almost the entire
+    // index for a common query even when the caller requests one result.
+    let mut best = BinaryHeap::new();
+    let mut haystack = String::new();
+    for (file_number, file) in index.files.iter().enumerate() {
+        let path = file.path.to_ascii_lowercase();
+        let path_score: usize = terms
+            .iter()
+            .map(|term| path.match_indices(term).count())
+            .sum();
         for (chunk, text) in file.chunks.iter().enumerate() {
-            let haystack = format!("{}\n{text}", file.path).to_ascii_lowercase();
-            let score = terms
-                .iter()
-                .map(|term| haystack.match_indices(term).count())
-                .sum();
+            haystack.clear();
+            haystack.push_str(text);
+            haystack.make_ascii_lowercase();
+            let score = path_score
+                + terms
+                    .iter()
+                    .map(|term| haystack.match_indices(term).count())
+                    .sum::<usize>();
             if score > 0 {
-                hits.push(Match {
+                // Larger keys are better. Preserve the previous stable order
+                // for tied paths/scores, including duplicate file entries.
+                let rank = (
+                    score,
+                    Reverse(file.path.as_str()),
+                    Reverse(file_number),
+                    Reverse(chunk),
+                );
+                if best.len() < limit {
+                    best.push(Reverse(rank));
+                } else if let Some(mut worst) = best.peek_mut() {
+                    if rank > worst.0 {
+                        *worst = Reverse(rank);
+                    }
+                }
+            }
+        }
+    }
+    let mut locations = best.into_vec();
+    locations.sort_unstable();
+    locations
+        .into_iter()
+        .map(
+            |Reverse((score, _, Reverse(file_number), Reverse(chunk)))| {
+                let file = &index.files[file_number];
+                Match {
                     path: file.path.clone(),
                     chunk,
                     score,
                     hash: file.hash.clone(),
-                    text: text.clone(),
-                });
-            }
-        }
-    }
-    hits.sort_by(|a, b| b.score.cmp(&a.score).then_with(|| a.path.cmp(&b.path)));
-    hits.truncate(limit);
-    hits
+                    text: file.chunks[chunk].clone(),
+                }
+            },
+        )
+        .collect()
 }
 
 fn repo_root(cwd: &Path) -> Result<PathBuf> {
@@ -406,5 +447,81 @@ mod tests {
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].path, "src/auth.rs");
         assert_eq!(hits[0].score, 3);
+    }
+
+    #[test]
+    fn bounded_search_matches_full_sort_for_ties_and_limits() {
+        let index = Index {
+            schema_version: 1,
+            repository: PathBuf::from("/tmp/example"),
+            head: "abc".into(),
+            updated_at_ms: 0,
+            files: (0..30)
+                .rev()
+                .map(|i| FileEntry {
+                    path: format!("src/Token-{}.rs", i % 7),
+                    hash: format!("hash-{i}"),
+                    language: "rs".into(),
+                    bytes: 0,
+                    chunks: (0..8)
+                        .map(|j| format!("{} VALIDATE λ\n", "token ".repeat((i + j) % 5)))
+                        .collect(),
+                })
+                .collect(),
+        };
+        for query in [
+            "token",
+            "TOKEN validate",
+            "λ",
+            "missing",
+            "x",
+            "token token",
+        ] {
+            let terms: Vec<_> = query
+                .split(|c: char| !c.is_alphanumeric() && c != '_')
+                .filter(|term| term.len() > 1)
+                .map(str::to_ascii_lowercase)
+                .collect();
+            let mut expected = Vec::new();
+            for file in &index.files {
+                for (chunk, text) in file.chunks.iter().enumerate() {
+                    let haystack = format!("{}\n{text}", file.path).to_ascii_lowercase();
+                    let score: usize = terms
+                        .iter()
+                        .map(|term| haystack.match_indices(term).count())
+                        .sum();
+                    if score > 0 {
+                        expected.push((
+                            file.path.as_str(),
+                            chunk,
+                            score,
+                            file.hash.as_str(),
+                            text.as_str(),
+                        ));
+                    }
+                }
+            }
+            expected.sort_by(|a, b| b.2.cmp(&a.2).then_with(|| a.0.cmp(b.0)));
+            for limit in [0, 1, 3, 20, 250] {
+                let actual = search(&index, query, limit);
+                let actual: Vec<_> = actual
+                    .iter()
+                    .map(|hit| {
+                        (
+                            hit.path.as_str(),
+                            hit.chunk,
+                            hit.score,
+                            hit.hash.as_str(),
+                            hit.text.as_str(),
+                        )
+                    })
+                    .collect();
+                assert_eq!(
+                    actual,
+                    expected[..expected.len().min(limit)],
+                    "query {query:?}, limit {limit}"
+                );
+            }
+        }
     }
 }

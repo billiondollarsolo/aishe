@@ -25,8 +25,8 @@ use super::pty_out::PtyOut;
 use super::sessions::LeanSessionStore;
 use super::stdout_redirect::StdoutRedirect;
 
-/// Warm MCP + skills + custom slash-commands once per live lean shell
-/// (lazy on first agent/`/status`/`/help`/custom slash).
+/// Load local registries once per live lean shell; connect MCP only when an
+/// agent turn or explicit `/mcp` discovery needs it.
 #[derive(Default)]
 pub struct LeanWarm {
     pub skills: Option<SkillRegistry>,
@@ -35,14 +35,32 @@ pub struct LeanWarm {
 }
 
 impl LeanWarm {
+    /// Warm all registries for an agent turn. Local slash commands use the
+    /// narrower helpers so inspecting this shell never starts MCP servers.
     pub fn ensure(&mut self, config: &Config) {
+        self.ensure_local();
+        self.ensure_mcp(config);
+    }
+
+    fn ensure_local(&mut self) {
+        self.ensure_skills();
+        self.ensure_commands();
+    }
+
+    fn ensure_skills(&mut self) {
         if self.skills.is_none() {
             self.skills = Some(SkillRegistry::load());
         }
+    }
+
+    fn ensure_mcp(&mut self, config: &Config) {
         if self.mcp.is_none() {
             // Empty/disabled config → empty registry; never touches OpenCode.
             self.mcp = Some(crate::mcp::McpRegistry::connect(&config.mcp_servers));
         }
+    }
+
+    fn ensure_commands(&mut self) {
         if self.commands.is_none() {
             self.commands = Some(CommandRegistry::load());
             refresh_custom_cmds_file(self.commands.as_ref());
@@ -581,12 +599,12 @@ fn handle_slash(
     let rest_args: Vec<&str> = line.split_whitespace().skip(1).collect();
     match name {
         "/help" | "/commands" => {
-            warm.ensure(config);
+            warm.ensure_commands();
             emit_lean_help(warm, pty, name == "/commands");
             "OK".into()
         }
         "/status" => {
-            warm.ensure(config);
+            warm.ensure_local();
             let sid = store
                 .as_ref()
                 .map(|s| s.id().to_string())
@@ -658,7 +676,7 @@ fn handle_slash(
             "OK".into()
         }
         "/skills" => {
-            warm.ensure(config);
+            warm.ensure_skills();
             let names = warm.skill_names();
             if names.is_empty() {
                 emit_text(pty, "skills: (none loaded)");
@@ -674,7 +692,7 @@ fn handle_slash(
             "OK".into()
         }
         "/mcp" => {
-            warm.ensure(config);
+            warm.ensure_mcp(config);
             let servers = LeanWarm::mcp_server_names(config);
             let tools = warm.mcp_tool_names();
             if servers.is_empty() {
@@ -847,7 +865,7 @@ fn handle_custom_or_unknown(
     {
         return format!("ERROR\tunknown slash {name}");
     }
-    warm.ensure(config);
+    warm.ensure_commands();
     let Some(cmd) = warm
         .commands
         .as_ref()
@@ -1553,7 +1571,7 @@ mod tests {
     }
 
     #[test]
-    fn status_warms_skills_and_mcp_once() {
+    fn status_warms_local_registries_without_connecting_mcp() {
         let mut config = test_config();
         let mut provider = None;
         let mut executor = Executor::new().expect("executor");
@@ -1574,7 +1592,8 @@ mod tests {
             );
             assert_eq!(reply, "OK");
             assert!(warm.skills.is_some());
-            assert!(warm.mcp.is_some());
+            assert!(warm.commands.is_some());
+            assert!(warm.mcp.is_none());
             let shown = pty.take_capture();
             assert!(
                 shown.contains("skills:") && shown.contains("mcp:"),
@@ -1585,6 +1604,133 @@ mod tests {
                 "status must show connection+model: {shown:?}"
             );
         });
+    }
+
+    #[test]
+    fn local_slashes_defer_mcp_until_explicit_discovery() {
+        let Some(python) = ["python3", "python"].into_iter().find(|name| {
+            std::process::Command::new(name)
+                .arg("--version")
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status()
+                .is_ok_and(|status| status.success())
+        }) else {
+            eprintln!("skipping: Python is required for the MCP subprocess fixture");
+            return;
+        };
+        let marker = std::env::temp_dir().join(format!(
+            "aishe-lean-mcp-starts-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let server = r#"
+import json, sys
+with open(sys.argv[1], "a") as marker:
+    marker.write("started\n")
+for line in sys.stdin:
+    message = json.loads(line)
+    request_id = message.get("id")
+    if request_id is None:
+        continue
+    method = message.get("method")
+    if method == "initialize":
+        result = {"protocolVersion": "2025-06-18", "capabilities": {"tools": {}},
+                  "serverInfo": {"name": "marker", "version": "1"}}
+    elif method == "tools/list":
+        result = {"tools": [{"name": "echo", "description": "Echo fixture input",
+                             "inputSchema": {"type": "object"}}]}
+    elif method == "tools/call":
+        result = {"content": [{"type": "text", "text": "fixture echo"}]}
+    else:
+        result = {}
+    print(json.dumps({"jsonrpc": "2.0", "id": request_id, "result": result}), flush=True)
+"#;
+        let mut config = test_config();
+        config.mcp_servers.insert(
+            "marker".into(),
+            crate::config::McpServerConfig {
+                command: Some(python.into()),
+                args: vec![
+                    "-u".into(),
+                    "-c".into(),
+                    server.into(),
+                    marker.display().to_string(),
+                ],
+                env: Default::default(),
+                url: None,
+                headers: Default::default(),
+                enabled: true,
+            },
+        );
+        let mut provider = None;
+        let mut executor = Executor::new().expect("executor");
+        let mut session = Session::new(true);
+        let pty = PtyOut::capture();
+        with_store(|store| {
+            let mut warm = LeanWarm::default();
+            for slash in ["/help", "/commands", "/skills", "/status"] {
+                let reply = handle_ipc_line(
+                    &mut config,
+                    &mut provider,
+                    &mut executor,
+                    &mut session,
+                    store,
+                    &mut warm,
+                    &pty,
+                    &format!("SLASH\task\t/tmp\t{slash}"),
+                );
+                assert_eq!(reply, "OK", "local slash {slash} failed");
+                assert!(!marker.exists(), "{slash} started an MCP subprocess");
+                assert!(warm.mcp.is_none());
+                let shown = pty.take_capture();
+                if slash == "/status" {
+                    assert!(shown.contains("1 configured (not warmed)"), "{shown:?}");
+                }
+            }
+            let reply = handle_ipc_line(
+                &mut config,
+                &mut provider,
+                &mut executor,
+                &mut session,
+                store,
+                &mut warm,
+                &pty,
+                "SLASH\task\t/tmp\t/aishe_missing_mcp_regression_command",
+            );
+            assert!(reply.starts_with("ERROR\tunknown slash"));
+            assert!(!marker.exists(), "unknown slash started an MCP subprocess");
+            assert!(
+                provider.is_none(),
+                "local inspection constructed a provider"
+            );
+
+            for _ in 0..2 {
+                let reply = handle_ipc_line(
+                    &mut config,
+                    &mut provider,
+                    &mut executor,
+                    &mut session,
+                    store,
+                    &mut warm,
+                    &pty,
+                    "SLASH\task\t/tmp\t/mcp",
+                );
+                assert_eq!(reply, "OK");
+                let shown = pty.take_capture();
+                assert!(shown.contains("mcp__marker__echo"), "{shown:?}");
+            }
+            // The agent's full warm-up reuses the same connected registry.
+            warm.ensure(&config);
+            assert_eq!(std::fs::read_to_string(&marker).unwrap(), "started\n");
+            let registry = warm.mcp.as_ref().expect("MCP discovered");
+            let (_, output) = registry.call("mcp__marker__echo", &serde_json::json!({}));
+            assert!(output.contains("fixture echo"), "{output:?}");
+        });
+        let _ = std::fs::remove_file(marker);
     }
 
     #[test]
@@ -1873,6 +2019,7 @@ mod tests {
                 reply.starts_with("RAN") || reply.starts_with("CONFIRM_B64"),
                 "expected RAN/CONFIRM for shell custom, got {reply}"
             );
+            assert!(warm.mcp.is_none(), "custom shell commands must stay local");
         });
 
         match prev_cfg {

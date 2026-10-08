@@ -1,6 +1,6 @@
 //! Foreground executor for supervisor-routed proxy tools.
 
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 use std::io::{IsTerminal, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -20,6 +20,54 @@ use crate::config::Config;
 use crate::executor::Executor;
 
 const WORKER_SHUTDOWN_GRACE: Duration = Duration::from_millis(100);
+
+/// Connect only the MCP server requested by an approved managed tool call.
+/// Keeping even an empty registry memoizes a failed handshake for this turn,
+/// so repeated calls cannot repeatedly pay the initialization timeout.
+#[derive(Default)]
+struct TurnMcp {
+    configs: BTreeMap<String, crate::config::McpServerConfig>,
+    servers: BTreeMap<String, crate::mcp::McpRegistry>,
+}
+
+impl TurnMcp {
+    fn new(configs: &BTreeMap<String, crate::config::McpServerConfig>) -> Self {
+        Self {
+            configs: configs.clone(),
+            servers: BTreeMap::new(),
+        }
+    }
+
+    fn call(
+        &mut self,
+        server: &str,
+        exposed: &str,
+        args: &Value,
+        cancel: &AtomicBool,
+    ) -> (String, String) {
+        let Some(config) = self.configs.get(server).filter(|config| config.enabled) else {
+            return (
+                exposed.to_string(),
+                format!("Error: MCP server '{server}' is not enabled or configured."),
+            );
+        };
+        let registry = self.servers.entry(server.to_string()).or_insert_with(|| {
+            crate::mcp::McpRegistry::connect(&BTreeMap::from([(
+                server.to_string(),
+                config.clone(),
+            )]))
+        });
+        // A slow first handshake can outlive the foreground request. Do not
+        // dispatch an external action if cancellation arrived while connecting.
+        if cancel.load(Ordering::SeqCst) {
+            return (
+                exposed.to_string(),
+                "Error: MCP request was cancelled before it started.".to_string(),
+            );
+        }
+        registry.call(exposed, args)
+    }
+}
 
 pub struct ToolWorker {
     stop: Arc<AtomicBool>,
@@ -143,7 +191,7 @@ impl ToolWorker {
             .name("aishe-tool-worker".into())
             .spawn(move || {
                 let skills = crate::skills::SkillRegistry::load();
-                let mcp = crate::mcp::McpRegistry::connect(&config.mcp_servers);
+                let mut mcp = TurnMcp::new(&config.mcp_servers);
                 let mut approvals = HashSet::new();
                 let max_tool_calls = env_limit("AISHE_TASK_MAX_TOOL_CALLS");
                 let max_network_calls = env_limit("AISHE_TASK_MAX_NETWORK_CALLS");
@@ -179,7 +227,7 @@ impl ToolWorker {
                                 execute(
                                     &work,
                                     &skills,
-                                    &mcp,
+                                    &mut mcp,
                                     &mut approvals,
                                     &ExecutionContext {
                                         cancel: &cancel,
@@ -308,7 +356,7 @@ struct ExecutionContext<'a> {
 fn execute(
     work: &ToolWork,
     skills: &crate::skills::SkillRegistry,
-    mcp: &crate::mcp::McpRegistry,
+    mcp: &mut TurnMcp,
     approvals: &mut HashSet<String>,
     context: &ExecutionContext<'_>,
 ) -> ExecutionResult {
@@ -1408,11 +1456,7 @@ fn use_skill(work: &ToolWork, skills: &crate::skills::SkillRegistry) -> Executio
     }
 }
 
-fn mcp_call(
-    work: &ToolWork,
-    mcp: &crate::mcp::McpRegistry,
-    cancel: &Arc<AtomicBool>,
-) -> ExecutionResult {
+fn mcp_call(work: &ToolWork, mcp: &mut TurnMcp, cancel: &Arc<AtomicBool>) -> ExecutionResult {
     if cancel.load(Ordering::SeqCst) {
         return failure("MCP request was cancelled before it started.");
     }
@@ -1437,7 +1481,7 @@ fn mcp_call(
         .get("arguments")
         .cloned()
         .unwrap_or_else(|| serde_json::json!({}));
-    let (_, output) = mcp.call(&exposed, &args);
+    let (_, output) = mcp.call(server, &exposed, &args, cancel);
     ExecutionResult {
         success: !output.starts_with("Error"),
         output,
@@ -1553,6 +1597,334 @@ mod tests {
         }
     }
 
+    fn http_mcp_config(url: String, enabled: bool) -> crate::config::McpServerConfig {
+        serde_json::from_value(serde_json::json!({"url": url, "enabled": enabled})).unwrap()
+    }
+
+    #[test]
+    fn managed_worker_builtin_and_suggest_shutdown_do_not_initialize_mcp() {
+        let root = std::env::temp_dir().join(format!(
+            "aishe-tool-lazy-mcp-{:032x}",
+            rand::random::<u128>()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("input"), "builtin worked").unwrap();
+        let mut mcp_server = mockito::Server::new();
+        let untouched = mcp_server
+            .mock("POST", "/")
+            .expect(0)
+            .with_status(500)
+            .create();
+        let mut config = Config::default();
+        config
+            .mcp_servers
+            .insert("unused".into(), http_mcp_config(mcp_server.url(), true));
+
+        for mode in [Mode::Yolo, Mode::Suggest] {
+            let mut control = mockito::Server::new();
+            let registration = control
+                .mock("POST", "/v1/lease/register")
+                .with_header("content-type", "application/json")
+                .with_body(r#"{"lease_id":"lease_test","backend_session_id":"ses_test"}"#)
+                .create();
+            let first_poll = AtomicBool::new(true);
+            let (delivered, observed) = std::sync::mpsc::channel();
+            let polled = delivered.clone();
+            let mut item = work(&root, "read_file", serde_json::json!({"path":"input"}));
+            item.mode = mode;
+            let next = control
+                .mock("POST", "/v1/lease/next")
+                .with_header("content-type", "application/json")
+                .with_body_from_request(move |_| {
+                    if first_poll.swap(false, Ordering::SeqCst) && mode == Mode::Yolo {
+                        serde_json::to_vec(&item).unwrap()
+                    } else {
+                        if mode == Mode::Suggest {
+                            let _ = polled.send(());
+                        }
+                        b"null".to_vec()
+                    }
+                })
+                .expect_at_least(1)
+                .create();
+            let heartbeat = control
+                .mock("POST", "/v1/lease/heartbeat")
+                .with_body(r#"{"ok":true}"#)
+                .expect_at_least(0)
+                .create();
+            let started = control
+                .mock("POST", "/v1/lease/started")
+                .with_body(r#"{"ok":true}"#)
+                .expect(usize::from(mode == Mode::Yolo))
+                .create();
+            let completed = control
+                .mock("POST", "/v1/lease/complete")
+                .match_body(mockito::Matcher::PartialJson(serde_json::json!({
+                    "success": true, "output": "builtin worked"
+                })))
+                .with_body_from_request(move |_| {
+                    let _ = delivered.send(());
+                    br#"{"ok":true}"#.to_vec()
+                })
+                .expect(usize::from(mode == Mode::Yolo))
+                .create();
+            let unregistered = control
+                .mock("POST", "/v1/lease/unregister")
+                .with_body(r#"{"ok":true}"#)
+                .expect_at_least(1)
+                .create();
+            let state = crate::backend::control::SupervisorState::new(
+                1,
+                2,
+                control.url(),
+                control.url(),
+                "test".into(),
+                "a".repeat(64),
+                "test".into(),
+                "test".into(),
+                "test".into(),
+                "b".repeat(64),
+                1,
+                "c".repeat(64),
+                "d".repeat(64),
+            );
+            let worker = ToolWorker::start_silent(
+                SupervisorClient::new(state).unwrap(),
+                LeaseRegistration {
+                    aishe_shell_id: "shell_test".into(),
+                    backend_session_id: "ses_test".into(),
+                    workspace: root.clone(),
+                    mode,
+                    scope: ExecutionScope::Workspace,
+                    network: NetworkPolicy::Deny,
+                    interactive: false,
+                    budget_usd: None,
+                    price: None,
+                    baseline_spent_usd: 0.0,
+                },
+                config.clone(),
+                Arc::new(AtomicBool::new(false)),
+            )
+            .unwrap();
+            let result = observed.recv_timeout(Duration::from_secs(5));
+            worker.stop();
+            result.expect("worker must poll/complete without initializing unused MCP");
+            registration.assert();
+            next.assert();
+            heartbeat.assert();
+            started.assert();
+            completed.assert();
+            unregistered.assert();
+            untouched.assert();
+        }
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn managed_mcp_connects_only_selected_server_and_reuses_it() {
+        let mut selected = mockito::Server::new();
+        let initialize = selected
+            .mock("POST", "/")
+            .match_body(mockito::Matcher::PartialJson(
+                serde_json::json!({"method":"initialize"}),
+            ))
+            .with_header("content-type", "application/json")
+            .with_body(r#"{"jsonrpc":"2.0","id":1,"result":{"capabilities":{}}}"#)
+            .create();
+        let initialized = selected
+            .mock("POST", "/")
+            .match_body(mockito::Matcher::PartialJson(
+                serde_json::json!({"method":"notifications/initialized"}),
+            ))
+            .with_status(202)
+            .create();
+        let tools = selected
+            .mock("POST", "/")
+            .match_body(mockito::Matcher::PartialJson(serde_json::json!({"method":"tools/list"})))
+            .with_header("content-type", "application/json")
+            .with_body(r#"{"jsonrpc":"2.0","id":2,"result":{"tools":[{"name":"echo","description":"echo","inputSchema":{"type":"object"}}]}}"#)
+            .create();
+        let calls = selected
+            .mock("POST", "/")
+            .match_body(mockito::Matcher::PartialJson(serde_json::json!({
+                "method":"tools/call", "params":{"name":"echo", "arguments":{"text":"selected"}}
+            })))
+            .with_header("content-type", "application/json")
+            .with_body_from_request(|request| {
+                let body: Value = serde_json::from_slice(request.body().unwrap()).unwrap();
+                serde_json::to_vec(&serde_json::json!({
+                    "jsonrpc":"2.0", "id":body["id"],
+                    "result":{"content":[{"type":"text", "text":"selected"}]}
+                }))
+                .unwrap()
+            })
+            .expect(2)
+            .create();
+        let mut unused = mockito::Server::new();
+        let untouched = unused.mock("POST", "/").expect(0).create();
+        let mut mcp = TurnMcp::new(&BTreeMap::from([
+            ("selected".into(), http_mcp_config(selected.url(), true)),
+            ("unused".into(), http_mcp_config(unused.url(), true)),
+        ]));
+        let item = work(
+            &std::env::temp_dir(),
+            "mcp_call",
+            serde_json::json!({
+                "server":"selected", "tool":"echo", "arguments":{"text":"selected"}
+            }),
+        );
+        let cancel = Arc::new(AtomicBool::new(false));
+        for _ in 0..2 {
+            let result = mcp_call(&item, &mut mcp, &cancel);
+            assert!(result.success, "{}", result.output);
+            assert_eq!(result.output, "selected");
+        }
+        initialize.assert();
+        initialized.assert();
+        tools.assert();
+        calls.assert();
+        untouched.assert();
+    }
+
+    #[test]
+    fn managed_mcp_failed_handshake_is_cached_for_the_turn() {
+        let mut server = mockito::Server::new();
+        let failed = server
+            .mock("POST", "/")
+            .match_body(mockito::Matcher::PartialJson(
+                serde_json::json!({"method":"initialize"}),
+            ))
+            .with_status(400)
+            .with_body("server unavailable")
+            .create();
+        let mut mcp = TurnMcp::new(&BTreeMap::from([(
+            "failed".into(),
+            http_mcp_config(server.url(), true),
+        )]));
+        let item = work(
+            &std::env::temp_dir(),
+            "mcp_call",
+            serde_json::json!({
+                "server":"failed", "tool":"echo", "arguments":{}
+            }),
+        );
+        let cancel = Arc::new(AtomicBool::new(false));
+        let first = mcp_call(&item, &mut mcp, &cancel);
+        let second = mcp_call(&item, &mut mcp, &cancel);
+        assert!(!first.success);
+        assert!(!second.success);
+        assert_eq!(first.output, second.output);
+        failed.assert();
+    }
+
+    #[test]
+    fn managed_mcp_cancellation_during_handshake_prevents_the_call() {
+        let mut server = mockito::Server::new();
+        let cancel = Arc::new(AtomicBool::new(false));
+        let connecting_cancel = Arc::clone(&cancel);
+        let initialize = server
+            .mock("POST", "/")
+            .match_body(mockito::Matcher::PartialJson(
+                serde_json::json!({"method":"initialize"}),
+            ))
+            .with_header("content-type", "application/json")
+            .with_body_from_request(move |_| {
+                connecting_cancel.store(true, Ordering::SeqCst);
+                br#"{"jsonrpc":"2.0","id":1,"result":{"capabilities":{}}}"#.to_vec()
+            })
+            .create();
+        let initialized = server
+            .mock("POST", "/")
+            .match_body(mockito::Matcher::PartialJson(
+                serde_json::json!({"method":"notifications/initialized"}),
+            ))
+            .with_status(202)
+            .create();
+        let tools = server
+            .mock("POST", "/")
+            .match_body(mockito::Matcher::PartialJson(
+                serde_json::json!({"method":"tools/list"}),
+            ))
+            .with_header("content-type", "application/json")
+            .with_body(r#"{"jsonrpc":"2.0","id":2,"result":{"tools":[{"name":"echo","description":"echo","inputSchema":{"type":"object"}}]}}"#)
+            .create();
+        let untouched = server
+            .mock("POST", "/")
+            .match_body(mockito::Matcher::PartialJson(
+                serde_json::json!({"method":"tools/call"}),
+            ))
+            .expect(0)
+            .create();
+        let mut mcp = TurnMcp::new(&BTreeMap::from([(
+            "selected".into(),
+            http_mcp_config(server.url(), true),
+        )]));
+        let item = work(
+            &std::env::temp_dir(),
+            "mcp_call",
+            serde_json::json!({"server":"selected", "tool":"echo", "arguments":{}}),
+        );
+        let result = mcp_call(&item, &mut mcp, &cancel);
+        assert!(!result.success);
+        assert!(result.output.contains("cancelled"));
+        initialize.assert();
+        initialized.assert();
+        tools.assert();
+        untouched.assert();
+    }
+
+    #[test]
+    fn managed_mcp_rejected_requests_do_not_initialize_any_server() {
+        let mut server = mockito::Server::new();
+        let untouched = server.mock("POST", "/").expect(0).create();
+        let mut mcp = TurnMcp::new(&BTreeMap::from([
+            ("enabled".into(), http_mcp_config(server.url(), true)),
+            ("disabled".into(), http_mcp_config(server.url(), false)),
+        ]));
+        let cancel = Arc::new(AtomicBool::new(false));
+        for (name, tool) in [
+            ("unknown", "echo"),
+            ("disabled", "echo"),
+            ("enabled/invalid", "echo"),
+            ("enabled", "echo/invalid"),
+        ] {
+            let item = work(
+                &std::env::temp_dir(),
+                "mcp_call",
+                serde_json::json!({
+                    "server":name, "tool":tool, "arguments":{}
+                }),
+            );
+            assert!(!mcp_call(&item, &mut mcp, &cancel).success);
+        }
+        let mut item = work(
+            &std::env::temp_dir(),
+            "mcp_call",
+            serde_json::json!({
+                "server":"enabled", "tool":"echo", "arguments":{}
+            }),
+        );
+        item.mode = Mode::Suggest;
+        assert!(
+            !execute(
+                &item,
+                &crate::skills::SkillRegistry::default(),
+                &mut mcp,
+                &mut HashSet::new(),
+                &ExecutionContext {
+                    cancel: &cancel,
+                    denied_environment: &HashSet::new(),
+                    stream_output: false,
+                    audit: &audit_context(),
+                },
+            )
+            .success
+        );
+        cancel.store(true, Ordering::SeqCst);
+        assert!(!mcp_call(&item, &mut mcp, &cancel).success);
+        untouched.assert();
+    }
+
     #[test]
     fn workspace_file_paths_reject_parent_and_symlink_escapes() {
         let root =
@@ -1659,7 +2031,7 @@ mod tests {
         let result = execute(
             &item,
             &crate::skills::SkillRegistry::default(),
-            &crate::mcp::McpRegistry::default(),
+            &mut TurnMcp::default(),
             &mut HashSet::new(),
             &ExecutionContext {
                 cancel: &Arc::new(AtomicBool::new(false)),
@@ -1690,7 +2062,7 @@ mod tests {
         let result = execute(
             &item,
             &crate::skills::SkillRegistry::default(),
-            &crate::mcp::McpRegistry::default(),
+            &mut TurnMcp::default(),
             &mut approvals,
             &ExecutionContext {
                 cancel: &cancel,

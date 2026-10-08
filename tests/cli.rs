@@ -2410,7 +2410,7 @@ Authorization = "Bearer fake-private-header"
         ])
         .output()
         .unwrap();
-    assert!(output.status.success(), "{:?}", output);
+    assert!(output.status.success(), "{output:?}");
     let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     let ids: Vec<&str> = report["checks"]
         .as_array()
@@ -2633,7 +2633,7 @@ auth_required = false
     };
     // `provider test` was a duplicate spelling of `aishe test`.
     let output = run(&["test", "--json"]).output().unwrap();
-    assert!(output.status.success(), "{:?}", output);
+    assert!(output.status.success(), "{output:?}");
     let document: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     let report = &document["provider"];
     assert_eq!(report["schema_version"], 2);

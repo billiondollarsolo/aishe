@@ -6,9 +6,9 @@ use std::sync::Arc;
 use serde_json::{json, Value};
 
 use super::{
-    external_http_agent, read_sse, status_is_accepted, stream_post, usage_from_value, Completion,
+    provider_http_agent, read_sse, status_is_accepted, stream_post, usage_from_value, Completion,
     HttpResponse, Msg, Provider, ProviderError, ResponseFormat, ToolCall, ToolDef,
-    HTTP_TIMEOUT_SECS, MAX_PROVIDER_BODY_BYTES, MAX_TOKENS,
+    MAX_PROVIDER_BODY_BYTES, MAX_TOKENS,
 };
 use crate::usage::UsageMeter;
 
@@ -18,6 +18,7 @@ pub struct AnthropicProvider {
     base_url: String,
     api_key: String,
     model: String,
+    agent: ureq::Agent,
     meter: Arc<UsageMeter>,
 }
 
@@ -27,6 +28,7 @@ impl AnthropicProvider {
             base_url: crate::provider_catalog::normalize_base_url(&base_url),
             api_key,
             model,
+            agent: provider_http_agent(),
             meter: Arc::new(UsageMeter::default()),
         }
     }
@@ -97,7 +99,7 @@ impl AnthropicProvider {
     }
 
     fn post(&self, body: &Value) -> Result<Value, ProviderError> {
-        let resp = post_with_retry(&self.endpoint(), &self.api_key, body)?;
+        let resp = post_with_retry(&self.agent, &self.endpoint(), &self.api_key, body)?;
         let (i, o) = usage_from_value(&resp);
         self.meter.record(i, o);
         Ok(resp)
@@ -188,6 +190,7 @@ impl Provider for AnthropicProvider {
         let mut body = self.build_body(system, messages, tools);
         body["stream"] = json!(true);
         let resp = match stream_post(
+            &self.agent,
             &self.endpoint(),
             &[
                 ("x-api-key", &self.api_key),
@@ -296,6 +299,7 @@ impl Provider for AnthropicProvider {
         let mut body = self.build_body(system, messages, &[]);
         body["stream"] = json!(true);
         let resp = stream_post(
+            &self.agent,
             &self.endpoint(),
             &[
                 ("x-api-key", &self.api_key),
@@ -367,23 +371,22 @@ impl AnthropicProvider {
 
 /// POST with retries on 429/5xx/connection errors (backoff + `Retry-After`),
 /// mapping errors to `ProviderError`.
-fn post_with_retry(url: &str, api_key: &str, body: &Value) -> Result<Value, ProviderError> {
+fn post_with_retry(
+    agent: &ureq::Agent,
+    url: &str,
+    api_key: &str,
+    body: &Value,
+) -> Result<Value, ProviderError> {
     use super::{backoff, is_retryable_status, retry_after_secs, MAX_RETRIES};
     let mut attempt = 0;
     loop {
-        let agent = external_http_agent(
-            std::time::Duration::from_secs(HTTP_TIMEOUT_SECS),
-            Some(std::time::Duration::from_secs(HTTP_TIMEOUT_SECS)),
-            None,
-            None,
-        );
         crate::lean::mark_nl_wire_ready();
         let result = agent
             .post(url)
             .header("x-api-key", api_key)
             .header("anthropic-version", ANTHROPIC_VERSION)
             .header("content-type", "application/json")
-            .send_json(body.clone());
+            .send_json(body);
 
         match result {
             Ok(mut resp) if status_is_accepted(resp.status()) => {
@@ -407,6 +410,7 @@ fn post_with_retry(url: &str, api_key: &str, body: &Value) -> Result<Value, Prov
                 }
                 if is_retryable_status(status) && attempt < MAX_RETRIES {
                     let wait = backoff(attempt + 1, retry_after_secs(&resp));
+                    drop(resp);
                     attempt += 1;
                     std::thread::sleep(wait);
                     continue;

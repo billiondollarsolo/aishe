@@ -16,6 +16,12 @@ python3 tests/shell_contract.py target/debug/aishe
 
 ## Test layout
 
+To compare local retrieval performance with the previous algorithms, run
+`cargo run --release --locked --example retrieval_benchmark`. The fixture checks
+identical results before reporting median times for repository search and
+history deduplication. These measurements describe synthetic local workloads;
+provider latency and real-world speedups depend on the endpoint and history.
+
 - Rust unit tests live inline in each module under `src/`.
 - Integration tests are in `tests/`:
   - `tests/cli.rs`, `tests/dispatcher.rs`, `tests/executor.rs`, `tests/modes.rs`,

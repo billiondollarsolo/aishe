@@ -263,6 +263,10 @@ reservations expire if a provider never reports a failed turn, preventing
 permanent budget lockout without permitting unbounded spend.
 
 The foreground `ToolWorker` adapts AIShe's command/file/web/MCP/skill tools.
+It connects an MCP server only when an approved `mcp_call` selects that enabled
+server, and reuses the connection for the turn. Failed initialization is also
+cached for the turn, so repeated calls cannot repeat a slow handshake. Built-in
+tools and suggest turns do not initialize unrelated MCP servers.
 Model-controlled child processes receive an explicit sanitized environment:
 provider variables, all `AISHE_*`/`OPENCODE_*`, and likely secret names are
 removed. Tool output is redacted and bounded before it crosses the bridge.

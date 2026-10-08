@@ -146,9 +146,11 @@ AISHE_SPY_WIRE_NS=/tmp/wire \
   `#`. Reuses connection store + provider catalog (no OpenCode model discovery).
   Grok subscription remains the default happy path. Selection is shell-local via
   `connection::write_shell_selection`.
-- **F16/F17 warm MCP + skills:** `LeanWarm` loads `SkillRegistry` +
-  `McpRegistry` once per live shell (lazy on first agent turn or `/status`).
-  `/status` prints skill count and MCP configured/tool hint.
+- **F16/F17 warm MCP + skills:** local registries load once when needed.
+  `/help`, `/commands`, `/skills`, `/status`, and custom shell commands do not
+  connect MCP servers. `/status` reports configured servers as "not warmed"
+  until explicit `/mcp` discovery or the first agent turn connects them; later
+  turns reuse the connected registry.
 - **F09 CLI mode aliases:** `--mode` / `aishe mode` accept
   `ask|allow|agent` and legacy `suggest|auto|yolo`. Durable save canonicalizes
   to ask/allow/agent. Lean `/help` documents both.
@@ -181,7 +183,7 @@ AISHE_SPY_WIRE_NS=/tmp/wire \
   `AISHE_AGENT_OUTPUT` / `AISHE_OUTPUT_FILE`, and maps `detailed` →
   `yolo_verbose` for lean agent tool dumps. Hook binds `AISHE_DETAILS_KEY` (default `^O`).
 - **F16/F17 `/mcp` + `/skills`:** list **names** (servers/tools/skills), not just
-  `/status` counts. Warm-on-first-use unchanged.
+  `/status` counts. `/skills` loads only skills; `/mcp` connects only MCP servers.
 
 ### Wave 6 — 1.0 closure (2026-09-09)
 

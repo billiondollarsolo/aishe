@@ -60,6 +60,17 @@ pub(crate) fn external_http_agent(
         .into()
 }
 
+/// One reusable transport pool per native provider. Streaming requests override
+/// these non-streaming timeouts on the request while sharing the same pool.
+pub(crate) fn provider_http_agent() -> ureq::Agent {
+    external_http_agent(
+        Duration::from_secs(HTTP_TIMEOUT_SECS),
+        Some(Duration::from_secs(HTTP_TIMEOUT_SECS)),
+        None,
+        None,
+    )
+}
+
 pub mod anthropic;
 pub mod fake;
 pub mod fallback;
@@ -524,6 +535,7 @@ pub(crate) fn usage_from_value(v: &Value) -> (u64, u64) {
 /// (429/5xx/connection errors) with backoff. Returns the streaming response for
 /// [`read_sse`] to consume.
 pub(crate) fn stream_post(
+    agent: &ureq::Agent,
     url: &str,
     headers: &[(&str, &str)],
     body: &Value,
@@ -533,18 +545,19 @@ pub(crate) fn stream_post(
         // Fast-fail the TCP connect so an unreachable endpoint doesn't sit on the
         // read timeout, but keep the per-read timeout (not a whole-call deadline)
         // so legitimate slow streams aren't cut.
-        let agent = external_http_agent(
-            Duration::from_secs(5),
-            None,
-            Some(Duration::from_secs(HTTP_TIMEOUT_SECS)),
-            Some(Duration::from_secs(HTTP_TIMEOUT_SECS)),
-        );
-        let mut req = agent.post(url);
+        let mut req = agent
+            .post(url)
+            .config()
+            .timeout_connect(Some(Duration::from_secs(5)))
+            .timeout_global(None)
+            .timeout_recv_response(Some(Duration::from_secs(HTTP_TIMEOUT_SECS)))
+            .timeout_recv_body(Some(Duration::from_secs(HTTP_TIMEOUT_SECS)))
+            .build();
         for (k, v) in headers {
             req = req.header(*k, *v);
         }
         crate::lean::mark_nl_wire_ready();
-        match req.send_json(body.clone()) {
+        match req.send_json(body) {
             Ok(resp) if status_is_accepted(resp.status()) => return Ok(resp),
             Ok(resp) => {
                 let status = resp.status().as_u16();
@@ -556,6 +569,9 @@ pub(crate) fn stream_post(
                 }
                 if is_retryable_status(status) && attempt < MAX_RETRIES {
                     let wait = backoff(attempt + 1, retry_after_secs(&resp));
+                    // Do not wait for an error body: a streaming response has
+                    // no global deadline and could trickle bytes indefinitely.
+                    drop(resp);
                     attempt += 1;
                     std::thread::sleep(wait);
                     continue;
@@ -963,6 +979,61 @@ mod tests {
         assert!(status_is_accepted(ureq::http::StatusCode::OK));
         assert!(status_is_accepted(ureq::http::StatusCode::FOUND));
         assert!(!status_is_accepted(ureq::http::StatusCode::BAD_REQUEST));
+    }
+
+    #[test]
+    fn provider_agent_retains_nonstreaming_deadline() {
+        let agent = provider_http_agent();
+        let timeouts = agent.config().timeouts();
+        assert_eq!(timeouts.connect, Some(Duration::from_secs(60)));
+        assert_eq!(timeouts.global, Some(Duration::from_secs(60)));
+        assert_eq!(timeouts.recv_response, None);
+        assert_eq!(timeouts.recv_body, None);
+    }
+
+    #[test]
+    fn streaming_overrides_agent_deadline_and_response_body_timeouts() {
+        use std::io::{BufRead, Read, Write};
+        use std::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}/stream", listener.local_addr().unwrap());
+        let server = std::thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            let mut reader = std::io::BufReader::new(stream);
+            let mut length = 0;
+            loop {
+                let mut line = String::new();
+                assert!(reader.read_line(&mut line).unwrap() > 0);
+                if line == "\r\n" {
+                    break;
+                }
+                if let Some(value) = line.to_ascii_lowercase().strip_prefix("content-length:") {
+                    length = value.trim().parse().unwrap();
+                }
+            }
+            let mut body = vec![0; length];
+            reader.read_exact(&mut body).unwrap();
+            let mut stream = reader.into_inner();
+            // Both header and body waits exceed the injected agent defaults.
+            std::thread::sleep(Duration::from_millis(120));
+            stream
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 25\r\nConnection: close\r\n\r\ndata: first\n\n")
+                .unwrap();
+            std::thread::sleep(Duration::from_millis(120));
+            stream.write_all(b"data: last\n\n").unwrap();
+        });
+        let short = Some(Duration::from_millis(30));
+        let agent = external_http_agent(Duration::from_secs(5), short, short, short);
+        let response = stream_post(&agent, &url, &[], &serde_json::json!({})).unwrap();
+        let mut events = Vec::new();
+        read_sse(response, |event| events.push(event.to_string())).unwrap();
+        assert_eq!(events, ["first", "last"]);
+        assert_eq!(agent.config().timeouts().global, short);
+        server.join().unwrap();
     }
 
     #[test]
