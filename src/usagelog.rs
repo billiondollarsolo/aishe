@@ -56,6 +56,11 @@ pub struct Entry {
 
 pub fn read_entries(path: &Path) -> Vec<Entry> {
     let text = std::fs::read_to_string(path).unwrap_or_default();
+    parse_entries(&text)
+}
+
+/// Parse a tally already read by the caller, preserving connection identity.
+pub fn parse_entries(text: &str) -> Vec<Entry> {
     let mut out = Vec::new();
     for line in text.lines() {
         let parts: Vec<&str> = line.split('\t').collect();
@@ -108,7 +113,7 @@ pub fn read(path: &Path) -> Vec<(Usage, String)> {
 /// A one-line session summary (`aishe session: X in · Y out · N reqs · ~$Z`),
 /// or `None` when the tally is empty. Cost is summed per entry using each
 /// command's own model price, so a mixed-model session is still accurate;
-/// unpriced models are counted and disclosed.
+/// unpriced requests are counted and disclosed.
 pub fn summarize(
     path: &Path,
     pricing: &std::collections::BTreeMap<String, Price>,
@@ -140,7 +145,7 @@ pub fn summarize_for_connection(
         reqs += entry.usage.requests;
         match usage::price_for(&entry.model, pricing) {
             Some(p) => total_cost += usage::cost(entry.usage, p),
-            None => unpriced += 1,
+            None => unpriced += entry.usage.requests,
         }
     }
     if reqs == 0 {
@@ -447,15 +452,15 @@ mod tests {
             Usage {
                 input: 2000,
                 output: 300,
-                requests: 1,
+                requests: 3,
             },
             "totally-unknown-model",
         );
         let line = summarize(&p, &std::collections::BTreeMap::new()).unwrap();
         assert!(line.contains("3,000 in"), "got: {line}");
         assert!(line.contains("500 out"), "got: {line}");
-        assert!(line.contains("2 reqs"), "got: {line}");
-        assert!(line.contains("(+1 unpriced)"), "got: {line}");
+        assert!(line.contains("4 reqs"), "got: {line}");
+        assert!(line.contains("(+3 unpriced)"), "got: {line}");
         std::fs::remove_file(&p).ok();
     }
 

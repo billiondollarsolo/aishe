@@ -3,6 +3,7 @@
 
 pub mod suggest;
 pub mod yolo;
+pub(crate) mod yolo_workspace;
 
 use std::io::Write;
 
@@ -26,13 +27,20 @@ pub fn budget_reached(provider: &dyn Provider, config: &Config) -> bool {
         &config.pricing,
         config.aishe.budget_usd,
     ) {
-        let message = format!(
-            "budget reached (~${:.2} ≥ ${:.2}); raise `budget_usd` to continue",
-            usage::price_for(config.active_model(), &config.pricing)
-                .map(|p| usage::cost(snap, p))
-                .unwrap_or(0.0),
-            config.aishe.budget_usd,
-        );
+        let message = if crate::lean::enabled() {
+            // IPC carries an adjusted per-provider threshold for a cumulative
+            // shell budget. Display the configured total through /usage rather
+            // than presenting that internal threshold as the user's limit.
+            "session budget reached; raise `budget_usd` to continue (see /usage)".into()
+        } else {
+            format!(
+                "budget reached (~${:.2} ≥ ${:.2}); raise `budget_usd` to continue",
+                usage::price_for(config.active_model(), &config.pricing)
+                    .map(|p| usage::cost(snap, p))
+                    .unwrap_or(0.0),
+                config.aishe.budget_usd,
+            )
+        };
         eprintln!(
             "  {}",
             TerminalCapabilities::detect_stderr().paint(StyleToken::Danger, &message)

@@ -463,15 +463,82 @@ pub fn zsh_color_map(capabilities: &TerminalCapabilities) -> Vec<(&'static str, 
             if !capabilities.styled() {
                 return (*key, String::new());
             }
-            let (_, ansi256, (r, g, b)) = palette_entry(capabilities.theme, *token);
+            if capabilities.theme == Theme::Mono {
+                return (
+                    *key,
+                    match token {
+                        // Shell prompt consumers share a bold reset. Keep
+                        // mono styles within that contract so they cannot leak
+                        // underline/reverse video into the editable command.
+                        StyleToken::Danger | StyleToken::Focus | StyleToken::ProposedCommand => {
+                            "%B"
+                        }
+                        _ if *bold
+                            || matches!(
+                                token,
+                                StyleToken::Accent
+                                    | StyleToken::Warning
+                                    | StyleToken::Success
+                                    | StyleToken::Policy
+                            ) =>
+                        {
+                            "%B"
+                        }
+                        _ => "",
+                    }
+                    .to_string(),
+                );
+            }
+            let (ansi16, ansi256, (r, g, b)) = palette_entry(capabilities.theme, *token);
             let color = match capabilities.color_depth {
                 ColorDepth::None => return (*key, String::new()),
+                ColorDepth::Ansi16 => format!("%F{{{}}}", ansi16_color(ansi16)),
                 ColorDepth::TrueColor => format!("%F{{#{r:02x}{g:02x}{b:02x}}}"),
                 _ => format!("%F{{{ansi256}}}"),
             };
             (*key, if *bold { format!("%B{color}") } else { color })
         })
+        .chain([
+            (
+                "AISHE_HIGHLIGHT_SHELL",
+                zsh_highlight_style(capabilities, StyleToken::UserShell),
+            ),
+            (
+                "AISHE_HIGHLIGHT_AGENT",
+                zsh_highlight_style(capabilities, StyleToken::UserAgent),
+            ),
+            (
+                "AISHE_HIGHLIGHT_SLASH",
+                zsh_highlight_style(capabilities, StyleToken::Accent),
+            ),
+        ])
         .collect()
+}
+
+fn ansi16_color(sequence: &str) -> u8 {
+    sequence
+        .split(';')
+        .filter_map(|part| part.parse::<u8>().ok())
+        .find(|code| (30..=37).contains(code))
+        .unwrap_or(37)
+        - 30
+}
+
+fn zsh_highlight_style(capabilities: &TerminalCapabilities, token: StyleToken) -> String {
+    if !capabilities.styled() {
+        return String::new();
+    }
+    if capabilities.theme == Theme::Mono {
+        return "bold".into();
+    }
+    let (ansi16, ansi256, (r, g, b)) = palette_entry(capabilities.theme, token);
+    let color = match capabilities.color_depth {
+        ColorDepth::None => return String::new(),
+        ColorDepth::Ansi16 => ansi16_color(ansi16).to_string(),
+        ColorDepth::Ansi256 => ansi256.to_string(),
+        ColorDepth::TrueColor => format!("#{r:02x}{g:02x}{b:02x}"),
+    };
+    format!("fg={color},bold")
 }
 
 fn palette_entry(theme: Theme, token: StyleToken) -> (&'static str, u8, (u8, u8, u8)) {

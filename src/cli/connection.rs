@@ -822,7 +822,8 @@ pub fn mode(effective: &Config, value: Option<&str>, save_default: bool) -> u8 {
                 return 1;
             }
         }
-        println!("mode: {canonical} (this shell)");
+        // The parent still has to validate policy and any session grant.
+        println!("mode requested: {canonical} (this shell)");
     }
     if save {
         let mut cfg = match Config::load_or_init() {

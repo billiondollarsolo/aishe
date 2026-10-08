@@ -197,6 +197,13 @@ pub struct Executor {
     /// Skip user rc / `.aishrc`. Lean agent `run_command` uses `dash -c` or
     /// `zsh -f -c`.
     norc: bool,
+    /// Explicit authority for a lean agent turn. Kept separate from the shell's
+    /// cwd so changing directories cannot enlarge an accepted workspace.
+    lean_scope: Option<(
+        crate::agent::ExecutionScope,
+        PathBuf,
+        crate::agent::NetworkPolicy,
+    )>,
 }
 
 impl Executor {
@@ -226,6 +233,7 @@ impl Executor {
             sandbox_wrap: Vec::new(),
             cancel: None,
             norc: false,
+            lean_scope: None,
         })
     }
 
@@ -264,8 +272,35 @@ impl Executor {
         self.sandbox_wrap = wrap;
     }
 
+    pub fn set_lean_scope(
+        &mut self,
+        scope: Option<(
+            crate::agent::ExecutionScope,
+            PathBuf,
+            crate::agent::NetworkPolicy,
+        )>,
+    ) {
+        self.lean_scope = scope;
+    }
+
+    pub fn lean_scope(
+        &self,
+    ) -> Option<&(
+        crate::agent::ExecutionScope,
+        PathBuf,
+        crate::agent::NetworkPolicy,
+    )> {
+        self.lean_scope.as_ref()
+    }
+
     pub fn set_cancel_flag(&mut self, cancel: Arc<AtomicBool>) {
         self.cancel = Some(cancel);
+    }
+
+    pub fn is_cancelled(&self) -> bool {
+        self.cancel
+            .as_ref()
+            .is_some_and(|cancel| cancel.load(Ordering::SeqCst))
     }
 
     /// Point the `history` builtin at the timestamped history log.
@@ -417,6 +452,11 @@ impl Executor {
     /// Delegate a shell line to the backing shell with inherited stdio, so
     /// interactive children (vim, ssh, top) and pipes/globs/redirs all work.
     pub fn run(&mut self, line: &str) -> i32 {
+        // IPC owns terminal input. Its commands need cancellable process-group
+        // capture rather than a blocking child status wait.
+        if self.cancel.is_some() {
+            return self.run_captured(line, DEFAULT_CAPTURE_TIMEOUT, true).0;
+        }
         let mut cmd = Command::new(&self.shell);
         // `Command` inherits the parent environment before `envs` overlays
         // values. Clearing first is mandatory for the agent executor:
@@ -454,6 +494,10 @@ impl Executor {
     /// output is also streamed to the terminal as it arrives; when false it is
     /// captured silently (the caller decides what to show).
     pub fn run_captured(&mut self, line: &str, timeout: Duration, tee: bool) -> (i32, String) {
+        if self.is_cancelled() {
+            self.record(line, 130);
+            return (130, "[aishe: command cancelled before launch]".into());
+        }
         // With a sandbox wrapper set, run `<wrapper…> -- <shell> -c <cmd>` so the
         // command executes inside the sandbox; otherwise just `<shell> -c <cmd>`.
         let mut cmd = if self.sandbox_wrap.is_empty() {
@@ -572,6 +616,10 @@ impl Executor {
         timeout: Duration,
         tee: bool,
     ) -> (i32, String) {
+        if self.is_cancelled() {
+            self.record(line, 130);
+            return (130, "[aishe: command cancelled before launch]".into());
+        }
         let (cols, rows) = crossterm::terminal::size().unwrap_or((80, 24));
         let pair = match native_pty_system().openpty(PtySize {
             rows,

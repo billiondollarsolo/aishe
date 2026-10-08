@@ -412,6 +412,22 @@ fn run() -> Result<u8> {
         .ok()
         .and_then(|cwd| config.apply_project_overlay(&cwd));
     aishe::connection::apply_shell_selection(&mut config)?;
+    if aishe::lean::enabled() && args.mode.is_none() {
+        if let Ok(mode) = std::env::var("AISHE_MODE") {
+            if !mode.is_empty() {
+                config.aishe.mode = aishe::lean::LeanMode::parse(&mode).as_str().into();
+            }
+        }
+    }
+    if aishe::lean::enabled()
+        && std::env::var_os("AISHE_SHELL_ID").is_some_and(|value| !value.is_empty())
+    {
+        if let Ok(scope) = std::env::var("AISHE_SCOPE") {
+            if matches!(scope.as_str(), "workspace" | "host") {
+                config.backend.default_scope = scope;
+            }
+        }
+    }
     // CLI flags win over the config file (which wins over compiled defaults).
     config.apply_overrides(
         args.mode.as_deref(),
@@ -1109,7 +1125,7 @@ fn run() -> Result<u8> {
 
     // Non-interactive single-shot mode (-c).
     if let Some(input) = args.command {
-        return aishe::cli::runtime::one_shot(
+        let result = aishe::cli::runtime::one_shot(
             &input,
             &mut executor,
             &mut provider,
@@ -1119,6 +1135,8 @@ fn run() -> Result<u8> {
             &skills,
             &mcp,
         );
+        aishe::cli::status::record_session_usage(provider.as_deref(), &config);
+        return result;
     }
 
     // Pipe/script mode: run each line of piped stdin like a `-c` invocation.
@@ -1135,7 +1153,7 @@ fn run() -> Result<u8> {
                     if trimmed.is_empty() {
                         continue;
                     }
-                    last = aishe::cli::runtime::one_shot(
+                    let result = aishe::cli::runtime::one_shot(
                         trimmed,
                         &mut executor,
                         &mut provider,
@@ -1144,11 +1162,19 @@ fn run() -> Result<u8> {
                         &commands,
                         &skills,
                         &mcp,
-                    )?;
+                    );
+                    match result {
+                        Ok(code) => last = code,
+                        Err(error) => {
+                            aishe::cli::status::record_session_usage(provider.as_deref(), &config);
+                            return Err(error);
+                        }
+                    }
                 }
                 Err(_) => break,
             }
         }
+        aishe::cli::status::record_session_usage(provider.as_deref(), &config);
         return Ok(last);
     }
 

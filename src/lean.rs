@@ -22,7 +22,7 @@ use std::time::Instant;
 
 pub use grant::{ensure_session_grant, grant_accepted, LeanGrant, LeanMode};
 pub use hook::{wrapper_zshenv, wrapper_zshrc, zsh_argv};
-pub use ipc::{spawn_ipc, IpcGuard};
+pub use ipc::{spawn_ipc, spawn_ipc_with_files, IpcGuard, LeanShellFiles};
 pub use nl::{handle_ipc_line, run_nl, LeanWarm};
 pub use pty_out::{PtyOut, PtyWrite};
 pub use sessions::{
@@ -54,10 +54,8 @@ pub fn enabled() -> bool {
 }
 
 pub fn session_mode(config: &crate::config::Config) -> String {
-    let from_env = std::env::var("AISHE_MODE")
-        .ok()
-        .filter(|value| !value.is_empty());
-    LeanMode::parse(from_env.as_deref().unwrap_or(config.aishe.mode.as_str()))
+    // main resolves inherited mode before applying explicit CLI overrides.
+    LeanMode::parse(config.aishe.mode.as_str())
         .as_str()
         .to_string()
 }

@@ -2,9 +2,11 @@
 //!
 //! Lean IPC replies are **control** (`OK` / `STREAM_END` / `FILL_B64` /
 //! `CONFIRM_B64` / `RAN` / `ERROR`). Token streams and multi-line answers are
-//! written by the parent onto the PTY master via [`PtyOut`] as they arrive;
+//! written by the parent onto terminal output via [`PtyOut`] as they arrive;
 //! the FIFO stays control-only (never carries answer body).
 
+use std::borrow::Cow;
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -20,7 +22,9 @@ use crate::safety::{self, Risk};
 use crate::session::Session;
 use crate::skills::SkillRegistry;
 
-use super::grant::{ensure_session_grant, LeanGrant, LeanMode};
+use super::grant::{
+    ensure_session_grant, validate_scope, workspace_grant_root, LeanGrant, LeanMode, SessionGrants,
+};
 use super::pty_out::PtyOut;
 use super::sessions::LeanSessionStore;
 use super::stdout_redirect::StdoutRedirect;
@@ -32,9 +36,167 @@ pub struct LeanWarm {
     pub skills: Option<SkillRegistry>,
     pub mcp: Option<crate::mcp::McpRegistry>,
     pub commands: Option<CommandRegistry>,
+    pub grants: SessionGrants,
+    // Per-shell accounting survives provider replacement and conversation
+    // resets. Attribute each delta to the connection and model that billed it.
+    usage: BTreeMap<(String, String), crate::usage::Usage>,
 }
 
 impl LeanWarm {
+    /// Record a provider-meter delta after a request. Callers must supply only
+    /// newly metered usage, never the provider's cumulative snapshot.
+    pub fn record_usage(&mut self, usage: crate::usage::Usage, model: &str, connection_id: &str) {
+        if usage.is_empty() {
+            return;
+        }
+        let total = self
+            .usage
+            .entry((connection_id.to_string(), model.to_string()))
+            .or_default();
+        total.input = total.input.saturating_add(usage.input);
+        total.output = total.output.saturating_add(usage.output);
+        total.requests = total.requests.saturating_add(usage.requests);
+    }
+
+    /// Include recorded standalone CLI calls made inside this shell when usage
+    /// is explicitly inspected. An unreadable tally leaves memory intact.
+    pub fn replace_usage_from_log(&mut self, path: &Path) {
+        let Ok(text) = std::fs::read_to_string(path) else {
+            return;
+        };
+        self.usage.clear();
+        for entry in crate::usagelog::parse_entries(&text) {
+            self.record_usage(
+                entry.usage,
+                &entry.model,
+                entry.connection_id.as_deref().unwrap_or("legacy/unknown"),
+            );
+        }
+    }
+
+    /// Whole-shell usage, priced with each billed model rather than the active
+    /// model. Unknown prices remain visible instead of becoming a zero cost.
+    pub fn usage_summary(&self, config: &Config) -> Option<String> {
+        self.usage_summary_for_connection(config, None)
+    }
+
+    /// Carry known session spend across provider replacements. The native
+    /// loop compares its own cumulative meter with this turn's threshold, so
+    /// add that meter's baseline to the remaining shell allowance exactly once.
+    fn budgeted_turn_config<'a>(
+        &self,
+        config: &'a Config,
+        provider: Option<&dyn Provider>,
+    ) -> Result<Cow<'a, Config>> {
+        let budget = config.aishe.budget_usd;
+        if budget <= 0.0 {
+            return Ok(Cow::Borrowed(config));
+        }
+        let current_price = crate::usage::budget_price_for(config.active_model(), &config.pricing);
+        let current_cost = current_price
+            .zip(provider.map(|provider| provider.meter().snapshot()))
+            .map(|(price, usage)| crate::usage::cost(usage, price))
+            .unwrap_or(0.0);
+        let spent = if self.usage.is_empty() {
+            current_cost
+        } else {
+            self.usage
+                .iter()
+                .filter_map(|((_, model), usage)| {
+                    crate::usage::budget_price_for(model, &config.pricing)
+                        .map(|price| crate::usage::cost(*usage, price))
+                })
+                .sum()
+        };
+        let remaining = budget - spent;
+        if remaining <= 0.0 {
+            anyhow::bail!(
+                "session budget reached (~${spent:.4} ≥ ${budget:.4}); raise budget_usd to continue"
+            );
+        }
+        let mut turn = config.clone();
+        if let Some(price) = current_price {
+            // Give the existing native loop an exact price too, preventing its
+            // display-price substring resolver from changing this threshold.
+            turn.pricing.insert(config.active_model().into(), price);
+            turn.aishe.budget_usd = current_cost + remaining;
+        } else {
+            // Unknown-price calls retain the existing unenforced behavior.
+            // Their limitation is disclosed next to the configured budget.
+            turn.aishe.budget_usd = 0.0;
+        }
+        Ok(Cow::Owned(turn))
+    }
+
+    fn budget_summary(&self, config: &Config) -> Option<String> {
+        if config.aishe.budget_usd <= 0.0 {
+            return None;
+        }
+        let unknown =
+            crate::usage::budget_price_for(config.active_model(), &config.pricing).is_none()
+                || self.usage.keys().any(|(_, model)| {
+                    crate::usage::budget_price_for(model, &config.pricing).is_none()
+                });
+        Some(format!(
+            "budget: ${:.2}{}",
+            config.aishe.budget_usd,
+            if unknown {
+                " · unknown model prices cannot be enforced"
+            } else {
+                ""
+            },
+        ))
+    }
+
+    fn usage_summary_for_connection(
+        &self,
+        config: &Config,
+        connection_id: Option<&str>,
+    ) -> Option<String> {
+        let mut total = crate::usage::Usage::default();
+        let mut total_cost = 0.0;
+        let mut unpriced = 0u64;
+        for ((connection, model), usage) in &self.usage {
+            if connection_id.is_some_and(|id| id != connection) {
+                continue;
+            }
+            total.input = total.input.saturating_add(usage.input);
+            total.output = total.output.saturating_add(usage.output);
+            total.requests = total.requests.saturating_add(usage.requests);
+            match crate::usage::price_for(model, &config.pricing) {
+                Some(price) => total_cost += crate::usage::cost(*usage, price),
+                None => unpriced = unpriced.saturating_add(usage.requests),
+            }
+        }
+        if total.is_empty() {
+            return None;
+        }
+        let unpriced_requests = format!(
+            "{unpriced} unpriced req{}",
+            if unpriced == 1 { "" } else { "s" },
+        );
+        let cost = if unpriced == 0 {
+            format!("~${total_cost:.4}")
+        } else if total_cost > 0.0 {
+            format!("~${total_cost:.4} (+{unpriced_requests})")
+        } else {
+            format!("cost n/a ({unpriced_requests})")
+        };
+        Some(format!(
+            "{} in · {} out · {} req{} · {cost}",
+            crate::usage::group(total.input),
+            crate::usage::group(total.output),
+            total.requests,
+            if total.requests == 1 { "" } else { "s" }
+        ))
+    }
+
+    fn used_multiple_connections(&self) -> bool {
+        let mut connections = self.usage.keys().map(|(connection, _)| connection);
+        let first = connections.next();
+        connections.any(|connection| Some(connection) != first)
+    }
+
     /// Warm all registries for an agent turn. Local slash commands use the
     /// narrower helpers so inspecting this shell never starts MCP servers.
     pub fn ensure(&mut self, config: &Config) {
@@ -201,13 +363,47 @@ pub fn prepare_agent_executor(
     config: &Config,
     mode: LeanMode,
 ) -> Result<()> {
+    let root = if mode == LeanMode::Agent && config.backend.default_scope != "host" {
+        workspace_grant_root(executor.cwd()).unwrap_or_else(|| executor.cwd().clone())
+    } else {
+        executor.cwd().clone()
+    };
+    prepare_scoped_executor(executor, config, mode, &root)
+}
+
+fn prepare_scoped_executor(
+    executor: &mut Executor,
+    config: &Config,
+    mode: LeanMode,
+    workspace: &Path,
+) -> Result<()> {
     executor.prefer_posix_capture();
-    if mode == LeanMode::Agent && config.backend.default_scope != "host" {
+    executor.set_sandbox_wrap(Vec::new());
+    executor.set_lean_scope(None);
+    if mode == LeanMode::Agent {
+        let host = config.backend.default_scope == "host";
+        validate_scope(config, mode, host, workspace)?;
+        let network = crate::agent::NetworkPolicy::parse(&config.backend.workspace_network)
+            .unwrap_or(crate::agent::NetworkPolicy::Deny);
+        executor.set_lean_scope(Some((
+            if host {
+                crate::agent::ExecutionScope::Host
+            } else {
+                crate::agent::ExecutionScope::Workspace
+            },
+            workspace.canonicalize()?,
+            network,
+        )));
+        if host {
+            return Ok(());
+        }
         #[cfg(target_os = "linux")]
         {
-            if crate::sandbox::bwrap_available() {
-                executor.set_sandbox_wrap(crate::sandbox::bwrap_wrap_argv(executor.cwd()));
-            }
+            executor.set_sandbox_wrap(crate::sandbox::agent_bwrap_argv(
+                workspace,
+                executor.cwd(),
+                network,
+            )?);
         }
     }
     Ok(())
@@ -228,6 +424,43 @@ pub fn handle_ipc_line(
     super::mark_nl_turn_start();
     let (op, rest) = raw.split_once('\t').unwrap_or((raw, ""));
     match op {
+        "MODE_CHECK" | "MODE_ACCEPT" => {
+            let (word, cwd) = rest.split_once('\t').unwrap_or((rest, ""));
+            let (mode, host) = match word.trim().to_ascii_lowercase().as_str() {
+                "ask" | "suggest" => (LeanMode::Ask, config.backend.default_scope == "host"),
+                "allow" | "auto" => (LeanMode::Allow, config.backend.default_scope == "host"),
+                "agent" | "yolo" => (LeanMode::Agent, false),
+                "agent-host" => (LeanMode::Agent, true),
+                _ => return "ERROR\tmode must be ask, allow, agent, or agent-host".into(),
+            };
+            let cwd = Path::new(cwd);
+            if let Err(error) = validate_scope(config, mode, host, cwd) {
+                return format!("ERROR\t{}", one_line(&error.to_string()));
+            }
+            if op == "MODE_CHECK" {
+                return if warm.grants.accepted(mode, host, cwd) {
+                    "ACCEPTED".into()
+                } else {
+                    "GRANT_REQUIRED".into()
+                };
+            }
+            if let Err(error) = warm.grants.accept(mode, host, cwd) {
+                return format!("ERROR\t{}", one_line(&error.to_string()));
+            }
+            if mode == LeanMode::Agent {
+                config.backend.default_scope = if host { "host" } else { "workspace" }.into();
+            }
+            config.aishe.mode = mode.as_str().into();
+            format!(
+                "MODE_OK\t{}\t{}\t{}",
+                mode.as_str(),
+                config.backend.default_scope,
+                warm.grants
+                    .workspace_root()
+                    .map(|root| root.display().to_string())
+                    .unwrap_or_default()
+            )
+        }
         "NL" | "SLASH" | "FIX" => {
             let mut parts = rest.splitn(3, '\t');
             let mode = LeanMode::parse(parts.next().unwrap_or("ask"));
@@ -244,13 +477,13 @@ pub fn handle_ipc_line(
                 "NL" => handle_nl(
                     config, provider, executor, session, store, warm, pty, mode, cwd, line,
                 ),
-                "FIX" => handle_fix(config, provider, executor, session, store, pty, line),
+                "FIX" => handle_fix(config, provider, executor, session, store, warm, pty, line),
                 _ => handle_slash(
                     config, provider, executor, session, store, warm, pty, mode, cwd, line,
                 ),
             }
         }
-        "CONFIRM_YES" => run_confirmed(executor, rest.trim()),
+        "CONFIRM_YES" => run_confirmed(executor, rest.trim(), pty),
         "STOP" => "OK".into(),
         _ => format!("ERROR\tunknown lean op {op}"),
     }
@@ -286,8 +519,44 @@ fn handle_nl(
 ) -> String {
     // Empty `?` (hook sends "?" or "") → explain last failure capsule.
     if line.is_empty() || line == "?" {
-        return explain_last_failure(config, provider, executor, session, store, pty);
+        return explain_last_failure(config, provider, executor, session, store, warm, pty);
     }
+    if mode != LeanMode::Ask {
+        let host = config.backend.default_scope == "host";
+        let workspace = if host {
+            executor.cwd().to_path_buf()
+        } else {
+            warm.grants
+                .workspace_root()
+                .unwrap_or(executor.cwd())
+                .to_path_buf()
+        };
+        if let Err(error) = validate_scope(config, mode, host, &workspace) {
+            return format!("ERROR\t{}", one_line(&error.to_string()));
+        }
+        if !warm.grants.accepted(mode, host, executor.cwd()) {
+            return format!(
+                "ERROR\t{} requires a grant for this shell and workspace; use /mode {}",
+                mode.as_str(),
+                if mode == LeanMode::Agent && host {
+                    "agent-host"
+                } else {
+                    mode.as_str()
+                }
+            );
+        }
+        if let Err(error) = prepare_scoped_executor(executor, config, mode, &workspace) {
+            return format!("ERROR\t{}", one_line(&error.to_string()));
+        }
+    } else {
+        executor.set_sandbox_wrap(Vec::new());
+        executor.set_lean_scope(None);
+    }
+    let turn_config = match warm.budgeted_turn_config(config, provider.as_deref()) {
+        Ok(config) => config,
+        Err(error) => return format!("ERROR\t{}", one_line(&error.to_string())),
+    };
+    let config = turn_config.as_ref();
     if provider.is_none() {
         *provider = providers::make(config).ok();
     }
@@ -295,9 +564,6 @@ fn handle_nl(
         return "ERROR\tno provider configured (set an API key, or AISHE_FAKE_LLM for tests)"
             .into();
     };
-    if mode != LeanMode::Ask {
-        let _ = prepare_agent_executor(executor, config, mode);
-    }
     let cwd_path = if cwd.is_empty() {
         executor.cwd().to_path_buf()
     } else {
@@ -344,12 +610,14 @@ fn handle_nl(
     reply
 }
 
+#[allow(clippy::too_many_arguments)]
 fn explain_last_failure(
     config: &Config,
     provider: &mut Option<Arc<dyn Provider>>,
     executor: &mut Executor,
     session: &mut Session,
     store: &mut Option<LeanSessionStore>,
+    warm: &LeanWarm,
     pty: &PtyOut,
 ) -> String {
     let capsule = match crate::failure::current() {
@@ -363,6 +631,11 @@ fn explain_last_failure(
         "Explain why this shell command failed with exit status {} and suggest safe next steps. Do not execute anything.\nCommand: {}",
         capsule.exit_status, capsule.command
     );
+    let turn_config = match warm.budgeted_turn_config(config, provider.as_deref()) {
+        Ok(config) => config,
+        Err(error) => return format!("ERROR\t{}", one_line(&error.to_string())),
+    };
+    let config = turn_config.as_ref();
     if provider.is_none() {
         *provider = providers::make(config).ok();
     }
@@ -374,12 +647,14 @@ fn explain_last_failure(
     reply
 }
 
+#[allow(clippy::too_many_arguments)]
 fn handle_fix(
     config: &Config,
     provider: &mut Option<Arc<dyn Provider>>,
     executor: &mut Executor,
     session: &mut Session,
     store: &mut Option<LeanSessionStore>,
+    warm: &LeanWarm,
     pty: &PtyOut,
     _line: &str,
 ) -> String {
@@ -394,6 +669,11 @@ fn handle_fix(
         emit_text(pty, "fix disabled: stored command was redacted");
         return "OK".into();
     }
+    let turn_config = match warm.budgeted_turn_config(config, provider.as_deref()) {
+        Ok(config) => config,
+        Err(error) => return format!("ERROR\t{}", one_line(&error.to_string())),
+    };
+    let config = turn_config.as_ref();
     if provider.is_none() {
         *provider = providers::make(config).ok();
     }
@@ -406,7 +686,11 @@ fn handle_fix(
         &capsule.exit_status.to_string(),
         ctx.as_deref(),
     );
-    match modes::suggest::request(&prompt, provider_ref, executor, config, Vec::new()) {
+    let result = modes::suggest::request(&prompt, provider_ref, executor, config, Vec::new());
+    if executor.is_cancelled() {
+        return "CANCELLED".into();
+    }
+    match result {
         Ok(Suggestion::Command {
             command,
             explanation,
@@ -422,7 +706,7 @@ fn handle_fix(
         Ok(Suggestion::Answer { explanation }) => {
             session.record_user(&format!("fix: {}", capsule.command));
             session.record_assistant(&explanation);
-            emit_text(pty, &explanation);
+            emit_answer(pty, &explanation);
             persist_store(store, session);
             "OK".into()
         }
@@ -453,12 +737,16 @@ fn suggest_reply(
             auto_run_safe,
         );
     }
-    match modes::suggest::request(line, provider, executor, config, session.history()) {
+    let result = modes::suggest::request(line, provider, executor, config, session.history());
+    if executor.is_cancelled() {
+        return "CANCELLED".into();
+    }
+    match result {
         Ok(suggestion) => match suggestion {
             Suggestion::Answer { explanation } => {
                 session.record_user(line);
                 session.record_assistant(&explanation);
-                emit_text(pty, &explanation);
+                emit_answer(pty, &explanation);
                 "OK".into()
             }
             Suggestion::Command {
@@ -472,7 +760,7 @@ fn suggest_reply(
                 }
                 if auto_run_safe {
                     match safety::assess(&command) {
-                        Risk::Safe => run_now(executor, &command),
+                        Risk::Safe => run_now(executor, &command, pty),
                         Risk::Dangerous(reason) | Risk::Unknown(reason) => {
                             format!("CONFIRM_B64\t{}", b64(&format!("{command} ({reason})")))
                         }
@@ -497,15 +785,22 @@ fn suggest_reply_streamed(
     pty: &PtyOut,
     auto_run_safe: bool,
 ) -> String {
-    let mut out = super::PtyWrite::new(pty);
-    match modes::suggest::request_streamed(
+    let mut out = CancellablePtyWrite {
+        inner: super::PtyWrite::new(pty),
+        executor,
+    };
+    let result = modes::suggest::request_streamed(
         line,
         provider,
         executor,
         config,
         session.history(),
         &mut out,
-    ) {
+    );
+    if executor.is_cancelled() {
+        return "CANCELLED".into();
+    }
+    match result {
         Ok(suggestion) => match suggestion {
             Suggestion::Answer { explanation } => {
                 session.record_user(line);
@@ -525,7 +820,7 @@ fn suggest_reply_streamed(
                 }
                 if auto_run_safe {
                     match safety::assess(&command) {
-                        Risk::Safe => run_now(executor, &command),
+                        Risk::Safe => run_now(executor, &command, pty),
                         Risk::Dangerous(reason) | Risk::Unknown(reason) => {
                             format!("CONFIRM_B64\t{}", b64(&format!("{command} ({reason})")))
                         }
@@ -536,6 +831,24 @@ fn suggest_reply_streamed(
             }
         },
         Err(error) => format!("ERROR\t{}", one_line(&error.to_string())),
+    }
+}
+
+struct CancellablePtyWrite<'a> {
+    inner: super::PtyWrite<'a>,
+    executor: &'a Executor,
+}
+
+impl std::io::Write for CancellablePtyWrite<'_> {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        if self.executor.is_cancelled() {
+            return Ok(buf.len());
+        }
+        std::io::Write::write(&mut self.inner, buf)
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        std::io::Write::flush(&mut self.inner)
     }
 }
 
@@ -561,10 +874,14 @@ fn agent_reply(
     pty: &PtyOut,
 ) -> String {
     warm.ensure(config);
+    if executor.is_cancelled() {
+        return "CANCELLED".into();
+    }
     let skills = warm.skills.as_ref().expect("skills warmed");
     let mcp = warm.mcp.as_ref().expect("mcp warmed");
+    let capabilities = crate::ui::TerminalCapabilities::detect_stdout();
     let _redirect = StdoutRedirect::to_pty(pty.clone());
-    match modes::yolo::run(
+    match modes::yolo::run_with_terminal(
         line,
         provider,
         executor,
@@ -573,6 +890,7 @@ fn agent_reply(
         skills,
         mcp,
         session,
+        capabilities,
     ) {
         Ok(()) => "RAN".into(),
         Err(error) => format!("ERROR\t{}", one_line(&error.to_string())),
@@ -610,17 +928,51 @@ fn handle_slash(
                 .map(|s| s.id().to_string())
                 .unwrap_or_else(|| "-".into());
             let conn = config.active_connection_id();
+            let host = config.backend.default_scope == "host";
+            let scope = match mode {
+                LeanMode::Ask => "none (suggestions)",
+                LeanMode::Allow => "host (dangerous commands require yes)",
+                LeanMode::Agent if host => "host",
+                LeanMode::Agent => "workspace",
+            };
+            let grant = if mode == LeanMode::Ask {
+                "not needed"
+            } else if mode == LeanMode::Agent && host && !config.sandbox.allow_host_yolo {
+                "blocked by policy"
+            } else if warm.grants.accepted(mode, host, executor.cwd()) {
+                "accepted"
+            } else {
+                "required"
+            };
             emit_text(
                 pty,
                 &format!(
-                    "lean {} · mode {} · connection {} · model {} · session {}",
+                    "lean {} · mode {} · scope {} · grant {}",
                     env!("CARGO_PKG_VERSION"),
                     mode.as_str(),
-                    crate::commands::display_safe(conn),
-                    crate::commands::display_safe(config.active_model()),
-                    crate::commands::display_safe(&sid)
+                    scope,
+                    grant,
                 ),
             );
+            emit_text(
+                pty,
+                &format!(
+                    "connection {} · model {} · details {}",
+                    crate::commands::display_safe(conn),
+                    crate::commands::display_safe(config.active_model()),
+                    crate::commands::display_safe(&config.backend.output),
+                ),
+            );
+            emit_text(
+                pty,
+                &format!("session {}", crate::commands::display_safe(&sid)),
+            );
+            let usage = lean_usage_summary(warm, provider.as_deref(), config)
+                .unwrap_or_else(|| "no model calls yet this session".into());
+            emit_text(pty, &format!("usage: {usage}"));
+            if let Some(budget) = warm.budget_summary(config) {
+                emit_text(pty, &budget);
+            }
             emit_text(
                 pty,
                 &format!(
@@ -642,23 +994,25 @@ fn handle_slash(
             "OK".into()
         }
         "/usage" => {
-            let msg = match provider.as_deref() {
-                Some(p) => {
-                    let snap = p.meter().snapshot();
-                    if snap.is_empty() {
-                        "usage: no model calls yet this session".into()
-                    } else {
-                        format!(
-                            "usage: {}",
-                            crate::usage::summary(snap, config.active_model(), &config.pricing)
-                        )
-                    }
-                }
-                None => "usage: no model calls yet this session".into(),
-            };
+            let msg = lean_usage_summary(warm, provider.as_deref(), config)
+                .map(|summary| format!("usage: {summary}"))
+                .unwrap_or_else(|| "usage: no model calls yet this session".into());
             emit_text(pty, &msg);
-            if config.aishe.budget_usd > 0.0 {
-                emit_text(pty, &format!("budget: ${:.2}", config.aishe.budget_usd));
+            if warm.used_multiple_connections() {
+                let conn = config.active_connection_id();
+                let summary = warm
+                    .usage_summary_for_connection(config, Some(conn))
+                    .unwrap_or_else(|| "no model calls yet".into());
+                emit_text(
+                    pty,
+                    &format!(
+                        "active connection {}: {summary}",
+                        crate::commands::display_safe(conn)
+                    ),
+                );
+            }
+            if let Some(budget) = warm.budget_summary(config) {
+                emit_text(pty, &budget);
             }
             "OK".into()
         }
@@ -666,12 +1020,6 @@ fn handle_slash(
         "/details" => {
             let next = cycle_details_density(&mut config.backend.output);
             config.aishe.yolo_verbose = next == "detailed";
-            std::env::set_var("AISHE_AGENT_OUTPUT", next);
-            if let Ok(path) = std::env::var("AISHE_OUTPUT_FILE") {
-                if !path.is_empty() {
-                    let _ = std::fs::write(&path, next);
-                }
-            }
             emit_text(pty, &format!("details: {next} (this shell)"));
             "OK".into()
         }
@@ -775,9 +1123,10 @@ fn emit_lean_help(warm: &LeanWarm, pty: &PtyOut, commands_only: bool) {
             pty,
             "  empty ? explains last failure · Ctrl-X Ctrl-F suggests a fix",
         );
+        emit_text(pty, "  /mode ask|allow|agent|agent-host");
         emit_text(
             pty,
-            "  /mode ask|allow|agent   Shift-Tab cycles (aliases suggest|auto|yolo)",
+            "  Shift-Tab cycles on empty input; aliases suggest|auto|yolo remain accepted",
         );
         emit_text(pty, "  /connection /model   list/pick for this shell");
         emit_text(
@@ -898,7 +1247,7 @@ fn handle_custom_or_unknown(
             return "OK".into();
         }
         match safety::assess(&ex.text) {
-            Risk::Safe => run_now(executor, &ex.text),
+            Risk::Safe => run_now(executor, &ex.text, pty),
             Risk::Dangerous(reason) | Risk::Unknown(reason) => {
                 format!("CONFIRM_B64\t{}", b64(&format!("{} ({reason})", ex.text)))
             }
@@ -1015,7 +1364,6 @@ fn handle_model_slash(
         return format!("ERROR\t{}", one_line(&error.to_string()));
     }
     config.set_active_model(chosen.clone());
-    let _ = crate::connection::write_shell_selection(config, "shell");
     *provider = providers::make(config).ok();
     emit_text(
         pty,
@@ -1074,7 +1422,6 @@ fn handle_connection_slash(
     if let Err(error) = config.select_connection(&id) {
         return format!("ERROR\t{}", one_line(&error.to_string()));
     }
-    let _ = crate::connection::write_shell_selection(config, "shell");
     *provider = providers::make(config).ok();
     emit_text(
         pty,
@@ -1199,7 +1546,7 @@ fn prepare_nl_prompt(line: &str, cwd: &Path, config: &Config) -> String {
     }
 }
 
-fn run_confirmed(executor: &mut Executor, command: &str) -> String {
+fn run_confirmed(executor: &mut Executor, command: &str, pty: &PtyOut) -> String {
     let decoded = decode_confirm_payload(command);
     let command = decoded
         .split(" (")
@@ -1209,7 +1556,7 @@ fn run_confirmed(executor: &mut Executor, command: &str) -> String {
     if command.is_empty() {
         return "ERROR\tnothing to run".into();
     }
-    run_now(executor, command)
+    run_now(executor, command, pty)
 }
 
 fn decode_confirm_payload(raw: &str) -> String {
@@ -1226,9 +1573,15 @@ fn decode_confirm_payload(raw: &str) -> String {
     raw.to_string()
 }
 
-fn run_now(executor: &mut Executor, command: &str) -> String {
+fn run_now(executor: &mut Executor, command: &str, pty: &PtyOut) -> String {
+    // Command stdout uses the same raw-terminal newline handling as answers.
+    let _redirect = StdoutRedirect::to_pty(pty.clone());
     let code = executor.run(command);
-    format!("RAN\texit {code}")
+    if executor.is_cancelled() {
+        "CANCELLED".into()
+    } else {
+        format!("RAN\texit {code}")
+    }
 }
 
 fn cycle_details_density(current: &mut String) -> &'static str {
@@ -1243,6 +1596,28 @@ fn cycle_details_density(current: &mut String) -> &'static str {
 
 fn emit_text(pty: &PtyOut, text: &str) {
     pty.write_user_line(text);
+}
+
+fn emit_answer(pty: &PtyOut, text: &str) {
+    if !text.trim().is_empty() {
+        let capabilities = crate::ui::TerminalCapabilities::detect_stdout();
+        pty.write_user_line(&capabilities.assistant_answer_header());
+        pty.write_user_line(text);
+    }
+}
+
+fn lean_usage_summary(
+    warm: &LeanWarm,
+    provider: Option<&dyn Provider>,
+    config: &Config,
+) -> Option<String> {
+    warm.usage_summary(config).or_else(|| {
+        // Direct callers may not have an IPC request boundary to record into
+        // the shell ledger. Fall back only while the ledger is still empty.
+        let usage = provider?.meter().snapshot();
+        (!usage.is_empty())
+            .then(|| crate::usage::summary(usage, config.active_model(), &config.pricing))
+    })
 }
 
 fn b64(text: &str) -> String {
@@ -1412,6 +1787,512 @@ mod tests {
         });
         std::env::remove_var("AISHE_FAKE_LLM");
         std::env::remove_var("AISHE_FAKE_USAGE");
+    }
+
+    #[test]
+    fn usage_survives_model_connection_and_conversation_changes() {
+        let _guard = fake_llm_lock();
+        std::env::set_var("AISHE_FAKE_LLM", "unused");
+        let mut config = test_config();
+        config.set_active_model("metered-a".into());
+        config.pricing.insert(
+            "metered-a".into(),
+            crate::usage::Price {
+                input: 1.0,
+                output: 2.0,
+            },
+        );
+        config.pricing.insert(
+            "metered-b".into(),
+            crate::usage::Price {
+                input: 4.0,
+                output: 8.0,
+            },
+        );
+        let original_connection = config.active_connection_id().to_string();
+        let mut provider = None;
+        let mut executor = Executor::new().expect("executor");
+        let mut session = Session::new(true);
+        session.record_user("conversation to reset");
+        let pty = PtyOut::capture();
+        with_store(|store| {
+            let mut warm = LeanWarm::default();
+            warm.record_usage(
+                crate::usage::Usage {
+                    input: 1_000_000,
+                    output: 1_000_000,
+                    requests: 1,
+                },
+                "metered-a",
+                &original_connection,
+            );
+            for slash in ["/model metered-b", "/connection openai", "/reset"] {
+                let reply = handle_ipc_line(
+                    &mut config,
+                    &mut provider,
+                    &mut executor,
+                    &mut session,
+                    store,
+                    &mut warm,
+                    &pty,
+                    &format!("SLASH\task\t/tmp\t{slash}"),
+                );
+                assert_eq!(reply, "OK", "{slash}: {reply}");
+            }
+            warm.record_usage(
+                crate::usage::Usage {
+                    input: 2_000_000,
+                    output: 0,
+                    requests: 1,
+                },
+                "metered-b",
+                config.active_connection_id(),
+            );
+            assert!(session.history().is_empty());
+            let _ = pty.take_capture();
+            let reply = handle_ipc_line(
+                &mut config,
+                &mut provider,
+                &mut executor,
+                &mut session,
+                store,
+                &mut warm,
+                &pty,
+                "SLASH\task\t/tmp\t/usage",
+            );
+            assert_eq!(reply, "OK");
+            let shown = pty.take_capture();
+            assert!(
+                shown.contains("3,000,000 in · 1,000,000 out · 2 reqs · ~$11.0000"),
+                "{shown}"
+            );
+            assert!(
+                shown.contains("active connection openai: 2,000,000 in · 0 out · 1 req · ~$8.0000"),
+                "{shown}"
+            );
+        });
+        std::env::remove_var("AISHE_FAKE_LLM");
+    }
+
+    #[test]
+    fn mixed_usage_discloses_unpriced_requests_without_repricing_old_models() {
+        let mut config = test_config();
+        config.pricing.insert(
+            "priced".into(),
+            crate::usage::Price {
+                input: 2.0,
+                output: 3.0,
+            },
+        );
+        config.set_active_model("unknown".into());
+        let mut warm = LeanWarm::default();
+        warm.record_usage(
+            crate::usage::Usage {
+                input: 1_000_000,
+                output: 0,
+                requests: 1,
+            },
+            "priced",
+            "work",
+        );
+        warm.record_usage(
+            crate::usage::Usage {
+                input: 50,
+                output: 5,
+                requests: 3,
+            },
+            "unknown",
+            "work",
+        );
+        let summary = warm.usage_summary(&config).expect("usage recorded");
+        assert!(
+            summary.contains("4 reqs · ~$2.0000 (+3 unpriced reqs)"),
+            "{summary}"
+        );
+        assert!(summary.contains("1,000,050 in · 5 out"), "{summary}");
+    }
+
+    #[test]
+    fn status_reports_scope_grant_policy_density_and_shell_usage() {
+        let mut config = test_config();
+        config.backend.default_scope = "host".into();
+        config.backend.output = "compact".into();
+        config.aishe.budget_usd = 12.5;
+        config.sandbox.allow_host_yolo = false;
+        let mut provider = None;
+        let mut executor = Executor::new().expect("executor");
+        let mut session = Session::new(true);
+        let pty = PtyOut::capture();
+        with_store(|store| {
+            let mut warm = LeanWarm::default();
+            warm.grants
+                .accept(LeanMode::Agent, true, executor.cwd())
+                .expect("host grant");
+            warm.record_usage(
+                crate::usage::Usage {
+                    input: 10,
+                    output: 5,
+                    requests: 1,
+                },
+                "unknown",
+                "previous-connection",
+            );
+            let reply = handle_ipc_line(
+                &mut config,
+                &mut provider,
+                &mut executor,
+                &mut session,
+                store,
+                &mut warm,
+                &pty,
+                "SLASH\tagent\t/tmp\t/status",
+            );
+            assert_eq!(reply, "OK");
+            let shown = pty.take_capture();
+            assert!(
+                shown.contains("mode agent · scope host · grant blocked by policy"),
+                "{shown}"
+            );
+            assert!(shown.contains("details compact"), "{shown}");
+            assert!(shown.contains("usage: 10 in · 5 out · 1 req"), "{shown}");
+            assert!(shown.contains("budget: $12.50"), "{shown}");
+            assert!(provider.is_none(), "status initialized a provider");
+            assert!(warm.mcp.is_none(), "status initialized MCP");
+        });
+    }
+
+    #[test]
+    fn session_budget_cannot_be_reset_by_model_or_connection_swaps() {
+        let _guard = fake_llm_lock();
+        std::env::set_var("AISHE_FAKE_LLM", "budget fixture answer");
+        std::env::set_var("AISHE_FAKE_USAGE", "1000000,0");
+        let mut config = test_config();
+        config.aishe.budget_usd = 2.0;
+        config.set_active_model("budget-a".into());
+        for model in ["budget-a", "budget-b"] {
+            config.pricing.insert(
+                model.into(),
+                crate::usage::Price {
+                    input: 1.0,
+                    output: 1.0,
+                },
+            );
+        }
+        let mut provider = None;
+        let mut executor = Executor::new().expect("executor");
+        let mut session = Session::new(true);
+        let pty = PtyOut::capture();
+        with_store(|store| {
+            let mut warm = LeanWarm::default();
+            let first = handle_ipc_line(
+                &mut config,
+                &mut provider,
+                &mut executor,
+                &mut session,
+                store,
+                &mut warm,
+                &pty,
+                "NL\task\t/tmp\tfirst call",
+            );
+            assert_eq!(first, "STREAM_END");
+            warm.record_usage(
+                provider.as_ref().unwrap().meter().snapshot(),
+                config.active_model(),
+                config.active_connection_id(),
+            );
+            for slash in ["/model budget-b", "/connection openai", "/model budget-b"] {
+                assert_eq!(
+                    handle_ipc_line(
+                        &mut config,
+                        &mut provider,
+                        &mut executor,
+                        &mut session,
+                        store,
+                        &mut warm,
+                        &pty,
+                        &format!("SLASH\task\t/tmp\t{slash}"),
+                    ),
+                    "OK"
+                );
+            }
+            let second = handle_ipc_line(
+                &mut config,
+                &mut provider,
+                &mut executor,
+                &mut session,
+                store,
+                &mut warm,
+                &pty,
+                "NL\task\t/tmp\tsecond call",
+            );
+            assert_eq!(second, "STREAM_END");
+            let baseline = provider.as_ref().unwrap().meter().snapshot();
+            warm.record_usage(
+                baseline,
+                config.active_model(),
+                config.active_connection_id(),
+            );
+            let blocked = handle_ipc_line(
+                &mut config,
+                &mut provider,
+                &mut executor,
+                &mut session,
+                store,
+                &mut warm,
+                &pty,
+                "NL\task\t/tmp\tthird call",
+            );
+            assert!(
+                blocked.starts_with("ERROR\tsession budget reached"),
+                "{blocked}"
+            );
+            assert_eq!(provider.as_ref().unwrap().meter().snapshot(), baseline);
+            assert_eq!(config.aishe.budget_usd, 2.0);
+            assert_eq!(
+                handle_ipc_line(
+                    &mut config,
+                    &mut provider,
+                    &mut executor,
+                    &mut session,
+                    store,
+                    &mut warm,
+                    &pty,
+                    "SLASH\task\t/tmp\t/model unknown",
+                ),
+                "OK"
+            );
+            let blocked = handle_ipc_line(
+                &mut config,
+                &mut provider,
+                &mut executor,
+                &mut session,
+                store,
+                &mut warm,
+                &pty,
+                "NL\task\t/tmp\tunknown model bypass",
+            );
+            assert!(
+                blocked.starts_with("ERROR\tsession budget reached"),
+                "{blocked}"
+            );
+            assert!(provider.as_ref().unwrap().meter().snapshot().is_empty());
+        });
+        std::env::remove_var("AISHE_FAKE_LLM");
+        std::env::remove_var("AISHE_FAKE_USAGE");
+    }
+
+    #[test]
+    fn native_agent_loop_uses_remaining_shell_budget_without_double_counting_meter() {
+        let _guard = fake_llm_lock();
+        std::env::set_var("AISHE_FAKE_LLM", "budget fixture final");
+        std::env::set_var("AISHE_FAKE_USAGE", "1000000,0");
+        std::env::set_var("AISHE_FAKE_TOOL", "true");
+        let mut config = test_config();
+        config.backend.default_scope = "host".into();
+        config.aishe.budget_usd = 10.0;
+        config.aishe.stream = false;
+        config.aishe.yolo_confirm = "never".into();
+        config.aishe.yolo_confirm_dangerous = false;
+        config.set_active_model("budget-current".into());
+        for model in ["budget-previous", "budget-current"] {
+            config.pricing.insert(
+                model.into(),
+                crate::usage::Price {
+                    input: 1.0,
+                    output: 1.0,
+                },
+            );
+        }
+        let mut provider = providers::make(&config).ok();
+        provider.as_ref().unwrap().meter().record(1_000_000, 0);
+        let mut executor = Executor::new().expect("executor");
+        let mut session = Session::new(true);
+        let pty = PtyOut::capture();
+        with_store(|store| {
+            std::env::set_var(
+                "AISHE_DATA_DIR",
+                std::env::var_os("AISHE_LEAN_SESSIONS").unwrap(),
+            );
+            let mut warm = LeanWarm::default();
+            warm.grants
+                .accept(LeanMode::Agent, true, executor.cwd())
+                .unwrap();
+            warm.record_usage(
+                crate::usage::Usage {
+                    input: 8_000_000,
+                    output: 0,
+                    requests: 8,
+                },
+                "budget-previous",
+                "previous",
+            );
+            warm.record_usage(
+                crate::usage::Usage {
+                    input: 1_000_000,
+                    output: 0,
+                    requests: 1,
+                },
+                "budget-current",
+                config.active_connection_id(),
+            );
+            let effective = warm
+                .budgeted_turn_config(&config, provider.as_deref())
+                .unwrap();
+            assert_eq!(effective.aishe.budget_usd, 2.0);
+            drop(effective);
+            let reply = handle_ipc_line(
+                &mut config,
+                &mut provider,
+                &mut executor,
+                &mut session,
+                store,
+                &mut warm,
+                &pty,
+                "NL\tagent\t/tmp\tspend one remaining call",
+            );
+            assert_eq!(reply, "RAN");
+            let usage = provider.as_ref().unwrap().meter().snapshot();
+            assert_eq!(usage.requests, 2, "agent exceeded the remaining allowance");
+            assert_eq!(usage.input, 2_000_000);
+            assert_eq!(config.aishe.budget_usd, 10.0);
+            std::env::remove_var("AISHE_DATA_DIR");
+        });
+        std::env::remove_var("AISHE_FAKE_LLM");
+        std::env::remove_var("AISHE_FAKE_USAGE");
+        std::env::remove_var("AISHE_FAKE_TOOL");
+    }
+
+    #[test]
+    fn hard_budget_does_not_substitute_display_price_patterns_for_unknown_models() {
+        let mut config = test_config();
+        config.aishe.budget_usd = 1.0;
+        config.set_active_model("custom-claude-sonnet".into());
+        assert!(crate::usage::price_for(config.active_model(), &config.pricing).is_some());
+        let warm = LeanWarm::default();
+        let turn = warm.budgeted_turn_config(&config, None).unwrap();
+        assert_eq!(turn.aishe.budget_usd, 0.0);
+        assert!(warm
+            .budget_summary(&config)
+            .unwrap()
+            .contains("unknown model prices cannot be enforced"));
+        assert_eq!(config.aishe.budget_usd, 1.0);
+    }
+
+    #[test]
+    fn exhausted_budget_blocks_failure_ai_but_keeps_local_status_available() {
+        let _guard = fake_llm_lock();
+        std::env::set_var("AISHE_FAKE_LLM", "must not be called");
+        let mut config = test_config();
+        config.aishe.budget_usd = 1.0;
+        config.set_active_model("failure-budget".into());
+        config.pricing.insert(
+            "failure-budget".into(),
+            crate::usage::Price {
+                input: 1.0,
+                output: 1.0,
+            },
+        );
+        let mut provider = None;
+        let mut executor = Executor::new().expect("executor");
+        let mut session = Session::new(true);
+        let pty = PtyOut::capture();
+        with_store(|store| {
+            std::env::set_var(
+                "AISHE_DATA_DIR",
+                std::env::var_os("AISHE_LEAN_SESSIONS").unwrap(),
+            );
+            std::env::set_var("AISHE_SHELL_ID", "budget-failure");
+            std::env::set_var("AISHE_LAST_EXIT", "1");
+            crate::failure::record_from_env("false").expect("failure fixture");
+            let mut warm = LeanWarm::default();
+            warm.record_usage(
+                crate::usage::Usage {
+                    input: 1_000_000,
+                    output: 0,
+                    requests: 1,
+                },
+                config.active_model(),
+                config.active_connection_id(),
+            );
+            for request in ["NL\task\t/tmp\t?", "FIX\task\t/tmp\tfix"] {
+                let reply = handle_ipc_line(
+                    &mut config,
+                    &mut provider,
+                    &mut executor,
+                    &mut session,
+                    store,
+                    &mut warm,
+                    &pty,
+                    request,
+                );
+                assert!(
+                    reply.starts_with("ERROR\tsession budget reached"),
+                    "{reply}"
+                );
+                assert!(
+                    provider.is_none(),
+                    "budget rejection initialized a provider"
+                );
+            }
+            assert_eq!(
+                handle_ipc_line(
+                    &mut config,
+                    &mut provider,
+                    &mut executor,
+                    &mut session,
+                    store,
+                    &mut warm,
+                    &pty,
+                    "SLASH\task\t/tmp\t/status",
+                ),
+                "OK"
+            );
+            assert!(provider.is_none());
+            std::env::remove_var("AISHE_DATA_DIR");
+            std::env::remove_var("AISHE_SHELL_ID");
+            std::env::remove_var("AISHE_LAST_EXIT");
+        });
+        std::env::remove_var("AISHE_FAKE_LLM");
+    }
+
+    #[test]
+    fn usage_inspection_imports_standalone_and_legacy_calls_without_double_counting() {
+        let config = test_config();
+        let path = std::env::temp_dir().join(format!(
+            "aishe-lean-usage-import-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos(),
+        ));
+        let mut warm = LeanWarm::default();
+        warm.record_usage(
+            crate::usage::Usage {
+                input: 12,
+                output: 4,
+                requests: 1,
+            },
+            "unknown",
+            "openai",
+        );
+        std::fs::write(
+            &path,
+            "v2\t12\t4\t1\tunknown\topenai\n10\t2\t1\tlegacy-model\n",
+        )
+        .unwrap();
+        warm.replace_usage_from_log(&path);
+        warm.replace_usage_from_log(&path);
+        let summary = warm.usage_summary(&config).expect("usage imported");
+        assert!(summary.contains("22 in · 6 out · 2 reqs"), "{summary}");
+        assert!(warm.used_multiple_connections());
+        let active = warm
+            .usage_summary_for_connection(&config, Some("openai"))
+            .unwrap();
+        assert!(active.contains("12 in · 4 out · 1 req"), "{active}");
+        std::fs::remove_file(&path).unwrap();
+        warm.replace_usage_from_log(&path);
+        assert_eq!(warm.usage_summary(&config), Some(summary));
     }
 
     #[test]
@@ -1819,6 +2700,13 @@ for line in sys.stdin:
                 shown.contains("alpha") && shown.contains("delta"),
                 "pty missing streamed answer: {shown:?}"
             );
+            let header = crate::ui::TerminalCapabilities::detect_stdout().assistant_answer_header();
+            assert_eq!(shown.matches(&header).count(), 1, "{shown:?}");
+            assert_eq!(
+                shown.matches("alpha beta gamma delta").count(),
+                1,
+                "{shown:?}"
+            );
         });
         let n: u64 = std::fs::read_to_string(&chunk_spy)
             .unwrap_or_default()
@@ -1830,6 +2718,53 @@ for line in sys.stdin:
         std::env::remove_var("AISHE_FAKE_STREAM_CHUNK");
         std::env::remove_var("AISHE_SPY_STREAM_CHUNKS");
         let _ = std::fs::remove_file(&chunk_spy);
+    }
+
+    #[test]
+    fn nonstream_answers_have_one_authorship_header_and_command_reasons_have_none() {
+        let config = test_config();
+        let mut executor = Executor::new().unwrap();
+        let mut session = Session::new(true);
+        let pty = PtyOut::capture();
+        let provider = providers::fake::FakeProvider::new(
+            r#"{"type":"answer","explanation":"the nonstream answer"}"#.into(),
+        );
+        assert_eq!(
+            suggest_reply(
+                "answer",
+                &provider,
+                &mut executor,
+                &config,
+                &mut session,
+                &pty,
+                true
+            ),
+            "OK"
+        );
+        let shown = pty.take_capture();
+        let header = crate::ui::TerminalCapabilities::detect_stdout().assistant_answer_header();
+        assert_eq!(shown.matches(&header).count(), 1, "{shown:?}");
+        assert_eq!(
+            shown.matches("the nonstream answer").count(),
+            1,
+            "{shown:?}"
+        );
+        let provider = providers::fake::FakeProvider::new(
+            r#"{"type":"command","command":"true","explanation":"the command reason"}"#.into(),
+        );
+        assert!(suggest_reply(
+            "command",
+            &provider,
+            &mut executor,
+            &config,
+            &mut session,
+            &pty,
+            true
+        )
+        .starts_with("RAN\texit 0"));
+        let shown = pty.take_capture();
+        assert!(!shown.contains(&header), "{shown:?}");
+        assert_eq!(shown.matches("the command reason").count(), 1, "{shown:?}");
     }
 
     #[test]

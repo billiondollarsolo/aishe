@@ -248,7 +248,7 @@ pub(crate) enum Cmd {
         #[arg(value_parser = ["zsh", "bash"])]
         shell: String,
     },
-    /// Launch your real interactive zsh (with all native plugins) under aishe.
+    /// Launch the lean interactive zsh shell (legacy: AISHE_LEGACY_OPENCODE=1).
     Zsh,
     /// Check your environment: shell, config, front-end, provider, API key.
     Doctor {

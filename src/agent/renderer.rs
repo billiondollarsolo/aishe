@@ -107,7 +107,7 @@ impl AgentRenderer {
         Self::with_capabilities(output, TerminalCapabilities::detect_stdout())
     }
 
-    fn with_capabilities(output: &str, capabilities: TerminalCapabilities) -> Self {
+    pub(crate) fn with_capabilities(output: &str, capabilities: TerminalCapabilities) -> Self {
         Self {
             mode: OutputMode::parse(output),
             capabilities,
@@ -129,6 +129,17 @@ impl AgentRenderer {
     }
 
     pub fn render(&mut self, event: &AgentEvent) {
+        // A turn may outlive several resizes. Keep the captured color/motion
+        // policy (stdout can be redirected), but fit each new frame to the
+        // actual terminal rather than the width at turn creation.
+        if self.capabilities.is_tty {
+            if let Ok((columns, rows)) = crossterm::terminal::size() {
+                if columns > 0 && rows > 0 {
+                    self.capabilities.columns = columns;
+                    self.capabilities.rows = rows;
+                }
+            }
+        }
         match event {
             AgentEvent::Connected => self.status("connecting"),
             AgentEvent::SessionCreated { .. }
@@ -432,7 +443,10 @@ impl AgentRenderer {
                 self.clear_status();
                 if self.mode == OutputMode::Focus {
                     if let Some(commands) = self.command_summary() {
-                        self.line(&format!("  commands: {commands}"), StyleToken::Muted);
+                        self.line(
+                            &format!("  attempted commands: {commands}"),
+                            StyleToken::Muted,
+                        );
                     }
                 }
                 if let Some(files) = self.changed_file_summary() {
@@ -504,7 +518,7 @@ impl AgentRenderer {
         }
     }
 
-    fn line(&mut self, value: &str, token: StyleToken) {
+    pub(crate) fn line(&mut self, value: &str, token: StyleToken) {
         self.clear_status();
         println!("{}", self.capabilities.paint(token, value));
     }
@@ -562,7 +576,7 @@ impl AgentRenderer {
         self.status_visible = true;
     }
 
-    fn clear_status(&mut self) {
+    pub(crate) fn clear_status(&mut self) {
         if !self.status_visible {
             return;
         }
@@ -746,6 +760,28 @@ fn waiting_panel(
     metadata: &[(&str, String)],
     footer: &str,
 ) -> String {
+    // Small terminals cannot fit a framed panel plus metadata labels. Keep the
+    // same meaning in a wrapped text layout rather than forcing a 30-cell box.
+    if capabilities.columns < 30 {
+        let indent = if capabilities.columns >= 3 { "  " } else { "" };
+        let width = usize::from(capabilities.columns)
+            .saturating_sub(indent.len())
+            .max(1);
+        let mut content = vec![safe(title, 4096)];
+        content.extend(
+            metadata
+                .iter()
+                .map(|(label, value)| format!("{label}: {}", safe(value, 4096))),
+        );
+        content.push(safe_multiline(body, 4096));
+        content.push(safe(footer, 4096));
+        let lines = content
+            .iter()
+            .flat_map(|value| crate::ui::wrap_cells(value, width))
+            .map(|line| format!("{indent}{line}"))
+            .collect::<Vec<_>>();
+        return format!("{}\n", lines.join("\n"));
+    }
     let ascii = capabilities.glyphs().focus() == ">";
     let (left, right, vertical, lower_left, lower_right, horizontal) = if ascii {
         ("+", "+", "|", "+", "+", "-")
@@ -944,6 +980,28 @@ mod tests {
     }
 
     #[test]
+    fn narrow_question_panel_preserves_identity_and_fits_terminal_cells() {
+        let capabilities = static_plain_capabilities(20);
+        let panel = waiting_question_panel(
+            &capabilities,
+            "Choose a deployment region",
+            Some("planner"),
+            Some("task-id"),
+            Some("q-id"),
+        );
+        assert!(
+            panel.lines().all(|line| crate::ui::cell_width(line) <= 20),
+            "{panel}"
+        );
+        assert!(panel.contains("planner") && panel.contains("task-id") && panel.contains("q-id"));
+        assert!(panel
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+            .contains("awaiting input"));
+    }
+
+    #[test]
     fn summaries_are_compact_and_reclassify_recovered_attempts() {
         let mut renderer = AgentRenderer::new("focus");
         renderer.completed_tools = 5;
@@ -978,7 +1036,10 @@ mod tests {
             "run command  docker logs web".into(),
         ];
         let commands = renderer.command_summary().unwrap();
-        assert!(commands.starts_with("docker ps  ·  docker inspect web"));
+        assert!(commands.starts_with(&format!(
+            "docker ps  {}  docker inspect web",
+            renderer.capabilities.glyphs().separator()
+        )));
         assert!(commands.ends_with("+1 more"));
     }
 

@@ -4,7 +4,10 @@
 use std::io::{IsTerminal, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
 
+use crate::agent::renderer::AgentRenderer;
+use crate::agent::{AgentEvent, ToolCallView, ToolResultView, UserFacingError};
 use crate::ui::SemanticStylize;
+use crate::ui::{StyleToken, TerminalCapabilities};
 use anyhow::Result;
 
 use super::{render_markdown, run_command_tool, safety_gate, use_skill_tool, GateOutcome};
@@ -30,15 +33,56 @@ pub fn run(
     mcp: &McpRegistry,
     session: &mut Session,
 ) -> Result<()> {
+    run_with_terminal(
+        input,
+        provider,
+        executor,
+        config,
+        interrupt,
+        skills,
+        mcp,
+        session,
+        TerminalCapabilities::detect_stdout(),
+    )
+}
+
+/// The lean shell redirects stdout while this loop runs. Preserve the real
+/// terminal's capabilities before that redirect so density, colors, and motion
+/// describe the user-facing output surface rather than the forwarding pipe.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn run_with_terminal(
+    input: &str,
+    provider: &dyn Provider,
+    executor: &mut Executor,
+    config: &Config,
+    interrupt: &AtomicBool,
+    skills: &SkillRegistry,
+    mcp: &McpRegistry,
+    session: &mut Session,
+    capabilities: TerminalCapabilities,
+) -> Result<()> {
     // Optional reversible session: run the whole loop against a throwaway copy of
     // the working tree, then preview + confirm/apply at the end.
     let dry = DryRun::setup(executor, config)?;
     let history = session.history();
     let mut task = crate::tasks::Active::start(config, executor.cwd(), input);
     println!("  {}", format!("task {}", task.id()).dim());
+    let density = effective_density(config);
+    let mut renderer = AgentRenderer::with_capabilities(density, capabilities);
     let outcome = run_loop(
-        input, provider, executor, config, interrupt, skills, mcp, history, &mut task, false,
+        input,
+        provider,
+        executor,
+        config,
+        interrupt,
+        skills,
+        mcp,
+        history,
+        &mut task,
+        false,
+        &mut renderer,
     );
+    renderer.clear_status();
     super::report_usage(provider, config);
     if let Some(d) = dry {
         d.finish(executor);
@@ -60,6 +104,11 @@ pub fn run(
 struct DryRun {
     real_cwd: std::path::PathBuf,
     staging: std::path::PathBuf,
+    real_scope: Option<(
+        crate::agent::ExecutionScope,
+        std::path::PathBuf,
+        crate::agent::NetworkPolicy,
+    )>,
 }
 
 impl DryRun {
@@ -86,6 +135,14 @@ impl DryRun {
                 "yolo_dry_run could not create its isolated preview and will not execute: {error}"
             );
         }
+        let real_scope = executor.lean_scope().cloned();
+        if real_scope.is_some() {
+            executor.set_lean_scope(Some((
+                crate::agent::ExecutionScope::Workspace,
+                staging.canonicalize()?,
+                crate::agent::NetworkPolicy::Deny,
+            )));
+        }
         executor.redirect_cwd(staging.clone());
         executor.set_sandbox_wrap(crate::overlay::dry_run_argv(&staging, &staging));
         println!(
@@ -93,7 +150,11 @@ impl DryRun {
             "dry-run: this session runs in an isolated copy; changes are previewed at the end."
                 .dim()
         );
-        Ok(Some(DryRun { real_cwd, staging }))
+        Ok(Some(DryRun {
+            real_cwd,
+            staging,
+            real_scope,
+        }))
     }
 
     /// Restore the executor, then preview the session's file changes and
@@ -102,6 +163,7 @@ impl DryRun {
     fn finish(self, executor: &mut Executor) {
         executor.set_sandbox_wrap(Vec::new());
         executor.redirect_cwd(self.real_cwd.clone());
+        executor.set_lean_scope(self.real_scope.clone());
 
         let changes = crate::overlay::changes(&self.real_cwd, &self.staging);
         if changes.is_empty() {
@@ -116,7 +178,9 @@ impl DryRun {
         );
         crate::overlay::print_changes(&changes);
 
-        let apply = if std::io::stdin().is_terminal() {
+        let apply = if executor.is_cancelled() {
+            false
+        } else if std::io::stdin().is_terminal() {
             print!(
                 "\napply these {} change(s) to the working tree? [Y/n]: ",
                 changes.len()
@@ -174,12 +238,19 @@ fn run_loop(
     history: Vec<Msg>,
     task: &mut crate::tasks::Active,
     resumed: bool,
+    renderer: &mut AgentRenderer,
 ) -> Result<Option<String>> {
     let ctx = context::build(executor, config);
     // Effective confirmation tier (resolves `yolo_confirm` and the legacy
     // `yolo_confirm_dangerous` boolean). Writes outside the tree by the file
     // tools are confirmed whenever the tier is not "never".
-    let tier = sandbox::confirm_tier(config);
+    // A validated lean session grant authorizes autonomous actions within its
+    // explicit scope. Legacy turns keep their configured confirmation tier.
+    let tier = if executor.lean_scope().is_some() {
+        Tier::Never
+    } else {
+        sandbox::confirm_tier(config)
+    };
     let confirm_writes = tier != Tier::Never;
     // Sandbox backend (Off / Policy gate / bwrap OS isolation). A `bwrap` request
     // with bubblewrap missing degrades to the policy gate — warn once.
@@ -263,13 +334,14 @@ fn run_loop(
     crate::audit::ai_request("yolo", config.active_model(), input);
 
     for iteration in 0..config.aishe.max_yolo_iterations {
-        if interrupt.load(Ordering::SeqCst) {
-            println!("  {}", "aborted".dim());
+        if interrupt.load(Ordering::SeqCst) || executor.is_cancelled() {
+            renderer.render(&AgentEvent::Aborted);
             task.interrupted(&messages, provider.meter().snapshot());
             return Ok(None);
         }
         // Stop before the next model call if the session budget is spent.
         if super::budget_reached(provider, config) {
+            renderer.clear_status();
             task.interrupted(&messages, provider.meter().snapshot());
             return Ok(None);
         }
@@ -278,20 +350,25 @@ fn run_loop(
         // for the whole turn. `streamed` tracks whether any text was printed.
         let before = provider.meter().snapshot();
         let mut streamed = false;
-        let result = if config.aishe.stream {
-            let mut out = std::io::stdout();
+        renderer.render(&AgentEvent::ReasoningStarted);
+        let result = if config.aishe.stream && effective_density(config) == "detailed" {
             provider.complete_with_tools_stream(&system, &messages, &tools, &mut |delta| {
-                if !streamed {
-                    let capabilities = crate::ui::TerminalCapabilities::detect_stdout();
-                    let _ = writeln!(out, "\n{}", capabilities.assistant_answer_header());
+                if interrupt.load(Ordering::SeqCst) || executor.is_cancelled() {
+                    return;
                 }
                 streamed = true;
-                let _ = write!(out, "{delta}");
-                let _ = out.flush();
+                renderer.render(&AgentEvent::TextDelta { text: delta.into() });
             })
         } else {
             provider.complete_with_tools(&system, &messages, &tools)
         };
+        // A blocked provider call may finish after Ctrl-C. Never print its
+        // result or admit a tool after that turn has been cancelled.
+        if interrupt.load(Ordering::SeqCst) || executor.is_cancelled() {
+            renderer.render(&AgentEvent::Aborted);
+            task.interrupted(&messages, provider.meter().snapshot());
+            return Ok(None);
+        }
         let completion: Completion = match result {
             Ok(c) => c,
             Err(e) => {
@@ -299,10 +376,13 @@ fn run_loop(
                     println!();
                 }
                 crate::audit::ai_error("yolo", config.active_model(), &e.to_string());
-                eprintln!(
-                    "{}",
-                    format!("aishe: {}", crate::providers::actionable_error(&e)).red()
-                );
+                renderer.render(&AgentEvent::Failed {
+                    error: UserFacingError {
+                        code: "provider.error".into(),
+                        message: crate::providers::actionable_error(&e),
+                        retryable: false,
+                    },
+                });
                 task.failed(
                     &messages,
                     provider.meter().snapshot(),
@@ -323,19 +403,15 @@ fn run_loop(
 
         // No tool calls → final answer.
         if completion.tool_calls.is_empty() {
-            match (&completion.text, streamed) {
-                // Finish the one-pass stream without rewriting scrollback.
-                (Some(text), true) => super::rerender_streamed_markdown(text),
-                // Not streamed: render markdown directly.
-                (Some(text), false) => {
-                    println!(
-                        "\n{}",
-                        crate::ui::TerminalCapabilities::detect_stdout().assistant_answer_header()
-                    );
-                    render_markdown(text);
-                }
-                _ => {}
-            }
+            let final_text = completion.text.clone().unwrap_or_default();
+            renderer.render(&AgentEvent::TextCompleted {
+                text: final_text.clone(),
+            });
+            renderer.render(&AgentEvent::Completed {
+                // TextCompleted already carries the answer; Completed closes
+                // activity without printing the same prose a second time.
+                summary: String::new(),
+            });
             messages.push(Msg::Assistant(AssistantMsg {
                 text: completion.text.clone(),
                 tool_calls: Vec::new(),
@@ -372,15 +448,23 @@ fn run_loop(
 
         for call in &completion.tool_calls {
             task.pending(call, &messages, provider.meter().snapshot());
-            if interrupt.load(Ordering::SeqCst) {
+            if interrupt.load(Ordering::SeqCst) || executor.is_cancelled() {
                 messages.push(Msg::ToolResult {
                     call_id: call.id.clone(),
                     content: "Interrupted by user.".to_string(),
                 });
-                println!("  {}", "aborted".dim());
+                renderer.render(&AgentEvent::Aborted);
                 task.interrupted(&messages, provider.meter().snapshot());
                 return Ok(None);
             }
+            renderer.render(&AgentEvent::ToolStarted {
+                call: ToolCallView {
+                    call_id: call.id.clone(),
+                    name: call.name.clone(),
+                    arguments: call.arguments.clone(),
+                    title: String::new(),
+                },
+            });
 
             // Skill loading (progressive disclosure): return the skill body so
             // the model has its instructions in context, then continue.
@@ -391,12 +475,10 @@ fn run_loop(
                     .and_then(|v| v.as_str())
                     .unwrap_or("");
                 let content = match skills.get(name) {
-                    Some(s) => {
-                        println!("  {} {}", "skill".cyan(), name.dim());
-                        s.body.clone()
-                    }
+                    Some(s) => s.body.clone(),
                     None => format!("No skill named '{name}'."),
                 };
+                render_tool_result(renderer, &call.id, None, &content);
                 messages.push(Msg::ToolResult {
                     call_id: call.id.clone(),
                     content: content.clone(),
@@ -409,13 +491,34 @@ fn run_loop(
             // directly here, relative to the cwd where applicable.
             if crate::tools::is_builtin_tool(&call.name) {
                 task.mark_pending_started();
-                let (label, content) = crate::tools::execute(
+                // File previews and approvals temporarily own the cursor.
+                renderer.clear_status();
+                let (label, content) = super::yolo_workspace::execute_rendered(
+                    executor.lean_scope(),
                     &call.name,
                     &call.arguments,
                     executor.cwd(),
                     confirm_writes,
                     config.aishe.yolo_preview,
+                    effective_density(config) == "detailed",
                 );
+                render_tool_result(renderer, &call.id, None, &content);
+                if (content.starts_with("Wrote ") || content.starts_with("Replaced "))
+                    && matches!(call.name.as_str(), "write_file" | "edit_file")
+                {
+                    if let Some(path) = call
+                        .arguments
+                        .get("path")
+                        .and_then(serde_json::Value::as_str)
+                    {
+                        renderer.render(&AgentEvent::Diff {
+                            diff: crate::agent::DiffView {
+                                path: path.into(),
+                                patch: String::new(),
+                            },
+                        });
+                    }
+                }
                 crate::audit::action(&format!("yolo:{}", call.name), &label, None);
                 messages.push(Msg::ToolResult {
                     call_id: call.id.clone(),
@@ -428,8 +531,8 @@ fn run_loop(
             // MCP tools (namespaced mcp__server__tool) are proxied to the server.
             if crate::mcp::is_mcp_tool(&call.name) {
                 task.mark_pending_started();
-                println!("  {} {}", "mcp".cyan(), call.name.as_str().dim());
                 let (label, content) = mcp.call(&call.name, &call.arguments);
+                render_tool_result(renderer, &call.id, None, &content);
                 crate::audit::action(&format!("yolo:{}", call.name), &label, None);
                 messages.push(Msg::ToolResult {
                     call_id: call.id.clone(),
@@ -452,15 +555,23 @@ fn run_loop(
                 .unwrap_or("")
                 .to_string();
 
-            println!(
-                "  {} {}: {}",
-                "*".yellow(),
-                reason.as_str().dim(),
-                command.as_str().white()
-            );
+            if effective_density(config) == "detailed" {
+                renderer.clear_status();
+                renderer.line(
+                    &format!("  {}", crate::commands::display_safe(&command)),
+                    StyleToken::ProposedCommand,
+                );
+                if !reason.trim().is_empty() {
+                    renderer.line(
+                        &format!("  {}", crate::commands::display_safe(&reason)),
+                        StyleToken::Muted,
+                    );
+                }
+            }
 
             if command.trim().is_empty() {
-                let content = "No command provided.".to_string();
+                let content = "Error: no command provided.".to_string();
+                render_tool_result(renderer, &call.id, None, &content);
                 messages.push(Msg::ToolResult {
                     call_id: call.id.clone(),
                     content: content.clone(),
@@ -473,9 +584,14 @@ fn run_loop(
             // running, feeding the reason back to the model so it can adapt. The
             // bwrap backend enforces isolation at run time instead, so it does not
             // pre-refuse here.
-            if sandbox_backend == sandbox::Backend::Policy {
+            if executor.lean_scope().is_none() && sandbox_backend == sandbox::Backend::Policy {
                 if let Some(reason) = sandbox::sandbox_refusal(&command) {
-                    println!("  {} {}", "!".red(), reason.as_str().yellow());
+                    render_tool_result(
+                        renderer,
+                        &call.id,
+                        None,
+                        &format!("Error: workspace policy refused this command: {reason}"),
+                    );
                     crate::audit::action("yolo:sandbox-refused", &command, None);
                     messages.push(Msg::ToolResult {
                         call_id: call.id.clone(),
@@ -499,6 +615,7 @@ fn run_loop(
             // proceed automatically when stdin is not a terminal.
             let (need_confirm, dangerous) = sandbox::needs_confirm(tier, &command);
             if need_confirm {
+                renderer.clear_status();
                 let declined = if dangerous {
                     matches!(safety_gate(&command), GateOutcome::Declined)
                 } else {
@@ -506,6 +623,7 @@ fn run_loop(
                 };
                 if declined {
                     let content = "User declined to run this command.".to_string();
+                    render_tool_result(renderer, &call.id, None, &content);
                     messages.push(Msg::ToolResult {
                         call_id: call.id.clone(),
                         content: content.clone(),
@@ -515,20 +633,45 @@ fn run_loop(
                 }
             }
 
-            // bwrap backend: run this command inside a sandbox (read-only root,
-            // writable working tree). Recomputed each time so it tracks the cwd.
-            if sandbox_backend == sandbox::Backend::Bwrap {
+            // Lean authority retains its accepted root while cwd changes. The
+            // compatibility sandbox must never replace that stronger wrapper.
+            if let Some((scope, workspace, network)) = executor.lean_scope().cloned() {
+                let wrap = match scope {
+                    crate::agent::ExecutionScope::Host => Ok(Vec::new()),
+                    crate::agent::ExecutionScope::Workspace => {
+                        sandbox::agent_bwrap_argv(&workspace, executor.cwd(), network)
+                    }
+                };
+                match wrap {
+                    Ok(wrap) => executor.set_sandbox_wrap(wrap),
+                    Err(error) => {
+                        let content =
+                            format!("Error: workspace scope refused this command: {error}");
+                        render_tool_result(renderer, &call.id, None, &content);
+                        messages.push(Msg::ToolResult {
+                            call_id: call.id.clone(),
+                            content: content.clone(),
+                        });
+                        task.tool_completed(call, &content, &messages, provider.meter().snapshot());
+                        continue;
+                    }
+                }
+            } else if sandbox_backend == sandbox::Backend::Bwrap {
                 let wrap = sandbox::bwrap_wrap_argv(executor.cwd());
                 executor.set_sandbox_wrap(wrap);
             }
-            let verbose = config.aishe.yolo_verbose;
+            let verbose = effective_density(config) == "detailed";
+            if verbose {
+                renderer.clear_status();
+            }
             task.mark_pending_started();
             let (code, output) = executor.run_captured(&command, DEFAULT_CAPTURE_TIMEOUT, verbose);
-            // Quiet by default: the model still gets the full output, but the
-            // terminal shows only a compact result instead of dumping everything.
-            if !verbose {
-                print_run_result(code, &output);
+            if interrupt.load(Ordering::SeqCst) || executor.is_cancelled() {
+                renderer.render(&AgentEvent::Aborted);
+                task.interrupted(&messages, provider.meter().snapshot());
+                return Ok(None);
             }
+            render_tool_result(renderer, &call.id, Some(code), &output);
             crate::audit::action("yolo", &command, Some(code));
             let content = format!("exit code {code}\n{output}");
             messages.push(Msg::ToolResult {
@@ -539,6 +682,7 @@ fn run_loop(
         }
 
         if iteration + 1 == config.aishe.max_yolo_iterations {
+            renderer.clear_status();
             println!(
                 "  {}",
                 format!(
@@ -623,9 +767,21 @@ pub fn resume(
         }
     }
     println!("  {}", format!("resuming task {}", task.id()).dim());
+    let mut renderer = AgentRenderer::new(effective_density(config));
     let outcome = run_loop(
-        &objective, provider, executor, config, interrupt, skills, mcp, messages, &mut task, true,
+        &objective,
+        provider,
+        executor,
+        config,
+        interrupt,
+        skills,
+        mcp,
+        messages,
+        &mut task,
+        true,
+        &mut renderer,
     );
+    renderer.clear_status();
     super::report_usage(provider, config);
     outcome?;
     Ok(())
@@ -641,31 +797,62 @@ fn canonical_messages(messages: &[Msg]) -> Vec<Msg> {
         .collect()
 }
 
-/// Compact per-step result shown in non-verbose yolo: the exit code and a line
-/// count, plus a short tail of the output when the command failed (so the user
-/// sees what went wrong without the full dump). The model still receives the
-/// complete output.
-fn print_run_result(code: i32, output: &str) {
-    let lines: Vec<&str> = output.lines().filter(|l| !l.trim().is_empty()).collect();
-    let n = lines.len();
-    let plural = if n == 1 { "" } else { "s" };
-    if code == 0 {
-        println!(
-            "  {} {}",
-            "✓".green(),
-            format!("exit 0 · {n} line{plural}").dim()
-        );
+fn effective_density(config: &Config) -> &str {
+    if config.aishe.yolo_verbose {
+        "detailed"
     } else {
-        println!(
-            "  {} {}",
-            "✗".red(),
-            format!("exit {code} · {n} line{plural}").dim()
-        );
-        // A short tail for context (the model gets all of it).
-        let tail = lines.len().saturating_sub(4);
-        for l in &lines[tail..] {
-            println!("    {}", l.dim());
-        }
+        &config.backend.output
+    }
+}
+
+fn render_tool_result(
+    renderer: &mut AgentRenderer,
+    call_id: &str,
+    code: Option<i32>,
+    output: &str,
+) {
+    let failed = code.is_some_and(|value| value != 0)
+        || output.trim_start().starts_with("Error")
+        || output.trim_start().starts_with("No skill named ")
+        || output.trim_start().starts_with("User declined ");
+    if failed {
+        let first_line = output
+            .lines()
+            .find(|line| !line.trim().is_empty())
+            .unwrap_or("");
+        let message = code
+            .map(|value| format!("exit {value}: {first_line}"))
+            .unwrap_or_else(|| first_line.to_string());
+        renderer.render(&AgentEvent::ToolFailed {
+            call_id: call_id.into(),
+            error: UserFacingError {
+                code: "tool.failed".into(),
+                message,
+                retryable: true,
+            },
+        });
+    } else {
+        let summary = if let Some(code) = code {
+            let lines = output
+                .lines()
+                .filter(|line| !line.trim().is_empty())
+                .count();
+            format!(
+                "exit {code} · {lines} line{}",
+                if lines == 1 { "" } else { "s" }
+            )
+        } else {
+            output.to_string()
+        };
+        renderer.render(&AgentEvent::ToolCompleted {
+            call_id: call_id.into(),
+            result: ToolResultView {
+                success: true,
+                exit_code: code,
+                output: summary,
+                metadata: serde_json::Value::Null,
+            },
+        });
     }
 }
 

@@ -11,9 +11,9 @@ Interactive `aishe` (and `aishe zsh`) now:
    `-f` is NO_RCS. `-o RCS` re-enables only this ZDOTDIR so the lean hook loads.
    `-o NO_GLOBAL_RCS` keeps `/etc/zshrc` off. The user's `~/.zshrc` is **never**
    sourced. Optional aliases live in `~/.aishe/leanrc` or `$AISHE_LEANRC`.
-2. Injects a **minimal hook**: classifier `?` / `!` / PATH-known / NL, tiny
-   prompt + mode glyph, Shift-Tab grant cycle. Known commands stay in the child
-   zsh (no parent spawn, no model, no socket call).
+2. Injects an **owned hook**: classifier `?` / `!` / PATH-known / NL, bounded
+   prompt + mode/scope indicators, Shift-Tab grant cycle. Known commands stay in
+   the child zsh (no parent spawn, no model, no socket call).
 3. Sends NL to the **already-running parent** over a FIFO. The parent uses the
    in-process `src/providers/*` HTTP client (ureq + rustls). It does **not**
    call `backend::supervisor` or start OpenCode.
@@ -48,6 +48,57 @@ or OpenCode (`dispatcher::fast_shell_line` in `src/main.rs`).
 | **ask** (default) | `❯` | none | none; propose or answer |
 | **allow** | `»` | type `allow` once | Safe auto-runs; Dangerous/Unknown need `yes` |
 | **agent** | `*` | type `agent` or `agent-host` | no per-action prompts after grant; Linux workspace needs working bwrap |
+
+## Default UI and session state
+
+- The left prompt keeps `ask`, `allow`, or `agent:workspace` / `agent:host`
+  visible, including when the terminal is narrow. A pending grant is marked
+  before AI execution. The right prompt shows the active model, connection,
+  and configured session metrics when space permits; labels are literal text.
+  Prompt colors and command highlighting follow the shared palette, `NO_COLOR`,
+  and `TERM=dumb`; ASCII mode supplies plain glyphs.
+- Shift-Tab cycles `ask → allow → agent → ask` on an empty input line. With
+  text entered it keeps reverse completion. `/mode agent` explicitly selects
+  workspace scope; `/mode agent-host` selects host scope. The parent validates
+  scope and policy before asking for a grant, reuses an accepted grant, and
+  commits the new mode only after acceptance. Cycling preserves the current
+  agent scope. Esc or Ctrl-C cancels the grant and preserves the last real
+  command failure. Accepted agent turns do not ask again per action; explicitly
+  configured file previews retain their approval step.
+- Workspace grants are tied to the canonical directory shown at acceptance.
+  Moving outside that tree requires a new grant. Host scope remains explicit
+  in the prompt and is refused when host-agent policy is disabled.
+- `/details` and Ctrl-O cycle `focus → compact → detailed`. Focus keeps final
+  results and an action summary, compact keeps tool result rows, and detailed
+  adds commands and raw output. Agent progress uses the shared renderer; static
+  terminals receive bounded phase messages.
+- `/usage` totals the live shell across model and connection switches, pricing
+  each billed model separately and disclosing unknown prices. Multiple used
+  connections also get an active-connection subtotal. `/reset` clears the
+  conversation, while spend remains counted. `/status` shows scope, grant,
+  density, usage, and the configured budget without starting a provider or MCP.
+  Standalone CLI usage recorded in this shell's tally is included on inspection.
+  The live IPC path stops further model calls once known-price session spend
+  reaches the configured budget, including after changing models or credentials.
+  Monetary enforcement uses exact known prices; unknown prices are disclosed
+  and remain unenforced. A response already in flight can exceed the budget.
+- The parent owns explicit session files for selections, output density, and
+  usage. Nested shells use their own files. Answers and transcripts go to the
+  terminal output sink; they are never written into the shell's input stream.
+- Ctrl-C during an AI turn requests cancellation and keeps the shell waiting
+  for that turn's reply. Command process groups stop promptly. Synchronous
+  provider requests and opaque MCP calls may finish before acknowledgement;
+  later output and tool actions are suppressed, and the next reply stays aligned.
+
+Linux workspace mode requires functional bubblewrap and limits command writes
+to the accepted tree, with private temporary storage and command network access
+denied unless configured otherwise. The system root remains mounted read-only,
+so this does not hide every readable file outside the project; home is masked
+apart from the accepted workspace. Built-in file tools enforce the workspace
+boundary separately. Configured MCP servers execute outside this command
+sandbox and retain their existing trust and network behavior. The workspace
+indicator therefore does not promise isolation of an opaque MCP server. On
+macOS, workspace restrictions are policy-only.
 
 ## How to run
 
@@ -106,11 +157,11 @@ AISHE_SPY_WIRE_NS=/tmp/wire \
 
 ### Closed in Wave 1 (2026-09-09)
 
-- **F19/F35 multi-line answers:** parent writes formatted text to the PTY master
+- **F19/F35 multi-line answers:** parent writes formatted text to terminal output
   via `lean::PtyOut`; FIFO returns control `OK`. FILL/CONFIRM use `*_B64` so
   newlines survive. Ask/suggest no longer flatten answers to spaces.
 - **F05/F46 agent transcript:** `StdoutRedirect` splices agent `println!`
-  output into the same PTY master; FIFO returns `RAN` only. No OpenCode on the
+  output into the terminal display sink; FIFO returns `RAN` only. No OpenCode on the
   default agent path.
 - **F18 compsys:** bounded `compinit` + `.zcompdump` / `.zcompcache` under the
   private ZDOTDIR. First interactive start may rebuild the dump (tens–low
@@ -134,8 +185,8 @@ AISHE_SPY_WIRE_NS=/tmp/wire \
   Ctrl-X Ctrl-F (`FIX` IPC) prefills a corrected command (`FILL_B64`).
 - **F31 `@file` / `@diff`:** parent expands attachments with `attachments::expand`
   before suggest/agent NL (same bounds as legacy).
-- **F33 real `/usage`:** prints `usage::summary` from the warm provider meter
-  (not a stub); optional budget line.
+- **F33 real `/usage`:** prints cumulative live-shell usage across provider
+  replacements, with mixed-model pricing and an optional budget line.
 - **F26 `aishe doctor` lean section:** `lean.enabled`, FIFO temp dir, compsys dump
   contract, grok `auth.json` **presence** (never token print), bwrap, leanrc path,
   lean sessions root.
@@ -145,7 +196,7 @@ AISHE_SPY_WIRE_NS=/tmp/wire \
 - **F15 `/connection` + `/model`:** lean FIFO slash list/pick by id, label, or
   `#`. Reuses connection store + provider catalog (no OpenCode model discovery).
   Grok subscription remains the default happy path. Selection is shell-local via
-  `connection::write_shell_selection`.
+  the parent's explicit session selection file.
 - **F16/F17 warm MCP + skills:** local registries load once when needed.
   `/help`, `/commands`, `/skills`, `/status`, and custom shell commands do not
   connect MCP servers. `/status` reports configured servers as "not warmed"
@@ -165,7 +216,7 @@ AISHE_SPY_WIRE_NS=/tmp/wire \
 
 - **F19 token streaming into PTY:** lean ask answers use provider
   `complete_stream` / SSE (fake provider chunks without network). Parent writes
-  token deltas to the PTY master via `PtyOut` / `PtyWrite`; FIFO returns
+  token deltas to terminal output via `PtyOut` / `PtyWrite`; FIFO returns
   `STREAM_END` (or `FILL_B64` / `CONFIRM_B64` for commands). Lean defaults
   streaming for ask; `config.stream` also enables allow. No OpenCode.
 - **Heavy specialist opt-in:** lean `/backend` + `src/lean/heavy.rs` docs point at
@@ -180,8 +231,8 @@ AISHE_SPY_WIRE_NS=/tmp/wire \
   Budgets table above. Known-cmd stays in-child (no FIFO / Provider / OpenCode).
 - **F34 `/details` + Ctrl-O:** cycles `focus → compact → detailed` on
   `config.backend.output`, emits `details: … (this shell)` via `PtyOut`, syncs
-  `AISHE_AGENT_OUTPUT` / `AISHE_OUTPUT_FILE`, and maps `detailed` →
-  `yolo_verbose` for lean agent tool dumps. Hook binds `AISHE_DETAILS_KEY` (default `^O`).
+  the shell's output file and renders distinct focus, compact, and detailed
+  transcripts. Hook binds `AISHE_DETAILS_KEY` (default `^O`).
 - **F16/F17 `/mcp` + `/skills`:** list **names** (servers/tools/skills), not just
   `/status` counts. `/skills` loads only skills; `/mcp` connects only MCP servers.
 
@@ -218,7 +269,8 @@ multi-step work. Controllers are layered:
 - Entry: `src/lean/nl.rs::agent_reply` / `run_nl(LeanMode::Agent)`.
 - Loop: `src/modes/yolo.rs` — multi-step tool calls until the model stops with
   a no-tool turn. Same tools and safety gate as legacy yolo; executor prefers
-  `dash -c` (fallback `zsh -f -c`) and Linux workspace bwrap when available.
+  `dash -c` (fallback `zsh -f -c`). Linux workspace scope requires functional
+  bubblewrap; unavailable isolation refuses the agent turn.
 - Provider is constructed once per live shell (FIFO parent) and kept warm —
   no per-turn `backend::supervisor::ensure_running`, no 45–63 MB OpenCode boot.
 - Ask/allow stay one-shot (suggest). Escalate to agent with Shift-Tab / grant
