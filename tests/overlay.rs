@@ -115,11 +115,6 @@ fn yolo_dry_run_session_previews_applies_and_is_undoable() {
             .unwrap()
             .env("XDG_CONFIG_HOME", &cfg_home)
             .env("XDG_DATA_HOME", &data_home)
-            // This fixture qualifies the historical batch dry-run contract,
-            // whose explicit preview/auto-apply policy predates native shell
-            // grants. Keep it on that front-end; native admission stays gated.
-            .env("AISHE_LEAN", "0")
-            .env("AISHE_LEGACY_OPENCODE", "1")
             .env("ANTHROPIC_API_KEY", "sk-test")
             .env("AISHE_FAKE_LLM", "done")
             .env(
@@ -131,9 +126,11 @@ fn yolo_dry_run_session_previews_applies_and_is_undoable() {
             .assert()
             .success()
     };
-    // A non-interactive (-c) yolo session runs in the staging copy, previews the
-    // changes, and auto-applies them (journaled).
-    run(&["-c", "update the data file"]).stdout(contains("dry-run").and(contains("applied")));
+    // Explicit task invocation authorizes this bounded workspace request.
+    // Configuration-selected autonomy in `-c` still requires a live shell
+    // grant. The task runs in staging, previews, and auto-applies (journaled).
+    run(&["agent", "--scope", "workspace", "update the data file"])
+        .stdout(contains("dry-run").and(contains("applied")));
     assert_eq!(
         std::fs::read_to_string(work.join("data.txt")).unwrap(),
         "v2\n"
