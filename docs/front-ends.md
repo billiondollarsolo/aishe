@@ -143,6 +143,7 @@ prompt badge appears only when tasks are running or a result or problem has not
 been seen. It counts work across all projects: for example, `2 running · 1 ready`.
 **Needs you** marks a paused agent question or action approval. `attention`
 marks failed, interrupted, or stopped work; `ready` marks an unseen result.
+`queued` counts workflow stages waiting for dependencies or a worker slot.
 Empty activity has no badge. Requests stay visible until you respond, while
 reviewed results stay quiet across shell sessions.
 
@@ -159,11 +160,15 @@ inspect it. **Tab** toggles the current project and all projects; **Ctrl-R**
 refreshes. **Ctrl-V** chooses Current work, Needs you, or Archived history.
 Details expose the result, recorded-check summary, checkpoint counters, and
 limits. Press **Enter** or **u** to respond to a request, **f** to send a
-follow-up, **e** for recorded checks, **l** for activity, **p** for read-only
-changes, or **?** for the searchable Task actions menu. **Esc** goes back or closes
+follow-up, **e** for recorded checks, **l** for activity, **t** for the typed
+timeline, **p** for read-only changes, or **?** for the searchable Task actions
+menu. **Ctrl-F** filters the timeline by event type. **Esc** goes back or closes
 the browser; **Ctrl-C** closes it from any page. Resume, stop, rework, apply,
 and discard are explicit actions with confirmation;
-opening a task or patch does not apply its changes. Existing `aishe task`
+opening a task or patch does not apply its changes. **a** opens file/hunk
+selection with actual checks and a separate, revision-bound Apply decision.
+The review states that a selected subset has not been checked separately.
+Existing `aishe task`
 start, list, tail, review, and lifecycle commands remain available. Tasks that
 run in the source directory still offer confirmed stop, resume, and rework
 controls. Changes, review, and apply require an isolated git worktree.
@@ -175,6 +180,14 @@ in Task actions; **n**, **i**, and **h** provide the same controls directly from
 details. Names are display labels; the original objective stays intact. Archiving
 keeps results and workspaces available in Archived history. Running tasks and
 tasks waiting for your response cannot be archived.
+
+During a native turn, **Ctrl-X d** queues background handoff at the next safe
+provider/tool boundary. In task details, **g** offers to bring the same checkpoint
+into this terminal with its saved authority and remaining allowances. Queued and
+received handoffs remain visible in details. `/tasks fg ID` provides the same
+continuation directly. `/workflow` inspects reusable task graphs and their
+isolated stage tree. For commands, template examples, and execution boundaries,
+see [Agentic task workflows](agentic-workflows.md).
 
 #### Answer a request without losing your place
 

@@ -36,6 +36,7 @@ const MAX_INTERACTION_PREVIEW_CHARS: usize = 4 * 16 * 1024;
 #[serde(rename_all = "snake_case")]
 pub enum TaskAttention {
     NeedsYou,
+    Queued,
     Running,
     Ready,
     Attention,
@@ -45,6 +46,7 @@ pub enum TaskAttention {
 impl From<State> for TaskAttention {
     fn from(state: State) -> Self {
         match state {
+            State::Blocked => Self::Queued,
             State::Waiting => Self::NeedsYou,
             State::Starting | State::Running => Self::Running,
             State::Completed => Self::Ready,
@@ -75,6 +77,18 @@ pub struct TaskEntry {
     pub attention: TaskAttention,
     pub isolated: bool,
     pub activity: String,
+    #[serde(default)]
+    pub workflow_id: Option<String>,
+    #[serde(default)]
+    pub stage_key: Option<String>,
+    #[serde(default)]
+    pub stage_name: Option<String>,
+    #[serde(default)]
+    pub dependencies: Vec<String>,
+    #[serde(default)]
+    pub workflow_completed: usize,
+    #[serde(default)]
+    pub workflow_total: usize,
 }
 
 impl TaskEntry {
@@ -93,7 +107,9 @@ impl TaskEntry {
             .iter()
             .filter(|request| request.status == super::InteractionStatus::Pending)
             .count();
-        let attention = if record.state == State::Waiting && pending_requests == 0 {
+        let attention = if (record.state == State::Waiting && pending_requests == 0)
+            || (record.state == State::Blocked && record.error.is_some())
+        {
             TaskAttention::Attention
         } else {
             record.state.into()
@@ -137,6 +153,32 @@ impl TaskEntry {
             attention,
             isolated: record.worktree.is_some(),
             activity: record_activity(record),
+            workflow_id: record
+                .workflow
+                .as_ref()
+                .map(|stage| safe_line(&stage.run_id, 160)),
+            stage_key: record
+                .workflow
+                .as_ref()
+                .map(|stage| safe_line(&stage.stage_key, 160)),
+            stage_name: record
+                .workflow
+                .as_ref()
+                .map(|stage| safe_line(&stage.stage_name, 160)),
+            dependencies: record
+                .workflow
+                .as_ref()
+                .map(|stage| {
+                    stage
+                        .dependencies
+                        .iter()
+                        .take(32)
+                        .map(|id| safe_line(id, 160))
+                        .collect()
+                })
+                .unwrap_or_default(),
+            workflow_completed: 0,
+            workflow_total: 0,
         }
     }
 
@@ -153,6 +195,8 @@ pub struct TaskStatus {
     pub running: usize,
     pub ready: usize,
     pub attention: usize,
+    #[serde(default)]
+    pub queued: usize,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -212,6 +256,8 @@ pub struct TaskCheckpoint {
     pub updated_at_ms: u128,
     pub native_state: Option<String>,
     pub execution: crate::tasks::ExecutionCounters,
+    #[serde(default)]
+    pub execution_limits: Option<crate::agent::native::NativeLimits>,
     pub usage: crate::tasks::UsageSummary,
     pub pending_tool: Option<String>,
     pub completed_tools: usize,
@@ -221,6 +267,8 @@ pub struct TaskCheckpoint {
     pub evidence: Vec<crate::tasks::CheckEvidence>,
     pub evidence_dropped: usize,
     pub workspace_revision: u64,
+    pub timeline: Vec<crate::tasks::TaskTimelineEvent>,
+    pub timeline_dropped: usize,
 }
 
 #[derive(Clone, Debug)]
@@ -233,6 +281,34 @@ pub struct TaskDetails {
     pub checkpoint: Option<TaskCheckpoint>,
     pub log_lines: Vec<String>,
     pub activity: String,
+    pub timeline: Vec<crate::tasks::TaskTimelineEvent>,
+    pub timeline_dropped: usize,
+    pub timeline_warning: Option<String>,
+    pub handoff: Option<TaskHandoff>,
+}
+
+#[derive(Clone, Debug)]
+pub struct TaskHandoff {
+    pub direction: crate::agent::native::handoff::Direction,
+    pub status: crate::agent::native::handoff::Status,
+    pub requested: Option<crate::agent::native::handoff::Direction>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct TaskTimeline {
+    pub events: Vec<crate::tasks::TaskTimelineEvent>,
+    pub dropped: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub warning: Option<String>,
+}
+
+pub fn task_timeline(id: &str) -> Result<TaskTimeline> {
+    let details = task_details(id)?;
+    Ok(TaskTimeline {
+        events: details.timeline,
+        dropped: details.timeline_dropped,
+        warning: details.timeline_warning,
+    })
 }
 
 impl TaskDetails {
@@ -302,7 +378,8 @@ pub fn cached_task_entries_with_query(
     project: Option<&Path>,
     query: EntryQuery,
 ) -> Result<Vec<TaskEntry>> {
-    let cache = read_cache(&cache_path()?)?;
+    let mut cache = read_cache(&cache_path()?)?;
+    annotate_workflows(&mut cache.entries);
     let mut entries = cache
         .entries
         .into_iter()
@@ -324,8 +401,8 @@ pub fn shell_status_text(project: Option<&Path>, seen_path: Option<&Path>) -> Re
     let seen = seen_path.map(read_seen).unwrap_or_default();
     let status = task_status(project, &seen)?;
     Ok(format!(
-        "running\t{}\nready\t{}\nattention\t{}\nneeds_you\t{}\n",
-        status.running, status.ready, status.attention, status.needs_you
+        "running\t{}\nready\t{}\nattention\t{}\nneeds_you\t{}\nqueued\t{}\n",
+        status.running, status.ready, status.attention, status.needs_you, status.queued
     ))
 }
 
@@ -338,6 +415,7 @@ fn status_for(entries: &[TaskEntry], seen: &SeenTasks) -> TaskStatus {
         match entry.attention {
             TaskAttention::NeedsYou => status.needs_you += 1,
             TaskAttention::Running => status.running += 1,
+            TaskAttention::Queued => status.queued += 1,
             TaskAttention::Ready if !seen.is_seen(entry) => status.ready += 1,
             TaskAttention::Attention if !seen.is_seen(entry) => status.attention += 1,
             _ => {}
@@ -481,9 +559,10 @@ fn trim_entries(entries: &mut Vec<TaskEntry>) {
         let priority = match entry.attention {
             TaskAttention::NeedsYou => 0,
             TaskAttention::Running => 1,
-            TaskAttention::Attention => 2,
-            TaskAttention::Ready => 3,
-            TaskAttention::Closed => 4,
+            TaskAttention::Queued => 2,
+            TaskAttention::Attention => 3,
+            TaskAttention::Ready => 4,
+            TaskAttention::Closed => 5,
         };
         (
             entry.archived,
@@ -501,8 +580,9 @@ fn sort_display_entries(entries: &mut [TaskEntry]) {
             TaskAttention::NeedsYou => 0,
             TaskAttention::Attention => 1,
             TaskAttention::Running => 2,
-            TaskAttention::Ready => 3,
-            TaskAttention::Closed => 4,
+            TaskAttention::Queued => 3,
+            TaskAttention::Ready => 4,
+            TaskAttention::Closed => 5,
         };
         (
             entry.attention != TaskAttention::NeedsYou,
@@ -511,6 +591,23 @@ fn sort_display_entries(entries: &mut [TaskEntry]) {
             std::cmp::Reverse(entry.updated_at_ms),
         )
     });
+}
+
+fn annotate_workflows(entries: &mut [TaskEntry]) {
+    let mut groups: BTreeMap<String, (usize, usize)> = BTreeMap::new();
+    for entry in entries.iter() {
+        if let Some(id) = &entry.workflow_id {
+            let group = groups.entry(id.clone()).or_default();
+            group.1 += 1;
+            group.0 += usize::from(matches!(entry.state, State::Completed | State::Applied));
+        }
+    }
+    for entry in entries {
+        if let Some((completed, total)) = entry.workflow_id.as_ref().and_then(|id| groups.get(id)) {
+            entry.workflow_completed = *completed;
+            entry.workflow_total = *total;
+        }
+    }
 }
 
 fn mutate_cache(path: &Path, change: impl FnOnce(&mut Cache)) -> Result<()> {
@@ -613,6 +710,15 @@ pub fn task_details(id: &str) -> Result<TaskDetails> {
         .native_task_id
         .as_deref()
         .and_then(|id| load_checkpoint_summary(id, record.state));
+    let handoff = record
+        .native_task_id
+        .as_deref()
+        .and_then(|id| crate::agent::native::handoff::snapshot(id).ok())
+        .map(|snapshot| TaskHandoff {
+            direction: snapshot.mode,
+            status: snapshot.status,
+            requested: snapshot.requested,
+        });
     let activity = checkpoint
         .as_ref()
         .and_then(|checkpoint| checkpoint.pending_tool.as_ref())
@@ -620,6 +726,41 @@ pub fn task_details(id: &str) -> Result<TaskDetails> {
         .map(|tool| format!("Using {tool}"))
         .unwrap_or_else(|| record_activity(&record));
     let log_lines = preview_log(&super::log_path(id)?).unwrap_or_default();
+    let (journal, timeline_warning) = match crate::tasks::timeline::read_background(id) {
+        Ok(journal) => (journal, None),
+        Err(error) => (
+            crate::tasks::timeline::TimelineJournal::default(),
+            Some(safe_line(
+                &format!("Background timeline unavailable: {error}"),
+                320,
+            )),
+        ),
+    };
+    let mut timeline = checkpoint
+        .as_ref()
+        .map(|checkpoint| checkpoint.timeline.clone())
+        .unwrap_or_default();
+    let mut timeline_dropped = journal.dropped.saturating_add(
+        checkpoint
+            .as_ref()
+            .map_or(0, |checkpoint| checkpoint.timeline_dropped),
+    );
+    timeline.extend(journal.events);
+    timeline.sort_by_key(|event| {
+        (
+            event.at_ms,
+            match event.source {
+                crate::tasks::timeline::EventSource::Native => 0,
+                crate::tasks::timeline::EventSource::Background => 1,
+            },
+            event.sequence,
+        )
+    });
+    if timeline.len() > crate::tasks::timeline::MAX_EVENTS {
+        let dropped = timeline.len() - crate::tasks::timeline::MAX_EVENTS;
+        timeline.drain(..dropped);
+        timeline_dropped = timeline_dropped.saturating_add(dropped);
+    }
     sanitize_record(&mut record);
     let interaction = super::InteractionSummary {
         pending: record
@@ -641,6 +782,10 @@ pub fn task_details(id: &str) -> Result<TaskDetails> {
         checkpoint,
         log_lines,
         activity,
+        timeline,
+        timeline_dropped,
+        timeline_warning,
+        handoff,
     })
 }
 
@@ -696,6 +841,7 @@ fn checkpoint_summary(record: &crate::tasks::Record) -> TaskCheckpoint {
             .as_deref()
             .map(|state| safe_line(state, 80)),
         execution: record.execution,
+        execution_limits: record.execution_limits.clone(),
         usage: record.usage.clone(),
         pending_tool: record
             .pending_tool
@@ -724,11 +870,28 @@ fn checkpoint_summary(record: &crate::tasks::Record) -> TaskCheckpoint {
             .collect(),
         evidence_dropped: record.evidence_dropped,
         workspace_revision: record.workspace_revision,
+        timeline: record
+            .timeline
+            .iter()
+            .rev()
+            .take(crate::tasks::timeline::MAX_EVENTS)
+            .rev()
+            .cloned()
+            .map(crate::tasks::TaskTimelineEvent::sanitized)
+            .collect(),
+        timeline_dropped: record.timeline_dropped.saturating_add(
+            record
+                .timeline
+                .len()
+                .saturating_sub(crate::tasks::timeline::MAX_EVENTS),
+        ),
     }
 }
 
 fn record_activity(record: &Record) -> String {
     match record.state {
+        State::Blocked if record.error.is_some() => "Dependency needs attention".into(),
+        State::Blocked => "Queued · waiting for dependencies".into(),
         State::Waiting
             if record
                 .mailbox
@@ -767,6 +930,19 @@ fn sanitize_record(record: &mut Record) {
         .map(|branch| safe_line(branch, 256));
     record.connection = None;
     record.process_start = None;
+    if let Some(stage) = &mut record.workflow {
+        stage.run_id = safe_line(&stage.run_id, 160);
+        stage.stage_key = safe_line(&stage.stage_key, 160);
+        stage.stage_name = safe_line(&stage.stage_name, 160);
+        stage.dependencies.truncate(32);
+        for id in &mut stage.dependencies {
+            *id = safe_line(id, 160);
+        }
+        stage.required_checks.truncate(32);
+        for command in &mut stage.required_checks {
+            *command = safe_line(command, 2048);
+        }
+    }
     record.mailbox.requests.truncate(128);
     for request in &mut record.mailbox.requests {
         request.prompt = safe_multiline(&request.prompt, MAX_INTERACTION_PREVIEW_CHARS);
@@ -1149,6 +1325,7 @@ mod tests {
                 running: 2,
                 ready: 1,
                 attention: 3,
+                queued: 0,
             }
         );
     }

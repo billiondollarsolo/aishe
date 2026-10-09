@@ -912,6 +912,14 @@ fn agent_reply(
         Ok(outcome) => match outcome.state {
             crate::agent::native::NativeTurnState::Completed => "RAN".into(),
             crate::agent::native::NativeTurnState::Cancelled => "CANCELLED".into(),
+            crate::agent::native::NativeTurnState::HandedOff => {
+                let receipt = outcome
+                    .detail
+                    .as_deref()
+                    .unwrap_or("Task moved to the background; open /tasks to view it.");
+                emit_text(pty, &format!("\n{receipt}"));
+                "RAN".into()
+            }
             _ => format!(
                 "ERROR\t{}",
                 one_line(

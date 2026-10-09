@@ -65,6 +65,9 @@ pub(crate) struct Args {
     /// Internal entry point for a private background task record.
     #[arg(long, hide = true)]
     pub(crate) background_task: Option<String>,
+    /// Internal entry point for a durable workflow scheduler.
+    #[arg(long, hide = true)]
+    pub(crate) background_workflow: Option<String>,
     /// (shell hook) Persist one bounded, redacted failure capsule.
     #[arg(long, hide = true)]
     pub(crate) record_failure: Option<String>,
@@ -82,6 +85,29 @@ pub(crate) struct Args {
     pub(crate) hook_cli: Option<Vec<String>>,
     #[command(subcommand)]
     pub(crate) cmd: Option<Cmd>,
+}
+
+/// Avoid constructing the full administrative command tree for exactly
+/// `aishe -c LINE`, only after the existing classifier proves a shell route.
+/// Everything else retains Clap's validation, including hyphen-prefixed values.
+pub(crate) fn fast_shell_command(
+    argv: impl IntoIterator<Item = std::ffi::OsString>,
+) -> Option<(String, bool)> {
+    let mut argv = argv.into_iter();
+    argv.next()?;
+    if argv.next()?.as_os_str() != "-c" {
+        return None;
+    }
+    let value = argv.next()?;
+    if argv.next().is_some() {
+        return None;
+    }
+    let line = value.to_str()?;
+    if line.starts_with('-') {
+        return None;
+    }
+    let command = aishe::dispatcher::fast_shell_line(line)?;
+    Some((command, line.trim().starts_with('!')))
 }
 
 #[derive(clap::Args, Debug)]
@@ -631,6 +657,11 @@ pub(crate) enum Cmd {
         #[command(subcommand)]
         cmd: BackgroundTaskCmd,
     },
+    /// Run reusable, checked workflows with bounded parallel stages.
+    Workflow {
+        #[command(subcommand)]
+        cmd: WorkflowCmd,
+    },
     /// Resume the most recent interrupted task, or a specific task ID.
     Resume {
         /// Task to resume
@@ -693,6 +724,16 @@ pub(crate) enum Cmd {
 
 #[derive(Subcommand, Debug)]
 pub(crate) enum BackgroundTaskCmd {
+    /// Move a running foreground native task to the background at a safe boundary.
+    Bg { id: Option<String> },
+    /// Continue a background task in this terminal with its saved context.
+    Fg { id: String },
+    /// Inspect recorded execution events without exposing private model context.
+    Timeline {
+        id: String,
+        #[arg(long)]
+        json: bool,
+    },
     /// Browse live background work, results, activity, and changes.
     Browse {
         /// Open one task directly.
@@ -771,6 +812,8 @@ pub(crate) enum BackgroundTaskCmd {
     Review {
         /// Task whose changes to review
         id: String,
+        #[arg(long)]
+        json: bool,
     },
     /// Ask the agent to revise a completed or failed isolated task.
     Rework {
@@ -784,8 +827,14 @@ pub(crate) enum BackgroundTaskCmd {
         /// Task whose changes to apply
         id: String,
         /// Apply only these numbered review hunks (repeatable).
-        #[arg(long = "hunk")]
+        #[arg(long = "hunk", requires = "revision")]
         hunks: Vec<usize>,
+        /// Apply whole files by numbered review identifier (repeatable).
+        #[arg(long = "file", requires = "revision")]
+        files: Vec<usize>,
+        /// Exact revision returned by task review; required for file selection.
+        #[arg(long)]
+        revision: Option<String>,
     },
     /// Remove an isolated task worktree after it stops.
     Discard {
@@ -865,6 +914,100 @@ pub(crate) enum BackgroundTaskCmd {
         #[arg(long)]
         evidence: Option<String>,
     },
+}
+
+#[derive(Subcommand, Debug)]
+pub(crate) enum WorkflowCmd {
+    /// Choose a saved workflow or inspect a run without starting a provider.
+    Browse,
+    /// List saved templates.
+    List {
+        #[arg(long)]
+        json: bool,
+    },
+    /// Show a template or workflow run and its stage tree.
+    Show {
+        name: String,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Save a validated JSON or TOML workflow template.
+    Save {
+        name: String,
+        #[arg(long)]
+        file: std::path::PathBuf,
+    },
+    /// Start a workflow in isolated stage worktrees.
+    Run {
+        name: String,
+        #[arg(long = "param")]
+        parameters: Vec<String>,
+        #[arg(long)]
+        no_isolation: bool,
+    },
+    /// List recorded workflow runs.
+    Runs {
+        #[arg(long)]
+        json: bool,
+    },
+    /// Stop a workflow and its active stages while retaining their work.
+    Cancel { id: String },
+    /// Restart a stopped scheduler using existing stage checkpoints.
+    Resume { id: String },
+    /// Delete one saved template; existing runs are retained.
+    Remove { name: String },
+}
+
+pub(crate) fn workflow_action(command: &WorkflowCmd) -> aishe::cli::workflowui::Action {
+    use aishe::cli::workflowui::Action;
+    match command {
+        WorkflowCmd::Browse => Action::Browse,
+        WorkflowCmd::List { json } => Action::List { json: *json },
+        WorkflowCmd::Show { name, json } => Action::Show {
+            name: name.clone(),
+            json: *json,
+        },
+        WorkflowCmd::Save { name, file } => Action::Save {
+            name: name.clone(),
+            file: file.clone(),
+        },
+        WorkflowCmd::Run {
+            name,
+            parameters,
+            no_isolation,
+        } => Action::Run {
+            name: name.clone(),
+            parameters: parameters.clone(),
+            no_isolation: *no_isolation,
+        },
+        WorkflowCmd::Runs { json } => Action::Runs { json: *json },
+        WorkflowCmd::Cancel { id } => Action::Cancel { id: id.clone() },
+        WorkflowCmd::Resume { id } => Action::Resume { id: id.clone() },
+        WorkflowCmd::Remove { name } => Action::Remove { name: name.clone() },
+    }
+}
+
+pub(crate) fn run_background_task(
+    config: &aishe::config::Config,
+    command: &BackgroundTaskCmd,
+) -> anyhow::Result<u8> {
+    use aishe::cli::{changeui, taskui};
+    match command {
+        BackgroundTaskCmd::Bg { id } => taskui::background_handoff(id.as_deref()),
+        BackgroundTaskCmd::Fg { id } => aishe::cli::runtime::resume_foreground_task(config, id),
+        BackgroundTaskCmd::Timeline { id, json } => taskui::timeline_command(id, *json),
+        BackgroundTaskCmd::Review { id, json } => changeui::review_command(id, *json),
+        BackgroundTaskCmd::Apply {
+            id,
+            files,
+            hunks,
+            revision: Some(revision),
+        } => changeui::apply_command(id, revision, files, hunks),
+        BackgroundTaskCmd::Apply { files, hunks, .. } if !files.is_empty() || !hunks.is_empty() => {
+            anyhow::bail!("selected files and hunks require --revision from task review")
+        }
+        _ => aishe::background::command(config, background_task_action(command)),
+    }
 }
 
 #[derive(Subcommand, Debug)]
@@ -1373,6 +1516,9 @@ pub(crate) fn session_action(command: &TaskSessionCmd) -> aishe::cli::session::A
 pub(crate) fn background_task_action(command: &BackgroundTaskCmd) -> aishe::background::Action {
     use aishe::background::{Action, StepState};
     match command {
+        BackgroundTaskCmd::Bg { .. }
+        | BackgroundTaskCmd::Fg { .. }
+        | BackgroundTaskCmd::Timeline { .. } => unreachable!("handled by run_background_task"),
         BackgroundTaskCmd::Browse {
             id,
             all,
@@ -1416,12 +1562,12 @@ pub(crate) fn background_task_action(command: &BackgroundTaskCmd) -> aishe::back
         },
         BackgroundTaskCmd::Cancel { id } => Action::Cancel { id: id.clone() },
         BackgroundTaskCmd::Resume { id } => Action::Resume { id: id.clone() },
-        BackgroundTaskCmd::Review { id } => Action::Review { id: id.clone() },
+        BackgroundTaskCmd::Review { id, .. } => Action::Review { id: id.clone() },
         BackgroundTaskCmd::Rework { id, instructions } => Action::Rework {
             id: id.clone(),
             instructions: instructions.join(" "),
         },
-        BackgroundTaskCmd::Apply { id, hunks } => Action::Apply {
+        BackgroundTaskCmd::Apply { id, hunks, .. } => Action::Apply {
             id: id.clone(),
             hunks: hunks.clone(),
         },
@@ -1612,7 +1758,17 @@ impl Args {
                 cmd: UpdateCmd::Check { json },
             }) => *json,
             Some(Cmd::Task {
-                cmd: BackgroundTaskCmd::List { json } | BackgroundTaskCmd::Show { json, .. },
+                cmd:
+                    BackgroundTaskCmd::List { json }
+                    | BackgroundTaskCmd::Show { json, .. }
+                    | BackgroundTaskCmd::Review { json, .. }
+                    | BackgroundTaskCmd::Timeline { json, .. },
+            }) => *json,
+            Some(Cmd::Workflow {
+                cmd:
+                    WorkflowCmd::List { json }
+                    | WorkflowCmd::Show { json, .. }
+                    | WorkflowCmd::Runs { json },
             }) => *json,
             Some(Cmd::Connection {
                 cmd: ConnectionCmd::List { json } | ConnectionCmd::Show { json, .. },

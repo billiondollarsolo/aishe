@@ -12,14 +12,62 @@ import json
 import os
 from pathlib import Path
 import platform
+import resource
 import shlex
 import shutil
 import statistics
 import subprocess
 import tempfile
+import time
 
-from direct_shell_benchmark import percentile, timed, write_config
+from direct_shell_benchmark import percentile, write_config
 from harness_identity import parse_binary_identity, require_current_binary
+
+
+RAW_ROW_LIMIT = 710
+PAIR_ROUNDS = 40
+
+
+def measured(argv, env, expected):
+    """CPU accounting brackets the wall interval; neither measures pure wait."""
+    started_at = datetime.datetime.now(datetime.timezone.utc).isoformat()
+    child_before = resource.getrusage(resource.RUSAGE_CHILDREN)
+    parent_before = resource.getrusage(resource.RUSAGE_SELF)
+    started = time.perf_counter_ns()
+    result = subprocess.run(argv, env=env, stdin=subprocess.DEVNULL,
+                            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                            timeout=15, check=False)
+    elapsed = (time.perf_counter_ns() - started) / 1_000_000
+    parent_after = resource.getrusage(resource.RUSAGE_SELF)
+    child_after = resource.getrusage(resource.RUSAGE_CHILDREN)
+    if result.returncode != 0 or result.stdout != expected or result.stderr:
+        raise AssertionError(
+            "direct command contract failed\n"
+            f"argv={argv!r}\nrc={result.returncode}\n"
+            f"stdout={result.stdout!r}\nstderr={result.stderr!r}"
+        )
+    row = {"started_at": started_at, "monotonic_start_ns": started,
+           "wall_ms": elapsed}
+    for name, before, after in (("child", child_before, child_after),
+                                ("parent", parent_before, parent_after)):
+        row[f"{name}_user_ms"] = (after.ru_utime - before.ru_utime) * 1000
+        row[f"{name}_system_ms"] = (after.ru_stime - before.ru_stime) * 1000
+        row[f"{name}_cpu_ms"] = (row[f"{name}_user_ms"] +
+                                row[f"{name}_system_ms"])
+    row["unaccounted_wall_ms"] = (elapsed - row["child_cpu_ms"] -
+                                  row["parent_cpu_ms"])
+    return row
+
+
+def summarize(rows):
+    walls = [row["wall_ms"] for row in rows]
+    result = {"p50_ms": round(statistics.median(walls), 3),
+              "p95_ms": round(percentile(walls, 95), 3)}
+    for field in ("child_cpu_ms", "parent_cpu_ms", "unaccounted_wall_ms"):
+        values = [row[field] for row in rows]
+        result[f"mean_{field}"] = round(statistics.mean(values), 3)
+        result[f"p95_{field}"] = round(percentile(values, 95), 3)
+    return result
 
 
 def main():
@@ -83,12 +131,44 @@ def main():
              active_history, expected),
         ]
         samples = {name: [] for name, *_ in cases}
+        rows = {name: [] for name, *_ in cases}
+        raw_rows = []
+        sequence = 0
         for number in range(args.warmup + args.commands):
             offset = number % len(cases)
-            for name, argv, case_env, output in cases[offset:] + cases[:offset]:
-                elapsed = timed(argv, case_env, output)
+            for order, (name, argv, case_env, output) in enumerate(
+                    cases[offset:] + cases[:offset]):
+                row = measured(argv, case_env, output)
                 if number >= args.warmup:
-                    samples[name].append(elapsed)
+                    row.update(sequence=sequence, phase="rotating", case=name,
+                               round=number - args.warmup, order=order)
+                    sequence += 1
+                    rows[name].append(row)
+                    samples[name].append(row["wall_ms"])
+                    if len(raw_rows) < RAW_ROW_LIMIT - PAIR_ROUNDS * 2:
+                        raw_rows.append(row)
+
+        # A separate diagnostic reverses within-pair order. The strict SLO
+        # benchmark and its raw-first alternating series remain unchanged.
+        paired = {order: {name: [] for name in ("raw_zsh", "aishe_direct_default")}
+                  for order in ("raw_first", "aishe_first")}
+        pair_deltas = {order: [] for order in paired}
+        for number in range(PAIR_ROUNDS):
+            order_name = "raw_first" if number % 2 == 0 else "aishe_first"
+            pair = [cases[1], cases[3]]
+            if order_name == "aishe_first":
+                pair.reverse()
+            walls = {}
+            for order, (name, argv, case_env, output) in enumerate(pair):
+                row = measured(argv, case_env, output)
+                row.update(sequence=sequence, phase="balanced_pairs", case=name,
+                           round=number, order=order, pair_order=order_name)
+                sequence += 1
+                paired[order_name][name].append(row)
+                walls[name] = row["wall_ms"]
+                raw_rows.append(row)
+            pair_deltas[order_name].append(walls["aishe_direct_default"] -
+                                          walls["raw_zsh"])
         backend = root / "data/aishe/backend"
         assert not backend.exists(), "direct components must never materialize backend state"
 
@@ -99,18 +179,41 @@ def main():
         "platform": platform.system(), "machine": platform.machine(),
         "commands_per_case": args.commands, "warmup": args.warmup,
         "backend_started": False,
-        "cases": {name: {"p50_ms": round(statistics.median(values), 3),
-                         "p95_ms": round(percentile(values, 95), 3),
+        "accounting_note": (
+            "Child CPU includes reaped descendants; parent CPU includes Python "
+            "subprocess bookkeeping. CPU deltas bracket the wall interval. "
+            "Unaccounted wall is wall minus child and parent CPU; it includes "
+            "I/O, scheduling, and accounting effects, may be negative, and is "
+            "not a measurement of scheduler delay. Warmup rows are omitted."
+        ),
+        "cases": {name: {**summarize(rows[name]),
                          "samples_ms": [round(value, 3) for value in values]}
                   for name, values in samples.items()},
+        "balanced_pairs": {
+            "rounds": PAIR_ROUNDS, "slo_enforced": False,
+            "orders": {order: {
+                "pairs": len(pair_deltas[order]),
+                "cases": {name: summarize(values) for name, values in cases.items()},
+                "mean_paired_wall_difference_ms": round(statistics.mean(pair_deltas[order]), 3),
+                "p95_paired_wall_difference_ms": round(percentile(pair_deltas[order], 95), 3),
+            } for order, cases in paired.items()},
+        },
+        "raw_rows_total": sequence, "raw_rows_recorded": len(raw_rows),
+        "raw_row_limit": RAW_ROW_LIMIT,
+        "raw_rows": [{key: round(value, 6) if isinstance(value, float) else value
+                      for key, value in row.items()} for row in raw_rows],
     }
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(json.dumps(report, indent=2) + "\n")
-    summary = dict(report)
+    summary = {key: value for key, value in report.items() if key != "raw_rows"}
     summary["cases"] = {name: {key: value for key, value in case.items()
                                if key != "samples_ms"}
                         for name, case in report["cases"].items()}
     print(json.dumps(summary, indent=2))
+    # Artifacts can be inaccessible through their signed download URLs. Keep
+    # bounded raw evidence in the job log as well as the JSON report.
+    for row in report["raw_rows"]:
+        print("sample: " + json.dumps(row, separators=(",", ":")))
     print(f"report: {args.output}")
     print("PASS: startup component output and backend isolation; SLO unchanged")
 

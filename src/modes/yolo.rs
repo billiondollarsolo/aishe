@@ -80,6 +80,16 @@ pub(crate) fn run_with_terminal(
             error,
         ));
     }
+    // A disabled journal can still run a foreground turn, but cannot offer a
+    // transferable checkpoint. Durable turns always fence parallel resumes.
+    let mut lease = if crate::tasks::load(task.id()).is_ok() {
+        Some(crate::agent::native::handoff::Lease::acquire(
+            task.id(),
+            !config.aishe.yolo_dry_run,
+        )?)
+    } else {
+        None
+    };
     let dry = match DryRun::setup(executor, config) {
         Ok(dry) => dry,
         Err(error) => {
@@ -91,7 +101,16 @@ pub(crate) fn run_with_terminal(
             ))
         }
     };
-    println!("  {}", format!("task {}", task.id()).dim());
+    let handoff_hint = if executor.terminal_input_owned_elsewhere()
+        && lease.is_some()
+        && !config.aishe.yolo_dry_run
+        && crate::agent::native::handoff::control_available()
+    {
+        " · Ctrl-X d background"
+    } else {
+        ""
+    };
+    println!("  {}", format!("task {}{handoff_hint}", task.id()).dim());
     let density = effective_density(config);
     let mut renderer = AgentRenderer::with_capabilities(density, capabilities);
     let outcome = run_loop(
@@ -106,6 +125,7 @@ pub(crate) fn run_with_terminal(
         &mut task,
         false,
         &mut renderer,
+        &mut lease,
     );
     renderer.clear_status();
     super::report_usage(provider, config);
@@ -137,7 +157,9 @@ pub(crate) fn run_with_terminal(
             .or(outcome.detail.as_deref())
             .unwrap_or("(agent turn ended without a final summary)"),
     );
-    Ok(outcome)
+    // The detached continuation must not race this process's checkpoint lock.
+    drop(lease);
+    complete_handoff(config, executor, outcome)
 }
 
 /// A reversible yolo session: the loop runs against `staging` (a copy of the
@@ -295,8 +317,10 @@ fn run_loop(
     task: &mut crate::tasks::Active,
     resumed: bool,
     renderer: &mut AgentRenderer,
+    lease: &mut Option<crate::agent::native::handoff::Lease>,
 ) -> Result<NativeTurnOutcome> {
-    let current_limits = NativeLimits::from_environment()?;
+    let current_limits =
+        NativeLimits::from_environment()?.with_iteration_limit(config.aishe.max_yolo_iterations);
     let limits = task
         .record()
         .execution_limits
@@ -313,6 +337,16 @@ fn run_loop(
             task,
             NativeTurnState::Cancelled,
             Some("Interrupted by user.".into()),
+            &history,
+            provider,
+            &budget,
+        );
+    }
+    if config.aishe.max_yolo_iterations == 0 {
+        return finish_turn(
+            task,
+            NativeTurnState::IterationLimit,
+            Some("Reached the iteration limit (0).".into()),
             &history,
             provider,
             &budget,
@@ -390,6 +424,15 @@ fn run_loop(
     system.push_str("\n\nUse run_check for an actual verification command, with a short label describing what it checks. Results record the real command, exit status and output; do not claim checks passed without running them. A successful agent response alone is not verification.");
     if background_id.is_some() {
         system.push_str("\n\nThis is a background task. When missing information blocks useful work, call ask_user with a concise question and optional choices. Use request_approval for one concrete tool/action needing user permission. Either parks the task in the user's Needs you inbox. After approval, reissue exactly the requested tool and arguments: approval is one-shot and does not change workspace, network or policy restrictions. New User messages marked Follow-up #N: are live instructions; incorporate them before further effects.");
+        if let Some(id) = background_id.as_deref() {
+            let checks = crate::background::required_checks(id)?;
+            if !checks.is_empty() {
+                system.push_str("\n\nThis workflow stage requires the following exact verification commands through run_check before completion. Run them after the final workspace change; do not substitute prose or another command. Dependent work remains blocked if a required check is missing, stale, uncertain or failed:\n");
+                for command in checks {
+                    system.push_str(&format!("- {}\n", crate::redact::redact(&command)));
+                }
+            }
+        }
     }
     if executor.lean_scope().is_some() {
         system.push_str("\n\nCommands run in a fresh restricted POSIX shell (dash, or zsh without startup files). They inherit filtered exports, PATH and environment from the live shell, but do not import interactive aliases, functions, plugins or startup code. Use POSIX syntax for run_command.");
@@ -512,6 +555,19 @@ fn run_loop(
             );
         }
         receive_followups(background_id.as_deref(), task, &mut messages, provider)?;
+        if let Some(outcome) = park_requested_handoff(
+            lease,
+            task,
+            &mut messages,
+            provider,
+            &budget,
+            interrupt,
+            executor,
+            config,
+        )? {
+            renderer.clear_status();
+            return Ok(outcome);
+        }
         // Stop before the next model call if the session budget is spent.
         if super::budget_reached(provider, config) {
             renderer.clear_status();
@@ -632,17 +688,30 @@ fn run_loop(
 
         // No tool calls → final answer.
         if completion.tool_calls.is_empty() {
+            messages.push(Msg::Assistant(AssistantMsg {
+                text: completion.text.clone(),
+                tool_calls: Vec::new(),
+            }));
+            if let Some(outcome) = park_requested_handoff(
+                lease,
+                task,
+                &mut messages,
+                provider,
+                &budget,
+                interrupt,
+                executor,
+                config,
+            )? {
+                renderer.clear_status();
+                return Ok(outcome);
+            }
             if let Some(id) = background_id.as_deref() {
                 // A follow-up arriving during the provider call must be seen
                 // before declaring the old answer complete.
-                if !crate::background::queued_followups(id)?.is_empty() {
-                    messages.push(Msg::Assistant(AssistantMsg {
-                        text: completion.text.clone(),
-                        tool_calls: Vec::new(),
-                    }));
-                    if receive_followups(Some(id), task, &mut messages, provider)? {
-                        continue;
-                    }
+                if !crate::background::queued_followups(id)?.is_empty()
+                    && receive_followups(Some(id), task, &mut messages, provider)?
+                {
+                    continue;
                 }
             }
             if task.background_cancelled() {
@@ -669,6 +738,24 @@ fn run_loop(
                     &budget,
                 );
             }
+            if let Some(owner) = lease.as_mut() {
+                if !owner.close_requests_if_unrequested()? {
+                    if let Some(outcome) = park_requested_handoff(
+                        lease,
+                        task,
+                        &mut messages,
+                        provider,
+                        &budget,
+                        interrupt,
+                        executor,
+                        config,
+                    )? {
+                        renderer.clear_status();
+                        return Ok(outcome);
+                    }
+                    anyhow::bail!("queued handoff disappeared before final completion");
+                }
+            }
             let final_text = completion.text.clone().unwrap_or_default();
             renderer.render(&AgentEvent::TextCompleted {
                 text: final_text.clone(),
@@ -678,10 +765,6 @@ fn run_loop(
                 // activity without printing the same prose a second time.
                 summary: String::new(),
             });
-            messages.push(Msg::Assistant(AssistantMsg {
-                text: completion.text.clone(),
-                tool_calls: Vec::new(),
-            }));
             let outcome = NativeTurnOutcome::completed(task.id(), completion.text);
             task.checkpoint_execution(budget.counters());
             task.finish_native(&outcome, &messages, provider.meter().snapshot());
@@ -716,6 +799,19 @@ fn run_loop(
         task.checkpoint_messages(&messages, provider.meter().snapshot());
 
         for call in &completion.tool_calls {
+            if let Some(outcome) = park_requested_handoff(
+                lease,
+                task,
+                &mut messages,
+                provider,
+                &budget,
+                interrupt,
+                executor,
+                config,
+            )? {
+                renderer.clear_status();
+                return Ok(outcome);
+            }
             // Steering a returned batch cancels its remaining, unstarted
             // calls. Complete their transcript before appending the User
             // message so no stale action executes before the model reads it.
@@ -1233,6 +1329,19 @@ fn run_loop(
                 &budget,
             );
         }
+        if let Some(outcome) = park_requested_handoff(
+            lease,
+            task,
+            &mut messages,
+            provider,
+            &budget,
+            interrupt,
+            executor,
+            config,
+        )? {
+            renderer.clear_status();
+            return Ok(outcome);
+        }
         if let Some(reason) = budget.exhausted() {
             renderer.clear_status();
             return finish_turn(
@@ -1287,6 +1396,12 @@ pub fn resume(
     if record.status == crate::tasks::Status::Completed {
         anyhow::bail!("task {} is already completed", record.id);
     }
+    // Claim before Active::resume can write, so an older worker's journal
+    // cannot be changed by a concurrent foreground continuation.
+    let mut lease = Some(crate::agent::native::handoff::Lease::acquire(
+        &record.id,
+        !config.aishe.yolo_dry_run,
+    )?);
     let objective = record.objective.clone();
     let changed_provider =
         record.provider != config.aishe.provider || record.model != config.active_model();
@@ -1416,10 +1531,11 @@ pub fn resume(
         &mut task,
         true,
         &mut renderer,
+        &mut lease,
     );
     renderer.clear_status();
     super::report_usage(provider, config);
-    Ok(match outcome {
+    let outcome = match outcome {
         Ok(outcome) => outcome,
         Err(error) => fail_internal(
             &mut task,
@@ -1427,7 +1543,105 @@ pub fn resume(
             interrupt.load(Ordering::SeqCst) || executor.is_cancelled(),
             error,
         ),
-    })
+    };
+    drop(lease);
+    complete_handoff(config, executor, outcome)
+}
+
+fn complete_handoff(
+    config: &Config,
+    executor: &Executor,
+    mut outcome: NativeTurnOutcome,
+) -> Result<NativeTurnOutcome> {
+    if outcome.state == NativeTurnState::HandedOff
+        && outcome.handoff == Some(crate::agent::native::handoff::Direction::Background)
+    {
+        let background_id = crate::background::adopt_saved_checkpoint_with_environment(
+            config,
+            &outcome.task_id,
+            executor.agent_environment_snapshot(config),
+        )?;
+        outcome.detail = Some(format!(
+            "Continuing in background. View it with /tasks {background_id}."
+        ));
+    }
+    Ok(outcome)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn park_requested_handoff(
+    lease: &mut Option<crate::agent::native::handoff::Lease>,
+    task: &mut crate::tasks::Active,
+    messages: &mut Vec<Msg>,
+    provider: &dyn Provider,
+    budget: &NativeBudget,
+    interrupt: &AtomicBool,
+    executor: &Executor,
+    config: &Config,
+) -> Result<Option<NativeTurnOutcome>> {
+    let Some(lease) = lease.as_mut() else {
+        return Ok(None);
+    };
+    let Some(direction) = lease.requested()? else {
+        return Ok(None);
+    };
+    // Cancellation remains authoritative even when an accepted handoff was
+    // queued during a blocked provider or subprocess.
+    if interrupt.load(Ordering::SeqCst) || executor.is_cancelled() || task.background_cancelled() {
+        return Ok(Some(finish_turn(
+            task,
+            NativeTurnState::Cancelled,
+            Some("Interrupted by user.".into()),
+            messages,
+            provider,
+            budget,
+        )?));
+    }
+    task.require_persistence()?;
+    task.record_timeline_event(
+        crate::tasks::timeline::EventKind::HandoffRequested,
+        direction.label(),
+        "Handoff accepted at a safe native boundary.",
+        None,
+    )?;
+    // A returned provider batch is authoritative history. Its remaining calls
+    // did not execute; complete them explicitly instead of replaying on resume.
+    let skipped = unanswered_tool_calls(messages);
+    *messages = resolve_unanswered_tools(messages);
+    for call in skipped {
+        task.record_timeline_event(
+            crate::tasks::timeline::EventKind::ToolResult,
+            &call.name,
+            &format!("Call {} was not executed before handoff; the model must inspect current state before proposing further work.", call.id),
+            Some(crate::tasks::timeline::EventOutcome::NotExecuted),
+        )?;
+    }
+    let mut outcome = finish_turn(
+        task,
+        NativeTurnState::HandedOff,
+        Some(format!(
+            "Task parked for {} continuation.",
+            direction.label()
+        )),
+        messages,
+        provider,
+        budget,
+    )?;
+    if outcome.state != NativeTurnState::HandedOff {
+        return Ok(Some(outcome));
+    }
+    outcome.handoff = Some(direction);
+    if direction == crate::agent::native::handoff::Direction::Foreground {
+        lease.transfer_environment(executor.agent_environment_snapshot(config))?;
+    }
+    lease.park(direction)?;
+    task.record_timeline_event(
+        crate::tasks::timeline::EventKind::HandoffCompleted,
+        direction.label(),
+        "Transcript and cumulative budgets checkpointed; execution ownership relinquished.",
+        Some(crate::tasks::timeline::EventOutcome::HandedOff),
+    )?;
+    Ok(Some(outcome))
 }
 
 fn fail_internal(
@@ -1522,6 +1736,7 @@ fn background_task_id() -> Option<String> {
     std::env::var("AISHE_BACKGROUND_TASK_ID")
         .ok()
         .filter(|id| !id.trim().is_empty())
+        .or_else(crate::agent::native::handoff::linked_task_id)
 }
 
 fn confirmation_tier(config: &Config, lean_grant: bool, background: bool) -> Tier {
@@ -1871,6 +2086,26 @@ fn resolve_unanswered_tools(messages: &[Msg]) -> Vec<Msg> {
     result
 }
 
+fn unanswered_tool_calls(messages: &[Msg]) -> Vec<ToolCall> {
+    let answered = messages
+        .iter()
+        .filter_map(|message| match message {
+            Msg::ToolResult { call_id, .. } => Some(call_id.as_str()),
+            _ => None,
+        })
+        .collect::<std::collections::HashSet<_>>();
+    messages
+        .iter()
+        .filter_map(|message| match message {
+            Msg::Assistant(assistant) | Msg::ProviderItems { assistant, .. } => Some(assistant),
+            _ => None,
+        })
+        .flat_map(|assistant| &assistant.tool_calls)
+        .filter(|call| !answered.contains(call.id.as_str()))
+        .cloned()
+        .collect()
+}
+
 fn effective_density(config: &Config) -> &str {
     if config.aishe.yolo_verbose {
         "detailed"
@@ -2173,6 +2408,9 @@ mod interaction_tests {
                 content: "exit code 0".into(),
             },
         ];
+        let skipped = unanswered_tool_calls(&messages);
+        assert_eq!(skipped.len(), 1);
+        assert_eq!(skipped[0].id, "unstarted");
         let mut resolved = resolve_unanswered_tools(&messages);
         resolved.push(Msg::User("[followup:1]\nUse the alternate path".into()));
         assert_eq!(resolved.len(), 4);
@@ -2182,6 +2420,7 @@ mod interaction_tests {
         assert!(matches!(&resolved[3], Msg::User(text) if text.starts_with("[followup:1]")));
         let again = resolve_unanswered_tools(&resolved);
         assert_eq!(again.len(), resolved.len());
+        assert!(unanswered_tool_calls(&resolved).is_empty());
     }
 
     #[test]

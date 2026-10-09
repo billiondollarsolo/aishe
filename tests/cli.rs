@@ -1039,6 +1039,93 @@ fn dash_c_commands_are_recorded_in_history() {
 }
 
 #[test]
+fn exact_dash_c_preserves_user_rc_history_and_mixed_flag_execution() {
+    let home = temp_config_home();
+    let data = home.join("data");
+    let config_file = home.join("aishe/config.toml");
+    let config = std::fs::read_to_string(&config_file).unwrap();
+    std::fs::write(&config_file, format!("version = 7\n{config}")).unwrap();
+    std::fs::write(home.join(".aishrc"), "HOME_RC_VALUE=home-value\n").unwrap();
+    std::fs::write(home.join("aishe/aishrc"), "CONFIG_RC_VALUE=config-value\n").unwrap();
+    let line = "printf '%s/%s\\n' \"$HOME_RC_VALUE\" \"$CONFIG_RC_VALUE\"";
+    let run = |args: &[&str]| {
+        let mut command = Command::cargo_bin("aishe").unwrap();
+        command
+            .env("HOME", &home)
+            .env("AISHE_CONFIG_DIR", &home)
+            .env("AISHE_DATA_DIR", &data)
+            .env_remove("AISHE_HISTFILE")
+            .args(args);
+        command
+    };
+    run(&["-c", line])
+        .assert()
+        .success()
+        .stdout("home-value/config-value\n")
+        .stderr("");
+    run(&["--mode", "ask", "-c", "printf 'mixed-flags\\n'"])
+        .assert()
+        .success()
+        .stdout("mixed-flags\n")
+        .stderr("");
+    let history = std::fs::read_to_string(data.join("aishe/history.ext")).unwrap();
+    assert!(
+        history.contains(line),
+        "history omitted the exact shell line"
+    );
+    assert!(history.contains("printf 'mixed-flags\\n'"));
+    assert!(!data.join("aishe/backend").exists());
+    std::fs::remove_dir_all(home).ok();
+}
+
+#[test]
+fn dash_c_parser_errors_and_help_never_execute_the_supplied_line() {
+    let root = temp_root("dash-c-validation");
+    let line = "printf 'executed' > must-not-exist";
+    let run = |args: &[&str]| {
+        let mut command = Command::cargo_bin("aishe").unwrap();
+        command
+            .current_dir(&root)
+            .env("AISHE_CONFIG_DIR", root.join("missing-config"))
+            .env("AISHE_DATA_DIR", root.join("data"))
+            .env_remove("AISHE_HISTFILE")
+            .args(args);
+        command
+    };
+    for args in [
+        vec!["-c", line, "--unknown-argument"],
+        vec!["-c", line, "--mode", "invalid"],
+        vec!["--mode", "invalid", "-c", line],
+        vec!["-c", line, "-c", line],
+        vec!["-c", "--invalid-hyphen-value"],
+        vec!["-c", "--help"],
+        vec!["--command", line],
+    ] {
+        run(&args).assert().code(2);
+        assert!(!root.join("must-not-exist").exists(), "executed {args:?}");
+    }
+    run(&["-c", line, "--help"])
+        .assert()
+        .success()
+        .stdout(contains("Usage:"));
+    assert!(!root.join("must-not-exist").exists());
+    #[cfg(unix)]
+    {
+        use std::os::unix::ffi::OsStringExt;
+        let mut value = line.as_bytes().to_vec();
+        value.push(0xff);
+        run(&["-c"])
+            .arg(std::ffi::OsString::from_vec(value))
+            .assert()
+            .code(2);
+        assert!(!root.join("must-not-exist").exists());
+    }
+    assert!(!root.join("missing-config").exists());
+    assert!(!root.join("data").exists());
+    std::fs::remove_dir_all(root).ok();
+}
+
+#[test]
 fn fix_line_prints_a_corrected_command() {
     // The fix-the-last-command hook returns a corrected command for the widget to
     // pre-fill. With fix_capture_stderr on, a read-only failed command is re-run

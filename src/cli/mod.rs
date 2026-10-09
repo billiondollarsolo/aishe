@@ -5,6 +5,7 @@
 //! entry point.
 
 pub mod backend;
+pub mod changeui;
 pub mod connection;
 pub mod error_contract;
 pub mod hints;
@@ -15,3 +16,4 @@ pub mod session;
 pub mod settings;
 pub mod status;
 pub mod taskui;
+pub mod workflowui;

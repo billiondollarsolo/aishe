@@ -12,9 +12,16 @@ use serde::{Deserialize, Serialize};
 
 use crate::config::Config;
 
+pub mod changes;
 mod interactions;
 mod metadata;
 mod presentation;
+pub mod scheduler;
+pub mod workflows;
+pub use changes::{
+    apply_task_changes, task_change_review, ApplyChanges, ChangeFile, ChangeHunk, ChangeKind,
+    ChangeReview,
+};
 pub use interactions::{
     acknowledge_followups, claim_followups, consume_interaction, create_approval, create_question,
     interaction_for_call, interaction_response, interaction_summary, queued_followups, Followup,
@@ -25,8 +32,8 @@ pub use metadata::{archive_task, mark_task_reviewed, pin_task, rename_task, Task
 pub use presentation::{
     acknowledge_task, cached_task_entries, cached_task_entries_with_query, read_seen,
     refresh_task_cache, shell_status_text, task_details, task_entries, task_entries_with_query,
-    task_patch_lines, task_status, EntryQuery, SeenTasks, TaskAttention, TaskCheckpoint,
-    TaskDetails, TaskEntry, TaskStatus,
+    task_patch_lines, task_status, task_timeline, EntryQuery, SeenTasks, TaskAttention,
+    TaskCheckpoint, TaskDetails, TaskEntry, TaskStatus, TaskTimeline,
 };
 
 const SCHEMA_VERSION: u32 = 1;
@@ -39,6 +46,7 @@ pub enum State {
     Starting,
     Running,
     Waiting,
+    Blocked,
     Completed,
     Failed,
     Interrupted,
@@ -98,6 +106,14 @@ pub struct Record {
     pub result_revision: u64,
     #[serde(default)]
     pub mailbox: InteractionMailbox,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workflow: Option<workflows::StageLink>,
+    #[serde(default)]
+    pub foreground: bool,
+    /// A completed stage is sealed while its snapshot is captured and after it
+    /// has been handed forward. Rework starts a new workflow after that point.
+    #[serde(default)]
+    pub workflow_frozen: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub native_task_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -187,6 +203,12 @@ pub enum Action {
     },
     Apply {
         id: String,
+        hunks: Vec<usize>,
+    },
+    ApplyReviewed {
+        id: String,
+        revision: String,
+        files: Vec<usize>,
         hunks: Vec<usize>,
     },
     Discard {
@@ -290,6 +312,16 @@ pub fn command(config: &Config, action: Action) -> Result<u8> {
         Action::Review { id } => review(config, &id),
         Action::Rework { id, instructions } => rework(config, &id, &instructions),
         Action::Apply { id, hunks } => apply(&id, &hunks),
+        Action::ApplyReviewed {
+            id,
+            revision,
+            files,
+            hunks,
+        } => {
+            let applied = apply_task_changes(&id, &revision, &files, &hunks)?;
+            println!("{}", serde_json::to_string_pretty(&applied)?);
+            Ok(0)
+        }
         Action::Discard { id } => discard(&id),
         Action::Plan { id, steps } => set_plan(&id, steps, false),
         Action::Replan { id, steps } => set_plan(&id, steps, true),
@@ -420,6 +452,9 @@ fn start(config: &Config, objective: &str, no_isolation: bool, budget: Budget) -
         state: State::Starting,
         result_revision: 0,
         mailbox: InteractionMailbox::default(),
+        workflow: None,
+        foreground: false,
+        workflow_frozen: false,
         native_task_id: None,
         engine: Some(actual_engine(config, crate::lean::enabled()).into()),
         connection_id: config.active_connection_id().into(),
@@ -718,6 +753,9 @@ pub fn finish_native(id: &str, outcome: &crate::agent::NativeTurnOutcome) -> Res
         Ok(())
     })?;
     refresh_status();
+    if let Some(link) = load(id)?.workflow {
+        let _ = scheduler::ensure_running(&link.run_id);
+    }
     Ok(exit_code)
 }
 
@@ -740,11 +778,24 @@ fn finish_native_record(
         record.exit_code = Some(130);
         return Ok(130);
     }
+    let required_failure = (outcome.state == crate::agent::NativeTurnState::Completed)
+        .then(|| scheduler::required_evidence(record).err())
+        .flatten();
     finish_record(
         record,
-        native_finish_state(outcome.state),
-        i32::from(outcome.exit_code()),
-        outcome.detail.as_deref().map(crate::redact::redact),
+        if required_failure.is_some() {
+            State::Failed
+        } else {
+            native_finish_state(outcome.state)
+        },
+        if required_failure.is_some() {
+            1
+        } else {
+            i32::from(outcome.exit_code())
+        },
+        required_failure
+            .map(|error| crate::redact::redact(&error.to_string()))
+            .or_else(|| outcome.detail.as_deref().map(crate::redact::redact)),
     );
     Ok(record
         .exit_code
@@ -757,6 +808,7 @@ fn native_finish_state(state: crate::agent::NativeTurnState) -> State {
     match state {
         NativeTurnState::Completed => State::Completed,
         NativeTurnState::Waiting => State::Waiting,
+        NativeTurnState::HandedOff => State::Interrupted,
         NativeTurnState::Cancelled => State::Cancelled,
         NativeTurnState::Declined => State::Interrupted,
         NativeTurnState::BudgetExhausted
@@ -1084,7 +1136,7 @@ fn cancel(id: &str) -> Result<u8> {
     update(id, |record| {
         if !matches!(
             record.state,
-            State::Starting | State::Running | State::Waiting
+            State::Starting | State::Running | State::Waiting | State::Blocked
         ) {
             return Ok(());
         }
@@ -1100,13 +1152,18 @@ fn cancel(id: &str) -> Result<u8> {
                 // The native command executor owns separate child process
                 // groups. Give its SIGINT watchdog a chance to reap those
                 // groups before terminating the worker itself.
-                if libc::kill(-(pid as i32), libc::SIGINT) != 0 {
+                let target = if record.foreground {
+                    pid as i32
+                } else {
+                    -(pid as i32)
+                };
+                if libc::kill(target, libc::SIGINT) != 0 {
                     anyhow::bail!("could not signal task {id}");
                 }
             }
             #[cfg(not(unix))]
             anyhow::bail!("task cancellation is not yet supported on this platform");
-            signalled = Some((pid, record.process_start.clone()));
+            signalled = Some((pid, record.process_start.clone(), record.foreground));
         }
         settle_elapsed(record);
         record.state = State::Cancelled;
@@ -1123,19 +1180,38 @@ fn cancel(id: &str) -> Result<u8> {
         cancelled = true;
         Ok(())
     })?;
-    if let Some((pid, identity)) = signalled {
+    if let Some((pid, identity, foreground)) = signalled {
         for _ in 0..20 {
-            if !same_process(pid, identity.as_deref()) {
+            let fresh = load(id)?;
+            if fresh.state != State::Cancelled
+                || fresh.pid != Some(pid)
+                || fresh.process_start != identity
+                || !same_process(pid, identity.as_deref())
+            {
                 break;
             }
             std::thread::sleep(std::time::Duration::from_millis(50));
         }
         #[cfg(unix)]
-        if same_process(pid, identity.as_deref()) {
-            unsafe {
-                libc::kill(-(pid as i32), libc::SIGTERM);
+        update(id, |fresh| {
+            if fresh.state == State::Cancelled
+                && fresh.pid == Some(pid)
+                && fresh.process_start == identity
+                && same_process(pid, identity.as_deref())
+            {
+                unsafe {
+                    libc::kill(
+                        if foreground {
+                            pid as i32
+                        } else {
+                            -(pid as i32)
+                        },
+                        libc::SIGTERM,
+                    );
+                }
             }
-        }
+            Ok(())
+        })?;
         // Keep the process identity while a worker is still stopping. Resume
         // must not race a previous attempt writing the same native checkpoint.
         update(id, |record| {
@@ -1153,6 +1229,16 @@ fn cancel(id: &str) -> Result<u8> {
         })?;
     }
     if cancelled {
+        if let Some(native_id) = load(id)?.native_task_id {
+            let _ = crate::agent::native::handoff::discard_environment(&native_id);
+        }
+        let _ = crate::tasks::timeline::append_background(
+            id,
+            crate::tasks::timeline::EventKind::Finished,
+            "Task cancelled",
+            "Cancelled by the user; remaining workflow effects are not admitted.",
+            Some(crate::tasks::timeline::EventOutcome::Cancelled),
+        );
         println!("cancelled task {id}");
     } else {
         println!("task {id} is {:?}; nothing to cancel", load(id)?.state);
@@ -1161,6 +1247,15 @@ fn cancel(id: &str) -> Result<u8> {
 }
 
 fn resume(config: &Config, id: &str) -> Result<u8> {
+    resume_with_environment(config, id, None, true)
+}
+
+fn resume_with_environment(
+    config: &Config,
+    id: &str,
+    environment: Option<&std::collections::HashMap<String, String>>,
+    announce: bool,
+) -> Result<u8> {
     let mut record = load(id)?;
     reconcile(&mut record)?;
     if !matches!(
@@ -1181,6 +1276,7 @@ fn resume(config: &Config, id: &str) -> Result<u8> {
     {
         anyhow::bail!("task {id} is still stopping; resume after its worker has exited");
     }
+    changes::ensure_no_partial_apply(&record)?;
     let checkpoint = resume_checkpoint(id)?.with_context(|| format!(
         "task {id} has no durable native checkpoint; start a new task explicitly instead of replaying its objective"
     ))?;
@@ -1194,26 +1290,43 @@ fn resume(config: &Config, id: &str) -> Result<u8> {
         .open(log_path(id)?)?;
     writeln!(&log, "\n--- resumed {} ---", now_ms()).ok();
     let stderr = log.try_clone()?;
-    update(id, |fresh| {
-        if !matches!(
-            fresh.state,
-            State::Waiting | State::Interrupted | State::Failed | State::Cancelled
-        ) {
-            anyhow::bail!("task {id} cannot resume from state {:?}", fresh.state);
-        }
-        if fresh.state == State::Waiting {
-            interactions::ready_to_resume(fresh)?;
-        }
-        fresh.state = State::Starting;
-        fresh.attempt_started_at_ms = Some(now_ms());
-        fresh.pid = None;
-        fresh.process_start = None;
-        fresh.exit_code = None;
-        fresh.error = None;
-        Ok(())
+    workflows::claim_slot(id, || {
+        update(id, |fresh| {
+            if !matches!(
+                fresh.state,
+                State::Waiting | State::Interrupted | State::Failed | State::Cancelled
+            ) {
+                anyhow::bail!("task {id} cannot resume from state {:?}", fresh.state);
+            }
+            if fresh.state == State::Waiting {
+                interactions::ready_to_resume(fresh)?;
+            }
+            changes::ensure_no_partial_apply(fresh)?;
+            if fresh.workflow_frozen {
+                anyhow::bail!(
+                    "workflow stage {id} was handed forward; run a new workflow to change it"
+                );
+            }
+            fresh.state = State::Starting;
+            fresh.foreground = false;
+            fresh.attempt_started_at_ms = Some(now_ms());
+            fresh.pid = None;
+            fresh.process_start = None;
+            fresh.exit_code = None;
+            fresh.error = None;
+            Ok(())
+        })
     })?;
     let mut child = Command::new(std::env::current_exe()?);
     restrict_background_environment(&mut child, &config);
+    if let Some(environment) = environment {
+        let denied = crate::executor::sensitive_environment_names(&config);
+        for (name, value) in environment {
+            if crate::executor::agent_environment_allowed(name, &denied) {
+                child.env(name, value);
+            }
+        }
+    }
     child
         .args([
             "--connection",
@@ -1252,140 +1365,308 @@ fn resume(config: &Config, id: &str) -> Result<u8> {
         }
         Ok(())
     })?;
-    println!("resumed task {id}");
+    if announce {
+        println!("resumed task {id}");
+    }
+    let _ = crate::tasks::timeline::append_background(
+        id,
+        crate::tasks::timeline::EventKind::Resumed,
+        "Checkpoint resumed",
+        "Saved provider identity, scope and remaining cumulative budget retained.",
+        None,
+    );
+    if let Some(link) = &record.workflow {
+        let _ = scheduler::ensure_running(&link.run_id);
+    }
     Ok(0)
 }
 
-fn review(config: &Config, id: &str) -> Result<u8> {
+/// Start only a durably claimed fresh workflow stage. Resumes always use the
+/// native checkpoint path above, so a scheduler restart cannot replay effects.
+fn launch_stage(config: &Config, id: &str) -> Result<()> {
     let record = load(id)?;
-    let patch = patch(&record)?;
-    if patch.is_empty() {
-        println!("task {id} has no file changes");
-        return Ok(0);
+    if record.state != State::Starting || record.native_task_id.is_some() {
+        anyhow::bail!("workflow stage {id} is not a fresh claimed task");
     }
-    let (numbered, count) = numbered_review(&patch)?;
-    print_colored_patch(&numbered);
-    println!("objective: {}", record.objective);
-    if !record.plan.is_empty() {
-        println!(
-            "plan: {}",
-            record
-                .plan
-                .iter()
-                .map(|step| format!("{}:{:?}", step.id, step.state))
-                .collect::<Vec<_>>()
-                .join(" · ")
-        );
+    let mut selected = worker_config(id, config)?;
+    crate::policy::constrain(&mut selected)?;
+    validate_host_admission(&selected, &record.scope, &record.source_cwd)?;
+    let log = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(log_path(id)?)?;
+    set_private(&log_path(id)?, 0o600);
+    let stderr = log.try_clone()?;
+    let mut child = Command::new(std::env::current_exe()?);
+    restrict_background_environment(&mut child, &selected);
+    child
+        .args([
+            "--connection",
+            selected.active_connection_id(),
+            "--model",
+            selected.active_model(),
+            "--mode",
+            "yolo",
+            "--background-task",
+            id,
+        ])
+        .current_dir(&record.run_cwd)
+        .stdin(Stdio::null())
+        .stdout(Stdio::from(log))
+        .stderr(Stdio::from(stderr))
+        .env("AISHE_SHELL_ID", format!("task-{id}"))
+        .env("AISHE_BACKGROUND_TASK_ID", id)
+        .env("AISHE_TASK_ROLE", &record.role)
+        .env("AISHE_TASK_SCOPE", &record.scope);
+    set_budget_environment(&mut child, &record.budget);
+    set_worker_engine_environment(&mut child, &record, &selected)?;
+    detach_worker(&mut child);
+    let child = child.spawn().context("starting workflow stage")?;
+    let identity = process_start(child.id());
+    update(id, |fresh| {
+        if fresh.state == State::Starting {
+            fresh.pid = Some(child.id());
+            fresh.process_start = identity;
+            fresh.state = State::Running;
+        }
+        Ok(())
+    })
+}
+
+pub fn required_checks(id: &str) -> Result<Vec<String>> {
+    Ok(load(id)?
+        .workflow
+        .map_or_else(Vec::new, |link| link.required_checks))
+}
+
+/// Move the saved native continuation into a detached owner. Provider state,
+/// pending effects, budgets and authority are retained; no request is restarted.
+pub fn adopt_saved_checkpoint(config: &Config, native_id: &str) -> Result<String> {
+    adopt_saved_checkpoint_with_environment(config, native_id, std::collections::HashMap::new())
+}
+
+pub fn adopt_saved_checkpoint_with_environment(
+    config: &Config,
+    native_id: &str,
+    environment: std::collections::HashMap<String, String>,
+) -> Result<String> {
+    let checkpoint = crate::tasks::load(native_id)?;
+    crate::agent::native::handoff::wait_stopped(native_id, std::time::Duration::from_secs(5))?;
+    if checkpoint.status != crate::tasks::Status::Interrupted
+        || checkpoint.native_state.as_deref() != Some("handed_off")
+    {
+        anyhow::bail!("native task {native_id} has not parked for background handoff");
     }
-    if !std::io::stdin().is_terminal() || !std::io::stdout().is_terminal() {
-        eprintln!("aishe: {count} selectable hunk(s); use `aishe task apply {id} --hunk N`");
-        return Ok(0);
-    }
-    let choices = vec![
-        "Apply all changes".into(),
-        format!("Select from {count} hunks"),
-        "Ask agent to rework".into(),
-        "Reject and discard worktree".into(),
-        "Leave for later".into(),
-    ];
-    let crate::promptui::PickerResult::Use(choice) =
-        crate::promptui::filter_picker("Review task changes", &choices, 4)?
-    else {
-        return Ok(0);
-    };
-    match choice {
-        0 => apply(id, &[]),
-        1 => select_hunks_interactive(id, &patch),
-        2 => {
-            let Some(instructions) = crate::promptui::text(
-                "Rework instructions",
-                "address the review feedback and rerun focused tests",
-                |value| {
-                    if value.trim().is_empty() {
-                        anyhow::bail!("instructions cannot be empty")
-                    }
-                    Ok(())
+    let existing = records()?
+        .into_iter()
+        .find(|record| record.native_task_id.as_deref() == Some(native_id));
+    let id = if let Some(existing) = existing {
+        update(&existing.id, |record| {
+            if matches!(
+                record.state,
+                State::Cancelled | State::Applied | State::Discarded
+            ) {
+                anyhow::bail!("task {} cannot hand off from {:?}", record.id, record.state);
+            }
+            if record.foreground {
+                settle_elapsed(record);
+                record.state = State::Interrupted;
+                record.pid = None;
+                record.process_start = None;
+                record.foreground = false;
+            }
+            Ok(())
+        })?;
+        existing.id
+    } else {
+        let selected = crate::tasks::restore_config(&checkpoint, config)?;
+        let id = new_id();
+        let dir = task_dir(&id)?;
+        fs::create_dir_all(&dir)?;
+        set_private(&dir, 0o700);
+        let limits = checkpoint.execution_limits.clone().unwrap_or_default();
+        let max_minutes = limits.elapsed.map_or(u32::MAX / 60, |value| {
+            value.as_secs().div_ceil(60).clamp(1, u64::from(u32::MAX)) as u32
+        });
+        let workspace = checkpoint
+            .workspace_root
+            .clone()
+            .unwrap_or_else(|| checkpoint.cwd.clone());
+        let identity = git_identity(&workspace);
+        let now = now_ms();
+        let record = Record {
+            schema_version: SCHEMA_VERSION,
+            id: id.clone(),
+            objective: checkpoint.objective.clone(),
+            source_cwd: checkpoint.cwd.clone(),
+            run_cwd: workspace,
+            source_repo: identity.as_ref().map(|(repo, _, _)| repo.clone()),
+            worktree: None,
+            base_head: identity.as_ref().map(|(_, head, _)| head.clone()),
+            source_branch: identity.and_then(|(_, _, branch)| branch),
+            created_at_ms: now,
+            updated_at_ms: now,
+            state: State::Interrupted,
+            result_revision: 0,
+            mailbox: InteractionMailbox::default(),
+            workflow: None,
+            foreground: false,
+            workflow_frozen: false,
+            native_task_id: Some(native_id.into()),
+            engine: Some("native".into()),
+            connection_id: checkpoint.connection_id.clone(),
+            provider: checkpoint.provider.clone(),
+            model: checkpoint.model.clone(),
+            connection: checkpoint.connection.clone(),
+            role: "build".into(),
+            scope: checkpoint.execution_scope.map_or_else(
+                || selected.backend.default_scope.clone(),
+                |scope| match scope {
+                    crate::agent::ExecutionScope::Workspace => "workspace".into(),
+                    crate::agent::ExecutionScope::Host => "host".into(),
                 },
-            )?
-            else {
-                return Ok(0);
-            };
-            if instructions == ":back" {
-                return Ok(0);
-            }
-            rework(config, id, &instructions)
-        }
-        3 => discard(id),
-        _ => Ok(0),
-    }
+            ),
+            network: checkpoint.network_policy.map_or_else(
+                || selected.backend.workspace_network.clone(),
+                |network| match network {
+                    crate::agent::NetworkPolicy::Deny => "deny".into(),
+                    crate::agent::NetworkPolicy::Allow => "allow".into(),
+                },
+            ),
+            elapsed_ms: checkpoint.execution.elapsed_ms,
+            attempt_started_at_ms: None,
+            steering_revision: checkpoint.steering_revision,
+            steering: Vec::new(),
+            pid: None,
+            process_start: None,
+            exit_code: Some(75),
+            budget: Budget {
+                max_minutes,
+                max_provider_turns: limits.provider_turns.unwrap_or(u32::MAX),
+                max_cost_usd: limits.cost_usd.unwrap_or(0.0),
+                max_tool_calls: limits.tool_calls.unwrap_or(u32::MAX),
+                max_network_calls: limits.network_calls.unwrap_or(u32::MAX),
+                max_changed_files: u32::MAX,
+                max_changed_bytes: u64::MAX,
+            },
+            plan: Vec::new(),
+            plan_revision: 0,
+            applied_hunks: Vec::new(),
+            applied_patch_sha256: None,
+            budget_exceeded: false,
+            error: Some("parked for background handoff".into()),
+        };
+        write_private(&request_path(&id)?, checkpoint.objective.as_bytes())?;
+        save(&record)?;
+        id
+    };
+    resume_with_environment(config, &id, Some(&environment), false)?;
+    Ok(id)
 }
 
-fn print_colored_patch(patch: &str) {
-    let capabilities = crate::ui::TerminalCapabilities::detect_stdout();
-    for line in patch.lines() {
-        let token = if line.starts_with('+') && !line.starts_with("+++") {
-            crate::ui::StyleToken::DiffAdd
-        } else if line.starts_with('-') && !line.starts_with("---") {
-            crate::ui::StyleToken::DiffRemove
-        } else if line.starts_with("diff --git") || line.starts_with("# aishe hunk") {
-            crate::ui::StyleToken::Accent
-        } else {
-            crate::ui::StyleToken::Muted
-        };
-        println!(
-            "{}",
-            capabilities.paint(token, &crate::commands::display_safe(line))
+/// Request the running native owner to park, then claim its exact checkpoint
+/// for this terminal process. A stale callback cannot win after its worker exits.
+pub fn claim_foreground(config: &Config, id: &str) -> Result<(Config, crate::tasks::Record)> {
+    let mut record = load(id)?;
+    reconcile(&mut record)?;
+    if matches!(
+        record.state,
+        State::Blocked | State::Cancelled | State::Applied | State::Discarded | State::Completed
+    ) {
+        anyhow::bail!(
+            "task {id} cannot move to foreground from {:?}",
+            record.state
         );
     }
+    if record.foreground {
+        anyhow::bail!("task {id} already belongs to a foreground terminal");
+    }
+    if record.state == State::Waiting {
+        interactions::ready_to_resume(&record)?;
+    }
+    let native_id = record
+        .native_task_id
+        .as_deref()
+        .context("task has not saved a native checkpoint yet")?;
+    if matches!(record.state, State::Starting | State::Running) {
+        crate::agent::native::handoff::request_task(
+            native_id,
+            crate::agent::native::handoff::Direction::Foreground,
+        )?;
+    }
+    crate::agent::native::handoff::wait_stopped(native_id, std::time::Duration::from_secs(5))?;
+    let started = std::time::Instant::now();
+    while record
+        .pid
+        .is_some_and(|pid| same_process(pid, record.process_start.as_deref()))
+    {
+        if started.elapsed() >= std::time::Duration::from_secs(5) {
+            anyhow::bail!("foreground handoff is queued; retry after the worker exits");
+        }
+        std::thread::sleep(std::time::Duration::from_millis(40));
+        record = load(id)?;
+    }
+    reconcile(&mut record)?;
+    let checkpoint = resume_checkpoint(id)?.context("task has no durable native checkpoint")?;
+    validate_remaining_budget(&record, &checkpoint)?;
+    let mut selected = worker_config(id, config)?;
+    crate::policy::constrain(&mut selected)?;
+    workflows::claim_slot(id, || {
+        update(id, |fresh| {
+            if fresh.foreground
+                || !matches!(
+                    fresh.state,
+                    State::Waiting | State::Interrupted | State::Failed
+                )
+                || fresh.native_task_id != record.native_task_id
+                || fresh.result_revision != record.result_revision
+                || fresh
+                    .pid
+                    .is_some_and(|pid| same_process(pid, fresh.process_start.as_deref()))
+            {
+                anyhow::bail!("task {id} changed while foreground handoff was pending");
+            }
+            if fresh.state == State::Waiting {
+                interactions::ready_to_resume(fresh)?;
+            }
+            fresh.foreground = true;
+            fresh.state = State::Running;
+            fresh.pid = Some(std::process::id());
+            fresh.process_start = process_start(std::process::id());
+            fresh.attempt_started_at_ms = Some(now_ms());
+            fresh.exit_code = None;
+            fresh.error = None;
+            Ok(())
+        })
+    })?;
+    Ok((selected, checkpoint))
 }
 
-fn select_hunks_interactive(id: &str, patch: &[u8]) -> Result<u8> {
-    let files = parse_file_patches(patch)?;
-    let labels = files
-        .iter()
-        .flat_map(|file| {
-            file.hunks
-                .iter()
-                .map(|hunk| hunk.lines().next().unwrap_or("file change").to_string())
-        })
-        .collect::<Vec<_>>();
-    let mut selected = std::collections::BTreeSet::new();
-    loop {
-        let mut options = labels
-            .iter()
-            .enumerate()
-            .map(|(index, label)| {
-                format!(
-                    "[{}] hunk {} · {label}",
-                    if selected.contains(&(index + 1)) {
-                        "x"
-                    } else {
-                        " "
-                    },
-                    index + 1
-                )
-            })
-            .collect::<Vec<_>>();
-        options.push(format!("Apply {} selected hunk(s)", selected.len()));
-        options.push("Back without applying".into());
-        let crate::promptui::PickerResult::Use(choice) =
-            crate::promptui::filter_picker("Select review hunks", &options, options.len() - 2)?
-        else {
-            return Ok(0);
-        };
-        if choice < labels.len() {
-            if !selected.insert(choice + 1) {
-                selected.remove(&(choice + 1));
-            }
-        } else if choice == labels.len() {
-            if selected.is_empty() {
-                continue;
-            }
-            return apply(id, &selected.into_iter().collect::<Vec<_>>());
-        } else {
-            return Ok(0);
+pub fn finish_foreground(id: &str, outcome: &crate::agent::NativeTurnOutcome) -> Result<u8> {
+    let mut code = outcome.exit_code();
+    update(id, |record| {
+        if !record.foreground {
+            return Ok(());
         }
+        if record.pid != Some(std::process::id()) {
+            anyhow::bail!("foreground task belongs to another terminal");
+        }
+        code = finish_native_record(record, outcome, crate::tasks::mark_background_cancelled)?;
+        record.foreground = false;
+        record.pid = None;
+        record.process_start = None;
+        Ok(())
+    })?;
+    refresh_status();
+    if let Some(link) = load(id)?.workflow {
+        let _ = scheduler::ensure_running(&link.run_id);
     }
+    Ok(code)
+}
+
+fn review(_config: &Config, id: &str) -> Result<u8> {
+    crate::cli::changeui::review_and_apply(id)?;
+    Ok(0)
 }
 
 fn rework(config: &Config, id: &str, instructions: &str) -> Result<u8> {
@@ -1403,10 +1684,17 @@ fn rework(config: &Config, id: &str, instructions: &str) -> Result<u8> {
         ) {
             anyhow::bail!("task {id} cannot be reworked from state {:?}", record.state);
         }
+        changes::ensure_no_partial_apply(record)?;
+        if record.workflow_frozen {
+            anyhow::bail!(
+                "workflow stage {id} was handed forward; run a new workflow to change it"
+            );
+        }
         let native_id = record
             .native_task_id
             .as_deref()
             .with_context(|| format!("task {id} has no durable native checkpoint to rework"))?;
+        let _ = crate::agent::native::handoff::discard_environment(native_id);
         validate_remaining_budget(record, &crate::tasks::load(native_id)?)?;
         let total = record
             .steering
@@ -1427,205 +1715,52 @@ fn rework(config: &Config, id: &str, instructions: &str) -> Result<u8> {
 }
 
 fn apply(id: &str, hunks: &[usize]) -> Result<u8> {
-    let mut record = load(id)?;
-    if record.budget_exceeded {
-        anyhow::bail!(
-            "task {id} exceeded its change budget; review or discard it, but do not apply it"
-        );
+    if !hunks.is_empty() {
+        anyhow::bail!("--hunk requires --revision from task review");
     }
-    if !matches!(
-        record.state,
-        State::Completed | State::Failed | State::Interrupted
-    ) {
-        anyhow::bail!(
-            "task {id} cannot apply changes from state {:?}",
-            record.state
-        );
-    }
-    let repo = record
-        .source_repo
-        .as_ref()
-        .context("task has no source git repository")?;
-    let full_patch = patch(&record)?;
-    let bytes = if hunks.is_empty() {
-        full_patch.clone()
-    } else {
-        select_hunks(&full_patch, hunks)?
-    };
-    if bytes.is_empty() {
-        println!("task {id} has no file changes");
-        return Ok(0);
-    }
-    let mut child = Command::new("git")
-        .args([
-            "-C",
-            &repo.display().to_string(),
-            "apply",
-            "--3way",
-            "--whitespace=nowarn",
-            "-",
-        ])
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()?;
-    child
-        .stdin
-        .as_mut()
-        .context("opening git apply stdin")?
-        .write_all(&bytes)?;
-    let output = child.wait_with_output()?;
-    if !output.status.success() {
-        anyhow::bail!(
-            "task patch did not apply cleanly: {}",
-            crate::commands::display_safe(&String::from_utf8_lossy(&output.stderr))
-        );
-    }
-    record.state = State::Applied;
-    record.applied_hunks = hunks.to_vec();
-    record.applied_patch_sha256 = Some({
-        use sha2::{Digest, Sha256};
-        format!("{:x}", Sha256::digest(&bytes))
-    });
-    record.updated_at_ms = now_ms().max(record.updated_at_ms.saturating_add(1));
-    save(&record)?;
-    println!("applied task {id} changes to {}", repo.display());
+    let review = task_change_review(id)?;
+    let applied = apply_task_changes(id, &review.revision, &[], hunks)?;
+    println!("{}", serde_json::to_string_pretty(&applied)?);
     Ok(0)
 }
 
-#[derive(Clone, Debug)]
-struct FilePatch {
-    header: String,
-    hunks: Vec<String>,
-}
-
-fn parse_file_patches(bytes: &[u8]) -> Result<Vec<FilePatch>> {
-    let text = std::str::from_utf8(bytes)
-        .context("hunk selection requires UTF-8 git paths and patch text")?;
-    let mut sections = Vec::new();
-    let mut current = String::new();
-    for line in text.split_inclusive('\n') {
-        if line.starts_with("diff --git ") && !current.is_empty() {
-            sections.push(std::mem::take(&mut current));
-        }
-        current.push_str(line);
-    }
-    if !current.is_empty() {
-        sections.push(current);
-    }
-    let mut files = Vec::new();
-    for section in sections {
-        let mut header = String::new();
-        let mut hunks = Vec::new();
-        let mut current_hunk = String::new();
-        for line in section.split_inclusive('\n') {
-            if line.starts_with("@@ ") {
-                if !current_hunk.is_empty() {
-                    hunks.push(std::mem::take(&mut current_hunk));
-                }
-                current_hunk.push_str(line);
-            } else if current_hunk.is_empty() {
-                header.push_str(line);
-            } else {
-                current_hunk.push_str(line);
-            }
-        }
-        if !current_hunk.is_empty() {
-            hunks.push(current_hunk);
-        }
-        // Binary/mode-only/create-delete sections are selected at file level.
-        if hunks.is_empty() && !header.trim().is_empty() {
-            hunks.push(String::new());
-        }
-        files.push(FilePatch { header, hunks });
-    }
-    Ok(files)
-}
-
-fn numbered_review(bytes: &[u8]) -> Result<(String, usize)> {
-    let files = parse_file_patches(bytes)?;
-    let mut output = String::new();
-    let mut id = 0usize;
-    for file in files {
-        output.push_str(&file.header);
-        for hunk in file.hunks {
-            id += 1;
-            output.push_str(&format!("# aishe hunk {id}\n"));
-            output.push_str(&hunk);
-        }
-    }
-    Ok((output, id))
-}
-
-fn select_hunks(bytes: &[u8], selected: &[usize]) -> Result<Vec<u8>> {
-    use std::collections::BTreeSet;
-    let requested: BTreeSet<usize> = selected.iter().copied().collect();
-    if requested.len() != selected.len() || requested.contains(&0) {
-        anyhow::bail!("hunk numbers must be unique positive integers");
-    }
-    let files = parse_file_patches(bytes)?;
-    let mut output = String::new();
-    let mut seen = BTreeSet::new();
-    let mut id = 0usize;
-    for file in files {
-        let mut chosen = String::new();
-        let mut file_selected = false;
-        for hunk in file.hunks {
-            id += 1;
-            if requested.contains(&id) {
-                seen.insert(id);
-                file_selected = true;
-                chosen.push_str(&hunk);
-            }
-        }
-        if file_selected {
-            output.push_str(&file.header);
-            output.push_str(&chosen);
-        }
-    }
-    if seen != requested {
-        let missing = requested
-            .difference(&seen)
-            .map(usize::to_string)
-            .collect::<Vec<_>>();
-        anyhow::bail!("unknown hunk number(s): {}", missing.join(", "));
-    }
-    if output.is_empty() {
-        anyhow::bail!("selected hunks produced an empty patch");
-    }
-    Ok(output.into_bytes())
-}
-
 fn discard(id: &str) -> Result<u8> {
-    let mut record = load(id)?;
-    if matches!(record.state, State::Running | State::Starting) {
-        anyhow::bail!("cancel task {id} before discarding it");
-    }
-    if let (Some(repo), Some(worktree)) = (&record.source_repo, &record.worktree) {
-        let expected = task_dir(id)?.join("worktree");
-        if worktree != &expected || !worktree.starts_with(task_root()?) {
-            anyhow::bail!("refusing to remove an unowned task worktree");
+    update(id, |record| {
+        if matches!(
+            record.state,
+            State::Running | State::Starting | State::Waiting
+        ) {
+            anyhow::bail!("cancel task {id} before discarding it");
         }
-        let output = Command::new("git")
-            .args([
-                "-C",
-                &repo.display().to_string(),
-                "worktree",
-                "remove",
-                "--force",
-            ])
-            .arg(worktree)
-            .output()?;
-        if !output.status.success() {
-            anyhow::bail!(
-                "could not remove task worktree: {}",
-                crate::commands::display_safe(&String::from_utf8_lossy(&output.stderr))
-            );
+        if let (Some(repo), Some(worktree)) = (&record.source_repo, &record.worktree) {
+            let expected = task_dir(id)?.join("worktree");
+            if worktree != &expected || !worktree.starts_with(task_root()?) {
+                anyhow::bail!("refusing to remove an unowned task worktree");
+            }
+            let output = Command::new("git")
+                .args([
+                    "-C",
+                    &repo.display().to_string(),
+                    "worktree",
+                    "remove",
+                    "--force",
+                ])
+                .arg(worktree)
+                .output()?;
+            if !output.status.success() {
+                anyhow::bail!(
+                    "could not remove task worktree: {}",
+                    crate::commands::display_safe(&String::from_utf8_lossy(&output.stderr))
+                );
+            }
         }
-    }
-    record.state = State::Discarded;
-    record.updated_at_ms = now_ms().max(record.updated_at_ms.saturating_add(1));
-    save(&record)?;
+        record.state = State::Discarded;
+        if let Some(native_id) = &record.native_task_id {
+            let _ = crate::agent::native::handoff::discard_environment(native_id);
+        }
+        interactions::invalidate_pending(record);
+        Ok(())
+    })?;
     println!("discarded task {id} worktree");
     Ok(0)
 }
@@ -1693,64 +1828,6 @@ fn set_step(id: &str, step: u32, state: StepState, evidence: Option<&str>) -> Re
     })?;
     println!("task {id} step {step}: {state:?}");
     Ok(0)
-}
-
-fn patch(record: &Record) -> Result<Vec<u8>> {
-    let worktree = record
-        .worktree
-        .as_ref()
-        .context("task has no isolated worktree")?;
-    let base = record
-        .base_head
-        .as_deref()
-        .context("task has no recorded base commit")?;
-    let mut bytes = command_bytes(
-        Command::new("git").args([
-            "-C",
-            &worktree.display().to_string(),
-            "diff",
-            "--binary",
-            base,
-            "--",
-        ]),
-        true,
-    )?;
-    let untracked = command_bytes(
-        Command::new("git").args([
-            "-C",
-            &worktree.display().to_string(),
-            "ls-files",
-            "--others",
-            "--exclude-standard",
-            "-z",
-        ]),
-        false,
-    )?;
-    for raw in untracked
-        .split(|byte| *byte == 0)
-        .filter(|value| !value.is_empty())
-    {
-        let relative = String::from_utf8(raw.to_vec()).context("non-UTF-8 task path")?;
-        if relative.starts_with('/') || relative.split('/').any(|part| part == "..") {
-            anyhow::bail!("unsafe untracked task path");
-        }
-        let output = Command::new("git")
-            .current_dir(worktree)
-            .args([
-                "diff",
-                "--no-index",
-                "--binary",
-                "--",
-                "/dev/null",
-                &relative,
-            ])
-            .output()?;
-        if !matches!(output.status.code(), Some(0 | 1)) {
-            anyhow::bail!("could not create patch for {relative}");
-        }
-        bytes.extend(output.stdout);
-    }
-    Ok(bytes)
 }
 
 fn changed_usage(record: &Record) -> Option<(u32, u64)> {
@@ -2000,17 +2077,6 @@ fn validate_native_workspace(record: &Record, checkpoint: &crate::tasks::Record)
     Ok(())
 }
 
-fn command_bytes(command: &mut Command, allow_diff_exit: bool) -> Result<Vec<u8>> {
-    let output = command.output()?;
-    if !(output.status.success() || allow_diff_exit && output.status.code() == Some(1)) {
-        anyhow::bail!(
-            "git command failed: {}",
-            crate::commands::display_safe(&String::from_utf8_lossy(&output.stderr))
-        );
-    }
-    Ok(output.stdout)
-}
-
 fn git_identity(cwd: &Path) -> Option<(PathBuf, String, Option<String>)> {
     let repo = git_text(cwd, &["rev-parse", "--show-toplevel"])?;
     let repo = PathBuf::from(repo).canonicalize().ok()?;
@@ -2020,15 +2086,46 @@ fn git_identity(cwd: &Path) -> Option<(PathBuf, String, Option<String>)> {
 }
 
 fn git_text(cwd: &Path, args: &[&str]) -> Option<String> {
-    let output = Command::new("git")
+    let mut command = Command::new("git");
+    command
+        .args([
+            "-c",
+            "core.fsmonitor=false",
+            "-c",
+            "core.hooksPath=/dev/null",
+        ])
         .args(args)
-        .current_dir(cwd)
-        .output()
-        .ok()?;
-    output
-        .status
-        .success()
-        .then(|| crate::commands::display_safe(String::from_utf8_lossy(&output.stdout).trim()))
+        .current_dir(cwd);
+    for name in [
+        "GIT_DIR",
+        "GIT_WORK_TREE",
+        "GIT_COMMON_DIR",
+        "GIT_INDEX_FILE",
+        "GIT_OBJECT_DIRECTORY",
+        "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+        "GIT_NAMESPACE",
+    ] {
+        command.env_remove(name);
+    }
+    for (name, _) in std::env::vars_os() {
+        if name.to_string_lossy().starts_with("GIT_CONFIG_") {
+            command.env_remove(name);
+        }
+    }
+    command
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("GIT_CONFIG_GLOBAL", "/dev/null");
+    let output = changes::command_output(
+        &mut command,
+        None,
+        64 * 1024,
+        false,
+        std::time::Instant::now() + std::time::Duration::from_secs(3),
+    )
+    .ok()?;
+    Some(crate::commands::display_safe(
+        String::from_utf8_lossy(&output).trim(),
+    ))
 }
 
 fn branch_label(record: &Record) -> String {
@@ -2805,18 +2902,6 @@ mod tests {
         // A final model response remains possible; admitting another tool is
         // independently denied by the native engine's persisted reservations.
         assert!(validate_remaining_budget(&record, &checkpoint).is_ok());
-    }
-
-    #[test]
-    fn hunk_selection_keeps_headers_and_rejects_unknown_ids() {
-        let patch = b"diff --git a/a b/a\n--- a/a\n+++ b/a\n@@ -1 +1 @@\n-old\n+new\n@@ -4 +4 @@\n-x\n+y\ndiff --git a/b b/b\n--- a/b\n+++ b/b\n@@ -1 +1 @@\n-no\n+yes\n";
-        let selected = String::from_utf8(select_hunks(patch, &[2, 3]).unwrap()).unwrap();
-        assert!(!selected.contains("-old"));
-        assert!(selected.contains("-x"));
-        assert!(selected.contains("-no"));
-        assert_eq!(selected.matches("diff --git").count(), 2);
-        assert!(select_hunks(patch, &[4]).is_err());
-        assert!(select_hunks(patch, &[1, 1]).is_err());
     }
 
     #[test]

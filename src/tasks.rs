@@ -16,7 +16,9 @@ use crate::providers::{ErrorKind, Msg, ToolCall};
 use crate::usage::Usage;
 
 pub mod evidence;
+pub mod timeline;
 pub use evidence::{CheckEvidence, CheckSummary, ExecutionKind, ExecutionOutcome};
+pub use timeline::{EventKind, EventOutcome, TaskTimelineEvent};
 
 pub const TASK_SCHEMA_VERSION: u32 = 1;
 
@@ -120,6 +122,12 @@ pub struct Record {
     pub workspace_revision: u64,
     #[serde(default)]
     pub evidence_dropped: usize,
+    #[serde(default)]
+    pub timeline: Vec<TaskTimelineEvent>,
+    #[serde(default)]
+    pub timeline_dropped: usize,
+    #[serde(default)]
+    pub timeline_sequence: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub native_state: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -188,6 +196,9 @@ impl Active {
             evidence: Vec::new(),
             workspace_revision: 0,
             evidence_dropped: 0,
+            timeline: Vec::new(),
+            timeline_dropped: 0,
+            timeline_sequence: 0,
             native_state: None,
             last_error_kind: None,
             last_error: None,
@@ -201,6 +212,13 @@ impl Active {
             usage_base: UsageSummary::default(),
             usage_meter_start: Usage::default(),
         };
+        timeline::push(
+            &mut active.record,
+            EventKind::TaskStarted,
+            "Task started",
+            objective,
+            None,
+        );
         active.save();
         active
     }
@@ -220,6 +238,13 @@ impl Active {
         active.record.last_error_kind = None;
         active.record.reconcile_unfinished_evidence(false);
         active.record.updated_at_ms = now_ms();
+        timeline::push(
+            &mut active.record,
+            EventKind::Resumed,
+            "Checkpoint resumed",
+            "The saved conversation, counters, and execution bounds were retained.",
+            None,
+        );
         active.save();
         active
     }
@@ -230,6 +255,26 @@ impl Active {
 
     pub fn record(&self) -> &Record {
         &self.record
+    }
+
+    /// A handoff requires a checkpoint even when ordinary foreground session
+    /// persistence was explicitly disabled.
+    pub fn require_persistence(&mut self) -> Result<()> {
+        if self.path.is_none() {
+            anyhow::bail!("task handoff requires durable task persistence; enable session persistence before handing off");
+        }
+        self.ensure_persisted()
+    }
+
+    pub fn record_timeline_event(
+        &mut self,
+        kind: EventKind,
+        subject: &str,
+        detail: &str,
+        outcome: Option<EventOutcome>,
+    ) -> Result<()> {
+        timeline::push(&mut self.record, kind, subject, detail, outcome);
+        self.ensure_persisted()
     }
 
     pub fn background_cancelled(&self) -> bool {
@@ -255,6 +300,18 @@ impl Active {
     }
 
     pub fn checkpoint_execution(&mut self, counters: ExecutionCounters) {
+        if counters.provider_turns > self.record.execution.provider_turns {
+            // The latest bounded observations are enough even for an imported
+            // checkpoint with an unexpectedly large reservation counter.
+            let start = self.record.execution.provider_turns.saturating_add(1).max(
+                counters
+                    .provider_turns
+                    .saturating_sub(timeline::MAX_EVENTS as u32),
+            );
+            for turn in start..=counters.provider_turns {
+                timeline::push(&mut self.record, EventKind::ProviderTurn, &format!("Provider turn {turn}"), "Budget reserved before a provider request; this is not a claim that the request completed.", None);
+            }
+        }
         self.record.execution = counters;
         self.save();
     }
@@ -266,9 +323,24 @@ impl Active {
 
     pub fn checkpoint_admission(&mut self, executor: &crate::executor::Executor) {
         if let Some((scope, root, network)) = executor.lean_scope() {
+            let changed = self.record.execution_scope != Some(*scope)
+                || self.record.network_policy != Some(*network)
+                || self.record.workspace_root.as_ref() != Some(root);
             self.record.execution_scope = Some(*scope);
             self.record.network_policy = Some(*network);
             self.record.workspace_root = Some(root.clone());
+            if changed {
+                timeline::push(
+                    &mut self.record,
+                    EventKind::Admission,
+                    "Execution admitted",
+                    &format!(
+                        "Scope: {scope:?}\nNetwork: {network:?}\nRoot: {}",
+                        root.display()
+                    ),
+                    None,
+                );
+            }
             self.save();
         }
     }
@@ -286,6 +358,15 @@ impl Active {
         messages: &[Msg],
         usage: Usage,
     ) -> Result<()> {
+        if revision > self.record.followup_revision {
+            timeline::push(
+                &mut self.record,
+                EventKind::FollowupReceived,
+                &format!("Follow-up #{revision}"),
+                "Added to the durable conversation at an execution boundary.",
+                None,
+            );
+        }
         self.record.followup_revision = self.record.followup_revision.max(revision);
         self.record.messages = sanitize_messages(messages);
         self.record.usage = self.cumulative_usage(usage);
@@ -354,6 +435,23 @@ impl Active {
             .find(|entry| entry.call_id == call_id && entry.outcome == ExecutionOutcome::Running)
             .with_context(|| format!("no started execution evidence for tool call {call_id}"))?;
         entry.finish(exit_code, output, duration_ms, cancelled);
+        let kind = entry.kind;
+        let command = entry.command.clone();
+        if kind == ExecutionKind::Check {
+            timeline::push(
+                &mut self.record,
+                EventKind::CheckResult,
+                &command,
+                &format!("Exit code: {exit_code}\nDuration: {duration_ms} ms\n{output}"),
+                Some(if cancelled {
+                    EventOutcome::Cancelled
+                } else if exit_code == 0 {
+                    EventOutcome::Completed
+                } else {
+                    EventOutcome::Failed
+                }),
+            );
+        }
         self.ensure_persisted()
     }
 
@@ -379,6 +477,15 @@ impl Active {
             CheckEvidence::started(call_id, command, cwd, kind, self.record.workspace_revision);
         entry.not_run(reason);
         self.record.evidence.push(entry);
+        if kind == ExecutionKind::Check {
+            timeline::push(
+                &mut self.record,
+                EventKind::CheckResult,
+                command,
+                reason,
+                Some(EventOutcome::NotExecuted),
+            );
+        }
         self.ensure_persisted()
     }
 
@@ -427,6 +534,7 @@ impl Active {
             NativeTurnState::Failed => (Status::Failed, "failed"),
             NativeTurnState::Declined => (Status::Interrupted, "declined"),
             NativeTurnState::Waiting => (Status::Interrupted, "waiting"),
+            NativeTurnState::HandedOff => (Status::Interrupted, "handed_off"),
         };
         self.record.status = status;
         self.record.native_state = Some(reason.into());
@@ -435,10 +543,31 @@ impl Active {
             self.record.pending_tool = None;
             self.record.last_error_kind = None;
         }
-        if outcome.state != NativeTurnState::Waiting {
+        if !matches!(
+            outcome.state,
+            NativeTurnState::Waiting | NativeTurnState::HandedOff
+        ) {
             self.record
                 .reconcile_unfinished_evidence(outcome.state == NativeTurnState::Cancelled);
         }
+        let event_outcome = match outcome.state {
+            NativeTurnState::Completed => EventOutcome::Completed,
+            NativeTurnState::Cancelled => EventOutcome::Cancelled,
+            NativeTurnState::Failed => EventOutcome::Failed,
+            NativeTurnState::Declined => EventOutcome::Declined,
+            NativeTurnState::Waiting => EventOutcome::Waiting,
+            NativeTurnState::HandedOff => EventOutcome::HandedOff,
+            NativeTurnState::BudgetExhausted | NativeTurnState::IterationLimit => {
+                EventOutcome::NotExecuted
+            }
+        };
+        timeline::push(
+            &mut self.record,
+            EventKind::Finished,
+            reason,
+            outcome.detail.as_deref().unwrap_or(""),
+            Some(event_outcome),
+        );
         self.checkpoint_messages(messages, usage);
     }
 
@@ -458,12 +587,21 @@ impl Active {
         });
         self.record.usage = self.cumulative_usage(usage);
         self.record.updated_at_ms = now_ms();
+        timeline::push(
+            &mut self.record,
+            EventKind::ToolPlanned,
+            &call.name,
+            &timeline::tool_arguments(&call.arguments),
+            None,
+        );
         self.save();
     }
 
     pub fn mark_pending_started(&mut self) {
         if let Some(pending) = self.record.pending_tool.as_mut() {
             pending.may_have_started = true;
+            let name = pending.call.name.clone();
+            timeline::push(&mut self.record, EventKind::ToolStarted, &name, "Execution boundary entered; an interruption after this point may leave effects uncertain.", None);
         }
         self.record.updated_at_ms = now_ms();
         self.save();
@@ -476,6 +614,12 @@ impl Active {
         messages: &[Msg],
         usage: Usage,
     ) {
+        let observed = self
+            .record
+            .pending_tool
+            .as_ref()
+            .filter(|pending| pending.call.id == call.id)
+            .map(|pending| pending.may_have_started);
         self.record_unexecuted_check(call, result);
         if !self
             .record
@@ -489,6 +633,17 @@ impl Active {
                 result: crate::redact::redact(result),
             });
         }
+        timeline::push(
+            &mut self.record,
+            EventKind::ToolResult,
+            &call.name,
+            result,
+            if observed == Some(false) {
+                Some(EventOutcome::NotExecuted)
+            } else {
+                None
+            },
+        );
         self.record.pending_tool = None;
         self.checkpoint_messages(messages, usage);
     }
@@ -508,6 +663,19 @@ impl Active {
         if record_not_run {
             self.record_unexecuted_check(&pending.call, result);
         }
+        timeline::push(
+            &mut self.record,
+            EventKind::ToolResult,
+            &pending.call.name,
+            result,
+            if pending.may_have_started {
+                Some(EventOutcome::Uncertain)
+            } else if record_not_run {
+                Some(EventOutcome::NotExecuted)
+            } else {
+                None
+            },
+        );
         self.record.pending_tool = None;
         let message = Msg::ToolResult {
             call_id: pending.call.id.clone(),
@@ -550,11 +718,25 @@ impl Active {
         );
         entry.not_run(result);
         self.record.evidence.push(entry);
+        timeline::push(
+            &mut self.record,
+            EventKind::CheckResult,
+            command,
+            result,
+            Some(EventOutcome::NotExecuted),
+        );
     }
 
     pub fn interrupted(&mut self, messages: &[Msg], usage: Usage) {
         self.record.status = Status::Interrupted;
         self.record.reconcile_unfinished_evidence(false);
+        timeline::push(
+            &mut self.record,
+            EventKind::Finished,
+            "Interrupted",
+            "No successful completion was observed.",
+            Some(EventOutcome::Uncertain),
+        );
         self.checkpoint_messages(messages, usage);
     }
 
@@ -563,6 +745,13 @@ impl Active {
         self.record.last_error_kind = Some(kind);
         self.record.last_error = Some(crate::redact::redact(error));
         self.record.reconcile_unfinished_evidence(false);
+        timeline::push(
+            &mut self.record,
+            EventKind::Finished,
+            "Failed",
+            error,
+            Some(EventOutcome::Failed),
+        );
         self.checkpoint_messages(messages, usage);
     }
 
@@ -570,6 +759,13 @@ impl Active {
         self.record.status = Status::Completed;
         self.record.pending_tool = None;
         self.record.reconcile_unfinished_evidence(false);
+        timeline::push(
+            &mut self.record,
+            EventKind::Finished,
+            "Completed",
+            "The task returned a final response; inspect recorded checks separately.",
+            Some(EventOutcome::Completed),
+        );
         self.checkpoint_messages(messages, usage);
     }
 
@@ -719,6 +915,7 @@ fn background_task_id() -> Option<String> {
     std::env::var("AISHE_BACKGROUND_TASK_ID")
         .ok()
         .filter(|value| !value.is_empty())
+        .or_else(crate::agent::native::handoff::linked_task_id)
 }
 
 fn task_path(id: &str) -> Option<PathBuf> {
@@ -1299,6 +1496,9 @@ mod tests {
             "evidence",
             "workspace_revision",
             "evidence_dropped",
+            "timeline",
+            "timeline_dropped",
+            "timeline_sequence",
             "native_state",
         ] {
             value.as_object_mut().unwrap().remove(field);
@@ -1309,12 +1509,110 @@ mod tests {
         assert_eq!(old.workspace_revision, 0);
         assert_eq!(old.followup_revision, 0);
         assert_eq!(old.evidence_dropped, 0);
+        assert!(old.timeline.is_empty());
+        assert_eq!(old.timeline_dropped, 0);
+        assert_eq!(old.timeline_sequence, 0);
         let mut current = Config::default();
         current.backend.default_scope = "host".into();
         current.backend.workspace_network = "allow".into();
         let restored = restore_config(&old, &current).unwrap();
         assert_eq!(restored.backend.default_scope, "workspace");
         assert_eq!(restored.backend.workspace_network, "deny");
+    }
+
+    #[test]
+    fn timeline_records_actual_checks_without_inventing_model_claims() {
+        let mut task = Active::start(&Config::default(), Path::new("/tmp"), "run checks");
+        task.path = None;
+        task.checkpoint_messages(
+            &[Msg::Assistant(crate::providers::AssistantMsg {
+                text: Some("All tests passed and every command succeeded".into()),
+                tool_calls: vec![],
+            })],
+            Usage::default(),
+        );
+        assert!(!task
+            .record
+            .timeline
+            .iter()
+            .any(|event| event.kind == EventKind::CheckResult));
+        task.begin_execution_evidence(
+            "check",
+            "cargo test",
+            Path::new("/tmp"),
+            ExecutionKind::Check,
+        )
+        .unwrap();
+        task.finish_execution_evidence("check", 1, "one failed check", 25, false)
+            .unwrap();
+        let actual = task
+            .record
+            .timeline
+            .iter()
+            .find(|event| event.kind == EventKind::CheckResult)
+            .unwrap();
+        assert_eq!(actual.outcome, Some(EventOutcome::Failed));
+        assert!(actual.detail.contains("Exit code: 1"));
+        assert!(!actual.detail.contains("All tests passed"));
+        assert_eq!(task.record.check_summary().failed, 1);
+    }
+
+    #[test]
+    fn timeline_keeps_uncertain_and_unexecuted_tools_distinct() {
+        let mut task = Active::start(&Config::default(), Path::new("/tmp"), "continue safely");
+        task.path = None;
+        let call = ToolCall {
+            id: "effect".into(),
+            name: "run_command".into(),
+            arguments: serde_json::json!({"command":"write effect"}),
+        };
+        task.pending(&call, &[], Usage::default());
+        task.clear_pending_with_result("Budget refused this command");
+        assert_eq!(
+            task.record.timeline.last().unwrap().outcome,
+            Some(EventOutcome::NotExecuted)
+        );
+        task.pending(&call, &[], Usage::default());
+        task.mark_pending_started();
+        task.clear_pending_with_result("Worker stopped while this command may have been executing");
+        assert_eq!(
+            task.record.timeline.last().unwrap().outcome,
+            Some(EventOutcome::Uncertain)
+        );
+        assert!(task
+            .record
+            .timeline
+            .windows(2)
+            .all(|pair| pair[0].sequence < pair[1].sequence));
+    }
+
+    #[test]
+    fn timeline_excludes_private_continuation_items_and_bounds_native_history() {
+        let mut task = Active::start(
+            &Config::default(),
+            Path::new("/tmp"),
+            "private continuation",
+        );
+        task.path = None;
+        task.checkpoint_messages(&[Msg::ProviderItems {
+            items: vec![serde_json::json!({"type":"reasoning","encrypted_content":"opaque-private-continuation","summary":[{"text":"private-reasoning-summary"}]})],
+            assistant: crate::providers::AssistantMsg { text: None, tool_calls: vec![] },
+        }], Usage::default());
+        for index in 0..timeline::MAX_EVENTS + 2 {
+            task.record_timeline_event(
+                EventKind::PlanNote,
+                &format!("note {index}"),
+                "A note is not check evidence",
+                None,
+            )
+            .unwrap();
+        }
+        assert_eq!(task.record.timeline.len(), timeline::MAX_EVENTS);
+        assert_eq!(task.record.timeline_dropped, 3);
+        let json = serde_json::to_string(&task.record.timeline).unwrap();
+        assert!(!json.contains("opaque-private-continuation"));
+        assert!(!json.contains("private-reasoning-summary"));
+        assert_eq!(task.record.check_summary().total, 0);
     }
 
     #[test]

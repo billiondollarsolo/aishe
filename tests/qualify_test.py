@@ -146,16 +146,16 @@ class QualificationTests(unittest.TestCase):
         )
         records = {record["id"]: record for record in report["gates"]}
 
-        for gate_id in ("installer-upgrade-linux", "credentials-linux"):
+        for gate_id in ("installer-upgrade-linux", "credentials-linux", "native-sandbox-functional"):
             self.assertEqual(records[gate_id]["status"], "skip")
             self.assertIn("not applicable", records[gate_id]["skip_reason"])
         for gate_id in ("real-model", "real-model-fuzz"):
             self.assertEqual(records[gate_id]["status"], "skip")
             self.assertIn("AISHE_REALTEST_KEY", records[gate_id]["skip_reason"])
         self.assertEqual(report["summary"]["outcome"], "passed_with_skips")
-        self.assertEqual(report["summary"]["counts"]["skip"], 4)
+        self.assertEqual(report["summary"]["counts"]["skip"], 5)
         self.assertTrue(all(records[gate_id]["status"] != "pass" for gate_id in (
-            "installer-upgrade-linux", "credentials-linux", "real-model", "real-model-fuzz"
+            "installer-upgrade-linux", "credentials-linux", "native-sandbox-functional", "real-model", "real-model-fuzz"
         )))
 
     def test_default_stop_records_every_remaining_gate_as_skipped(self):

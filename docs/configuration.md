@@ -47,6 +47,10 @@ Inside them:
 - Provider capability cache: `<data>/capabilities/*.json`
 - Resumable setup draft: `<data>/setup-draft.json`
 - Background agent tasks/worktrees: `<data>/background-tasks/`
+- Bounded task timelines: `<data>/background-tasks/<id>/timeline.json` and the
+  linked native checkpoint; provider-private continuation data is excluded
+- Native execution leases/one-shot handoff transfers: `<data>/tasks/handoff/`
+- Workflow templates/runs: `<data>/workflows/templates/` and `<data>/workflows/runs/`
 - Tracked repository indexes: `<data>/repo-index/`
 - Per-shell failure capsules: `<data>/failures/`
 - Binary rollback slot: `<data>/updates/previous-aishe`
@@ -184,6 +188,7 @@ snapshot and workspace-access boundaries.
 | `failed` | `1` | A provider, execution, or checkpoint failure prevented completion. |
 | `declined` | `2` | Required approval was declined. |
 | `waiting` | `75` | A background task saved a question or action approval and paused for your response. |
+| `handed_off` | `75` in a worker; `0` for a requested foreground transfer | The native checkpoint released ownership for continuation in the other execution mode. |
 
 A final model answer does not independently verify task success. The native
 agent can use `run_check` for an explicit verification command. Its evidence
@@ -231,6 +236,16 @@ execution context. It does not change the task's scope, network access, or
 organization policy. It cannot authorize a changed action or file target.
 Configured confirmation tiers and file previews become inbox requests for a
 background worker rather than unattended terminal prompts.
+
+Foreground/background handoff carries the same checkpoint and execution bounds;
+it does not create a new budget or change a source-directory task into an
+isolated worktree. Workflow templates are separate validated JSON/TOML data,
+with per-stage connection/model, scope, network, budgets, and literal required
+checks. Templates can narrow configured authority but cannot silently enable
+host scope or network access. The default graph uses two workers, workspace
+scope, and denied network; each stage owns a separate Git worktree. See
+[Agentic task workflows](agentic-workflows.md) for template examples, dependency
+release conditions, exact change review, and timeline privacy.
 
 ### Budget and cancellation boundaries
 

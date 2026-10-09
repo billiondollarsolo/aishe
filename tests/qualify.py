@@ -274,6 +274,22 @@ NATIVE_TASK_INTERACTIONS_UI = python_gate(
     "native-task-interactions-ui", "Needs you, live follow-ups, checks, and history with terminal restoration",
     "tests/task_interactions_pty.py", BINARY, required_tools=("zsh", "git"), timeout=300,
 )
+AGENTIC_WORKFLOWS = python_gate(
+    "agentic-workflows", "Dependency snapshots, restart, cancellation, selective changes, and factual timeline",
+    "tests/agentic_workflows.py", BINARY, required_tools=("git",), timeout=600,
+)
+TASK_HANDOFF_UI = python_gate(
+    "task-handoff-ui", "Exclusive foreground/background continuation with real terminal input",
+    "tests/task_handoff_pty.py", BINARY, required_tools=("zsh", "git"), timeout=300,
+)
+TASK_WORKFLOWS_UI = python_gate(
+    "task-workflows-ui", "Workflow launcher, selected review, timeline, and bounded busy history",
+    "tests/task_workflows_pty.py", BINARY, required_tools=("zsh", "git"), timeout=600,
+)
+NATIVE_SANDBOX_FUNCTIONAL = python_gate(
+    "native-sandbox-functional", "Actual workspace and denied-network enforcement by native tools",
+    "tests/native_sandbox_qualification.py", BINARY, required_tools=("bwrap",), platforms=frozenset({"Linux"}), timeout=180,
+)
 BASH_HOOK_CURRENT = python_gate(
     "bash-hook-current",
     "Native Bash hook declared-tier matrix for the current Bash",
@@ -459,6 +475,10 @@ LOCAL_FULL_GATES = (
     NATIVE_BACKGROUND_UI,
     NATIVE_TASK_INTERACTIONS,
     NATIVE_TASK_INTERACTIONS_UI,
+    AGENTIC_WORKFLOWS,
+    TASK_HANDOFF_UI,
+    TASK_WORKFLOWS_UI,
+    NATIVE_SANDBOX_FUNCTIONAL,
     python_gate(
         "legacy-pty-smoke", "Explicit legacy zsh smoke", "tests/pty_smoke.py", BINARY,
         required_tools=("zsh",), execution_env=LEGACY_ENV,
@@ -894,7 +914,7 @@ def collect_metadata(
                     "present" if platform_name == "Linux" and shutil.which("bwrap") else "absent"
                     if platform_name == "Linux" else "unsupported_platform"
                 ),
-                "qualification_gates": ["rust-tests", "host-scope", "admin-validation"],
+                "qualification_gates": ["native-sandbox-functional", "rust-tests", "host-scope", "admin-validation"],
             },
         },
         "credentials": {

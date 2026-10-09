@@ -6,6 +6,7 @@
 
 use std::path::{Component, Path, PathBuf};
 
+use crate::tasks::timeline::{append_background, EventKind, EventOutcome};
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -399,6 +400,7 @@ fn create_request(
     binding.validate()?;
     let prompt = bounded_text(prompt)?;
     let mut created = None;
+    let mut is_new = false;
     update(id, |record| {
         ensure_active(record)?;
         validate_record_binding(record, &binding)?;
@@ -434,9 +436,24 @@ fn create_request(
         };
         record.mailbox.requests.push(request.clone());
         created = Some(request);
+        is_new = true;
         Ok(())
     })?;
-    created.context("interaction request was not persisted")
+    let request = created.context("interaction request was not persisted")?;
+    if is_new {
+        let _ = append_background(
+            id,
+            if request.kind == InteractionKind::Question {
+                EventKind::Question
+            } else {
+                EventKind::Approval
+            },
+            "Needs you",
+            &request.prompt,
+            Some(EventOutcome::Waiting),
+        );
+    }
+    Ok(request)
 }
 
 pub fn interaction_for_call(
@@ -498,6 +515,7 @@ pub fn consume_interaction(
 ) -> Result<Option<InteractionResponse>> {
     binding.validate()?;
     let mut response = None;
+    let mut kind = EventKind::Approval;
     update(id, |record| {
         ensure_active(record)?;
         validate_record_binding(record, binding)?;
@@ -513,10 +531,24 @@ pub fn consume_interaction(
             .find(|request| request.id == request_id)
             .expect("matched request is present while locked");
         response = request.response.clone();
+        kind = if request.kind == InteractionKind::Question {
+            EventKind::Question
+        } else {
+            EventKind::Approval
+        };
         request.status = InteractionStatus::Consumed;
         request.consumed_at_ms.get_or_insert_with(now_ms);
         Ok(())
     })?;
+    if response.is_some() {
+        let _ = append_background(
+            id,
+            kind,
+            "Decision delivered",
+            "The saved one-use decision was consumed before tool admission.",
+            None,
+        );
+    }
     Ok(response)
 }
 
@@ -539,15 +571,33 @@ pub(super) fn respond(
         },
         InteractionResponse::Approved => InteractionResponse::Approved,
     };
+    let (_, event_outcome, event_detail) = match &response {
+        InteractionResponse::Answer { text } => {
+            (EventKind::Question, EventOutcome::Completed, text.clone())
+        }
+        InteractionResponse::Approved => (
+            EventKind::Approval,
+            EventOutcome::Completed,
+            "Approved the exact requested action".into(),
+        ),
+        InteractionResponse::Denied { reason } => {
+            (EventKind::Approval, EventOutcome::Declined, reason.clone())
+        }
+    };
+    let mut event_kind = EventKind::Approval;
     update(id, |record| {
-        let binding = record
+        let request = record
             .mailbox
             .requests
             .iter()
             .find(|request| request.id == request_id)
-            .context("human request does not exist")?
-            .binding
-            .clone();
+            .context("human request does not exist")?;
+        let binding = request.binding.clone();
+        event_kind = if request.kind == InteractionKind::Question {
+            EventKind::Question
+        } else {
+            EventKind::Approval
+        };
         validate_record_binding(record, &binding)?;
         let checkpoint = crate::tasks::load(&binding.native_task_id)?;
         if checkpoint.native_state.as_deref() != Some("waiting")
@@ -559,6 +609,13 @@ pub(super) fn respond(
         }
         record_response(record, request_id, response)
     })?;
+    let _ = append_background(
+        id,
+        event_kind,
+        "Response recorded",
+        &event_detail,
+        Some(event_outcome),
+    );
     // Persist the response before starting a worker. If that worker has not
     // exited yet, it remains safely answered and an explicit resume can retry.
     for _ in 0..20 {
@@ -663,6 +720,13 @@ pub(super) fn queue_followup(id: &str, text: &str) -> Result<u8> {
         Ok(())
     })?;
     println!("queued follow-up #{revision} for task {id}");
+    let _ = append_background(
+        id,
+        EventKind::FollowupQueued,
+        &format!("Follow-up #{revision}"),
+        "Queued for the next safe execution boundary",
+        None,
+    );
     Ok(0)
 }
 
@@ -690,6 +754,13 @@ pub(super) fn edit_followup(id: &str, revision: u32, text: &str) -> Result<u8> {
         Ok(())
     })?;
     println!("updated queued follow-up #{revision} for task {id}");
+    let _ = append_background(
+        id,
+        EventKind::FollowupQueued,
+        &format!("Follow-up #{revision} edited"),
+        "Queued instructions updated before delivery",
+        None,
+    );
     Ok(0)
 }
 
@@ -701,6 +772,13 @@ pub(super) fn remove_followup(id: &str, revision: u32) -> Result<u8> {
         Ok(())
     })?;
     println!("removed queued follow-up #{revision} for task {id}");
+    let _ = append_background(
+        id,
+        EventKind::FollowupQueued,
+        &format!("Follow-up #{revision} removed"),
+        "Removed before delivery",
+        Some(EventOutcome::NotExecuted),
+    );
     Ok(0)
 }
 

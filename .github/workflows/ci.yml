@@ -181,7 +181,7 @@ jobs:
   pty-native:
     name: Native shell (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 35
+    timeout-minutes: 50
     strategy:
       fail-fast: false
       matrix:
@@ -276,6 +276,20 @@ jobs:
         run: |
           python3 tests/require_gate.py python3 tests/native_task_interactions.py target/release/aishe
           python3 tests/require_gate.py python3 tests/task_interactions_pty.py target/release/aishe
+
+      - name: Handoff, selective changes, workflow dependencies, and factual timeline
+        timeout-minutes: 12
+        run: |
+          python3 tests/require_gate.py python3 tests/agentic_workflows.py target/release/aishe
+          python3 tests/require_gate.py python3 tests/task_handoff_pty.py target/release/aishe
+          python3 tests/require_gate.py python3 tests/task_workflows_pty.py target/release/aishe
+
+      - name: Prove functional native workspace sandbox
+        if: runner.os == 'Linux'
+        timeout-minutes: 3
+        env:
+          AISHE_REQUIRE_FUNCTIONAL_SANDBOX: "1"
+        run: python3 tests/require_gate.py python3 tests/native_sandbox_qualification.py target/release/aishe
 
       - name: Clean and personal zsh feature matrices
         timeout-minutes: 5

@@ -126,6 +126,7 @@ aishe sessions         List durable AI task sessions
 aishe reset            Start a fresh conversation in this AIShe shell without deleting the previous managed session
 aishe session ...      Inspect or manage one durable AI task session
 aishe task ...         Run and manage durable background agent tasks
+aishe workflow ...     Run reusable, checked workflows with bounded parallel stages
 aishe resume           Resume the most recent interrupted task, or a specific task ID
 aishe dry-run          Preview a command's file changes against a throwaway copy of the working tree (read-only system, no network via bubblewrap), then keep or discard
 aishe context          Inspect or configure the environment context sent to the model
@@ -275,6 +276,7 @@ The State/effect column uses one six-value vocabulary:
 | `/sessions` | Browse, resume, inspect, or fork AI sessions | conversation |
 | `/resume [ID]` | Resume the latest interrupted task or a session by ID | conversation |
 | `/fork [SESSION_ID]` | Fork a managed conversation and switch this shell to it | conversation |
+| `/workflow [ACTION OPTIONS…]` | Inspect and run reusable checked agent workflows | runs agent / edits files |
 | `/task [ACTION OPTIONS…]` | Start and manage isolated background agent tasks | runs agent / edits files |
 | `/plan [TASK_ID]` | Inspect or edit a durable agent checklist | conversation |
 | `/replan [TASK_ID]` | Revise a checklist while retaining completed evidence | conversation |

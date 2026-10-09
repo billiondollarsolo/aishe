@@ -95,6 +95,21 @@ Verify the actual editable buffers and side effects with:
   results, checkpoint counters/limits, and read-only changes. Search and project
   filtering keep older work discoverable without filling the prompt. Lifecycle
   actions remain explicit and confirmed.
+- Ctrl-X d queues handoff of a running native turn at a safe provider/tool
+  boundary. The saved checkpoint retains its transcript, admitted scope, and
+  spent allowances; an exclusive execution lease fences duplicate continuations.
+  Task details show queued/received transfers and offer g to claim the foreground.
+- Task details offer t for a bounded typed timeline and Ctrl-F for event filters.
+  Provider-private continuation items and environment values are excluded.
+  p inspects file/hunk changes alongside real checks; a selects a revision-bound
+  subset and asks before application. A selected subset is not independently
+  checked. Opening details, timelines, and workflow templates never starts a model.
+- `/workflow` inspects and launches reusable literal-parameter task graphs.
+  Separate Git worktrees contain each stage, finite parallelism limits workers,
+  and exact fresh recorded-check gates release dependencies. Queued stages have
+  their own quiet badge count. The existing watcher wakes stopped schedulers at
+  most once a minute; no task process is launched per keystroke. Details and
+  examples are in [Agentic task workflows](agentic-workflows.md).
 - `/model` and `/connection` open searchable, paged pickers on the inner shell's
   terminal. Picks apply to this shell; a separate explicit Yes saves a default.
   Lean model choices use configuration and capability cache without starting a
