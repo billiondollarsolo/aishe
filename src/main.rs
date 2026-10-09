@@ -51,6 +51,9 @@ fn main() -> ExitCode {
 }
 
 fn run() -> Result<u8> {
+    if let Some((command, forced)) = args::fast_shell_command(std::env::args_os()) {
+        return run_fast_shell_command(&command, forced);
+    }
     let args = Args::parse();
     aishe::ui::set_machine_output(args.machine_output());
 
@@ -88,16 +91,11 @@ fn run() -> Result<u8> {
         .as_deref()
         .and_then(dispatcher::fast_shell_line)
     {
-        if args
+        let forced = args
             .command
             .as_deref()
-            .is_some_and(|line| line.trim().starts_with('!'))
-        {
-            aishe::cli::runtime::print_forced_shell_cue();
-        }
-        let mut executor = Executor::new()?;
-        executor.set_history_log(aishe::cli::history::fast_history_log()?);
-        return Ok(executor.run(&command) as u8);
+            .is_some_and(|line| line.trim().starts_with('!'));
+        return run_fast_shell_command(&command, forced);
     }
 
     // Setup is deliberately handled before ordinary config loading: its job is
@@ -1347,6 +1345,15 @@ struct ResolvedAgent {
     max_minutes: u32,
     max_turns: u32,
     max_cost: Option<f64>,
+}
+
+fn run_fast_shell_command(command: &str, forced: bool) -> Result<u8> {
+    if forced {
+        aishe::cli::runtime::print_forced_shell_cue();
+    }
+    let mut executor = Executor::new()?;
+    executor.set_history_log(aishe::cli::history::fast_history_log()?);
+    Ok(executor.run(command) as u8)
 }
 
 fn resolve_agent(options: &AgentArgs, config: &Config) -> Result<Option<ResolvedAgent>> {

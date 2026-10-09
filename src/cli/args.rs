@@ -87,6 +87,29 @@ pub(crate) struct Args {
     pub(crate) cmd: Option<Cmd>,
 }
 
+/// Avoid constructing the full administrative command tree for exactly
+/// `aishe -c LINE`, only after the existing classifier proves a shell route.
+/// Everything else retains Clap's validation, including hyphen-prefixed values.
+pub(crate) fn fast_shell_command(
+    argv: impl IntoIterator<Item = std::ffi::OsString>,
+) -> Option<(String, bool)> {
+    let mut argv = argv.into_iter();
+    argv.next()?;
+    if argv.next()?.as_os_str() != "-c" {
+        return None;
+    }
+    let value = argv.next()?;
+    if argv.next().is_some() {
+        return None;
+    }
+    let line = value.to_str()?;
+    if line.starts_with('-') {
+        return None;
+    }
+    let command = aishe::dispatcher::fast_shell_line(line)?;
+    Some((command, line.trim().starts_with('!')))
+}
+
 #[derive(clap::Args, Debug)]
 pub(crate) struct SetupArgs {
     /// Resume the last interrupted setup draft.
