@@ -218,7 +218,13 @@ fn accept_with_timeout(listener: &TcpListener, timeout: Duration) -> TcpStream {
     let deadline = Instant::now() + timeout;
     loop {
         match listener.accept() {
-            Ok((stream, _)) => return stream,
+            Ok((stream, _)) => {
+                // Darwin inherits the listener's O_NONBLOCK on accepted
+                // sockets; Linux does not. Only accept polling is nonblocking.
+                // Request reads retain their existing five-second deadline.
+                stream.set_nonblocking(false).unwrap();
+                return stream;
+            }
             Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
                 assert!(Instant::now() < deadline, "provider did not retry promptly");
                 thread::sleep(Duration::from_millis(10));
