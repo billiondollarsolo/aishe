@@ -378,6 +378,36 @@ def has_ready_prompt(text: str) -> bool:
     )
 
 
+def wait_for_columns(
+    transport: PtyTransport | TmuxTransport | ScreenTransport,
+    prefix: str,
+    columns: int,
+    timeout: float = TIMEOUT,
+) -> str:
+    """Observe asynchronous resize without waiting on one stale size result."""
+    deadline = time.monotonic() + timeout
+    last = ""
+    attempt = 0
+    marker = None
+    while time.monotonic() < deadline:
+        if marker is None:
+            marker = f"{prefix}_COLS_{attempt}_"
+            attempt += 1
+            transport.sendline(f"printf '%s%s\\n' {marker} \"$COLUMNS\"")
+        last = transport.capture()
+        # Only a completed output line counts, never the echoed probe command.
+        observed = re.search(rf"(?:^|[\r\n]){re.escape(marker)}(-?\d+)(?=[\r\n])", last)
+        if observed:
+            if int(observed.group(1)) == columns:
+                return last
+            marker = None  # Re-probe only after the prior command completed.
+        time.sleep(0.15)
+    tail = last[-3000:].replace("\x1b", "<ESC>")
+    raise ContractFailure(
+        f"timed out waiting for resize propagation to COLUMNS={columns}; transcript tail:\n{tail}"
+    )
+
+
 def exercise_contract(
     transport: PtyTransport | TmuxTransport | ScreenTransport,
     prefix: str,
@@ -418,10 +448,7 @@ def exercise_contract(
     checks.append("300 ms split ESC+[A sequence recalled and executed history")
 
     transport.resize(40, 120)
-    time.sleep(0.7)
-    cols = f"{prefix}_COLS_"
-    transport.sendline(f"printf '%s%s\\n' {cols} \"$COLUMNS\"")
-    wait_for(transport, lambda text: f"{cols}120" in text, "resize propagation to COLUMNS=120")
+    wait_for_columns(transport, prefix, 120)
     checks.append("80x24 to 120x40 resize propagated through the transport")
 
     term = f"{prefix}_TERM_"

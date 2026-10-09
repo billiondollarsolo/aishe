@@ -8,6 +8,7 @@ import importlib.util
 import pathlib
 import sys
 import unittest
+from unittest.mock import patch
 
 
 MODULE_PATH = pathlib.Path(__file__).with_name("terminal_compat.py")
@@ -19,6 +20,98 @@ SPEC.loader.exec_module(terminal_compat)
 
 
 class TerminalCompatibilityTests(unittest.TestCase):
+    def test_resize_probe_observes_later_size_without_queued_commands(self) -> None:
+        class DelayedResize:
+            transcript = ""
+            captures = 0
+            sent = 0
+            pending = None
+
+            def sendline(self, line):
+                self.assert_idle()
+                self.pending = line.split()[2]
+                self.sent += 1
+                self.transcript += line + "\r\n"
+
+            def assert_idle(self):
+                if self.pending is not None:
+                    raise AssertionError("queued a probe before the prior output")
+
+            def capture(self):
+                self.captures += 1
+                if self.captures % 2 == 0 and self.pending is not None:
+                    width = 80 if self.sent == 1 else 120
+                    self.transcript += f"{self.pending}{width}\r\n"
+                    self.pending = None
+                return self.transcript
+
+        transport = DelayedResize()
+        with patch.object(terminal_compat.time, "sleep"):
+            text = terminal_compat.wait_for_columns(transport, "DELAYED", 120)
+        self.assertIn("DELAYED_COLS_0_80\r\n", text)
+        self.assertIn("DELAYED_COLS_1_120\r\n", text)
+        self.assertEqual(transport.sent, 2)
+
+    def test_resize_probe_waits_for_fragmented_output_line_to_complete(self) -> None:
+        class FragmentedResize:
+            transcript = ""
+            captures = 0
+            sent = 0
+            pending = None
+
+            def sendline(self, line):
+                if self.pending is not None:
+                    raise AssertionError("queued a probe after only partial output")
+                self.pending = line.split()[2]
+                self.sent += 1
+                self.transcript += line + "\r\n"
+
+            def capture(self):
+                self.captures += 1
+                if self.captures == 1:
+                    self.transcript += self.pending + "1"
+                elif self.captures == 2:
+                    self.transcript += "20"  # A partial 120 must not pass.
+                elif self.captures == 3:
+                    self.transcript += "0"  # The observed size is actually 1200.
+                elif self.captures == 4:
+                    self.transcript += "\r\n"
+                    self.pending = None
+                else:
+                    self.transcript += self.pending + "120\r\n"
+                    self.pending = None
+                return self.transcript
+
+        transport = FragmentedResize()
+        with patch.object(terminal_compat.time, "sleep"):
+            text = terminal_compat.wait_for_columns(transport, "FRAGMENTED", 120)
+        self.assertIn("FRAGMENTED_COLS_0_1200\r\n", text)
+        self.assertIn("FRAGMENTED_COLS_1_120\r\n", text)
+        self.assertEqual(transport.sent, 2)
+        self.assertEqual(transport.captures, 5)
+
+    def test_resize_probe_fails_boundedly_without_actual_size_output(self) -> None:
+        class NoResize:
+            transcript = ""
+            sent = 0
+
+            def sendline(self, line):
+                self.sent += 1
+                marker = line.split()[2]
+                # Even an echoed command mentioning 120 cannot prove resize.
+                self.transcript += line + " # 120\r\n" + f"{marker}80\r\n"
+
+            def capture(self):
+                return self.transcript
+
+        transport = NoResize()
+        with patch.object(terminal_compat.time, "monotonic", side_effect=[0, .1, .2, .3, .4, .5]), \
+                patch.object(terminal_compat.time, "sleep"):
+            with self.assertRaisesRegex(terminal_compat.ContractFailure, "COLUMNS=120"):
+                terminal_compat.wait_for_columns(transport, "NO_RESIZE", 120, timeout=.5)
+        self.assertEqual(transport.sent, 4)
+        self.assertIn("NO_RESIZE_COLS_3_80", transport.transcript)
+
     def test_ready_prompt_accepts_actual_colored_mode_and_glyph_segments(self) -> None:
         for glyph in (">", "❯", "»", ">>", "*"):
             prompt = f"\x1b[38;5;220mask\x1b[0m \x1b[1m{glyph}\x1b[0m "
