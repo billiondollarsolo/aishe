@@ -100,7 +100,7 @@ fn generated_shell_artifacts_match_the_reviewed_byte_snapshots() {
         (
             "zsh init",
             zsh_script(),
-            "e9121dcea46b2d6107fc36510aaf26f8bb75d0db833208349c7adde4977fb468",
+            "d58d6baea470f2c3101c5ab102f101189cb1a0127339624e79d7e0d4dd291f09",
         ),
         (
             "bash init",

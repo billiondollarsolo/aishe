@@ -1,10 +1,12 @@
 # aishe lean PTY hook (.zshrc) — generated
-# Isolated ZDOTDIR. NEVER source ~/.zshrc, $AISHE_REAL_ZDOTDIR, or plugin stacks.
+# The clean profile starts isolated; the explicitly selected personal wrapper
+# has already sourced user configuration before this shared native hook.
 # Known commands stay in this zsh. NL goes to the parent over a FIFO (no `aishe` spawn).
 
-unsetopt GLOBAL_RCS 2>/dev/null || true
+[[ "${AISHE_ZSH_PROFILE:-clean}" == clean ]] && unsetopt GLOBAL_RCS 2>/dev/null
 
-if [[ -n "${AISHE_HISTFILE:-}" ]]; then
+if [[ -n "${AISHE_HISTFILE:-}" &&
+      ( "${AISHE_ZSH_PROFILE:-clean}" == clean || "${AISHE_MANAGE_HISTORY:-0}" == 1 ) ]]; then
   HISTFILE="${AISHE_HISTFILE}"
   HISTSIZE=20000
   SAVEHIST=10000
@@ -20,6 +22,10 @@ fi
 : ${AISHE_MODE:=ask}
 export AISHE_MODE
 export AISHE_LEAN=1
+# The parent selected these private controls. Later environment edits must not
+# redirect the producer or weaken credential filtering for an agent request.
+(( ${+_AISHE_STATE_CONTROL_FILE} )) || readonly _AISHE_STATE_CONTROL_FILE="${AISHE_EXECUTION_STATE_FILE:-}"
+(( ${+_AISHE_STATE_CONTROL_DENY} )) || readonly _AISHE_STATE_CONTROL_DENY="${AISHE_EXECUTION_STATE_DENY:-}"
 
 _aishe_lean_glyph() {
   if [[ "${AISHE_UNICODE:-unicode}" == ascii ]]; then
@@ -135,6 +141,22 @@ aishe_set_prompt() {
     fi
   fi
   [[ "${AISHE_UNICODE:-unicode}" == ascii ]] && separator=' | '
+  # Keep a theme's prompt intact unless the person explicitly requests ours.
+  # Mode state is still refreshed above and available to themes as this value.
+  typeset -gx AISHE_MODE_INDICATOR="${mode_label} ${glyph}"
+  if [[ "${AISHE_PTY_PROMPT:-1}" == 0 ||
+        ( "${AISHE_ZSH_PROFILE:-clean}" == personal && "${AISHE_PTY_PROMPT:-1}" != force ) ]]; then
+    if [[ -n "${_AISHE_COMPOSED_RPROMPT:-}" && "$RPROMPT" == "$_AISHE_COMPOSED_RPROMPT" ]]; then
+      RPROMPT="${_AISHE_USER_RPROMPT:-}"
+    fi
+    if [[ "${AISHE_PERSONAL_INDICATOR:-0}" == 1 ]]; then
+      typeset -g _AISHE_USER_RPROMPT="$RPROMPT"
+      psvar[88]="$AISHE_MODE_INDICATOR"
+      typeset -g _AISHE_COMPOSED_RPROMPT="${RPROMPT}${RPROMPT:+$separator}%88v"
+      RPROMPT="$_AISHE_COMPOSED_RPROMPT"
+    fi
+    return 0
+  fi
   if [[ "${AISHE_STYLE:-none}" == on ]]; then
     close='%f%b%u%s'
     path_color="$AISHE_COLOR_PATH"
@@ -318,17 +340,15 @@ aishe-slash-tab() {
   head="${head%%[[:space:]]*}"
   if [[ "$head" != /* || "$head" == //* || "$head" == /*/* ||
         "$trimmed" == *$'\n'* ]] || (( CURSOR > ${#leading} + ${#head} )); then
-    zle expand-or-complete
+    local REPLY
+    _aishe_effective_keymap
+    zle "${_AISHE_USER_TAB_NAMES[$REPLY]:-expand-or-complete}" -w
     return
   fi
   zle aishe-complete-slashes
 }
 
-if [[ -o interactive ]]; then
-  aishe_set_prompt
-fi
-
-# Optional tiny rc the user chose for this shell. NEVER ~/.zshrc by default.
+# Early native configuration: aliases, environment, completion paths and widgets.
 if [[ -n "${AISHE_LEANRC:-}" && -r "${AISHE_LEANRC}" ]]; then
   source "${AISHE_LEANRC}"
 elif [[ -r "${HOME}/.aishe/leanrc" ]]; then
@@ -336,25 +356,64 @@ elif [[ -r "${HOME}/.aishe/leanrc" ]]; then
 fi
 
 
-# Bounded compsys (F18). Dump + cache under private ZDOTDIR only — no user
-# plugins, no ~/.zshrc. First interactive start may rebuild .zcompdump (tens to
-# low hundreds of ms); subsequent prompts use `compinit -C` and stay fast.
+# Bounded clean-profile compsys. The private cache survives shell launches.
+# Personal profiles retain their existing completion setup and cache policy.
 # Always pass `-u`: CI images (esp. macOS runners) ship group-writable
 # /usr/share/zsh; plain `compinit` then prompts on a TTY and deadlocks nested
 # PTY tests that cannot answer the security question.
 if [[ -o interactive ]]; then
-  autoload -Uz compinit 2>/dev/null || true
-  if (( $+functions[compinit] )); then
-    typeset -g _AISHE_COMPDUMP="${ZDOTDIR:-${HOME}}/.zcompdump"
-    typeset -g _AISHE_COMPCACHE="${ZDOTDIR:-${HOME}}/.zcompcache"
-    mkdir -p "${_AISHE_COMPCACHE}" 2>/dev/null || true
-    zstyle ':completion:*' use-cache on
-    zstyle ':completion:*' cache-path "${_AISHE_COMPCACHE}"
-    if [[ -s "${_AISHE_COMPDUMP}" ]]; then
-      compinit -u -d "${_AISHE_COMPDUMP}" -C
-    else
-      compinit -u -d "${_AISHE_COMPDUMP}"
+  if (( ! $+functions[compdef] )); then
+    autoload -Uz compinit 2>/dev/null || true
+    if (( $+functions[compinit] )); then
+      typeset -g _AISHE_COMPLETION_ROOT="${AISHE_COMPLETION_CACHE:-${ZDOTDIR:-${HOME}}}"
+      # A different completion search path must not reuse an incompatible dump.
+      typeset -gi _AISHE_FPATH_HASH=5381
+      typeset -g _AISHE_FPATH_TEXT="${(j.:.)fpath}"
+      typeset -gi _AISHE_FPATH_MTIME=0 _AISHE_COMPDUMP_FAST=0
+      typeset -gA _AISHE_FPATH_STAT
+      typeset -g _AISHE_FPATH_DIR
+      if zmodload zsh/stat 2>/dev/null; then
+        for _AISHE_FPATH_DIR in "${fpath[@]}"; do
+          if zstat -H _AISHE_FPATH_STAT +mtime "$_AISHE_FPATH_DIR" 2>/dev/null; then
+            _AISHE_FPATH_TEXT+=":${_AISHE_FPATH_STAT[mtime]}"
+            (( _AISHE_FPATH_STAT[mtime] > _AISHE_FPATH_MTIME )) && _AISHE_FPATH_MTIME=${_AISHE_FPATH_STAT[mtime]}
+          else
+            _AISHE_FPATH_TEXT+=':missing'
+          fi
+        done
+      fi
+      typeset -gi _AISHE_FPATH_INDEX
+      for (( _AISHE_FPATH_INDEX=1; _AISHE_FPATH_INDEX<=${#_AISHE_FPATH_TEXT}; _AISHE_FPATH_INDEX++ )); do
+        (( _AISHE_FPATH_HASH = ((_AISHE_FPATH_HASH * 33) ^ #_AISHE_FPATH_TEXT[$_AISHE_FPATH_INDEX]) & 0x7fffffff ))
+      done
+      typeset -g _AISHE_COMPDUMP="${_AISHE_COMPLETION_ROOT}/.zcompdump-${ZSH_VERSION}-${_AISHE_FPATH_HASH}"
+      if [[ -s "$_AISHE_COMPDUMP" ]] && zstat -H _AISHE_FPATH_STAT +mtime "$_AISHE_COMPDUMP" 2>/dev/null; then
+        # If a directory changed in the same second as this dump, let compinit
+        # check its function count. This closes coarse-mtime installation races.
+        (( _AISHE_FPATH_MTIME < _AISHE_FPATH_STAT[mtime] )) && _AISHE_COMPDUMP_FAST=1
+      fi
+      typeset -g _AISHE_COMPCACHE="${_AISHE_COMPLETION_ROOT}/.zcompcache"
+      (umask 077; mkdir -p "${_AISHE_COMPCACHE}") 2>/dev/null || true
+      if [[ "${AISHE_ZSH_PROFILE:-clean}" == clean ]]; then
+        zstyle ':completion:*' use-cache on
+        zstyle ':completion:*' cache-path "${_AISHE_COMPCACHE}"
+      fi
+      if [[ -s "${_AISHE_COMPDUMP}" && "$_AISHE_COMPDUMP_FAST" == 1 ]]; then
+        compinit -u -d "${_AISHE_COMPDUMP}" -C
+      else
+        _aishe_compinit_private() {
+          local saved_umask="$(umask)" result
+          umask 077
+          compinit -u -d "${_AISHE_COMPDUMP}"
+          result=$?
+          umask "$saved_umask"
+          return "$result"
+        }
+        _aishe_compinit_private
+      fi
     fi
+  fi
+  if (( $+functions[compdef] )); then
     compdef _aishe_complete_slash_arguments /help /mode /context /doctor
   fi
 fi
@@ -416,8 +475,11 @@ _aishe_routes_to_agent() {
   local expect_head=1
   for word in "${words[@]}"; do
     if (( expect_head )); then
-      if [[ "$word" == [[:alpha:]_][[:alnum:]_]#=* ]]; then
-        continue
+      if _aishe_has_assignment_head "$word"; then
+        # The tokenizer splits array values after `name=(` into further words.
+        # Once a command starts with shell assignment syntax, let zsh parse the
+        # whole compound statement instead of routing an array item as NL.
+        return 1
       fi
       case "$word" in
         '('|'{'|'[['|'((') return 1 ;;
@@ -440,20 +502,86 @@ _aishe_lean_flatten() {
   print -r -- "$s"
 }
 
+_aishe_capture_execution_state() {
+  emulate -L zsh
+  setopt extendedglob
+  [[ -n "${_AISHE_STATE_CONTROL_FILE:-}" ]] || return 0
+  zmodload zsh/system 2>/dev/null && zmodload zsh/files 2>/dev/null || return 1
+  local _AISHE_STATE_FILE="$_AISHE_STATE_CONTROL_FILE"
+  local _AISHE_STATE_TEMPORARY="${_AISHE_STATE_FILE}.tmp.${sysparams[pid]}.${RANDOM}${RANDOM}"
+  local _AISHE_STATE_NAME _AISHE_STATE_UPPER _AISHE_STATE_VALUE _AISHE_STATE_DENIED_NAME
+  local -a _AISHE_STATE_CONFIGURED_DENY
+  local -A _AISHE_STATE_DENIED
+  _AISHE_STATE_CONFIGURED_DENY=("${(@f)_AISHE_STATE_CONTROL_DENY}")
+  for _AISHE_STATE_DENIED_NAME in "${_AISHE_STATE_CONFIGURED_DENY[@]}"; do
+    [[ -n "$_AISHE_STATE_DENIED_NAME" ]] && _AISHE_STATE_DENIED[${(U)_AISHE_STATE_DENIED_NAME}]=1
+  done
+  local -i _AISHE_STATE_STATE_FD _AISHE_STATE_BYTES=13 _AISHE_STATE_COUNT=0 _AISHE_STATE_FAILED=0 _AISHE_STATE_VALUE_BYTES
+  # The parent owns this private directory. Exclusive/no-follow creation keeps
+  # this handoff separate from user files; a partial snapshot is never sent.
+  sysopen -w -o creat,excl,nofollow -m 0600 -u _AISHE_STATE_STATE_FD "$_AISHE_STATE_TEMPORARY" 2>/dev/null || return 1
+  print -rn -u "$_AISHE_STATE_STATE_FD" -- $'AISHE_ENV_V1\0' || _AISHE_STATE_FAILED=1
+  for _AISHE_STATE_NAME in ${(ok)parameters}; do
+    [[ "${parameters[$_AISHE_STATE_NAME]}" == *export* ]] || continue
+    case "${parameters[$_AISHE_STATE_NAME]}" in
+      array-*|association-*) continue ;;
+    esac
+    [[ "$_AISHE_STATE_NAME" == [A-Za-z_][A-Za-z0-9_]# ]] || continue
+    _AISHE_STATE_UPPER="${(U)_AISHE_STATE_NAME}"
+    case "$_AISHE_STATE_UPPER" in
+      AISHE_*|_AISHE_*|OPENCODE_*|LD_*|DYLD_*|ENV|BASH_ENV|SHELLOPTS|BASHOPTS|ZDOTDIR|*TOKEN*|*SECRET*|*PASSWORD*|*PASSWD*|*API_KEY*|*APIKEY*|*AUTHORIZATION*|*CREDENTIAL*|*PRIVATE_KEY*|*ACCESS_KEY*) continue ;;
+    esac
+    [[ "${_AISHE_STATE_DENIED[$_AISHE_STATE_UPPER]:-0}" == 1 ]] && continue
+    _AISHE_STATE_VALUE="${(P)_AISHE_STATE_NAME}"
+    # OS environment values cannot contain NUL. Reject a zsh-only value rather
+    # than interpreting its bytes as another record in this framing protocol.
+    if [[ "$_AISHE_STATE_VALUE" == *$'\0'* ]]; then
+      _AISHE_STATE_FAILED=1
+      break
+    fi
+    # Measure bytes under a function-local locale; exported locale values in
+    # the snapshot remain exactly what the person configured in their shell.
+    () { local LC_ALL=C; _AISHE_STATE_VALUE_BYTES=${#_AISHE_STATE_VALUE}; }
+    (( _AISHE_STATE_COUNT++, _AISHE_STATE_BYTES += ${#_AISHE_STATE_NAME} + _AISHE_STATE_VALUE_BYTES + 2 ))
+    if (( _AISHE_STATE_COUNT > 512 || _AISHE_STATE_BYTES > 262144 || _AISHE_STATE_VALUE_BYTES > 65536 || ${#_AISHE_STATE_NAME} > 128 )); then
+      _AISHE_STATE_FAILED=1
+      break
+    fi
+    print -rn -u "$_AISHE_STATE_STATE_FD" -- "$_AISHE_STATE_NAME"$'\0'"$_AISHE_STATE_VALUE"$'\0' || { _AISHE_STATE_FAILED=1; break; }
+  done
+  exec {_AISHE_STATE_STATE_FD}>&-
+  if (( _AISHE_STATE_FAILED )); then
+    zf_rm -f -- "$_AISHE_STATE_TEMPORARY" 2>/dev/null
+    return 1
+  fi
+  zf_mv -f -- "$_AISHE_STATE_TEMPORARY" "$_AISHE_STATE_FILE" 2>/dev/null || {
+    zf_rm -f -- "$_AISHE_STATE_TEMPORARY" 2>/dev/null
+    return 1
+  }
+}
+
 _aishe_lean_send() {
   emulate -L zsh
-  local payload="$1" reply
+  local _AISHE_STATE_PAYLOAD="$1" _AISHE_STATE_REPLY
   [[ -n "${AISHE_LEAN_REQ:-}" && -p "${AISHE_LEAN_REQ}" &&
      -n "${AISHE_LEAN_REP:-}" && -p "${AISHE_LEAN_REP}" ]] || {
     print -u2 -- 'aishe: lean IPC is not connected'
     return 1
   }
-  print -r -- "$payload" > "$AISHE_LEAN_REQ" || return 1
-  IFS= read -r -t 120 reply < "$AISHE_LEAN_REP" || {
+  case "${_AISHE_STATE_PAYLOAD%%$'\t'*}" in
+    NL|FIX|CONFIRM_YES|SLASH)
+      _aishe_capture_execution_state || {
+        print -u2 -- 'aishe: live shell state unavailable; request was not submitted'
+        return 1
+      }
+      ;;
+  esac
+  print -r -- "$_AISHE_STATE_PAYLOAD" > "$AISHE_LEAN_REQ" || return 1
+  IFS= read -r -t 120 _AISHE_STATE_REPLY < "$AISHE_LEAN_REP" || {
     print -u2 -- 'aishe: lean NL timed out'
     return 1
   }
-  print -r -- "$reply"
+  print -r -- "$_AISHE_STATE_REPLY"
 }
 
 _aishe_lean_grant_word() {
@@ -619,11 +747,11 @@ _aishe_lean_b64_decode() {
 
 _aishe_lean_handle_reply() {
   emulate -L zsh
-  local reply="$1"
-  local kind="${reply%%	*}"
-  local rest="${reply#*$'\t'}"
-  [[ "$kind" == "$reply" ]] && rest=""
-  case "$kind" in
+  local _AISHE_LOCAL_REPLY="$1"
+  local _AISHE_LOCAL_KIND="${_AISHE_LOCAL_REPLY%%	*}"
+  local _AISHE_LOCAL_REST="${_AISHE_LOCAL_REPLY#*$'\t'}"
+  [[ "$_AISHE_LOCAL_KIND" == "$_AISHE_LOCAL_REPLY" ]] && _AISHE_LOCAL_REST=""
+  case "$_AISHE_LOCAL_KIND" in
     OK|STREAM_END)
       # Parent already wrote multi-line / streamed answer onto terminal output.
       ;;
@@ -632,131 +760,131 @@ _aishe_lean_handle_reply() {
       ;;
     ANSWER)
       # Legacy one-liner fallback.
-      [[ -n "$rest" ]] && print -r -- "$rest"
+      [[ -n "$_AISHE_LOCAL_REST" ]] && print -r -- "$_AISHE_LOCAL_REST"
       ;;
     ANSWER_B64)
-      local text
-      text="$(_aishe_lean_b64_decode "$rest")"
-      [[ -n "$text" ]] && print -r -- "$text"
+      local _AISHE_LOCAL_TEXT
+      _AISHE_LOCAL_TEXT="$(_aishe_lean_b64_decode "$_AISHE_LOCAL_REST")"
+      [[ -n "$_AISHE_LOCAL_TEXT" ]] && print -r -- "$_AISHE_LOCAL_TEXT"
       ;;
     FILL|FILL_B64)
-      local cmd="$rest"
-      if [[ "$kind" == FILL_B64 ]]; then
-        cmd="$(_aishe_lean_b64_decode "$rest")"
+      local _AISHE_LOCAL_CMD="$_AISHE_LOCAL_REST"
+      if [[ "$_AISHE_LOCAL_KIND" == FILL_B64 ]]; then
+        _AISHE_LOCAL_CMD="$(_aishe_lean_b64_decode "$_AISHE_LOCAL_REST")"
       fi
       typeset -g _AISHE_STAGED_SUGGESTION=1
-      print -z -- "$cmd"
+      print -z -- "$_AISHE_LOCAL_CMD"
       ;;
     RAN)
-      [[ -n "$rest" ]] && print -r -- "$rest"
+      [[ -n "$_AISHE_LOCAL_REST" ]] && print -r -- "$_AISHE_LOCAL_REST"
       ;;
     ERROR)
-      print -u2 -- "aishe: $rest"
+      print -u2 -- "aishe: $_AISHE_LOCAL_REST"
       ;;
     CONFIRM|CONFIRM_B64)
-      local body="$rest"
-      if [[ "$kind" == CONFIRM_B64 ]]; then
-        body="$(_aishe_lean_b64_decode "$rest")"
+      local _AISHE_LOCAL_BODY="$_AISHE_LOCAL_REST"
+      if [[ "$_AISHE_LOCAL_KIND" == CONFIRM_B64 ]]; then
+        _AISHE_LOCAL_BODY="$(_aishe_lean_b64_decode "$_AISHE_LOCAL_REST")"
       fi
-      print -r -- "Dangerous / unknown: $body"
+      print -r -- "Dangerous / unknown: $_AISHE_LOCAL_BODY"
       print -n -- "Type yes to run: "
-      local ans
+      local _AISHE_LOCAL_ANS
       if [[ -n "${_AISHE_INPUT_FD:-}" && "_AISHE_INPUT_FD" -ge 0 ]]; then
-        IFS= read -r ans <&$_AISHE_INPUT_FD
+        IFS= read -r _AISHE_LOCAL_ANS <&$_AISHE_INPUT_FD
       else
-        IFS= read -r ans
+        IFS= read -r _AISHE_LOCAL_ANS
       fi
-      if [[ "$ans" == yes ]]; then
-        local again payload
-        if [[ "$kind" == CONFIRM_B64 ]]; then
-          payload="$rest"
+      if [[ "$_AISHE_LOCAL_ANS" == yes ]]; then
+        local _AISHE_LOCAL_AGAIN _AISHE_LOCAL_PAYLOAD
+        if [[ "$_AISHE_LOCAL_KIND" == CONFIRM_B64 ]]; then
+          _AISHE_LOCAL_PAYLOAD="$_AISHE_LOCAL_REST"
         else
-          payload="$(_aishe_lean_flatten "$body")"
+          _AISHE_LOCAL_PAYLOAD="$(_aishe_lean_flatten "$_AISHE_LOCAL_BODY")"
         fi
-        again="$(_aishe_lean_send "CONFIRM_YES	$payload")"
-        _aishe_lean_handle_reply "$again"
+        _AISHE_LOCAL_AGAIN="$(_aishe_lean_send "CONFIRM_YES	$_AISHE_LOCAL_PAYLOAD")"
+        _aishe_lean_handle_reply "$_AISHE_LOCAL_AGAIN"
       else
         print -r -- "cancelled"
       fi
       ;;
     *)
-      [[ -n "$reply" ]] && print -r -- "$reply"
+      [[ -n "$_AISHE_LOCAL_REPLY" ]] && print -r -- "$_AISHE_LOCAL_REPLY"
       ;;
   esac
 }
 
 _aishe_lean_nl() {
   emulate -L zsh
-  local line="$1"
-  [[ -z "$line" ]] && return
+  local _AISHE_LOCAL_LINE="$1"
+  [[ -z "$_AISHE_LOCAL_LINE" ]] && return
   _aishe_lean_take_grant "$(_aishe_lean_grant_word)" || return 0
-  local payload reply
-  payload="NL	${AISHE_MODE:-ask}	$PWD	$(_aishe_lean_flatten "$line")"
-  reply="$(_aishe_lean_send "$payload")" || return
-  _aishe_lean_handle_reply "$reply"
+  local _AISHE_LOCAL_PAYLOAD _AISHE_LOCAL_REPLY
+  _AISHE_LOCAL_PAYLOAD="NL	${AISHE_MODE:-ask}	$PWD	$(_aishe_lean_flatten "$_AISHE_LOCAL_LINE")"
+  _AISHE_LOCAL_REPLY="$(_aishe_lean_send "$_AISHE_LOCAL_PAYLOAD")" || return
+  _aishe_lean_handle_reply "$_AISHE_LOCAL_REPLY"
 }
 
 _aishe_lean_slash() {
   emulate -L zsh
   setopt extendedglob
-  local line="$1"
-  local name="${line%%[[:space:]]*}"
-  local arg="${line#"$name"}"
-  arg="${arg##[[:space:]]#}"
-  arg="${arg%%[[:space:]]#}"
-  local -a cli_args
+  local _AISHE_LOCAL_LINE="$1"
+  local _AISHE_LOCAL_NAME="${_AISHE_LOCAL_LINE%%[[:space:]]*}"
+  local _AISHE_LOCAL_ARG="${_AISHE_LOCAL_LINE#"$_AISHE_LOCAL_NAME"}"
+  _AISHE_LOCAL_ARG="${_AISHE_LOCAL_ARG##[[:space:]]#}"
+  _AISHE_LOCAL_ARG="${_AISHE_LOCAL_ARG%%[[:space:]]#}"
+  local -a _AISHE_LOCAL_CLI_ARGS
   # Tokenize quoted CLI arguments without evaluating substitutions or globs.
-  cli_args=()
-  [[ -n "$arg" ]] && cli_args=("${(@Q)${(z)arg}}")
-  case "$name" in
+  _AISHE_LOCAL_CLI_ARGS=()
+  [[ -n "$_AISHE_LOCAL_ARG" ]] && _AISHE_LOCAL_CLI_ARGS=("${(@Q)${(z)_AISHE_LOCAL_ARG}}")
+  case "$_AISHE_LOCAL_NAME" in
     /)
-      local reply
-      reply="$(_aishe_lean_send "SLASH	${AISHE_MODE:-ask}	$PWD	/help")" || return
-      _aishe_lean_handle_reply "$reply"
+      local _AISHE_LOCAL_REPLY
+      _AISHE_LOCAL_REPLY="$(_aishe_lean_send "SLASH	${AISHE_MODE:-ask}	$PWD	/help")" || return
+      _aishe_lean_handle_reply "$_AISHE_LOCAL_REPLY"
       ;;
     /mode)
       _aishe_lean_mark_mode_interaction
-      if [[ -z "$arg" ]]; then
+      if [[ -z "$_AISHE_LOCAL_ARG" ]]; then
         print -r -- "mode: ${AISHE_MODE:-ask} (${AISHE_SCOPE:-workspace})"
         return 0
       fi
-      case "${arg:l}" in
-        ask|suggest) arg=ask ;;
-        allow|auto) arg=allow ;;
-        agent|yolo) arg=agent ;;
+      case "${_AISHE_LOCAL_ARG:l}" in
+        ask|suggest) _AISHE_LOCAL_ARG=ask ;;
+        allow|auto) _AISHE_LOCAL_ARG=allow ;;
+        agent|yolo) _AISHE_LOCAL_ARG=agent ;;
         agent-host) ;;
-        *) print -u2 -r -- "aishe: unknown mode '$arg' (ask|allow|agent|agent-host)"; return 0 ;;
+        *) print -u2 -r -- "aishe: unknown mode '$_AISHE_LOCAL_ARG' (ask|allow|agent|agent-host)"; return 0 ;;
       esac
-      _aishe_lean_take_grant "$arg" || return 0
+      _aishe_lean_take_grant "$_AISHE_LOCAL_ARG" || return 0
       aishe_set_prompt
       print -r -- "mode: ${AISHE_MODE} (${AISHE_SCOPE})"
       ;;
     /model|/connection)
-      if [[ -z "$arg" || "$arg" == default ]]; then
+      if [[ -z "$_AISHE_LOCAL_ARG" || "$_AISHE_LOCAL_ARG" == default ]]; then
         # Interactive prompts belong to the inner shell's real terminal, not
         # the parent FIFO worker. The selection handoff updates the next turn.
-        if [[ "$name" == /model ]]; then
-          if [[ -n "$arg" ]]; then command aishe model "$arg" <&$_AISHE_INPUT_FD
+        if [[ "$_AISHE_LOCAL_NAME" == /model ]]; then
+          if [[ -n "$_AISHE_LOCAL_ARG" ]]; then command aishe model "$_AISHE_LOCAL_ARG" <&$_AISHE_INPUT_FD
           else command aishe model <&$_AISHE_INPUT_FD; fi
         else
-          if [[ -n "$arg" ]]; then command aishe connection pick "$arg" <&$_AISHE_INPUT_FD
+          if [[ -n "$_AISHE_LOCAL_ARG" ]]; then command aishe connection pick "$_AISHE_LOCAL_ARG" <&$_AISHE_INPUT_FD
           else command aishe connection pick <&$_AISHE_INPUT_FD; fi
         fi
       else
-        local reply
-        reply="$(_aishe_lean_send "SLASH	${AISHE_MODE:-ask}	$PWD	$(_aishe_lean_flatten "$line")")" || return
-        _aishe_lean_handle_reply "$reply"
+        local _AISHE_LOCAL_REPLY
+        _AISHE_LOCAL_REPLY="$(_aishe_lean_send "SLASH	${AISHE_MODE:-ask}	$PWD	$(_aishe_lean_flatten "$_AISHE_LOCAL_LINE")")" || return
+        _aishe_lean_handle_reply "$_AISHE_LOCAL_REPLY"
       fi
       ;;
-    /settings) command aishe settings "${(@)cli_args}" <&$_AISHE_INPUT_FD ;;
-    /setup) command aishe setup "${(@)cli_args}" <&$_AISHE_INPUT_FD ;;
-    /tour) command aishe tour "${(@)cli_args}" <&$_AISHE_INPUT_FD ;;
-    /context) command aishe context "${(@)cli_args}" <&$_AISHE_INPUT_FD ;;
-    /doctor) command aishe doctor "${(@)cli_args}" <&$_AISHE_INPUT_FD ;;
+    /settings) command aishe settings "${(@)_AISHE_LOCAL_CLI_ARGS}" <&$_AISHE_INPUT_FD ;;
+    /setup) command aishe setup "${(@)_AISHE_LOCAL_CLI_ARGS}" <&$_AISHE_INPUT_FD ;;
+    /tour) command aishe tour "${(@)_AISHE_LOCAL_CLI_ARGS}" <&$_AISHE_INPUT_FD ;;
+    /context) command aishe context "${(@)_AISHE_LOCAL_CLI_ARGS}" <&$_AISHE_INPUT_FD ;;
+    /doctor) command aishe doctor "${(@)_AISHE_LOCAL_CLI_ARGS}" <&$_AISHE_INPUT_FD ;;
     /help|/commands|/status|/reset|/undo|/usage|/details|/mcp|/skills|/sessions|/backend)
-      local reply
-      reply="$(_aishe_lean_send "SLASH	${AISHE_MODE:-ask}	$PWD	$(_aishe_lean_flatten "$line")")" || return
-      _aishe_lean_handle_reply "$reply"
+      local _AISHE_LOCAL_REPLY
+      _AISHE_LOCAL_REPLY="$(_aishe_lean_send "SLASH	${AISHE_MODE:-ask}	$PWD	$(_aishe_lean_flatten "$_AISHE_LOCAL_LINE")")" || return
+      _aishe_lean_handle_reply "$_AISHE_LOCAL_REPLY"
       ;;
     /*/*)
       # Absolute path with extra segments — leave to shell.
@@ -764,9 +892,9 @@ _aishe_lean_slash() {
       ;;
     /[[:alnum:]_-]##)
       # Custom markdown slash-command → FIFO (F40).
-      local reply
-      reply="$(_aishe_lean_send "SLASH	${AISHE_MODE:-ask}	$PWD	$(_aishe_lean_flatten "$line")")" || return
-      _aishe_lean_handle_reply "$reply"
+      local _AISHE_LOCAL_REPLY
+      _AISHE_LOCAL_REPLY="$(_aishe_lean_send "SLASH	${AISHE_MODE:-ask}	$PWD	$(_aishe_lean_flatten "$_AISHE_LOCAL_LINE")")" || return
+      _aishe_lean_handle_reply "$_AISHE_LOCAL_REPLY"
       ;;
     *)
       return 1
@@ -778,9 +906,9 @@ _aishe_lean_slash() {
 
 # Unknown command: do not spawn aishe. Route the accepted line as NL.
 command_not_found_handler() {
-  local line="${(j: :)@}"
-  [[ -n "${_AISHE_ACCEPTED_LINE:-}" && "$line" == "$_AISHE_ACCEPTED_LINE" ]] || return 127
-  _aishe_lean_nl "$line"
+  local _AISHE_LOCAL_LINE="${(j: :)@}"
+  [[ -n "${_AISHE_ACCEPTED_LINE:-}" && "$_AISHE_LOCAL_LINE" == "$_AISHE_ACCEPTED_LINE" ]] || return 127
+  _aishe_lean_nl "$_AISHE_LOCAL_LINE"
   return 0
 }
 
@@ -838,20 +966,20 @@ aishe-fix-command() {
   fi
   zle -I
   zle -M "aishe: asking for a fix…"
-  local reply
-  reply="$(_aishe_lean_send "FIX	${AISHE_MODE:-ask}	$PWD	fix")" || {
+  local _AISHE_LOCAL_REPLY
+  _AISHE_LOCAL_REPLY="$(_aishe_lean_send "FIX	${AISHE_MODE:-ask}	$PWD	fix")" || {
     zle -M "aishe: fix request failed"
     return
   }
-  local kind="${reply%%	*}"
-  local rest="${reply#*$'	'}"
-  [[ "$kind" == "$reply" ]] && rest=""
-  case "$kind" in
+  local _AISHE_LOCAL_KIND="${_AISHE_LOCAL_REPLY%%	*}"
+  local _AISHE_LOCAL_REST="${_AISHE_LOCAL_REPLY#*$'	'}"
+  [[ "$_AISHE_LOCAL_KIND" == "$_AISHE_LOCAL_REPLY" ]] && _AISHE_LOCAL_REST=""
+  case "$_AISHE_LOCAL_KIND" in
     FILL_B64)
-      local decoded
-      decoded="$(print -r -- "$rest" | base64 -d 2>/dev/null)" || decoded=""
-      if [[ -n "$decoded" ]]; then
-        BUFFER="$decoded"
+      local _AISHE_LOCAL_DECODED
+      _AISHE_LOCAL_DECODED="$(print -r -- "$_AISHE_LOCAL_REST" | base64 -d 2>/dev/null)" || _AISHE_LOCAL_DECODED=""
+      if [[ -n "$_AISHE_LOCAL_DECODED" ]]; then
+        BUFFER="$_AISHE_LOCAL_DECODED"
         CURSOR=${#BUFFER}
         zle -M "aishe: fix ready — review before Enter"
       else
@@ -862,7 +990,7 @@ aishe-fix-command() {
       zle -M "aishe: see explanation above"
       ;;
     ERROR)
-      zle -M "aishe: ${rest:-fix failed}"
+      zle -M "aishe: ${_AISHE_LOCAL_REST:-fix failed}"
       ;;
     CANCELLED)
       zle -M "aishe: fix cancelled"
@@ -880,11 +1008,11 @@ aishe-fix-command() {
 # config.backend.output + PtyOut message; child syncs AISHE_AGENT_OUTPUT.
 aishe-toggle-agent-details() {
   emulate -L zsh
-  local reply
+  local _AISHE_LOCAL_REPLY
   # The parent prints a persistent notice. Give it a clear output line, then
   # redraw the same input buffer instead of writing into the active ZLE row.
   zle -I
-  reply="$(_aishe_lean_send "SLASH	${AISHE_MODE:-ask}	$PWD	/details")" || {
+  _AISHE_LOCAL_REPLY="$(_aishe_lean_send "SLASH	${AISHE_MODE:-ask}	$PWD	/details")" || {
     zle -M "aishe: details toggle failed"
     zle reset-prompt
     return
@@ -918,10 +1046,10 @@ aishe-show-route() {
 aishe-nl-widget() {
   emulate -L zsh
   [[ -z "$BUFFER" ]] && return
-  local submitted="$BUFFER"
-  print -s -- "$submitted"
+  local _AISHE_LOCAL_SUBMITTED="$BUFFER"
+  print -s -- "$_AISHE_LOCAL_SUBMITTED"
   zle -I
-  _aishe_lean_nl "$submitted"
+  _aishe_lean_nl "$_AISHE_LOCAL_SUBMITTED"
   BUFFER=""
   POSTDISPLAY=""
   zle .accept-line
@@ -959,22 +1087,30 @@ aishe-cycle-mode() {
 
 aishe-accept-line() {
   emulate -L zsh
-  setopt extendedglob
-  local line="$BUFFER"
-  local trimmed="${line##[[:space:]]#}"
-  trimmed="${trimmed%%[[:space:]]#}"
-
-  if [[ "$trimmed" == '!'* ]]; then
-    BUFFER="${trimmed#\!}"
-    BUFFER="${BUFFER##[[:space:]]#}"
+  # User widgets often call accept-line themselves. End their chain at zsh's
+  # built-in instead of recursively routing the same line back through AIShe.
+  if [[ "${_AISHE_CHAINING_ACCEPT:-0}" == 1 ]]; then
     zle .accept-line
     return
   fi
+  setopt extendedglob
+  local _AISHE_LOCAL_LINE="$BUFFER"
+  local _AISHE_LOCAL_TRIMMED="${_AISHE_LOCAL_LINE##[[:space:]]#}"
+  _AISHE_LOCAL_TRIMMED="${_AISHE_LOCAL_TRIMMED%%[[:space:]]#}"
 
-  if [[ "$trimmed" == /* && "$trimmed" != //* ]]; then
+  # A spaced `! command` is AIShe's explicit shell route. Keep native zsh
+  # history forms (!!, !$, !word, !?word?, !-n, !n) byte-for-byte intact.
+  if [[ "$_AISHE_LOCAL_TRIMMED" == '!'[[:space:]]* ]]; then
+    BUFFER="${_AISHE_LOCAL_TRIMMED#\!}"
+    BUFFER="${BUFFER##[[:space:]]#}"
+    _aishe_accept_shell_line
+    return
+  fi
+
+  if [[ "$_AISHE_LOCAL_TRIMMED" == /* && "$_AISHE_LOCAL_TRIMMED" != //* ]]; then
     zle -I
-    if _aishe_lean_slash "$trimmed"; then
-      print -s -- "$trimmed"
+    if _aishe_lean_slash "$_AISHE_LOCAL_TRIMMED"; then
+      print -s -- "$_AISHE_LOCAL_TRIMMED"
       BUFFER=""
       POSTDISPLAY=""
       # The slash completed inside this widget. Refresh its existing input
@@ -985,16 +1121,16 @@ aishe-accept-line() {
     fi
   fi
 
-  if _aishe_routes_to_agent "$trimmed"; then
-    local body="$trimmed"
-    local was_q=0
-    [[ "${body[1]}" == '?' ]] && { body="${body#?}"; was_q=1 }
-    body="${body##[[:space:]]#}"
-    print -s -- "$trimmed"
+  if _aishe_routes_to_agent "$_AISHE_LOCAL_TRIMMED"; then
+    local _AISHE_LOCAL_BODY="$_AISHE_LOCAL_TRIMMED"
+    local _AISHE_LOCAL_WAS_Q=0
+    [[ "${_AISHE_LOCAL_BODY[1]}" == '?' ]] && { _AISHE_LOCAL_BODY="${_AISHE_LOCAL_BODY#?}"; _AISHE_LOCAL_WAS_Q=1 }
+    _AISHE_LOCAL_BODY="${_AISHE_LOCAL_BODY##[[:space:]]#}"
+    print -s -- "$_AISHE_LOCAL_TRIMMED"
     zle -I
-    if [[ -n "$body" ]]; then
-      _aishe_lean_nl "$body"
-    elif (( was_q )); then
+    if [[ -n "$_AISHE_LOCAL_BODY" ]]; then
+      _aishe_lean_nl "$_AISHE_LOCAL_BODY"
+    elif (( _AISHE_LOCAL_WAS_Q )); then
       # Empty `?` → explain last failure capsule (lean-native, no OpenCode).
       _aishe_lean_nl "?"
     fi
@@ -1004,7 +1140,35 @@ aishe-accept-line() {
     return
   fi
 
-  zle .accept-line
+  _aishe_accept_shell_line
+}
+
+_aishe_accept_shell_line() {
+  local _AISHE_CHAINING_ACCEPT=1
+  local REPLY
+  _aishe_effective_keymap
+  local _AISHE_ENTER_TARGET="${_AISHE_USER_ACCEPT_NAMES[$REPLY]:-accept-line}"
+  if [[ "$_AISHE_ENTER_TARGET" == accept-line ]]; then
+    # Give a plugin its original WIDGET=accept-line while it runs. Restore the
+    # actual live wrapper afterward, including a plugin installed in leanrc.post.
+    zle -A accept-line _aishe-live-accept-line
+    zle -A _aishe-user-accept-line accept-line
+    { zle accept-line -w } always {
+      zle -A _aishe-live-accept-line accept-line
+    }
+  else
+    zle "$_AISHE_ENTER_TARGET" -w
+  fi
+}
+
+_aishe_effective_keymap() {
+  local keymap="${KEYMAP:-main}"
+  local -a mapping
+  mapping=(${(z)$(bindkey -l -L "$keymap" 2>/dev/null)})
+  # main is an alias for emacs or viins; resolve it at use time so `bindkey -v`
+  # after launch chooses the correct saved user widgets as well.
+  [[ "${mapping[2]:-}" == -A ]] && keymap="${mapping[3]}"
+  REPLY="$keymap"
 }
 
 _aishe_highlight_command() {
@@ -1068,19 +1232,52 @@ zle -N aishe-show-route
   zstyle ':completion:aishe-slashes:*' format '%d'
   zstyle ':completion:aishe-slashes:*' menu auto select
   zle -N _aishe_highlight_command
-  if (( ${+widgets[accept-line]} )); then
-    typeset -g _aishe_orig_accept_line="${widgets[accept-line]#-}"
-  fi
+  zle -A accept-line _aishe-user-accept-line
+  typeset -gA _AISHE_USER_ACCEPT_NAMES _AISHE_USER_TAB_NAMES
+  typeset -g _aishe_keymap _aishe_old_widget
+  typeset -ga _aishe_binding
+  for _aishe_keymap in emacs viins vicmd; do
+    # Capture the actual Enter/Tab binding in each keymap, not only the named
+    # accept-line widget. Plugins can bind Enter directly to their own widget.
+    _aishe_binding=(${(z)$(bindkey -M "$_aishe_keymap" '^M' 2>/dev/null)})
+    _aishe_old_widget="${_aishe_binding[2]:-accept-line}"
+    _AISHE_USER_ACCEPT_NAMES[$_aishe_keymap]="$_aishe_old_widget"
+    _aishe_binding=(${(z)$(bindkey -M "$_aishe_keymap" '^I' 2>/dev/null)})
+    _aishe_old_widget="${_aishe_binding[2]:-expand-or-complete}"
+    _AISHE_USER_TAB_NAMES[$_aishe_keymap]="$_aishe_old_widget"
+    bindkey -M "$_aishe_keymap" '^M' aishe-accept-line
+    bindkey -M "$_aishe_keymap" '^I' aishe-slash-tab
+  done
   zle -A aishe-accept-line accept-line
   autoload -Uz add-zle-hook-widget 2>/dev/null
   add-zle-hook-widget zle-line-pre-redraw _aishe_highlight_command 2>/dev/null || true
-  bindkey "${AISHE_NL_KEY:-^[^M}" aishe-nl-widget
-  bindkey "${AISHE_FIX_KEY:-^X^F}" aishe-fix-command
-bindkey "${AISHE_ROUTE_KEY:-^X?}" aishe-show-route
   if (( ${+widgets[reverse-menu-complete]} )); then
     typeset -g _AISHE_ORIG_MODE_WIDGET=reverse-menu-complete
   fi
-  bindkey "${AISHE_MODE_KEY:-^[[Z}" aishe-cycle-mode
-  bindkey "${AISHE_DETAILS_KEY:-^O}" aishe-toggle-agent-details
-  bindkey "^I" aishe-slash-tab
+  _aishe_bind_optional() {
+    local keymap="$1" key="$2" widget="$3" explicit="$4"
+    local -a binding
+    binding=(${(z)$(bindkey -M "$keymap" "$key" 2>/dev/null)})
+    # Personal custom shortcuts win unless an AISHE_*_KEY explicitly requests
+    # that shortcut. Clean profile keeps the established AIShe defaults.
+    if [[ "${AISHE_ZSH_PROFILE:-clean}" == clean || "$explicit" == 1 ||
+          "${binding[2]:-undefined-key}" == undefined-key ]]; then
+      bindkey -M "$keymap" "$key" "$widget"
+    fi
+  }
+  for _aishe_keymap in emacs viins; do
+    _aishe_bind_optional "$_aishe_keymap" "${AISHE_NL_KEY:-^[^M}" aishe-nl-widget "${+AISHE_NL_KEY}"
+    _aishe_bind_optional "$_aishe_keymap" "${AISHE_FIX_KEY:-^X^F}" aishe-fix-command "${+AISHE_FIX_KEY}"
+    _aishe_bind_optional "$_aishe_keymap" "${AISHE_ROUTE_KEY:-^X?}" aishe-show-route "${+AISHE_ROUTE_KEY}"
+    _aishe_bind_optional "$_aishe_keymap" "${AISHE_MODE_KEY:-^[[Z}" aishe-cycle-mode "${+AISHE_MODE_KEY}"
+    _aishe_bind_optional "$_aishe_keymap" "${AISHE_DETAILS_KEY:-^O}" aishe-toggle-agent-details "${+AISHE_DETAILS_KEY}"
+  done
+  # Late native customization deliberately sees the installed AIShe widgets.
+  # It can override a binding or extend a widget without being replaced below.
+  if [[ -n "${AISHE_LEANRC_POST:-}" && -r "$AISHE_LEANRC_POST" ]]; then
+    source "$AISHE_LEANRC_POST"
+  elif [[ -r "$HOME/.aishe/leanrc.post" ]]; then
+    source "$HOME/.aishe/leanrc.post"
+  fi
+  aishe_set_prompt
 fi

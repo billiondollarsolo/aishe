@@ -1249,11 +1249,12 @@ mod tests {
         assert_eq!(cell_width("\u{1b}[31mred\u{1b}[0m"), 3);
 
         let value = "A界e\u{301}ZQ";
-        let truncated = truncate_cells(value, 5);
+        let glyphs = Glyphs { unicode: true };
+        let truncated = truncate_cells_with(value, 5, glyphs);
         assert_eq!(truncated, "A界e\u{301}…");
         assert_eq!(cell_width(&truncated), 5);
-        assert!(!truncate_cells("👩‍💻xy", 3).contains('x'));
-        assert!(truncate_cells("👩‍💻xy", 3).starts_with("👩‍💻"));
+        assert!(!truncate_cells_with("👩‍💻xy", 3, glyphs).contains('x'));
+        assert!(truncate_cells_with("👩‍💻xy", 3, glyphs).starts_with("👩‍💻"));
     }
 
     #[test]

@@ -13,6 +13,7 @@ mod nl;
 mod pty_out;
 mod sessions;
 mod slash;
+pub mod state;
 mod stdout_redirect;
 pub use grok_oauth::{
     auth_path as grok_auth_path, available as grok_subscription_available, SUBSCRIPTION_TOKEN_ENV,
@@ -22,9 +23,12 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
 
 pub use grant::{ensure_session_grant, grant_accepted, LeanGrant, LeanMode};
-pub use hook::{wrapper_zshenv, wrapper_zshrc, zsh_argv};
+pub use hook::{
+    wrapper_zshenv, wrapper_zshenv_for_profile, wrapper_zshrc, wrapper_zshrc_for_profile, zsh_argv,
+    zsh_argv_for_profile, ZshProfile,
+};
 pub use ipc::{spawn_ipc, spawn_ipc_with_files, IpcGuard, LeanShellFiles};
-pub use nl::{handle_ipc_line, run_nl, LeanWarm};
+pub use nl::{handle_ipc_line, prepare_agent_executor, run_nl, LeanWarm};
 pub use pty_out::{PtyOut, PtyWrite};
 pub use sessions::{
     list as list_lean_sessions, store_root as lean_sessions_root, Meta as LeanSessionMeta,

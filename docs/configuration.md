@@ -30,7 +30,8 @@ Inside them:
 - Shared credentials: `<config>/credentials.toml` (private mode `0600`)
 - Custom commands: `<config>/commands/` and `<project>/.aishe/commands/`
 - Skills: `<config>/skills/` and `<project>/.aishe/skills/`
-- Startup file: `~/.aishrc` and `<config>/aishrc`
+- Native startup files: `~/.aishe/leanrc` and `~/.aishe/leanrc.post`
+- Compatibility executor startup files: `~/.aishrc` and `<config>/aishrc`
 - Timestamped shell history: `<data>/history.ext`
 - Audit log: `<data>/audit.jsonl` (override with `AISHE_LOG_FILE`)
 - Undo journal: `<data>/undo.jsonl` (override with `AISHE_UNDO_JOURNAL`)
@@ -66,7 +67,7 @@ brevity. Read `~/.config/aishe/...` as `<config>/...` and
 | Field | Type | Default | Meaning |
 |-------|------|---------|---------|
 | `safety_profile` | string | `custom` | Named settings bundle: `conservative`, `balanced`, `autonomous`, or `custom`. |
-| `mode` | string | `suggest` | Interaction mode: `suggest`, `auto`, or `yolo`. |
+| `mode` | string | `suggest` | Interaction mode: `ask`, `allow`, or `agent`; legacy aliases `suggest`, `auto`, and `yolo` remain accepted. A saved agent mode is not an unattended tool grant. |
 | `connection` | string | `anthropic` | Durable default named connection ID. `/connection` switches account for this shell unless the post-selection prompt or `--default` saves it; `/model` changes only the model on the active connection. |
 | `connection_fallback` | string | active connection | Named compatibility fallback connection. |
 | `provider` | string | `anthropic` | Which provider block to use: `anthropic` or `openai`. |
@@ -74,14 +75,14 @@ brevity. Read `~/.config/aishe/...` as `<config>/...` and
 | `yolo_confirm_dangerous` | bool | `true` | Deprecated native compatibility behavior; managed yolo uses one per-shell scope acceptance. |
 | `yolo_confirm` | string | `dangerous` | Native compatibility confirmation tier: `never`, `dangerous`, `writes`, or `all`. Managed yolo has no per-action prompts after scope acceptance. |
 | `yolo_sandbox` | bool | `false` | Native policy screen: refuse yolo commands that reach the network or write outside the working tree. Set directly here; a named safety profile selected through `aishe settings` may also update it. |
-| `max_yolo_iterations` | integer | `10` | Maximum tool-use steps for one yolo request. |
+| `max_yolo_iterations` | integer | `10` | Maximum model/tool-loop iterations for one agent request; one iteration can request several tools. Exhaustion returns the native iteration-limit outcome. |
 | `yolo_plan` | bool | `false` | Native plan-first dry run: the model shows its intended steps and you approve before the loop runs (interactive only). Set directly here; a named safety profile selected through `aishe settings` may also update it. |
 | `project_context` | bool | `true` | Include a per-project `.aishe/context.md` (at or above the cwd) in the model context. See [Per-project context](project-context.md). |
 | `file_tools` | bool | `true` | Offer the built-in `read_file`/`write_file`/`edit_file`/`list_dir` tools to yolo. |
 | `web_tool` | bool | `true` | Offer the built-in `fetch_url` tool to yolo (read web pages/docs; HTML stripped to text, size-capped). |
 | `auto_pushd` | bool | `false` | zsh `AUTO_PUSHD`: every `cd` pushes the previous dir (`cd -N`/`cd +N`, `dirs -v`). |
 | `cdpath` | array | `[]` | Extra base dirs searched by `cd <name>` (`CDPATH`); falls back to `$CDPATH`. |
-| `share_history` | bool | `true` | Share AIShe's timestamped history across concurrent and future sessions (zsh `SHARE_HISTORY` when AIShe supplies the native-history fallback); off makes AIShe history per-session. |
+| `share_history` | bool | `true` | Share AIShe's timestamped history across clean-profile shells. The personal profile preserves its own history variables/options unless `AISHE_MANAGE_HISTORY=1` opts into AIShe's policy. |
 | `structured` | string | `schema` | Suggest output format: `schema`, `json`, or `prompt`. |
 | `stream` | bool | `false` | Stream answers token-by-token (suggest and auto). |
 | `hook_timeout_secs` | integer | `60` | Maximum wait (1–600 seconds) for a prompt-blocking native shell hook. Explicit `aishe suggest` calls wait through the provider's retry policy and are not signal-truncated; exhausted provider failures return exit 1. |
@@ -138,7 +139,7 @@ explicit launch with `AISHE_LEGACY_OPENCODE=1 aishe`.
 | `fallback` | string | `native` | Compatibility engine allowed only when OpenCode fails before prompt admission. |
 | `managed` | bool | `true` | Install and launch AIShe's private compatibility-pinned runtime. |
 | `idle_timeout_secs` | integer | `1800` | Stop the private per-user supervisor after this idle period (30–86400). |
-| `default_scope` | string | `workspace` | Default `workspace` or `host` selection. Yolo acceptance itself is never persisted. |
+| `default_scope` | string | `workspace` | Default `workspace` or `host` selection. Live-shell grants are not saved as defaults; task checkpoints retain the admitted scope and root for revalidation on resume. |
 | `workspace_network` | string | `deny` | `allow` or `deny` network capability for workspace agent tools. |
 | `output` | string | `focus` | `focus` (transient current command plus a bounded three-command digest, one activity summary, and final response), `compact` (one persistent completion row per action), or `detailed` (raw command output, diffs, usage, and agent events). |
 | `max_output_tokens` | integer | `0` | Hard provider output cap; `0` delegates to backend/model unless organization policy caps it. |
@@ -159,6 +160,85 @@ max_instances = 8
 
 Fallback is one-way and pre-admission only. AIShe never duplicates a prompt
 after OpenCode has accepted it, emitted partial output, or requested a tool.
+
+## Native agent execution
+
+The native foreground shell, `aishe agent`, native `aishe resume`, and background
+task workers use the same agent loop, execution admission, effect limits, and
+terminal outcomes. Live-shell turns require the shell's accepted scope grant;
+explicit `agent`, task, and resume commands request autonomous execution
+directly and can run headlessly when scope and policy allow. Selecting agent
+mode in a config or project command alone does not authorize unattended tools.
+Admission precedes model work and automatic MCP connection.
+Agent commands use the native shell's filtered live exports; aliases/functions
+and personal startup code remain in zsh. See
+[Live shell state](front-ends.md#agent-execution-and-live-shell-state) for the
+snapshot and workspace-access boundaries.
+
+| Outcome | Exit code | Meaning |
+|---------|-----------|---------|
+| `completed` | `0` | The model returned a nonempty final answer without tool calls. |
+| `cancelled` | `130` | The user interrupted or cancelled execution. |
+| `budget_exhausted` | `124` | A task allowance or the known-price session budget stopped further work. |
+| `iteration_limit` | `75` | The model/tool loop reached its configured iteration cap. |
+| `failed` | `1` | A provider, execution, or checkpoint failure prevented completion. |
+| `declined` | `2` | Required approval was declined. |
+
+A final model answer does not independently verify task success. Verification
+commands and their output remain available in the transcript; an enforced
+acceptance-criteria/proof workflow is future work. Errors, cancellations, and
+limits cannot publish a successful background completion.
+
+### Checkpoints and resume
+
+Private native checkpoints retain the named connection and its endpoint/auth
+references, provider/model, admitted scope/network, canonical workspace root,
+messages, pending and completed tools, execution limits, cumulative usage, and
+effect reservations. Credential values and live environment snapshots are not
+saved. Resume restores the saved task identity rather than substituting current
+shell defaults, then rechecks current organization policy and execution
+admission. The workspace root stays fixed across directory changes. An uncertain
+pending tool is skipped rather than silently repeated.
+
+Background records link to the actual native checkpoint. `aishe task resume ID`
+continues that checkpoint; it does not restart the objective with a new budget.
+Previously spent allowances remain spent, and later limits can only tighten
+saved caps. Older records without a native checkpoint require an explicitly
+started new task. Protected host targets require fresh typed confirmation and
+fail closed headlessly. Organization policy that denies network also refuses
+native host scope, which cannot enforce that restriction.
+
+### Budget and cancellation boundaries
+
+Task provider-turn and tool-call counters are reserved before their effects and
+checkpointed. Planning consumes a provider turn. Tool-call limits count command,
+built-in, skill, and MCP dispatches. Network-call limits count `fetch_url`,
+recognized network-capable commands, and every opaque MCP tool call
+conservatively; they do not count every socket, HTTP retry, or internal request
+made by an arbitrary command or server. MCP discovery and internal RPC retries
+are not individually metered. Provider calls have a separate turn allowance.
+Linux workspace isolation can deny command network access; denied
+network scope also omits/rejects web and MCP tools. When network is allowed,
+MCP remains outside the command/file workspace sandbox.
+
+Wall-clock allowances cover active attempts, persist across resume, and shorten
+command timeouts to the remaining allowance. Paused time is not charged. An
+explicit task cost cap requires an exact finite model price; configure
+`[pricing."model"]` when the model is unknown. Ordinary shell cost displays
+continue to disclose unknown prices, and a provider response already in flight
+can exceed a monetary cap before the next admission check. Changed-file/byte
+limits are checked after execution and block review application when exceeded;
+they do not undo effects inside the isolated worktree.
+
+Ctrl-C stops command process groups and suppresses later output and tool
+admission. Native provider HTTP deadlines include streaming and retries and are
+shortened by the remaining task allowance. Cancellation or
+an exhausted task allowance may be acknowledged after an in-flight request
+returns. MCP HTTP requests and stdio response waits also use the shorter of
+their timeout (currently 30 seconds) and the remaining allowance. A blocked
+stdio write or an opaque server operation may still delay cancellation until
+the call returns. No later effects are admitted afterward. RPC effects cannot
+be rolled back by suppressing the response.
 
 ## `[sandbox]` section
 
@@ -181,6 +261,8 @@ protected_environment_patterns = ["prod", "production"]
 
 On macOS, `linux_backend` cannot create an OS sandbox; Setup and Doctor report
 policy-only behavior.
+Native workspace-agent admission on Linux always requires functional
+bubblewrap; compatibility sandbox settings do not weaken that requirement.
 
 ## `[roles.<name>]` sections (optional)
 
@@ -424,6 +506,21 @@ server launched from `command`. List connected tools with `aishe mcp`. See
 - `AISHE_POLICY_FILE`: alternate organization-policy path for managed
   deployment/testing.
 - `AISHE_MODE`: mode used by the native shell hook (`suggest`, `auto`, `yolo`).
+- `AISHE_ZSH_PROFILE`: native interactive profile, `clean` (default) or
+  `personal`. Personal loads real `.zshenv`/`.zshrc` and plugins without selecting
+  OpenCode; its prompt, history settings, and custom optional shortcuts remain
+  under your control.
+- `AISHE_LEANRC`: early native startup file, default `~/.aishe/leanrc`; use it
+  for exports, aliases, and completion paths before AIShe installs widgets.
+- `AISHE_LEANRC_POST`: late native startup file, default
+  `~/.aishe/leanrc.post`; use it to extend or override installed widgets/bindings.
+- `AISHE_PERSONAL_INDICATOR=1`: opt into a mode/scope suffix on the personal
+  right prompt. Themes can instead display the refreshed `AISHE_MODE_INDICATOR`.
+- `AISHE_PTY_PROMPT=force`: request AIShe's full prompt even in the personal
+  profile; `0` suppresses it.
+- `AISHE_MANAGE_HISTORY=1`: opt the personal profile into AIShe's history policy.
+- `AISHE_LEGACY_OPENCODE=1`: explicitly select the historical managed shell;
+  this is independent of the native zsh profile.
 - `AISHE_NL_KEY`: override the force-NL keybinding for the zsh hook (a `bindkey`
   sequence, for example `^o`).
 - `AISHE_MODE_KEY`: override the mode-cycle keybinding for the zsh hook (a

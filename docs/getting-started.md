@@ -84,7 +84,21 @@ aishe
 ```
 
 That launches a real zsh with a lightweight isolated configuration. Optional
-aliases belong in `~/.aishe/leanrc`. Subscription OAuth setup shows the explicit
+exports, aliases, and completion paths belong in `~/.aishe/leanrc`; late widget
+and binding changes belong in `~/.aishe/leanrc.post`. To use your own zsh
+configuration and plugins with the same native agent, launch:
+
+```sh
+AISHE_ZSH_PROFILE=personal aishe
+```
+
+The personal profile loads your `.zshenv`/`.zshrc`, preserves your prompt and
+history policy, and chains existing Enter/Tab widgets. Use
+`AISHE_PERSONAL_INDICATOR=1` to append mode/scope to its right prompt, or display
+`AISHE_MODE_INDICATOR` in your theme. `AISHE_PTY_PROMPT=force` opts into AIShe's
+full prompt. See [Front-ends](front-ends.md) for startup order and shortcuts.
+
+Subscription OAuth setup shows the explicit
 `AISHE_LEGACY_OPENCODE=1 aishe` launch command; first-run setup honors that choice
 for the shell it starts. The legacy hook remains available through `aishe init
 zsh`. Use `/` then Tab for described commands, `/settings` for saved defaults,
@@ -128,6 +142,15 @@ Pipes, globs, redirection, subshells, control structures, and interactive
 programs like `vim`, `ssh`, and `top` all work, because aishe hands shell lines
 to your real shell.
 
+Agent commands also use current exported `PATH`, virtual environment variables,
+and ordinary exports/unsets from this shell. For example, activating a project
+virtual environment before an agent request selects that environment's tools.
+This does not widen the accepted workspace: a virtual environment outside it
+can remain inaccessible under isolation. Aliases and functions stay in zsh;
+the agent uses a fresh command shell without personal startup code. Credential
+and startup-control variables are filtered, and the live snapshot is not saved
+in task or audit records.
+
 ## 3. Ask in plain English
 
 Type a request that is not a command, and the LLM proposes one:
@@ -147,10 +170,17 @@ runs it. Nothing is ever executed without a keystroke of yours.
 
 ## 4. Try the other modes
 
-```sh
-aishe mode auto     # run safe commands immediately, ask about the rest
-aishe mode yolo     # let the model run a multi-step task on its own
+Inside the native shell:
+
+```text
+/mode allow        # grant safe suggestions for this shell
+/mode agent        # grant autonomous work inside this workspace
+/mode agent-host   # explicitly grant host-wide work where policy allows
 ```
+
+Shift-Tab cycles modes on an empty line. With text entered it keeps reverse
+completion. Legacy `suggest`, `auto`, and `yolo` names remain accepted aliases;
+`aishe mode` changes defaults for new shells rather than granting a live shell.
 
 In `auto`, the safety gate has three outcomes: a command it finds safe runs
 straight away, one it flags as dangerous stops and makes you type the full word
@@ -158,21 +188,50 @@ straight away, one it flags as dangerous stops and makes you type the full word
 panel and a plain `[y/N]`. Nothing unverified ever runs on its own. See
 [Safety gate](safety.md#three-outcomes).
 
-The managed agent adds a separate execution **scope**. `workspace` confines
-agent effects to the selected project (with bubblewrap on supported Linux
-systems); `host` grants host-wide agent authority. Entering yolo asks once for
-the scope in each new shell. After acceptance, yolo runs without per-action
-approval prompts; a new shell asks again because acceptance is never persisted.
-Use `aishe scope workspace|host` and `aishe network allow|deny` to change the
-next turn's selection.
+The native agent has a separate execution **scope**. `workspace` binds commands
+and built-in file tools to the accepted project, with functional bubblewrap
+required on Linux; `host` grants host-wide authority. A workspace grant stays
+bound to the canonical directory shown at acceptance. Moving outside that tree
+requires another grant. After acceptance, agent actions within scope run without
+per-action prompts; explicit file previews retain their configured approval.
+New shells ask again. Protected host environments require fresh typed
+confirmation and reject unattended host execution. See the
+[scope boundaries](lean-hotpath.md#default-ui-and-session-state), including MCP
+and macOS limits.
 
 Or set the mode for a single session at launch:
 
 ```sh
-aishe --mode yolo
+aishe --mode agent
 ```
 
 See [Modes](modes.md) for the full behavior of each.
+
+### Run an explicit task
+
+For a scriptable autonomous request, use the task command rather than relying
+on a saved agent mode:
+
+```sh
+aishe agent --scope workspace 'inspect and fix the failing tests'
+aishe agent --background --scope workspace 'update the project documentation'
+aishe task list
+aishe task resume TASK_ID
+aishe resume NATIVE_TASK_ID
+```
+
+Foreground, CLI, and background tasks share the native execution engine.
+Background work runs in an isolated git worktree by default. Resume continues
+the saved transcript and scope, connection/model, workspace root, and spent
+allowances; a possibly started tool is not blindly executed again. Current
+organization policy still applies. Live environment values are not stored in
+the checkpoint.
+
+Completion returns exit `0`; cancellation, exhausted budgets, iteration caps,
+failure, and declined approval have separate nonzero exits. A completed task
+means the model supplied its final answer, so review the change and verification
+output before applying it. Exact exit codes and budget/cancellation boundaries
+are in [Native agent execution](configuration.md#native-agent-execution).
 
 ## 5. Force a route when needed
 
@@ -186,7 +245,8 @@ the #1 source of “why didn’t the AI hear me?” confusion.
 |----------|----------------|
 | `install kubectl please` | **Shell.** `install` is `/usr/bin/install` (copy files). Often fails with `No such file or directory`. |
 | `? install kubectl please` | **AI.** The `?` is stripped; the agent gets the English request. |
-| `!rm -rf build` | **Shell**, safety gate skipped (dangerous by design). |
+| `! rm -rf build` | **Shell**, safety gate skipped (dangerous by design). |
+| `!!`, `!$`, `!word` | Native zsh history expansion, not AIShe's force-shell prefix. |
 | `?` alone after a failed command | Ask the model to diagnose the last failure. |
 
 `# …` remains a deprecated compatibility spelling for force-NL and is stripped

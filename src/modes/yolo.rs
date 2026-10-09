@@ -4,8 +4,10 @@
 use std::io::{IsTerminal, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
 
+use crate::agent::native::{NativeBudget, NativeLimits};
 use crate::agent::renderer::AgentRenderer;
 use crate::agent::{AgentEvent, ToolCallView, ToolResultView, UserFacingError};
+use crate::agent::{NativeTurnOutcome, NativeTurnState};
 use crate::ui::SemanticStylize;
 use crate::ui::{StyleToken, TerminalCapabilities};
 use anyhow::Result;
@@ -32,7 +34,7 @@ pub fn run(
     skills: &SkillRegistry,
     mcp: &McpRegistry,
     session: &mut Session,
-) -> Result<()> {
+) -> Result<NativeTurnOutcome> {
     run_with_terminal(
         input,
         provider,
@@ -60,12 +62,32 @@ pub(crate) fn run_with_terminal(
     mcp: &McpRegistry,
     session: &mut Session,
     capabilities: TerminalCapabilities,
-) -> Result<()> {
+) -> Result<NativeTurnOutcome> {
     // Optional reversible session: run the whole loop against a throwaway copy of
     // the working tree, then preview + confirm/apply at the end.
-    let dry = DryRun::setup(executor, config)?;
     let history = session.history();
     let mut task = crate::tasks::Active::start(config, executor.cwd(), input);
+    task.set_usage_baseline(provider.meter().snapshot());
+    task.checkpoint_admission(executor);
+    if let Err(error) = task.ensure_persisted() {
+        return Ok(fail_internal(
+            &mut task,
+            provider,
+            interrupt.load(Ordering::SeqCst) || executor.is_cancelled(),
+            error,
+        ));
+    }
+    let dry = match DryRun::setup(executor, config) {
+        Ok(dry) => dry,
+        Err(error) => {
+            return Ok(fail_internal(
+                &mut task,
+                provider,
+                interrupt.load(Ordering::SeqCst) || executor.is_cancelled(),
+                error,
+            ))
+        }
+    };
     println!("  {}", format!("task {}", task.id()).dim());
     let density = effective_density(config);
     let mut renderer = AgentRenderer::with_capabilities(density, capabilities);
@@ -84,17 +106,35 @@ pub(crate) fn run_with_terminal(
     );
     renderer.clear_status();
     super::report_usage(provider, config);
+    let mut outcome = match outcome {
+        Ok(outcome) => outcome,
+        Err(error) => fail_internal(
+            &mut task,
+            provider,
+            interrupt.load(Ordering::SeqCst) || executor.is_cancelled(),
+            error,
+        ),
+    };
     if let Some(d) = dry {
-        d.finish(executor);
+        if let Some((state, detail)) =
+            d.finish(executor, outcome.state == NativeTurnState::Completed)
+        {
+            outcome.state = state;
+            outcome.detail = Some(detail);
+            outcome.final_text = None;
+            let messages = task.record().messages.clone();
+            task.finish_native(&outcome, &messages, provider.meter().snapshot());
+        }
     }
-    let final_text = outcome?;
     session.record_user(input);
     session.record_assistant(
-        final_text
+        outcome
+            .final_text
             .as_deref()
-            .unwrap_or("(yolo task ended without a final summary)"),
+            .or(outcome.detail.as_deref())
+            .unwrap_or("(agent turn ended without a final summary)"),
     );
-    Ok(())
+    Ok(outcome)
 }
 
 /// A reversible yolo session: the loop runs against `staging` (a copy of the
@@ -160,7 +200,7 @@ impl DryRun {
     /// Restore the executor, then preview the session's file changes and
     /// apply (interactive: prompt; non-interactive: auto-apply, journaled) or
     /// discard them. Always cleans up the staging copy.
-    fn finish(self, executor: &mut Executor) {
+    fn finish(self, executor: &mut Executor, completed: bool) -> Option<(NativeTurnState, String)> {
         executor.set_sandbox_wrap(Vec::new());
         executor.redirect_cwd(self.real_cwd.clone());
         executor.set_lean_scope(self.real_scope.clone());
@@ -169,7 +209,7 @@ impl DryRun {
         if changes.is_empty() {
             println!("{} no file changes this session.", "dry-run:".bold());
             let _ = std::fs::remove_dir_all(&self.staging);
-            return;
+            return None;
         }
         println!(
             "\n{} {} file change(s) from this session:",
@@ -178,7 +218,7 @@ impl DryRun {
         );
         crate::overlay::print_changes(&changes);
 
-        let apply = if executor.is_cancelled() {
+        let apply = if !completed || executor.is_cancelled() {
             false
         } else if std::io::stdin().is_terminal() {
             print!(
@@ -193,6 +233,7 @@ impl DryRun {
             true // non-interactive (-c): auto-apply (journaled, so `aishe undo` reverts)
         };
 
+        let mut outcome = None;
         if apply {
             let failed = crate::overlay::apply_journaled(
                 &self.real_cwd,
@@ -214,18 +255,30 @@ impl DryRun {
                     failed.len(),
                     failed.join(", ")
                 );
+                outcome = Some((
+                    NativeTurnState::Failed,
+                    format!(
+                        "Preview changes could not all be applied: {}",
+                        failed.join(", ")
+                    ),
+                ));
             }
         } else {
             println!("{} changes discarded.", "✗".red());
+            if completed {
+                outcome = Some((
+                    NativeTurnState::Declined,
+                    "Preview changes were discarded.".into(),
+                ));
+            }
         }
         let _ = std::fs::remove_dir_all(&self.staging);
+        outcome
     }
 }
 
-/// The agentic loop itself. Returns the model's final answer text (when it
-/// finished with a no-tool turn), or `None` if it was aborted, hit the budget, or
-/// reached the iteration cap. Usage reporting and session recording happen in
-/// [`run`].
+/// The agentic loop itself. Every stop carries an explicit terminal state;
+/// provider failures, cancellation and limits can never look like completion.
 #[allow(clippy::too_many_arguments)]
 fn run_loop(
     input: &str,
@@ -239,7 +292,51 @@ fn run_loop(
     task: &mut crate::tasks::Active,
     resumed: bool,
     renderer: &mut AgentRenderer,
-) -> Result<Option<String>> {
+) -> Result<NativeTurnOutcome> {
+    let current_limits = NativeLimits::from_environment()?;
+    let limits = task
+        .record()
+        .execution_limits
+        .as_ref()
+        .map_or(current_limits.clone(), |original| {
+            original.constrain(&current_limits)
+        });
+    limits.validate()?;
+    task.checkpoint_limits(limits.clone());
+    let mut budget = NativeBudget::new(limits, task.record().execution);
+    let _http_deadline = crate::providers::HttpDeadlineGuard::new(budget.remaining())?;
+    if interrupt.load(Ordering::SeqCst) || executor.is_cancelled() {
+        return finish_turn(
+            task,
+            NativeTurnState::Cancelled,
+            Some("Interrupted by user.".into()),
+            &history,
+            provider,
+            &budget,
+        );
+    }
+    if let Err(reason) = budget.check_provider() {
+        return finish_turn(
+            task,
+            NativeTurnState::BudgetExhausted,
+            Some(reason),
+            &history,
+            provider,
+            &budget,
+        );
+    }
+    if budget.requires_cost_accounting()
+        && crate::usage::budget_price_for(config.active_model(), &config.pricing).is_none_or(
+            |price| {
+                !price.input.is_finite()
+                    || !price.output.is_finite()
+                    || price.input < 0.0
+                    || price.output < 0.0
+            },
+        )
+    {
+        return finish_turn(task, NativeTurnState::Failed, Some("An explicit task cost limit requires an exact model price in [pricing]; no provider work was started.".into()), &history, provider, &budget);
+    }
     let ctx = context::build(executor, config);
     // Effective confirmation tier (resolves `yolo_confirm` and the legacy
     // `yolo_confirm_dangerous` boolean). Writes outside the tree by the file
@@ -272,13 +369,19 @@ fn run_loop(
     if config.aishe.web_tool {
         tools.extend(crate::tools::web_tool_defs());
     }
-    if !mcp.is_empty() {
+    let mcp_allowed = !executor
+        .lean_scope()
+        .is_some_and(|(_, _, network)| *network == crate::agent::NetworkPolicy::Deny);
+    if mcp_allowed && !mcp.is_empty() {
         tools.extend(mcp.tool_defs());
     }
     if !skills.is_empty() {
         tools.push(use_skill_tool());
     }
     let mut system = YOLO_SYSTEM.to_string();
+    if executor.lean_scope().is_some() {
+        system.push_str("\n\nCommands run in a fresh restricted POSIX shell (dash, or zsh without startup files). They inherit filtered exports, PATH and environment from the live shell, but do not import interactive aliases, functions, plugins or startup code. Use POSIX syntax for run_command.");
+    }
     system.push_str("\n\n");
     system.push_str(crate::product_help::product_brief());
     if config.aishe.file_tools {
@@ -306,16 +409,68 @@ fn run_loop(
     // the loop touches anything. Interactive only — there is no one to approve a
     // piped/`-c` run, so it proceeds as normal there.
     if !resumed && config.aishe.yolo_plan && std::io::stdin().is_terminal() {
-        match plan_first(input, &ctx, provider, config) {
+        if let Err(reason) = budget.admit_provider() {
+            return finish_turn(
+                task,
+                NativeTurnState::BudgetExhausted,
+                Some(reason),
+                &messages,
+                provider,
+                &budget,
+            );
+        }
+        task.checkpoint_execution(budget.counters());
+        task.ensure_persisted()?;
+        let before = provider.meter().snapshot();
+        let plan = plan_first(input, &ctx, provider, config);
+        record_provider_cost(&mut budget, provider, config, before);
+        task.checkpoint_execution(budget.counters());
+        if interrupt.load(Ordering::SeqCst) || executor.is_cancelled() {
+            return finish_turn(
+                task,
+                NativeTurnState::Cancelled,
+                Some("Interrupted by user.".into()),
+                &messages,
+                provider,
+                &budget,
+            );
+        }
+        if let Some(reason) = budget.exhausted() {
+            return finish_turn(
+                task,
+                NativeTurnState::BudgetExhausted,
+                Some(reason),
+                &messages,
+                provider,
+                &budget,
+            );
+        }
+        match plan {
             PlanOutcome::Declined => {
                 println!("  {}", "aborted".dim());
-                task.interrupted(&messages, provider.meter().snapshot());
-                return Ok(None);
+                return finish_turn(
+                    task,
+                    NativeTurnState::Declined,
+                    Some("User declined the proposed plan.".into()),
+                    &messages,
+                    provider,
+                    &budget,
+                );
             }
             PlanOutcome::Approved(plan) => {
                 user_msg.push_str(&format!("\n\nApproved plan to follow:\n{plan}"));
             }
-            // No plan produced (empty or error): proceed without one.
+            PlanOutcome::Failed(detail) => {
+                return finish_turn(
+                    task,
+                    NativeTurnState::Failed,
+                    Some(detail),
+                    &messages,
+                    provider,
+                    &budget,
+                );
+            }
+            // Empty plan: proceed without one.
             PlanOutcome::Skip => {}
         }
     }
@@ -330,21 +485,45 @@ fn run_loop(
     }
     task.checkpoint_messages(&messages, provider.meter().snapshot());
 
-    interrupt.store(false, Ordering::SeqCst);
     crate::audit::ai_request("yolo", config.active_model(), input);
 
     for iteration in 0..config.aishe.max_yolo_iterations {
         if interrupt.load(Ordering::SeqCst) || executor.is_cancelled() {
             renderer.render(&AgentEvent::Aborted);
-            task.interrupted(&messages, provider.meter().snapshot());
-            return Ok(None);
+            return finish_turn(
+                task,
+                NativeTurnState::Cancelled,
+                Some("Interrupted by user.".into()),
+                &messages,
+                provider,
+                &budget,
+            );
         }
         // Stop before the next model call if the session budget is spent.
         if super::budget_reached(provider, config) {
             renderer.clear_status();
-            task.interrupted(&messages, provider.meter().snapshot());
-            return Ok(None);
+            return finish_turn(
+                task,
+                NativeTurnState::BudgetExhausted,
+                Some("Session cost budget is exhausted.".into()),
+                &messages,
+                provider,
+                &budget,
+            );
         }
+        if let Err(reason) = budget.admit_provider() {
+            renderer.clear_status();
+            return finish_turn(
+                task,
+                NativeTurnState::BudgetExhausted,
+                Some(reason),
+                &messages,
+                provider,
+                &budget,
+            );
+        }
+        task.checkpoint_execution(budget.counters());
+        task.ensure_persisted()?;
 
         // Stream the assistant's prose live when streaming is on; otherwise wait
         // for the whole turn. `streamed` tracks whether any text was printed.
@@ -362,12 +541,42 @@ fn run_loop(
         } else {
             provider.complete_with_tools(&system, &messages, &tools)
         };
+        record_provider_cost(&mut budget, provider, config, before);
+        task.checkpoint_execution(budget.counters());
         // A blocked provider call may finish after Ctrl-C. Never print its
         // result or admit a tool after that turn has been cancelled.
         if interrupt.load(Ordering::SeqCst) || executor.is_cancelled() {
             renderer.render(&AgentEvent::Aborted);
-            task.interrupted(&messages, provider.meter().snapshot());
-            return Ok(None);
+            return finish_turn(
+                task,
+                NativeTurnState::Cancelled,
+                Some("Interrupted by user.".into()),
+                &messages,
+                provider,
+                &budget,
+            );
+        }
+        if let Some(reason) = budget.exhausted() {
+            renderer.clear_status();
+            return finish_turn(
+                task,
+                NativeTurnState::BudgetExhausted,
+                Some(reason),
+                &messages,
+                provider,
+                &budget,
+            );
+        }
+        if super::budget_reached(provider, config) {
+            renderer.clear_status();
+            return finish_turn(
+                task,
+                NativeTurnState::BudgetExhausted,
+                Some("Session cost budget is exhausted.".into()),
+                &messages,
+                provider,
+                &budget,
+            );
         }
         let completion: Completion = match result {
             Ok(c) => c,
@@ -389,7 +598,14 @@ fn run_loop(
                     e.kind(),
                     &e.to_string(),
                 );
-                return Ok(None);
+                return finish_turn(
+                    task,
+                    NativeTurnState::Failed,
+                    Some(crate::providers::actionable_error(&e)),
+                    &messages,
+                    provider,
+                    &budget,
+                );
             }
         };
         let after = provider.meter().snapshot();
@@ -403,6 +619,30 @@ fn run_loop(
 
         // No tool calls → final answer.
         if completion.tool_calls.is_empty() {
+            if task.background_cancelled() {
+                return finish_turn(
+                    task,
+                    NativeTurnState::Cancelled,
+                    Some("Interrupted by user.".into()),
+                    &messages,
+                    provider,
+                    &budget,
+                );
+            }
+            if completion
+                .text
+                .as_deref()
+                .is_none_or(|text| text.trim().is_empty())
+            {
+                return finish_turn(
+                    task,
+                    NativeTurnState::Failed,
+                    Some("The provider returned neither a final answer nor any tool calls.".into()),
+                    &messages,
+                    provider,
+                    &budget,
+                );
+            }
             let final_text = completion.text.clone().unwrap_or_default();
             renderer.render(&AgentEvent::TextCompleted {
                 text: final_text.clone(),
@@ -416,8 +656,11 @@ fn run_loop(
                 text: completion.text.clone(),
                 tool_calls: Vec::new(),
             }));
-            task.completed(&messages, provider.meter().snapshot());
-            return Ok(completion.text);
+            let outcome = NativeTurnOutcome::completed(task.id(), completion.text);
+            task.checkpoint_execution(budget.counters());
+            task.finish_native(&outcome, &messages, provider.meter().snapshot());
+            task.ensure_persisted()?;
+            return Ok(outcome);
         }
 
         // Interim turn that emitted prose before its tool calls: end the line so
@@ -454,9 +697,38 @@ fn run_loop(
                     content: "Interrupted by user.".to_string(),
                 });
                 renderer.render(&AgentEvent::Aborted);
-                task.interrupted(&messages, provider.meter().snapshot());
-                return Ok(None);
+                return finish_turn(
+                    task,
+                    NativeTurnState::Cancelled,
+                    Some("Interrupted by user.".into()),
+                    &messages,
+                    provider,
+                    &budget,
+                );
             }
+            if let Err(reason) = budget.admit_tool(call) {
+                messages.push(Msg::ToolResult {
+                    call_id: call.id.clone(),
+                    content: format!("Not executed: {reason}."),
+                });
+                task.tool_completed(
+                    call,
+                    &format!("Not executed: {reason}."),
+                    &messages,
+                    provider.meter().snapshot(),
+                );
+                renderer.clear_status();
+                return finish_turn(
+                    task,
+                    NativeTurnState::BudgetExhausted,
+                    Some(reason),
+                    &messages,
+                    provider,
+                    &budget,
+                );
+            }
+            task.checkpoint_execution(budget.counters());
+            task.ensure_persisted()?;
             renderer.render(&AgentEvent::ToolStarted {
                 call: ToolCallView {
                     call_id: call.id.clone(),
@@ -465,6 +737,20 @@ fn run_loop(
                     title: String::new(),
                 },
             });
+
+            if !tools.iter().any(|tool| tool.name == call.name) {
+                let content = format!(
+                    "Error: tool '{}' was not offered for this turn and was not executed.",
+                    call.name
+                );
+                render_tool_result(renderer, &call.id, None, &content);
+                messages.push(Msg::ToolResult {
+                    call_id: call.id.clone(),
+                    content: content.clone(),
+                });
+                task.tool_completed(call, &content, &messages, provider.meter().snapshot());
+                continue;
+            }
 
             // Skill loading (progressive disclosure): return the skill body so
             // the model has its instructions in context, then continue.
@@ -530,6 +816,16 @@ fn run_loop(
 
             // MCP tools (namespaced mcp__server__tool) are proxied to the server.
             if crate::mcp::is_mcp_tool(&call.name) {
+                if !mcp_allowed {
+                    let content = "Error: opaque MCP calls are unavailable when workspace network access is denied.".to_string();
+                    render_tool_result(renderer, &call.id, None, &content);
+                    messages.push(Msg::ToolResult {
+                        call_id: call.id.clone(),
+                        content: content.clone(),
+                    });
+                    task.tool_completed(call, &content, &messages, provider.meter().snapshot());
+                    continue;
+                }
                 task.mark_pending_started();
                 let (label, content) = mcp.call(&call.name, &call.arguments);
                 render_tool_result(renderer, &call.id, None, &content);
@@ -639,7 +935,20 @@ fn run_loop(
                 let wrap = match scope {
                     crate::agent::ExecutionScope::Host => Ok(Vec::new()),
                     crate::agent::ExecutionScope::Workspace => {
-                        sandbox::agent_bwrap_argv(&workspace, executor.cwd(), network)
+                        #[cfg(target_os = "linux")]
+                        {
+                            sandbox::agent_bwrap_argv(&workspace, executor.cwd(), network)
+                        }
+                        #[cfg(not(target_os = "linux"))]
+                        {
+                            if let Some(reason) = sandbox::sandbox_refusal(&command) {
+                                Err(anyhow::anyhow!(reason))
+                            } else {
+                                // Native file tools still enforce the canonical
+                                // accepted root on policy-only platforms.
+                                Ok(Vec::new())
+                            }
+                        }
                     }
                 };
                 match wrap {
@@ -665,11 +974,22 @@ fn run_loop(
                 renderer.clear_status();
             }
             task.mark_pending_started();
-            let (code, output) = executor.run_captured(&command, DEFAULT_CAPTURE_TIMEOUT, verbose);
+            let (code, output) = executor.run_captured(
+                &command,
+                budget.command_timeout(DEFAULT_CAPTURE_TIMEOUT),
+                verbose,
+            );
+            task.checkpoint_cwd(executor.cwd());
             if interrupt.load(Ordering::SeqCst) || executor.is_cancelled() {
                 renderer.render(&AgentEvent::Aborted);
-                task.interrupted(&messages, provider.meter().snapshot());
-                return Ok(None);
+                return finish_turn(
+                    task,
+                    NativeTurnState::Cancelled,
+                    Some("Interrupted by user.".into()),
+                    &messages,
+                    provider,
+                    &budget,
+                );
             }
             render_tool_result(renderer, &call.id, Some(code), &output);
             crate::audit::action("yolo", &command, Some(code));
@@ -679,6 +999,29 @@ fn run_loop(
                 content: content.clone(),
             });
             task.tool_completed(call, &content, &messages, provider.meter().snapshot());
+        }
+
+        if interrupt.load(Ordering::SeqCst) || executor.is_cancelled() {
+            renderer.render(&AgentEvent::Aborted);
+            return finish_turn(
+                task,
+                NativeTurnState::Cancelled,
+                Some("Interrupted by user.".into()),
+                &messages,
+                provider,
+                &budget,
+            );
+        }
+        if let Some(reason) = budget.exhausted() {
+            renderer.clear_status();
+            return finish_turn(
+                task,
+                NativeTurnState::BudgetExhausted,
+                Some(reason),
+                &messages,
+                provider,
+                &budget,
+            );
         }
 
         if iteration + 1 == config.aishe.max_yolo_iterations {
@@ -694,8 +1037,17 @@ fn run_loop(
         }
     }
 
-    task.interrupted(&messages, provider.meter().snapshot());
-    Ok(None)
+    finish_turn(
+        task,
+        NativeTurnState::IterationLimit,
+        Some(format!(
+            "Reached the iteration limit ({}).",
+            config.aishe.max_yolo_iterations
+        )),
+        &messages,
+        provider,
+        &budget,
+    )
 }
 
 /// Continue a durable task from its last complete checkpoint. A pending tool is
@@ -710,7 +1062,7 @@ pub fn resume(
     interrupt: &AtomicBool,
     skills: &SkillRegistry,
     mcp: &McpRegistry,
-) -> Result<()> {
+) -> Result<NativeTurnOutcome> {
     if record.status == crate::tasks::Status::Completed {
         anyhow::bail!("task {} is already completed", record.id);
     }
@@ -736,6 +1088,16 @@ pub fn resume(
         record.messages.clone()
     };
     let mut task = crate::tasks::Active::resume(record);
+    task.set_usage_baseline(provider.meter().snapshot());
+    task.checkpoint_admission(executor);
+    if let Err(error) = task.ensure_persisted() {
+        return Ok(fail_internal(
+            &mut task,
+            provider,
+            interrupt.load(Ordering::SeqCst) || executor.is_cancelled(),
+            error,
+        ));
+    }
     if let Some(pending) = task.record().pending_tool.clone() {
         println!(
             "{}",
@@ -757,7 +1119,13 @@ pub fn resume(
         if !skip {
             task.interrupted(&messages, provider.meter().snapshot());
             println!("  resume cancelled; task remains interrupted");
-            return Ok(());
+            let outcome = NativeTurnOutcome::new(
+                task.id(),
+                NativeTurnState::Declined,
+                Some("Resume was declined; the pending tool was not repeated.".into()),
+            );
+            task.finish_native(&outcome, &messages, provider.meter().snapshot());
+            return Ok(outcome);
         }
         if let Some(result) = task.clear_pending_with_result(
             "Skipped on resume because the prior process may have started this tool. \
@@ -766,6 +1134,12 @@ pub fn resume(
             messages.push(result);
         }
     }
+    // A provider can return several calls in one turn. Cancellation or a
+    // budget can stop before later calls have even acquired a pending record.
+    // Resolve those unattempted calls explicitly rather than replaying them or
+    // sending an incomplete tool transcript to the provider on resume.
+    messages = resolve_unanswered_tools(&messages);
+    task.checkpoint_messages(&messages, provider.meter().snapshot());
     println!("  {}", format!("resuming task {}", task.id()).dim());
     let mut renderer = AgentRenderer::new(effective_density(config));
     let outcome = run_loop(
@@ -783,8 +1157,86 @@ pub fn resume(
     );
     renderer.clear_status();
     super::report_usage(provider, config);
-    outcome?;
-    Ok(())
+    Ok(match outcome {
+        Ok(outcome) => outcome,
+        Err(error) => fail_internal(
+            &mut task,
+            provider,
+            interrupt.load(Ordering::SeqCst) || executor.is_cancelled(),
+            error,
+        ),
+    })
+}
+
+fn fail_internal(
+    task: &mut crate::tasks::Active,
+    provider: &dyn Provider,
+    cancelled: bool,
+    error: anyhow::Error,
+) -> NativeTurnOutcome {
+    let cancelled = cancelled || task.background_cancelled();
+    let outcome = NativeTurnOutcome::new(
+        task.id(),
+        if cancelled {
+            NativeTurnState::Cancelled
+        } else {
+            NativeTurnState::Failed
+        },
+        Some(if cancelled {
+            "Interrupted by user.".into()
+        } else {
+            crate::redact::redact(&error.to_string())
+        }),
+    );
+    let messages = task.record().messages.clone();
+    task.finish_native(&outcome, &messages, provider.meter().snapshot());
+    eprintln!(
+        "aishe: {}",
+        outcome.detail.as_deref().unwrap_or("native turn failed")
+    );
+    outcome
+}
+
+fn record_provider_cost(
+    budget: &mut NativeBudget,
+    provider: &dyn Provider,
+    config: &Config,
+    before: crate::usage::Usage,
+) {
+    let after = provider.meter().snapshot();
+    if let Some(price) = crate::usage::budget_price_for(config.active_model(), &config.pricing) {
+        budget.record_cost(crate::usage::cost(
+            crate::usage::Usage {
+                input: after.input.saturating_sub(before.input),
+                output: after.output.saturating_sub(before.output),
+                requests: after.requests.saturating_sub(before.requests),
+            },
+            price,
+        ));
+    }
+}
+
+fn finish_turn(
+    task: &mut crate::tasks::Active,
+    state: NativeTurnState,
+    detail: Option<String>,
+    messages: &[Msg],
+    provider: &dyn Provider,
+    budget: &NativeBudget,
+) -> Result<NativeTurnOutcome> {
+    let (state, detail) = if task.background_cancelled() {
+        (
+            NativeTurnState::Cancelled,
+            Some("Interrupted by user.".into()),
+        )
+    } else {
+        (state, detail)
+    };
+    let outcome = NativeTurnOutcome::new(task.id(), state, detail);
+    task.checkpoint_execution(budget.counters());
+    task.finish_native(&outcome, messages, provider.meter().snapshot());
+    task.ensure_persisted()?;
+    Ok(outcome)
 }
 
 fn canonical_messages(messages: &[Msg]) -> Vec<Msg> {
@@ -795,6 +1247,36 @@ fn canonical_messages(messages: &[Msg]) -> Vec<Msg> {
             other => other.clone(),
         })
         .collect()
+}
+
+fn resolve_unanswered_tools(messages: &[Msg]) -> Vec<Msg> {
+    let mut result = Vec::new();
+    let mut pending = Vec::<String>::new();
+    for message in messages {
+        if !matches!(message, Msg::ToolResult { .. }) {
+            for call_id in pending.drain(..) {
+                result.push(Msg::ToolResult {
+                    call_id,
+                    content: "Not executed before the previous turn stopped. Inspect current state before proposing further work.".into(),
+                });
+            }
+        }
+        match message {
+            Msg::Assistant(assistant) | Msg::ProviderItems { assistant, .. } => {
+                pending.extend(assistant.tool_calls.iter().map(|call| call.id.clone()));
+            }
+            Msg::ToolResult { call_id, .. } => pending.retain(|id| id != call_id),
+            Msg::User(_) => {}
+        }
+        result.push(message.clone());
+    }
+    for call_id in pending {
+        result.push(Msg::ToolResult {
+            call_id,
+            content: "Not executed before the previous turn stopped. Inspect current state before proposing further work.".into(),
+        });
+    }
+    result
 }
 
 fn effective_density(config: &Config) -> &str {
@@ -862,6 +1344,7 @@ enum PlanOutcome {
     Approved(String),
     /// The user declined; abort the run.
     Declined,
+    Failed(String),
     /// No usable plan (empty or the planning call failed); run without one.
     Skip,
 }
@@ -891,7 +1374,7 @@ fn plan_first(input: &str, ctx: &str, provider: &dyn Provider, config: &Config) 
                 )
                 .red()
             );
-            return PlanOutcome::Skip;
+            return PlanOutcome::Failed(crate::providers::actionable_error(&e));
         }
     };
     let after = provider.meter().snapshot();

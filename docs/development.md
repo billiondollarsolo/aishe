@@ -29,9 +29,19 @@ provider latency and real-world speedups depend on the endpoint and history.
     `tests/mcp.rs`, `tests/mcp_http.rs`: Rust integration tests.
   - `tests/pty_scenarios.py`, `tests/pty_fuzz.py`, `tests/zsh_features.py`,
     `tests/pty_signals.py`: deterministic pseudo-terminal suites for the zsh-PTY
-    front-end, driven by a fake provider (no key). `pty_signals.py` covers
-    Ctrl-C / Ctrl-Z / window resize / multi-line continuation; the fuzz and
-    feature suites write Markdown reports under `test-results/`.
+    front-end, driven by a fake provider (no key). The feature and signal suites
+    select `--profile clean`, `personal`, or `legacy` explicitly. Signal tests
+    check child effects, job control, paste, editing, resize, and terminal-state
+    restoration; the feature suites write reports under `test-results/`.
+  - `tests/native_runtime.rs`: provider errors, cancellation, effect reservations,
+    cumulative resume limits, unresolved tool batches, and admission boundaries
+    against controlled providers and a local HTTP endpoint.
+  - `tests/native_background_lifecycle.py`: public detached-task CLI, truthful
+    failures, cancellation of tool process groups, checkpoint continuation, saved
+    provider identity, cumulative budgets, and revisioned rework.
+  - `tests/native_zsh_profile_pty.py` and `tests/live_shell_state_pty.py`: personal
+    startup files, prompt and widget preservation, completion caching, and live
+    exports/PATH/virtual environments/unsets reaching native agent commands.
   - `tests/setup_pty.py`, `tests/statusline_pty.py`, and
     `tests/model_picker_pty.py`, and `tests/durable_task_resume.py`: real-PTY setup/settings transactions,
     native right-prompt/off live status, and kill/resume without duplicate tool
@@ -122,6 +132,26 @@ credential-isolation, tmux, and screen gates. `release` records non-applicable
 platform gates explicitly. `paid-live` makes every credentialed gate required;
 a missing credential yields `incomplete`, never pass. The individual commands
 below remain useful for focused development and diagnosis.
+
+Each gate supplies its own native clean, native personal, or legacy environment;
+the caller's shell mode cannot silently change what it qualifies. Required
+scripts that print `SKIP` produce incomplete evidence even when they return zero.
+CI uses `tests/require_gate.py` to fail those skipped required checks. Native
+terminal jobs run without installing OpenCode; legacy and managed-runtime jobs
+install and verify the pinned runtime separately.
+
+For focused native checks after a build:
+
+```sh
+cargo test --test native_runtime --locked
+python3 tests/native_background_lifecycle.py target/debug/aishe
+python3 tests/live_shell_state_pty.py target/debug/aishe
+python3 tests/native_zsh_profile_pty.py target/debug/aishe
+python3 tests/zsh_features.py target/debug/aishe --profile clean
+python3 tests/zsh_features.py target/debug/aishe --profile personal
+python3 tests/pty_signals.py target/debug/aishe --profile clean
+python3 tests/pty_signals.py target/debug/aishe --profile personal
+```
 
 `tests/admin_validation.py` is a repeatable harness that exercises a large
 surface area and writes a timestamped Markdown report under `test-results/`. It

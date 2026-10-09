@@ -194,6 +194,9 @@ pub struct Executor {
     /// Cooperative cancellation for foreground agent commands. Ordinary shell
     /// execution leaves this unset.
     cancel: Option<Arc<AtomicBool>>,
+    /// The parent PTY pump owns stdin during live-shell IPC turns. Admission
+    /// must not try to read a second prompt from that already-owned terminal.
+    terminal_input_owned_elsewhere: bool,
     /// Skip user rc / `.aishrc`. Lean agent `run_command` uses `dash -c` or
     /// `zsh -f -c`.
     norc: bool,
@@ -210,6 +213,10 @@ impl Executor {
     /// Construct an executor, locating a backing shell. Errors if neither zsh
     /// nor bash is on `$PATH`.
     pub fn new() -> Result<Self> {
+        Self::new_with_session_rc(true)
+    }
+
+    fn new_with_session_rc(source_user_rc: bool) -> Result<Self> {
         let shell = which("zsh")
             .or_else(|| which("bash"))
             .ok_or_else(|| anyhow!("neither zsh nor bash found on $PATH"))?;
@@ -226,12 +233,13 @@ impl Executor {
             cdpath: Vec::new(),
             named_dirs: HashMap::new(),
             history: VecDeque::with_capacity(10),
-            session_rc: init_session_rc().ok(),
+            session_rc: source_user_rc.then(init_session_rc).and_then(Result::ok),
             dir_stack: Vec::new(),
             jobs: Vec::new(),
             history_log: None,
             sandbox_wrap: Vec::new(),
             cancel: None,
+            terminal_input_owned_elsewhere: false,
             norc: false,
             lean_scope: None,
         })
@@ -241,28 +249,70 @@ impl Executor {
     /// It does not source user `.aishrc` files and removes credential-shaped
     /// environment variables before any model-requested process is started.
     pub fn new_agent(cwd: &Path, denied_environment: &HashSet<String>) -> Result<Self> {
-        let mut executor = Self::new()?;
-        executor.session_rc = None;
+        let mut executor = Self::new_with_session_rc(false)?;
         executor.set_cwd(
             cwd.canonicalize()
                 .map_err(|error| anyhow!("invalid agent cwd {}: {error}", cwd.display()))?,
         );
-        executor
-            .env
-            .retain(|name, _| agent_environment_allowed(name, denied_environment));
+        executor.restrict_agent_environment(denied_environment);
         if crate::lean::enabled() {
             executor.prefer_posix_capture();
         }
         Ok(executor)
     }
 
+    /// Replace the command environment with a complete live-shell snapshot.
+    /// This is a replacement rather than an overlay: an `unset` in the shell
+    /// must remove a variable from the next agent command as well. Credentials
+    /// and AIShe controls are excluded even if a forged snapshot includes them.
+    /// Values stay local to execution and are never model context or task data.
+    pub fn replace_agent_environment(
+        &mut self,
+        mut environment: HashMap<String, String>,
+        denied_environment: &HashSet<String>,
+    ) {
+        environment.retain(|name, _| agent_environment_allowed(name, denied_environment));
+        self.env = environment;
+        self.clear_session_rc();
+        self.norc = true;
+    }
+
+    /// Apply the same restricted environment boundary to a standalone turn or
+    /// an existing live-shell executor without replacing its non-secret state.
+    pub fn restrict_agent_environment(&mut self, denied_environment: &HashSet<String>) {
+        self.env
+            .retain(|name, _| agent_environment_allowed(name, denied_environment));
+        self.clear_session_rc();
+        self.norc = true;
+    }
+
+    /// Read one execution-state field for local admission checks. This does
+    /// not expose a serializable snapshot to tasks, audit, or model context.
+    pub(crate) fn execution_environment(&self, name: &str) -> Option<&str> {
+        self.env.get(name).map(String::as_str)
+    }
+
+    pub fn set_terminal_input_owned_elsewhere(&mut self, owned_elsewhere: bool) {
+        self.terminal_input_owned_elsewhere = owned_elsewhere;
+    }
+
+    pub(crate) fn terminal_input_owned_elsewhere(&self) -> bool {
+        self.terminal_input_owned_elsewhere
+    }
+
     /// Prefer `dash -c` (fallback `zsh -f -c`) and never source user rc. Used
     /// for model-proposed `run_command` on the lean hot path.
     pub fn prefer_posix_capture(&mut self) {
-        self.session_rc = None;
+        self.clear_session_rc();
         self.norc = true;
         if let Some(dash) = which("dash") {
             self.shell = dash;
+        }
+    }
+
+    fn clear_session_rc(&mut self) {
+        if let Some(path) = self.session_rc.take() {
+            let _ = std::fs::remove_file(path);
         }
     }
 
@@ -270,6 +320,25 @@ impl Executor {
     /// the shell in [`run_captured`]. Used by the yolo loop's `bwrap` backend.
     pub fn set_sandbox_wrap(&mut self, wrap: Vec<String>) {
         self.sandbox_wrap = wrap;
+    }
+
+    /// Resolve an isolation wrapper in the parent runtime environment, never
+    /// in the model command's live PATH. Activating a venv may select different
+    /// tools, but must not select a different sandbox than the admitted one.
+    fn sandbox_program(&self) -> Result<Option<PathBuf>> {
+        self.sandbox_wrap
+            .first()
+            .map(|program| {
+                let path = Path::new(program);
+                if path.is_absolute() {
+                    Ok(path.to_path_buf())
+                } else {
+                    which(program)
+                        .and_then(|path| path.canonicalize().ok())
+                        .ok_or_else(|| anyhow!("sandbox executable is unavailable"))
+                }
+            })
+            .transpose()
     }
 
     pub fn set_lean_scope(
@@ -301,6 +370,8 @@ impl Executor {
         self.cancel
             .as_ref()
             .is_some_and(|cancel| cancel.load(Ordering::SeqCst))
+            || (self.lean_scope.is_some()
+                && crate::agent::controller::INTERRUPTED.load(Ordering::SeqCst))
     }
 
     /// Point the `history` builtin at the timestamped history log.
@@ -454,7 +525,7 @@ impl Executor {
     pub fn run(&mut self, line: &str) -> i32 {
         // IPC owns terminal input. Its commands need cancellable process-group
         // capture rather than a blocking child status wait.
-        if self.cancel.is_some() {
+        if self.cancel.is_some() || self.lean_scope.is_some() {
             return self.run_captured(line, DEFAULT_CAPTURE_TIMEOUT, true).0;
         }
         let mut cmd = Command::new(&self.shell);
@@ -500,13 +571,20 @@ impl Executor {
         }
         // With a sandbox wrapper set, run `<wrapper…> -- <shell> -c <cmd>` so the
         // command executes inside the sandbox; otherwise just `<shell> -c <cmd>`.
-        let mut cmd = if self.sandbox_wrap.is_empty() {
-            Command::new(&self.shell)
-        } else {
-            let mut c = Command::new(&self.sandbox_wrap[0]);
+        let sandbox_program = match self.sandbox_program() {
+            Ok(program) => program,
+            Err(_) => {
+                self.record(line, 126);
+                return (126, "[aishe: sandbox executable is unavailable]".into());
+            }
+        };
+        let mut cmd = if let Some(program) = sandbox_program {
+            let mut c = Command::new(program);
             c.args(&self.sandbox_wrap[1..]);
             c.arg(&self.shell);
             c
+        } else {
+            Command::new(&self.shell)
         };
         // Start from the executor's explicit snapshot so credentials removed by
         // `new_agent` cannot leak back in through `Command` inheritance.
@@ -556,11 +634,7 @@ impl Executor {
             match child.try_wait() {
                 Ok(Some(status)) => break exit_code(&status),
                 Ok(None) => {
-                    if self
-                        .cancel
-                        .as_ref()
-                        .is_some_and(|cancel| cancel.load(Ordering::SeqCst))
-                    {
+                    if self.is_cancelled() {
                         kill_process_group(pgid);
                         let _ = child.wait();
                         cancelled = true;
@@ -635,14 +709,24 @@ impl Executor {
             }
         };
 
-        let mut command = if self.sandbox_wrap.is_empty() {
-            CommandBuilder::new(&self.shell)
-        } else {
-            let mut command = CommandBuilder::new(&self.sandbox_wrap[0]);
+        let sandbox_program = match self.sandbox_program() {
+            Ok(program) => program,
+            Err(_) => {
+                self.record(line, 126);
+                return (126, "[aishe: sandbox executable is unavailable]".into());
+            }
+        };
+        let mut command = if let Some(program) = sandbox_program {
+            let mut command = CommandBuilder::new(program);
             command.args(&self.sandbox_wrap[1..]);
             command.arg(&self.shell);
             command
+        } else {
+            CommandBuilder::new(&self.shell)
         };
+        if self.norc && self.shell.file_name().is_some_and(|name| name == "zsh") {
+            command.arg("-f");
+        }
         command.arg("-c");
         command.arg(line);
         command.env_clear();
@@ -733,11 +817,7 @@ impl Executor {
                 Ok(None) => {}
                 Err(_) => break 1,
             }
-            if self
-                .cancel
-                .as_ref()
-                .is_some_and(|cancel| cancel.load(Ordering::SeqCst))
-            {
+            if self.is_cancelled() {
                 if let Some(pgid) = pgid {
                     kill_process_group(pgid);
                 }
@@ -1516,11 +1596,17 @@ fn strip_quotes(v: &str) -> String {
     }
 }
 
-fn agent_environment_allowed(name: &str, denied_environment: &HashSet<String>) -> bool {
+pub(crate) fn agent_environment_allowed(name: &str, denied_environment: &HashSet<String>) -> bool {
     let upper = name.to_ascii_uppercase();
     if denied_environment.contains(&upper)
         || upper.starts_with("AISHE_")
+        || upper.starts_with("_AISHE_")
         || upper.starts_with("OPENCODE_")
+        // Loader/startup code can execute before an isolation wrapper enters
+        // its namespace, so live shell state must not inject it into agents.
+        || upper.starts_with("LD_")
+        || upper.starts_with("DYLD_")
+        || matches!(upper.as_str(), "ENV" | "BASH_ENV" | "SHELLOPTS" | "BASHOPTS" | "ZDOTDIR")
     {
         return false;
     }
@@ -1545,11 +1631,53 @@ fn agent_environment_allowed(name: &str, denied_environment: &HashSet<String>) -
         )
 }
 
+/// Environment names that belong to configured provider/MCP authentication.
+/// Some credentials have names without a recognizable secret marker, so the
+/// live-shell bridge and every restricted executor must use configuration too.
+pub fn sensitive_environment_names(config: &crate::config::Config) -> HashSet<String> {
+    let mut names: HashSet<String> = [
+        config.providers.openai.api_key_env.as_str(),
+        config.providers.anthropic.api_key_env.as_str(),
+        "AISHE_PROVIDER_API_KEY",
+        "AISHE_BRIDGE_TOKEN",
+        "OPENCODE_SERVER_PASSWORD",
+    ]
+    .into_iter()
+    .filter(|name| !name.is_empty())
+    .map(|name| name.to_ascii_uppercase())
+    .collect();
+    for connection in config.connections.values() {
+        if !connection.settings.api_key_env.is_empty() {
+            names.insert(connection.settings.api_key_env.to_ascii_uppercase());
+        }
+        if let crate::config::ConnectionAuth::ApiKey {
+            api_key_env: Some(name),
+            ..
+        } = &connection.auth
+        {
+            names.insert(name.to_ascii_uppercase());
+        }
+    }
+    for server in config.mcp_servers.values() {
+        for reference in server.env.values().chain(server.headers.values()) {
+            if let Some(name) = reference.strip_prefix("env:") {
+                names.insert(name.to_ascii_uppercase());
+            }
+        }
+    }
+    names
+}
+
 /// Create the per-session rc file that every delegated command sources. It
 /// begins by loading the user's `~/.aishrc` and `~/.config/aishe/aishrc` (if
 /// present); interactively-defined aliases/options are appended later.
 fn init_session_rc() -> std::io::Result<PathBuf> {
-    let path = std::env::temp_dir().join(format!("aishe-session-{}.zsh", std::process::id()));
+    use std::os::unix::fs::OpenOptionsExt;
+    let path = std::env::temp_dir().join(format!(
+        "aishe-session-{}-{:016x}.zsh",
+        std::process::id(),
+        rand::random::<u64>()
+    ));
     // Ensure aliases expand in the non-interactive `-c` shell (bash needs the
     // shopt; zsh has it on by default). Each line is harmless in the other shell.
     let mut content = String::from(
@@ -1565,7 +1693,13 @@ fn init_session_rc() -> std::io::Result<PathBuf> {
         let p = single_quote(&cfg.join("aishe").join("aishrc"));
         content.push_str(&format!("[ -f {p} ] && source {p}\n"));
     }
-    std::fs::write(&path, content)?;
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
+        .open(&path)?;
+    file.write_all(content.as_bytes())?;
     Ok(path)
 }
 
@@ -1692,11 +1826,8 @@ mod tests {
             .env
             .insert("AISHE_BRIDGE_URL".into(), "should-not-survive".into());
         executor.env.insert("LANG".into(), "C.UTF-8".into());
-        executor.session_rc = None;
         let denied = ["CONTRACT_PROVIDER_KEY".to_string()].into_iter().collect();
-        executor
-            .env
-            .retain(|name, _| agent_environment_allowed(name, &denied));
+        executor.restrict_agent_environment(&denied);
         assert!(!executor.env.contains_key("OPENAI_API_KEY"));
         assert!(!executor.env.contains_key("AWS_SECRET_ACCESS_KEY"));
         assert!(!executor.env.contains_key("CONTRACT_PROVIDER_KEY"));
@@ -1706,6 +1837,262 @@ mod tests {
             Some("C.UTF-8")
         );
         assert!(executor.session_rc.is_none());
+    }
+
+    #[test]
+    fn restricting_one_executor_does_not_remove_another_executors_private_rc() {
+        use std::os::unix::fs::MetadataExt;
+        let mut first = Executor::new().unwrap();
+        let second = Executor::new().unwrap();
+        let first_rc = first.session_rc.clone().unwrap();
+        let second_rc = second.session_rc.clone().unwrap();
+        assert_ne!(first_rc, second_rc);
+        assert_eq!(std::fs::metadata(&first_rc).unwrap().mode() & 0o777, 0o600);
+        first.restrict_agent_environment(&HashSet::new());
+        assert!(!first_rc.exists());
+        assert!(second_rc.exists());
+    }
+
+    #[test]
+    fn live_environment_replacement_propagates_unset_and_cannot_change_authority() {
+        let cwd = std::env::current_dir().unwrap().canonicalize().unwrap();
+        let mut executor = Executor::new_agent(&cwd, &HashSet::new()).unwrap();
+        executor.set_lean_scope(Some((
+            crate::agent::ExecutionScope::Workspace,
+            cwd.clone(),
+            crate::agent::NetworkPolicy::Deny,
+        )));
+        let first = HashMap::from([
+            ("PATH".into(), "/first/bin:/usr/bin:/bin".into()),
+            ("VIRTUAL_ENV".into(), "/first".into()),
+            ("LIVE_REMOVED".into(), "present".into()),
+        ]);
+        executor.replace_agent_environment(first, &HashSet::new());
+        let second = HashMap::from([
+            ("PATH".into(), "/second/bin:/usr/bin:/bin".into()),
+            ("AISHE_SCOPE".into(), "host".into()),
+            ("AISHE_GRANT".into(), "agent-host".into()),
+            ("OPENCODE_SERVER_PASSWORD".into(), "private".into()),
+            ("CUSTOM_LOGIN".into(), "private".into()),
+        ]);
+        executor.replace_agent_environment(second, &HashSet::from(["CUSTOM_LOGIN".into()]));
+        let (code, output) = executor.run_captured(
+            "printf '%s\\n' \"${PATH}\" \"${VIRTUAL_ENV-unset}\" \"${LIVE_REMOVED-unset}\" \"${AISHE_GRANT-unset}\" \"${OPENCODE_SERVER_PASSWORD-unset}\" \"${CUSTOM_LOGIN-unset}\"",
+            Duration::from_secs(2),
+            false,
+        );
+        assert_eq!(code, 0, "{output}");
+        assert_eq!(
+            output.trim(),
+            "/second/bin:/usr/bin:/bin\nunset\nunset\nunset\nunset\nunset"
+        );
+        assert_eq!(executor.cwd(), &cwd);
+        assert_eq!(
+            executor.lean_scope().unwrap().0,
+            crate::agent::ExecutionScope::Workspace
+        );
+        assert_eq!(
+            executor.lean_scope().unwrap().2,
+            crate::agent::NetworkPolicy::Deny
+        );
+    }
+
+    #[test]
+    fn live_path_executes_the_current_virtual_environment_program() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = std::env::temp_dir().join(format!("aishe-live-path-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir(&root).unwrap();
+        let executable = root.join("aishe-live-path-probe");
+        std::fs::write(
+            &executable,
+            "#!/bin/sh\nprintf 'VENV=%s\\n' \"$VIRTUAL_ENV\"\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let mut executor = Executor::new_agent(&root, &HashSet::new()).unwrap();
+        executor.replace_agent_environment(
+            HashMap::from([
+                ("PATH".into(), root.display().to_string()),
+                ("VIRTUAL_ENV".into(), root.display().to_string()),
+            ]),
+            &HashSet::new(),
+        );
+        let (code, output) =
+            executor.run_captured("aishe-live-path-probe", Duration::from_secs(2), false);
+        assert_eq!(code, 0, "{output}");
+        assert_eq!(output.trim(), format!("VENV={}", root.display()));
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn live_path_cannot_reselect_the_isolation_wrapper() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = std::env::temp_dir().join(format!("aishe-wrapper-path-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir(&root).unwrap();
+        let marker = root.join("wrong-wrapper-ran");
+        let fake_wrapper = root.join("env");
+        std::fs::write(
+            &fake_wrapper,
+            format!(
+                "#!/bin/sh\nprintf wrong > {}\nexit 0\n",
+                single_quote(&marker)
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&fake_wrapper, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let mut executor = Executor::new_agent(&root, &HashSet::new()).unwrap();
+        executor.set_sandbox_wrap(vec!["env".into()]);
+        executor.replace_agent_environment(
+            HashMap::from([("PATH".into(), root.display().to_string())]),
+            &HashSet::new(),
+        );
+        let (code, output) = executor.run_captured("printf proper", Duration::from_secs(2), false);
+        assert_eq!(code, 0, "{output}");
+        assert_eq!(output.trim(), "proper");
+        assert!(!marker.exists(), "live PATH changed the isolation wrapper");
+        executor.set_sandbox_wrap(vec!["aishe-wrapper-only-present-in-live-path".into()]);
+        std::fs::copy(
+            &fake_wrapper,
+            root.join("aishe-wrapper-only-present-in-live-path"),
+        )
+        .unwrap();
+        let (code, _) = executor.run_captured("printf rejected", Duration::from_secs(2), false);
+        assert_eq!(code, 126);
+        assert!(
+            !marker.exists(),
+            "unavailable trusted wrapper fell back to the live PATH"
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn restricted_interactive_zsh_does_not_replay_user_startup_code() {
+        let Some(zsh) = which("zsh") else {
+            return;
+        };
+        let root = std::env::temp_dir().join(format!("aishe-no-agent-rc-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir(&root).unwrap();
+        let marker = root.join("user-startup-ran");
+        std::fs::write(
+            root.join(".zshenv"),
+            format!("print wrong > {}\n", single_quote(&marker)),
+        )
+        .unwrap();
+        let mut executor = Executor::new_agent(&root, &HashSet::new()).unwrap();
+        executor.shell = zsh;
+        executor.replace_agent_environment(
+            HashMap::from([("HOME".into(), root.display().to_string())]),
+            &HashSet::new(),
+        );
+        let (code, output) =
+            executor.run_interactive_captured("printf agent-safe", Duration::from_secs(2), false);
+        assert_eq!(code, 0, "{output}");
+        assert_eq!(output.trim(), "agent-safe");
+        assert!(!marker.exists(), "agent replayed user zsh startup code");
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn native_interrupt_cancels_and_reaps_the_whole_command_group() {
+        // Isolate the process-global signal flag from concurrently running
+        // tests. The child executes this same one test with no cancel Arc.
+        const CHILD_FLAG: &str = "AISHE_TEST_NATIVE_INTERRUPT_CHILD";
+        if std::env::var_os(CHILD_FLAG).is_none() {
+            let output = Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "executor::tests::native_interrupt_cancels_and_reaps_the_whole_command_group",
+                    "--nocapture",
+                ])
+                .env(CHILD_FLAG, "1")
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stdout)
+            );
+            return;
+        }
+        crate::agent::controller::INTERRUPTED.store(false, Ordering::SeqCst);
+        let root = std::env::temp_dir().join(format!(
+            "aishe-native-cancel-{:016x}",
+            rand::random::<u64>()
+        ));
+        std::fs::create_dir(&root).unwrap();
+        let marker = root.join("orphan-finished");
+        let mut executor = Executor::new_agent(&root, &HashSet::new()).unwrap();
+        executor.set_lean_scope(Some((
+            crate::agent::ExecutionScope::Host,
+            root.clone(),
+            crate::agent::NetworkPolicy::Allow,
+        )));
+        assert!(executor.cancel.is_none());
+        let interrupt = std::thread::spawn(|| {
+            std::thread::sleep(Duration::from_millis(100));
+            crate::agent::controller::INTERRUPTED.store(true, Ordering::SeqCst);
+        });
+        let started = Instant::now();
+        let command = format!(
+            "(sleep 1; printf orphan > {}) & sleep 5",
+            single_quote(&marker)
+        );
+        assert_eq!(executor.run(&command), 130);
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "native cancellation waited for command timeout"
+        );
+        interrupt.join().unwrap();
+        std::thread::sleep(Duration::from_millis(1200));
+        assert!(
+            !marker.exists(),
+            "a descendant survived native cancellation"
+        );
+        crate::agent::controller::INTERRUPTED.store(false, Ordering::SeqCst);
+        let ordinary = Executor::new().unwrap();
+        crate::agent::controller::INTERRUPTED.store(true, Ordering::SeqCst);
+        assert!(
+            !ordinary.is_cancelled(),
+            "native cancellation changed ordinary shell execution"
+        );
+        crate::agent::controller::INTERRUPTED.store(false, Ordering::SeqCst);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn configured_credential_names_are_filtered_even_without_secret_markers() {
+        let mut config = crate::config::Config::default();
+        config.providers.anthropic.api_key_env = "CUSTOM_LOGIN".into();
+        config.connections.insert(
+            "private".into(),
+            crate::config::ConnectionConfig {
+                provider: "anthropic".into(),
+                label: "Private".into(),
+                settings: config.providers.anthropic.clone(),
+                auth: crate::config::ConnectionAuth::ApiKey {
+                    credential: None,
+                    api_key_env: Some("CUSTOM_ACCESS".into()),
+                },
+                reasoning_effort: None,
+            },
+        );
+        let denied = sensitive_environment_names(&config);
+        assert!(denied.contains("CUSTOM_LOGIN"));
+        assert!(denied.contains("CUSTOM_ACCESS"));
+        assert!(!agent_environment_allowed("CUSTOM_ACCESS", &denied));
+        assert!(!agent_environment_allowed("AISHE_SCOPE", &denied));
+        assert!(!agent_environment_allowed(
+            "_AISHE_AGENT_HOST_GRANTED",
+            &denied
+        ));
+        assert!(!agent_environment_allowed("LD_PRELOAD", &denied));
+        assert!(!agent_environment_allowed("DYLD_INSERT_LIBRARIES", &denied));
+        assert!(!agent_environment_allowed("BASH_ENV", &denied));
+        assert!(agent_environment_allowed("VIRTUAL_ENV", &denied));
+        assert!(agent_environment_allowed("PATH", &denied));
     }
 
     #[test]

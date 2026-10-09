@@ -12,9 +12,11 @@ line. The CLI package name is `aishe`.
 > prefer workspace scope and Linux isolation for untrusted work, read
 > [the safety model](docs/safety.md), and keep backups.
 
-AIShe runs an actual interactive zsh with an isolated, lightweight configuration.
-Native completion, job control, history, and ordinary commands stay in zsh.
-Optional aliases live in `~/.aishe/leanrc` or `$AISHE_LEANRC`. Input that is not a
+AIShe runs an actual interactive zsh. The default `clean` profile uses an
+isolated, lightweight configuration; `AISHE_ZSH_PROFILE=personal aishe` loads
+your zsh configuration and plugins with the same native agent. Completion, job
+control, history, and ordinary commands stay in zsh. Optional native startup
+files are `~/.aishe/leanrc` and `~/.aishe/leanrc.post`. Input that is not a
 command becomes a plain-English request to the AI.
 
 The default agent uses pooled native provider connections and keeps the model,
@@ -41,6 +43,7 @@ curl -fsSL https://raw.githubusercontent.com/billiondollarsolo/aishe/main/instal
 
 # 2. Use it — no shell hook required
 aishe                                      # real zsh with aishe active
+AISHE_ZSH_PROFILE=personal aishe            # your zsh settings, native agent
 aishe -c "turn the logs directory into a tarball"
 aishe suggest --json "list files by size" | jq -r .command
 
@@ -56,7 +59,7 @@ echo 'eval "$(aishe init zsh)"' >> ~/.zshrc   # or: aishe init bash
 | Switch account / model | **`/connection`** · **`/model`** (model is *this account only*) |
 | Cycle mode | **Shift-Tab** on empty input → ask `❯` · allow `»` · agent `*` |
 | **Force English to the AI** | Start with **`?`** — e.g. `? install kubectl please` |
-| Force raw shell | Start with **`!`** (bypasses the safety gate) |
+| Force raw shell | Start with **`! command`** (bypasses the safety gate; `!!` keeps zsh history expansion) |
 
 **Common trap:** lines whose **first word is a real binary** run as shell — even
 if the rest is English. `install` is `/usr/bin/install` on every Mac/Linux box,
@@ -75,11 +78,18 @@ Full routing, Option/Alt+Return, and Mac terminal Meta settings:
 ## Features
 
 - **Your real zsh, with a fast default.** Ordinary commands stay in the child
-  shell. A bounded prompt shows mode and execution scope; optional leanrc aliases
-  and native completion stay available. The explicit legacy integration loads
-  the user's full zsh configuration.
+  shell. Choose the clean profile or opt into your personal zsh configuration
+  without changing agent engines. Existing Enter/Tab widgets are chained;
+  personal prompts and custom shortcuts are preserved. Early and late native
+  startup files support further customization.
 - **A native agent in the shell.** Provider connections are reused across turns;
   skills and local commands load when needed, and MCP connects only when asked.
+  Foreground, CLI, and background tasks share native admission, effect budgets,
+  cancellation, and explicit completion or stop outcomes.
+- **The live working environment.** Agent commands use current exported
+  variables, `PATH`, virtual environments, and unsets from the interactive shell.
+  Credentials and startup controls are filtered; aliases and functions remain
+  in zsh rather than being replayed into the agent's command shell.
 - **Clean setup and settings.** Setup connects an account, chooses behavior,
   and reviews the result. Settings shows current values and unsaved changes;
   grouped review and transactional saves keep edits predictable.
@@ -115,8 +125,10 @@ Full routing, Option/Alt+Return, and Mac terminal Meta settings:
   with descriptions and fills the line for review. Arguments and file completion
   keep their native behavior; selecting a command does not execute it.
 - **Isolated background agents.** `aishe task start '…'` runs long work in a
-  detached git worktree with finite time/tool/network/change budgets, durable
-  state, cancellation/resume, numbered hunk review, and three-way apply.
+  detached git worktree with finite time, provider/tool dispatch, and change
+  limits, durable state, cancellation/resume, numbered hunk review, and three-way
+  apply. Network-call limits count recognized network tools and MCP calls, not
+  every request made inside a subprocess.
 - **Explicit context and automation.** Agent-only `@file`, `@dir`, `@diff`, and
   `@clipboard` attachments are bounded; `aishe index` searches tracked code
   locally; `aishe ask --json|--schema` produces validated machine output.
@@ -125,7 +137,9 @@ Full routing, Option/Alt+Return, and Mac terminal Meta settings:
   visible. `aishe usage` inspects the content-free saved ledger without enabling
   the audit log.
 - **Durable AI tasks.** Checkpointed agent sessions; `aishe sessions` /
-  `aishe resume` recover interrupted work without blind re-execution.
+  `aishe resume` recover interrupted work without blind re-execution. Saved
+  connection, model, scope, network, workspace root, and effect limits carry
+  forward; current organization policy can further restrict them.
 - **Private by default.** API keys in a mode-`0600` credentials file; OAuth in
   profile-isolated OpenCode HOME/XDG roots. Neither leaks into config, status,
   or audit identity fields.
@@ -205,12 +219,14 @@ install the optional hook). Walkthrough:
 
 | Mode      | Glyph | Behavior |
 |-----------|:-----:|----------|
-| `suggest` |  `❯`  | Default. Model answers or proposes a command; no agent tools. You review before anything runs. |
-| `auto`    |  `»`  | Approval-gated agent. Safe actions run; risky or unresolved actions stop for confirmation. |
-| `yolo`    |  `*`  | Autonomous loop after one scope grant per shell. Tools, results, iteration until done. |
+| `ask`     |  `❯`  | Default. Model answers or proposes a command; no agent tools. You review before anything runs. |
+| `allow`   |  `»`  | Safe suggestions run after a shell grant; risky or unresolved actions stop for confirmation. |
+| `agent`   |  `*`  | Autonomous loop after a scope grant per shell. Tools, results, and explicit completion or stop outcomes. |
+
+Legacy aliases `suggest`, `auto`, and `yolo` remain supported.
 
 Input prefixes: **`?…` force NL** (prefer this over Option/Alt+Return on Mac) ·
-`!…` force shell (bypass safety gate) · bare `?` after a failed command asks for
+`! command` force shell (bypass safety gate) · bare `?` after a failed command asks for
 diagnosis. Details: [docs/getting-started.md#5-force-a-route-when-needed](docs/getting-started.md#5-force-a-route-when-needed),
 [docs/modes.md](docs/modes.md), [docs/safety.md](docs/safety.md).
 
@@ -303,10 +319,18 @@ CLI commands and the legacy shell surface are described in
 
 ## Front-ends
 
-1. **zsh-PTY** — `aishe` wraps your real interactive zsh (full `~/.zshrc`,
-   plugins, job control). Natural language routes via `command_not_found_handler`.
-2. **Native hook** — `eval "$(aishe init zsh)"` (or `bash`) keeps *your* session.
+1. **Native zsh-PTY** — `aishe` launches a clean zsh; opt into your full
+   `.zshenv`/`.zshrc` with `AISHE_ZSH_PROFILE=personal`. Both use the native agent.
+2. **Standalone hook** — `eval "$(aishe init zsh)"` (or `bash`) keeps *your*
+   existing session and its compatibility integration.
 3. **Non-interactive** — `aishe -c '…'` and pipes.
+
+`aishe agent '…'` is an explicit autonomous task request. Selecting agent mode
+in configuration alone does not authorize an unattended natural-language turn.
+Native tasks return distinct exit codes for completion, cancellation, exhausted
+budgets, iteration limits, failure, and declined approval. Completion means the
+model supplied a final answer; it is not independent verification of the result.
+See [native agent execution](docs/configuration.md#native-agent-execution).
 
 Details: [docs/front-ends.md](docs/front-ends.md) ·
 [docs/shell-integration.md](docs/shell-integration.md) ·
@@ -329,23 +353,24 @@ Config lives in `config.toml` under the platform config directory
 
 ```toml
 [aishe]
-mode = "suggest"
+mode = "ask"
 connection = "openai-work"
 reasoning_effort = "auto"
 budget_usd = 0.0
 
 [connections.openai-work]
 provider = "openai"
-label = "Codex - OAuth · work"
+label = "Codex - API · work"
 base_url = "https://api.openai.com"
 model = "gpt-5.6-luna"
 transport = "responses"
 [connections.openai-work.auth]
-type = "oauth"
-profile = "work"
+type = "api_key"
+credential = "openai-work"
+api_key_env = "OPENAI_API_KEY"
 
 [backend]
-engine = "opencode"
+engine = "native"
 default_scope = "workspace"
 workspace_network = "deny"
 
@@ -353,8 +378,9 @@ workspace_network = "deny"
 linux_backend = "bwrap"
 ```
 
-Startup aliases for delegated commands: `~/.aishrc` (portable) — see
-[examples/aishrc](examples/aishrc).
+Native interactive startup files: `~/.aishe/leanrc` before widgets and
+`~/.aishe/leanrc.post` afterward. Compatibility executor aliases use
+`~/.aishrc` — see [examples/aishrc](examples/aishrc).
 
 ---
 

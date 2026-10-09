@@ -29,6 +29,7 @@ pub struct LeanShellFiles {
     pub usage: Option<PathBuf>,
     pub status: Option<PathBuf>,
     pub commands: Option<PathBuf>,
+    pub execution_state: Option<PathBuf>,
 }
 
 impl LeanShellFiles {
@@ -196,6 +197,7 @@ pub fn spawn_ipc_with_files(
             };
             crate::context::init(executor.shell());
             executor.set_cancel_flag(Arc::clone(&cancelled_thread));
+            executor.set_terminal_input_owned_elsewhere(true);
             let mut session = Session::new(true);
             let mut store = Some(LeanSessionStore::create(&cwd, &model));
             let mut provider = None;
@@ -221,6 +223,22 @@ pub fn spawn_ipc_with_files(
                 let raw = line.trim_end_matches(['\n', '\r']);
                 if raw == "STOP" {
                     break;
+                }
+                let operation = raw.split('\t').next().unwrap_or("");
+                if matches!(operation, "NL" | "FIX" | "CONFIRM_YES" | "SLASH") {
+                    if let Some(path) = &files.execution_state {
+                        let denied = crate::executor::sensitive_environment_names(&config);
+                        match super::state::consume_environment(path, &denied) {
+                            Ok(environment) => {
+                                executor.replace_agent_environment(environment, &denied);
+                            }
+                            Err(error) => {
+                                let _ = writeln!(rep, "ERROR\t{error}");
+                                let _ = rep.flush();
+                                continue;
+                            }
+                        }
+                    }
                 }
                 match files.apply_selection(&mut config) {
                     Ok(true) => provider = None,

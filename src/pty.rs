@@ -1,9 +1,10 @@
 //! PTY front-end.
 //!
 //! **Lean (default):** launch `zsh -f -i` (with RCS re-enabled only for an
-//! isolated ZDOTDIR) so the child never sources the user's `~/.zshrc` or plugin
-//! stack. A tiny hook classifies `?` / `!` / PATH-known / NL and sends NL to
-//! the parent over a FIFO. Restore the historical "your zsh + OpenCode" path
+//! isolated ZDOTDIR). `AISHE_ZSH_PROFILE=personal` loads the user's zsh settings
+//! with the same native runtime; the default clean profile stays isolated.
+//! A tiny hook classifies `?` / `!` / PATH-known / NL and sends NL to
+//! the parent over a FIFO. Restore the historical OpenCode path
 //! with `AISHE_LEGACY_OPENCODE=1`.
 //!
 //! **Legacy:** launch the user's *real* interactive zsh (`zsh -i`) inside a
@@ -69,10 +70,12 @@ fn run_zsh_inner(config: &Config, history_log: &std::path::Path, shell_id: Strin
         anyhow!("zsh not found on $PATH — the interactive front-end requires zsh (install it, or use `aishe -c …` / the bash hook)")
     })?;
 
-    // Isolated ZDOTDIR. Lean writes only the tiny hook (no user rc). Legacy
-    // sources the real `.zshrc` then appends the historical hook.
+    // Customization is independent of the provider/runtime selection. Reject a
+    // typo before creating a shell rather than silently loading another profile.
     let lean = crate::lean::enabled();
-    let zdotdir = make_zdotdir(lean).context("preparing zsh integration dir")?;
+    let profile =
+        crate::lean::ZshProfile::parse(std::env::var("AISHE_ZSH_PROFILE").ok().as_deref())?;
+    let zdotdir = make_zdotdir(lean, profile).context("preparing zsh integration dir")?;
     let _zdotdir_guard = ZdotdirGuard(zdotdir.clone());
     let real_zdotdir = std::env::var("ZDOTDIR").unwrap_or_else(|_| {
         dirs::home_dir()
@@ -109,7 +112,7 @@ fn run_zsh_inner(config: &Config, history_log: &std::path::Path, shell_id: Strin
 
     let mut cmd = CommandBuilder::new(&zsh);
     if lean {
-        for arg in crate::lean::zsh_argv() {
+        for arg in crate::lean::zsh_argv_for_profile(profile) {
             cmd.arg(*arg);
         }
     } else {
@@ -117,7 +120,8 @@ fn run_zsh_inner(config: &Config, history_log: &std::path::Path, shell_id: Strin
     }
     cmd.env("ZDOTDIR", &zdotdir);
     cmd.env("AISHE_OUR_ZDOTDIR", &zdotdir);
-    if !lean {
+    cmd.env("AISHE_ZSH_PROFILE", profile.as_str());
+    if !lean || profile == crate::lean::ZshProfile::Personal {
         cmd.env("AISHE_REAL_ZDOTDIR", &real_zdotdir);
     }
     cmd.env("AISHE_SHELL_ID", &shell_id);
@@ -143,6 +147,24 @@ fn run_zsh_inner(config: &Config, history_log: &std::path::Path, shell_id: Strin
         cmd.env("AISHE_LEAN_CMDS_FILE", cmds_file.display().to_string());
         lean_files.commands = Some(cmds_file.clone());
         _cmds_guard = Some(FileGuard(cmds_file));
+        let state_dir = zdotdir.join("execution-state");
+        create_private_directory(&state_dir)?;
+        let state_file = std::fs::canonicalize(&state_dir)?.join("state");
+        cmd.env("AISHE_EXECUTION_STATE_FILE", &state_file);
+        lean_files.execution_state = Some(state_file);
+        let mut denied_names: Vec<_> = crate::executor::sensitive_environment_names(config)
+            .into_iter()
+            .collect();
+        if let Ok(extra) = std::env::var("AISHE_EXECUTION_STATE_DENY") {
+            denied_names.extend(extra.lines().map(str::to_string));
+        }
+        denied_names.sort();
+        denied_names.dedup();
+        cmd.env("AISHE_EXECUTION_STATE_DENY", denied_names.join("\n"));
+        if profile == crate::lean::ZshProfile::Clean {
+            let cache = completion_cache_dir().unwrap_or_else(|_| zdotdir.join("completion"));
+            cmd.env("AISHE_COMPLETION_CACHE", cache);
+        }
     }
     // The prompt paints from the same palette as the Rust renderers, and goes
     // colorless under NO_COLOR/TERM=dumb/ui.theme = "none" like everything else.
@@ -556,17 +578,59 @@ impl Drop for FileGuard {
 }
 
 /// Create a temp ZDOTDIR containing `.zshenv` and `.zshrc`.
-fn make_zdotdir(lean: bool) -> Result<std::path::PathBuf> {
-    let dir = std::env::temp_dir().join(format!("aishe-zdotdir-{}", std::process::id()));
-    std::fs::create_dir_all(&dir)?;
+fn make_zdotdir(lean: bool, profile: crate::lean::ZshProfile) -> Result<std::path::PathBuf> {
+    let dir = std::env::temp_dir().join(format!(
+        "aishe-zdotdir-{}-{}",
+        std::process::id(),
+        random_shell_id()
+    ));
+    create_private_directory(&dir)?;
     if lean {
-        std::fs::write(dir.join(".zshenv"), crate::lean::wrapper_zshenv())?;
-        std::fs::write(dir.join(".zshrc"), crate::lean::wrapper_zshrc())?;
+        std::fs::write(
+            dir.join(".zshenv"),
+            crate::lean::wrapper_zshenv_for_profile(profile),
+        )?;
+        std::fs::write(
+            dir.join(".zshrc"),
+            crate::lean::wrapper_zshrc_for_profile(profile),
+        )?;
     } else {
         std::fs::write(dir.join(".zshenv"), integration::WRAPPER_ZSHENV)?;
         std::fs::write(dir.join(".zshrc"), integration::wrapper_zshrc())?;
     }
     Ok(dir)
+}
+
+/// Completion state survives clean shell launches without loading any user rc.
+/// Refuse a shared or symlinked cache; the caller can use its temporary directory.
+fn completion_cache_dir() -> Result<std::path::PathBuf> {
+    let base = std::env::var_os("XDG_CACHE_HOME")
+        .map(std::path::PathBuf::from)
+        .filter(|path| path.is_absolute())
+        .or_else(|| dirs::home_dir().map(|home| home.join(".cache")))
+        .context("no private completion cache location")?;
+    let parent = base.join("aishe");
+    std::fs::create_dir_all(&parent)?;
+    let dir = parent.join("zsh");
+    create_private_directory(&dir)?;
+    Ok(dir)
+}
+
+fn create_private_directory(dir: &std::path::Path) -> Result<()> {
+    use std::os::unix::fs::{DirBuilderExt, MetadataExt, PermissionsExt};
+    match std::fs::DirBuilder::new().mode(0o700).create(dir) {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+        Err(error) => return Err(error.into()),
+    }
+    let metadata = std::fs::symlink_metadata(dir)?;
+    if !metadata.is_dir()
+        || metadata.uid() != unsafe { libc::geteuid() }
+        || metadata.permissions().mode() & 0o777 != 0o700
+    {
+        anyhow::bail!("shell state directory is not private");
+    }
+    Ok(())
 }
 
 /// Restores cooked-mode terminal on drop.
@@ -584,5 +648,30 @@ struct ZdotdirGuard(std::path::PathBuf);
 impl Drop for ZdotdirGuard {
     fn drop(&mut self) {
         let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::os::unix::fs::{symlink, PermissionsExt};
+
+    #[test]
+    fn shell_state_directories_are_private_and_reject_shared_or_linked_paths() {
+        let root = std::env::temp_dir().join(format!("aishe-private-dir-{}", random_shell_id()));
+        create_private_directory(&root).unwrap();
+        let _cleanup = ZdotdirGuard(root.clone());
+        assert_eq!(
+            std::fs::metadata(&root).unwrap().permissions().mode() & 0o777,
+            0o700
+        );
+        create_private_directory(&root).unwrap();
+        let shared = root.join("shared");
+        std::fs::create_dir(&shared).unwrap();
+        std::fs::set_permissions(&shared, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(create_private_directory(&shared).is_err());
+        let linked = root.join("linked");
+        symlink(&root, &linked).unwrap();
+        assert!(create_private_directory(&linked).is_err());
     }
 }

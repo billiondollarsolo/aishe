@@ -7,6 +7,7 @@
 pub mod backend;
 pub mod controller;
 pub mod events;
+pub mod native;
 pub mod policy;
 pub mod renderer;
 pub mod tool_worker;
@@ -19,5 +20,6 @@ pub use events::{
     AgentEvent, ApprovalRequest, DiffView, OutputStream, TodoItem, ToolCallView, ToolResultView,
     UsageDelta, UserFacingError, UserQuestion,
 };
+pub use native::{NativeTurnOutcome, NativeTurnState};
 pub use policy::{ExecutionScope, Mode, NetworkPolicy};
 pub use tool_worker::ToolWorker;

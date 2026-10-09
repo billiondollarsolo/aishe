@@ -2,6 +2,7 @@
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
+use std::time::Duration;
 
 use serde_json::{json, Value};
 
@@ -383,6 +384,11 @@ fn post_with_retry(
         crate::lean::mark_nl_wire_ready();
         let result = agent
             .post(url)
+            .config()
+            .timeout_global(super::request_timeout(Some(Duration::from_secs(
+                super::HTTP_TIMEOUT_SECS,
+            )))?)
+            .build()
             .header("x-api-key", api_key)
             .header("anthropic-version", ANTHROPIC_VERSION)
             .header("content-type", "application/json")
@@ -412,7 +418,7 @@ fn post_with_retry(
                     let wait = backoff(attempt + 1, retry_after_secs(&resp));
                     drop(resp);
                     attempt += 1;
-                    std::thread::sleep(wait);
+                    super::wait_for_retry(wait)?;
                     continue;
                 }
                 return Err(ProviderError::Api {
@@ -423,7 +429,7 @@ fn post_with_retry(
             Err(e) => {
                 if attempt < MAX_RETRIES {
                     attempt += 1;
-                    std::thread::sleep(backoff(attempt, None));
+                    super::wait_for_retry(backoff(attempt, None))?;
                     continue;
                 }
                 return Err(ProviderError::Http(e.to_string()));

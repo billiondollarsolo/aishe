@@ -34,7 +34,7 @@ jobs:
           exit "$failed"
 
       - name: Check internal documentation links and anchors
-        run: python3 tests/docs_contract_test.py
+        run: python3 tests/require_gate.py python3 tests/docs_contract_test.py
 
   supply-chain:
     name: dependency advisories, licenses, and sources
@@ -55,6 +55,10 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest]
+    env:
+      AISHE_LEAN: "1"
+      AISHE_LEGACY_OPENCODE: "0"
+      AISHE_ZSH_PROFILE: clean
     steps:
       - uses: actions/checkout@v7
 
@@ -102,16 +106,17 @@ jobs:
       - name: Clippy
         run: cargo clippy --all-targets --all-features --locked -- -D warnings
 
+      - name: Build without default features
+        run: cargo check --no-default-features --locked
+
       - name: Build
         run: cargo build --verbose --locked
 
       - name: Shellcheck and generated hook syntax
-        run: python3 tests/shell_contract.py target/debug/aishe
+        run: python3 tests/require_gate.py python3 tests/shell_contract.py target/debug/aishe
 
-      - name: Install and live-verify pinned OpenCode runtime
-        run: |
-          target/debug/aishe backend install
-          target/debug/aishe backend verify --live
+      - name: Qualification reporting contract
+        run: python3 tests/require_gate.py python3 tests/qualify_test.py
 
       - name: Test
         # Bound the step so a nested-PTY deadlock cannot burn ~15m then cancel.
@@ -139,30 +144,37 @@ jobs:
       - name: Build on 1.88
         run: cargo build --verbose --locked
 
-  pty-smoke:
-    name: PTY smoke tests (zsh-pty)
-    runs-on: ubuntu-latest
+  pty-native:
+    name: Native shell (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 35
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    env:
+      AISHE_LEAN: "1"
+      AISHE_LEGACY_OPENCODE: "0"
+      AISHE_ZSH_PROFILE: clean
     steps:
       - uses: actions/checkout@v7
 
-      - name: Isolate the managed runtime
+      - name: Isolate runtime state
         shell: bash
-        run: echo "AISHE_RUNTIME_DIR=$RUNNER_TEMP/aishe-runtime" >> "$GITHUB_ENV"
+        run: echo "AISHE_RUNTIME_DIR=$RUNNER_TEMP/aishe-native-runtime" >> "$GITHUB_ENV"
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Install zsh
+      - name: Install shell tools (Linux)
+        if: runner.os == 'Linux'
         run: |
           sudo apt-get update && sudo apt-get install -y zsh bubblewrap tmux screen
-          # GitHub images leave the zsh completion directories group-writable,
-          # so compinit stops with an interactive "insecure directories …
-          # continue [y] or abort [n]?" prompt. Inside a PTY test that prompt
-          # eats a keystroke and every later expect() reads a line behind.
-          # ZSH_DISABLE_COMPFIX does not help — it is an oh-my-zsh variable,
-          # not something native compinit consults.
           sudo chmod -R go-w /usr/share/zsh /usr/local/share/zsh 2>/dev/null || true
-          zsh -f -c 'autoload -Uz compaudit && compaudit' || echo "compaudit clean"
+
+      - name: Harden zsh directories (macOS)
+        if: runner.os == 'macOS'
+        run: sudo chmod -R go-w /usr/share/zsh /usr/local/share/zsh 2>/dev/null || true
 
       - name: Cache cargo
         uses: actions/cache@v6
@@ -174,139 +186,138 @@ jobs:
           key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.toml', 'Cargo.lock') }}
 
       - name: Build release binary
+        timeout-minutes: 10
         run: cargo build --release --locked
 
-      - name: Direct shell never starts backend and stays within startup SLO
+      - name: Direct commands stay local and meet the startup SLO
+        timeout-minutes: 5
         run: >-
-          python3 tests/direct_shell_benchmark.py target/release/aishe
+          python3 tests/require_gate.py python3 tests/direct_shell_benchmark.py target/release/aishe
           --commands 100 --warmup 10
 
-      - name: Install and live-verify pinned OpenCode runtime
-        run: |
-          target/release/aishe backend install
-          target/release/aishe backend verify --live
-
-      - name: Installer upgrade preserves config and data
-        run: sh tests/installer_upgrade.sh target/release/aishe
-
-      - name: Generated CLI reference matches the clap tree
-        run: python3 tests/docs_cli_block_test.py target/release/aishe
-
-      - name: Unauthenticated loopback provider
-        run: python3 tests/provider_unauthenticated.py target/release/aishe
-
-      - name: Private shared credentials and precedence
-        run: python3 tests/credentials_linux.py target/release/aishe
-
-      - name: Real-model JSON/exit contract validator
-        run: python3 tests/live_contract_test.py
-
-      - name: External harness binary identity helper
-        run: python3 tests/harness_identity_test.py
-
-      - name: Native Bash 5 hook declared-tier matrix
+      - name: Native display, mode grants, and cancellation
         timeout-minutes: 5
         run: |
-          python3 tests/bash_hook_test.py
-          python3 tests/bash_hook.py target/release/aishe \
-            --bash /bin/bash --require-family 5.x
+          python3 tests/require_gate.py python3 tests/lean_ui_pty.py target/release/aishe
+          python3 tests/require_gate.py python3 tests/lean_modes_pty.py target/release/aishe
+          python3 tests/require_gate.py python3 tests/lean_cancel_pty.py target/release/aishe
 
-      - name: Terminal latency, tmux, and screen compatibility contract
+      - name: Slash discovery and concurrent picker isolation
+        timeout-minutes: 5
+        run: |
+          python3 tests/require_gate.py python3 tests/lean_slash_pty.py target/release/aishe
+          python3 tests/require_gate.py python3 tests/lean_picker_pty.py target/release/aishe
+          python3 tests/require_gate.py python3 tests/picker_arrows_pty.py target/release/aishe
+
+      - name: Setup, settings, and terminal restoration
         timeout-minutes: 8
         run: |
-          python3 tests/terminal_compat_test.py
-          python3 tests/terminal_compat.py target/release/aishe \
-            --capability local-latency --require-capability local-latency \
-            --capability tmux --require-capability tmux \
-            --capability screen --require-capability screen \
-            --json test-results/terminal-compat-linux.json
+          python3 tests/require_gate.py python3 tests/setup_pty.py target/release/aishe
+          python3 tests/require_gate.py python3 tests/settings_pty.py target/release/aishe
+          python3 tests/require_gate.py python3 tests/in_shell_menus_pty.py target/release/aishe
+          python3 tests/require_gate.py python3 tests/prompt_primitives_pty.py target/release/aishe
 
-      - name: Drive real zsh through the PTY front-end
-        run: python3 tests/pty_smoke.py target/release/aishe
+      - name: Native personal profile preserves zsh customizations
+        timeout-minutes: 5
+        run: python3 tests/require_gate.py python3 tests/native_zsh_profile_pty.py target/release/aishe
 
-      - name: zsh-PTY scenario tests (NL routing, sigils, auto-mode, history)
-        run: python3 tests/pty_scenarios.py target/release/aishe
+      - name: Native agents use the live shell environment
+        timeout-minutes: 5
+        run: python3 tests/require_gate.py python3 tests/live_shell_state_pty.py target/release/aishe
 
-      - name: zsh-PTY statusline placement and live metrics
-        run: python3 tests/statusline_pty.py target/release/aishe
-
-      - name: Unified connection/model picker and concurrent shell selection
-        run: python3 tests/model_picker_pty.py target/release/aishe
-
-      - name: Interactive setup state-machine PTY
-        run: python3 tests/setup_pty.py target/release/aishe
-
-      - name: In-shell regression PTY suite
+      - name: Clean and personal zsh feature matrices
+        timeout-minutes: 5
         run: |
-          python3 tests/in_shell_menus_pty.py target/release/aishe
-          python3 tests/yolo_consent_pty.py target/release/aishe
-          python3 tests/palette_pty.py target/release/aishe
-          python3 tests/mode_handoff_pty.py target/release/aishe
-          python3 tests/bare_words_pty.py target/release/aishe
-          python3 tests/theme_prompt_pty.py target/release/aishe
-          python3 tests/keys_pty.py target/release/aishe
-          python3 tests/usage_report_pty.py target/release/aishe
-          python3 tests/slash_highlight_pty.py target/release/aishe
-          python3 tests/picker_arrows_pty.py target/release/aishe
-          python3 tests/statusline_width_pty.py target/release/aishe
+          python3 tests/require_gate.py python3 tests/zsh_features.py target/release/aishe --profile clean
+          python3 tests/require_gate.py python3 tests/zsh_features.py target/release/aishe --profile personal
 
-      - name: Pinned OpenCode provider and tool-bridge contract
-        run: python3 tests/opencode_runtime_contract.py target/release/aishe
+      - name: Clean and personal jobs, signals, paste, editing, and terminal restore
+        timeout-minutes: 5
+        run: |
+          python3 tests/require_gate.py python3 tests/pty_signals.py target/release/aishe --profile clean
+          python3 tests/require_gate.py python3 tests/pty_signals.py target/release/aishe --profile personal
 
-      - name: Same-provider connection credential and runtime isolation
-        run: python3 tests/opencode_connection_isolation.py target/release/aishe
+      - name: Terminal latency and resize
+        timeout-minutes: 4
+        run: |
+          python3 tests/require_gate.py python3 tests/terminal_compat_test.py
+          python3 tests/require_gate.py python3 tests/terminal_compat.py target/release/aishe \
+            --capability local-latency --require-capability local-latency \
+            --json test-results/terminal-compat-native-${{ runner.os }}.json
 
-      - name: Workspace-to-host authority, focus output, and reset contract
-        run: python3 tests/opencode_host_scope.py target/release/aishe
-
-      - name: Managed OpenCode startup, reconnect, and memory qualification
+      - name: Native tmux and GNU screen transports
+        if: runner.os == 'Linux'
+        timeout-minutes: 5
         run: >-
-          python3 tests/opencode_soak.py target/release/aishe
-          --turns 20 --cold-cycles 3 --warm-probes 20 --reconnect-every 10
+          python3 tests/require_gate.py python3 tests/terminal_compat.py target/release/aishe
+          --capability tmux --require-capability tmux
+          --capability screen --require-capability screen
+          --json test-results/terminal-compat-native-multiplexers.json
 
-      - name: Concurrent managed-session isolation
-        run: python3 tests/opencode_concurrency.py target/release/aishe --sessions 8
+      - name: CLI, local provider, and credential contracts
+        timeout-minutes: 5
+        run: |
+          python3 tests/require_gate.py python3 tests/docs_cli_block_test.py target/release/aishe
+          python3 tests/require_gate.py python3 tests/provider_unauthenticated.py target/release/aishe
+          python3 tests/require_gate.py python3 tests/live_contract_test.py
+          python3 tests/require_gate.py python3 tests/harness_identity_test.py
 
-      - name: Durable task interruption and resume
-        run: python3 tests/durable_task_resume.py target/release/aishe
+      - name: Private shared credentials (Linux)
+        if: runner.os == 'Linux'
+        run: python3 tests/require_gate.py python3 tests/credentials_linux.py target/release/aishe
 
-      - name: zsh-PTY fuzz (generated commands, sigil NL, adversarial responses)
-        run: python3 tests/pty_fuzz.py target/release/aishe
+      - name: Native Bash declared-tier matrix
+        if: runner.os == 'Linux'
+        timeout-minutes: 5
+        run: |
+          python3 tests/require_gate.py python3 tests/bash_hook_test.py
+          python3 tests/require_gate.py python3 tests/bash_hook.py target/release/aishe \
+            --bash /bin/bash --require-family 5.x
 
-      - name: zsh feature matrix (pipes, here-docs, loops, jobs, history, ...)
-        run: python3 tests/zsh_features.py target/release/aishe
+      - name: Durable native task interruption and resume
+        timeout-minutes: 5
+        run: |
+          python3 tests/require_gate.py python3 tests/native_background_lifecycle.py target/release/aishe
+          python3 tests/require_gate.py python3 tests/durable_task_resume.py target/release/aishe
 
-      - name: zsh-PTY signals (Ctrl-C, Ctrl-Z, resize, multi-line)
-        run: python3 tests/pty_signals.py target/release/aishe
+      - name: Upload terminal qualification evidence
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: native-terminal-evidence-${{ runner.os }}
+          path: test-results/
+          if-no-files-found: ignore
 
-      - name: Real-model classification (opt-in; skips without the secret)
-        env:
-          AISHE_REALTEST_KEY: ${{ secrets.AISHE_REALTEST_KEY }}
-          AISHE_REALTEST_BASE_URL: https://api.openai.com
-          AISHE_REALTEST_MODEL: gpt-5.6-luna
-        run: python3 tests/real_model.py target/release/aishe
-      - name: Real-model robustness fuzz (opt-in; skips without the secret)
-        env:
-          AISHE_REALTEST_KEY: ${{ secrets.AISHE_REALTEST_KEY }}
-          AISHE_REALTEST_BASE_URL: https://api.openai.com
-          AISHE_REALTEST_MODEL: gpt-5.6-luna
-        run: python3 tests/real_fuzz.py target/release/aishe
-      - name: Admin validation (shell pass-through + file ops; NL skipped w/o key)
-        run: python3 tests/admin_validation.py target/release/aishe
-
-  pty-macos:
-    name: macOS flagship PTY gate (bounded)
-    runs-on: macos-latest
+  pty-legacy:
+    name: Explicit legacy shell (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 35
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    env:
+      AISHE_LEAN: "0"
+      AISHE_LEGACY_OPENCODE: "1"
     steps:
       - uses: actions/checkout@v7
 
-      - name: Isolate the managed runtime
+      - name: Isolate managed runtime state
         shell: bash
-        run: echo "AISHE_RUNTIME_DIR=$RUNNER_TEMP/aishe-runtime" >> "$GITHUB_ENV"
+        run: echo "AISHE_RUNTIME_DIR=$RUNNER_TEMP/aishe-legacy-runtime" >> "$GITHUB_ENV"
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
+
+      - name: Install zsh and isolation tools (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update && sudo apt-get install -y zsh bubblewrap
+          sudo chmod -R go-w /usr/share/zsh /usr/local/share/zsh 2>/dev/null || true
+
+      - name: Harden zsh directories (macOS)
+        if: runner.os == 'macOS'
+        run: sudo chmod -R go-w /usr/share/zsh /usr/local/share/zsh 2>/dev/null || true
 
       - name: Cache cargo
         uses: actions/cache@v6
@@ -315,39 +326,110 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: ${{ runner.os }}-pty-cargo-${{ hashFiles('**/Cargo.toml', 'Cargo.lock') }}
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.toml', 'Cargo.lock') }}
 
       - name: Build release binary
         timeout-minutes: 10
         run: cargo build --release --locked
 
-      # These are CLI-owned pseudo-terminals. They need the runner's normal
-      # PTY device access only; Accessibility, Screen Recording, Automation,
-      # and Full Disk Access permissions are neither requested nor required.
-      - name: Terminal latency and resize contract
-        timeout-minutes: 4
+      - name: Install and live-verify pinned OpenCode runtime
+        timeout-minutes: 5
         run: |
-          python3 tests/terminal_compat_test.py
-          python3 tests/terminal_compat.py target/release/aishe \
-            --capability local-latency --require-capability local-latency \
-            --json test-results/terminal-compat-macos.json
+          target/release/aishe backend install
+          target/release/aishe backend verify --live
 
-      - name: Routing, sigils, auto-mode, and history PTY
-        timeout-minutes: 5
-        run: python3 tests/pty_scenarios.py target/release/aishe
+      - name: Historical zsh UX executes under an explicit legacy gate
+        timeout-minutes: 8
+        run: |
+          python3 tests/require_gate.py python3 tests/pty_smoke.py target/release/aishe
+          python3 tests/require_gate.py python3 tests/pty_scenarios.py target/release/aishe
+          python3 tests/require_gate.py python3 tests/statusline_pty.py target/release/aishe
+          python3 tests/require_gate.py python3 tests/model_picker_pty.py target/release/aishe
+          python3 tests/require_gate.py python3 tests/pty_signals.py target/release/aishe --profile legacy
 
-      - name: Connection and model picker PTY
-        timeout-minutes: 5
-        run: python3 tests/model_picker_pty.py target/release/aishe
+      - name: Historical customization and menu regressions (Linux)
+        if: runner.os == 'Linux'
+        timeout-minutes: 8
+        run: |
+          python3 tests/require_gate.py python3 tests/in_shell_menus_pty.py target/release/aishe
+          python3 tests/require_gate.py python3 tests/yolo_consent_pty.py target/release/aishe
+          python3 tests/require_gate.py python3 tests/palette_pty.py target/release/aishe
+          python3 tests/require_gate.py python3 tests/mode_handoff_pty.py target/release/aishe
+          python3 tests/require_gate.py python3 tests/bare_words_pty.py target/release/aishe
+          python3 tests/require_gate.py python3 tests/theme_prompt_pty.py target/release/aishe
+          python3 tests/require_gate.py python3 tests/keys_pty.py target/release/aishe
+          python3 tests/require_gate.py python3 tests/usage_report_pty.py target/release/aishe
+          python3 tests/require_gate.py python3 tests/slash_highlight_pty.py target/release/aishe
+          python3 tests/require_gate.py python3 tests/picker_arrows_pty.py target/release/aishe
+          python3 tests/require_gate.py python3 tests/statusline_width_pty.py target/release/aishe
+          python3 tests/require_gate.py python3 tests/zsh_features.py target/release/aishe --profile legacy
 
-      - name: Statusline placement and live metrics PTY
-        timeout-minutes: 5
-        run: python3 tests/statusline_pty.py target/release/aishe
+      - name: Historical adversarial routing fuzz (Linux)
+        if: runner.os == 'Linux'
+        timeout-minutes: 8
+        run: python3 tests/require_gate.py python3 tests/pty_fuzz.py target/release/aishe
 
-      - name: Setup state-machine PTY
-        timeout-minutes: 5
-        run: python3 tests/setup_pty.py target/release/aishe
+      - name: Upload terminal qualification evidence
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: legacy-terminal-evidence-${{ runner.os }}
+          path: test-results/
+          if-no-files-found: ignore
 
-      - name: Signals, resize, and multi-line PTY
+  managed-runtime:
+    name: Managed OpenCode runtime contracts
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    env:
+      AISHE_LEAN: "0"
+      AISHE_LEGACY_OPENCODE: "1"
+    steps:
+      - uses: actions/checkout@v7
+      - name: Isolate managed runtime state
+        run: echo "AISHE_RUNTIME_DIR=$RUNNER_TEMP/aishe-managed-runtime" >> "$GITHUB_ENV"
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install shell and isolation tools
+        run: |
+          sudo apt-get update && sudo apt-get install -y zsh bubblewrap
+          sudo chmod -R go-w /usr/share/zsh /usr/local/share/zsh 2>/dev/null || true
+      - uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.toml', 'Cargo.lock') }}
+      - name: Build release binary
+        timeout-minutes: 10
+        run: cargo build --release --locked
+      - name: Install and live-verify pinned runtime
         timeout-minutes: 5
-        run: python3 tests/pty_signals.py target/release/aishe
+        run: |
+          target/release/aishe backend install
+          target/release/aishe backend verify --live
+      - name: Runtime, credential, and host-scope contracts
+        timeout-minutes: 10
+        run: |
+          python3 tests/require_gate.py python3 tests/opencode_runtime_contract.py target/release/aishe
+          python3 tests/require_gate.py python3 tests/opencode_connection_isolation.py target/release/aishe
+          python3 tests/require_gate.py python3 tests/opencode_host_scope.py target/release/aishe
+      - name: Runtime reconnect and concurrent-session qualification
+        timeout-minutes: 8
+        run: |
+          python3 tests/require_gate.py python3 tests/opencode_soak.py target/release/aishe \
+            --turns 20 --cold-cycles 3 --warm-probes 20 --reconnect-every 10
+          python3 tests/require_gate.py python3 tests/opencode_concurrency.py target/release/aishe --sessions 8
+      - name: Installer upgrade preserves config and data
+        run: sh tests/installer_upgrade.sh target/release/aishe
+      - name: Admin and shell contracts
+        timeout-minutes: 5
+        run: python3 tests/require_gate.py python3 tests/admin_validation.py target/release/aishe
+      - name: Live model contracts (opt-in)
+        env:
+          AISHE_REALTEST_KEY: ${{ secrets.AISHE_REALTEST_KEY }}
+          AISHE_REALTEST_BASE_URL: https://api.openai.com
+          AISHE_REALTEST_MODEL: gpt-5.6-luna
+        run: |
+          python3 tests/real_model.py target/release/aishe
+          python3 tests/real_fuzz.py target/release/aishe

@@ -1,16 +1,19 @@
 # Lean CSH hot path
 
-Week-1 skeleton of the [CSH MVP lean redesign](lean-1.0.md), shipped
-inside the existing **aishe** binary. Product name stays `aishe`.
+Native shell and agent path shipped inside the **aishe** binary, following the
+[CSH MVP lean redesign](lean-1.0.md). Historical wave notes and benchmark figures
+below retain the scope of the implementation they measured.
 
 ## What changed
 
 Interactive `aishe` (and `aishe zsh`) now:
 
-1. Launches **`zsh -f -o RCS -o NO_GLOBAL_RCS -i`** with an isolated `ZDOTDIR`.
+1. Defaults to **`zsh -f -o RCS -o NO_GLOBAL_RCS -i`** with an isolated `ZDOTDIR`.
    `-f` is NO_RCS. `-o RCS` re-enables only this ZDOTDIR so the lean hook loads.
-   `-o NO_GLOBAL_RCS` keeps `/etc/zshrc` off. The user's `~/.zshrc` is **never**
-   sourced. Optional aliases live in `~/.aishe/leanrc` or `$AISHE_LEANRC`.
+   `-o NO_GLOBAL_RCS` keeps `/etc/zshrc` off in this `clean` profile. Explicit
+   `AISHE_ZSH_PROFILE=personal` uses `zsh -i` with real `.zshenv`/`.zshrc` and
+   the same native agent. Both profiles support early `~/.aishe/leanrc`
+   (`AISHE_LEANRC`) and late `~/.aishe/leanrc.post` (`AISHE_LEANRC_POST`).
 2. Injects an **owned hook**: classifier `?` / `!` / PATH-known / NL, bounded
    prompt + mode/scope indicators, Shift-Tab grant cycle. Known commands stay in
    the child zsh (no parent spawn, no model, no socket call).
@@ -21,10 +24,15 @@ Interactive `aishe` (and `aishe zsh`) now:
    **agent** / **agent-host**. Safety `assess` still gates *model-proposed*
    lines; typed commands and `!` do not.
 5. Agent `run_command` prefers **`dash -c`**, else **`zsh -f -c`**, and wraps
-   with bubblewrap on Linux workspace agent.
+   with bubblewrap on Linux workspace agent. Current exports, `PATH`, virtual
+   environments, and unsets are transferred privately before AI/fix/slash
+   requests; known commands and keystrokes incur no snapshot work. Secrets and
+   startup controls are filtered. Aliases/functions and personal startup code
+   are not replayed into the agent command shell.
 
 Escape hatch: `AISHE_LEGACY_OPENCODE=1` (or `AISHE_LEAN=0`) restores the
 historical PTY that sources `~/.zshrc` and the OpenCode sidecar.
+The native personal profile is a separate choice and does not start that sidecar.
 
 ## Router
 
@@ -33,7 +41,7 @@ Same rule table as `dispatcher::route`:
 | Input | Route |
 |---|---|
 | leading `?` | NL (sigil stripped) |
-| leading `!` | shell (ungated) |
+| spaced `! command` | shell (ungated); `!!`/`!$`/`!word` retain zsh history expansion |
 | PATH / builtin / assignment / construct | shell |
 | question grammar (`what is`, trailing `?` on question heads, …) | NL |
 | else | NL |
@@ -89,11 +97,17 @@ Verify the actual editable buffers and side effects with:
   keyboard controls. Static terminals use durable rows and line commands.
   Esc, Ctrl-C, Ctrl-D, and EOF cancel and restore terminal settings.
 - The left prompt keeps `ask`, `allow`, or `agent:workspace` / `agent:host`
-  visible, including when the terminal is narrow. A pending grant is marked
+  visible in the clean profile, including when the terminal is narrow. A pending grant is marked
   before AI execution. The right prompt shows the active model, connection,
   and configured session metrics when space permits; labels are literal text.
   Prompt colors and command highlighting follow the shared palette, `NO_COLOR`,
   and `TERM=dumb`; ASCII mode supplies plain glyphs.
+- The personal profile preserves `PROMPT`, `RPROMPT`, history variables/options,
+  and custom optional keybindings. Themes can display `AISHE_MODE_INDICATOR`;
+  `AISHE_PERSONAL_INDICATOR=1` appends a mode/scope right-prompt suffix.
+  `AISHE_PTY_PROMPT=force` opts into the full AIShe prompt, and
+  `AISHE_MANAGE_HISTORY=1` opts into AIShe history policy. Existing Enter/Tab
+  widgets are chained per keymap; late rc overrides run after installation.
 - Shift-Tab cycles `ask → allow → agent → ask` on an empty input line. With
   text entered it keeps reverse completion. `/mode agent` explicitly selects
   workspace scope; `/mode agent-host` selects host scope. The parent validates
@@ -119,9 +133,12 @@ Verify the actual editable buffers and side effects with:
   reaches the configured budget, including after changing models or credentials.
   Monetary enforcement uses exact known prices; unknown prices are disclosed
   and remain unenforced. A response already in flight can exceed the budget.
-- The parent owns explicit session files for selections, output density, and
-  usage. Nested shells use their own files. Answers and transcripts go to the
-  terminal output sink; they are never written into the shell's input stream.
+- The parent owns explicit session files for selections, output density, usage,
+  and transient execution state. Nested shells use their own files. Environment
+  snapshots are consumed and removed, never recorded by this bridge in model
+  prompts, task checkpoints, or audit logs. They cannot widen workspace mounts;
+  a runtime under masked home can remain unavailable. Answers and transcripts
+  go to the terminal output sink, never the shell's input stream.
 - Ctrl-C during an AI turn requests cancellation and keeps the shell waiting
   for that turn's reply. Command process groups stop promptly. Synchronous
   provider requests and opaque MCP calls may finish before acknowledgement;
@@ -132,10 +149,37 @@ to the accepted tree, with private temporary storage and command network access
 denied unless configured otherwise. The system root remains mounted read-only,
 so this does not hide every readable file outside the project; home is masked
 apart from the accepted workspace. Built-in file tools enforce the workspace
-boundary separately. Configured MCP servers execute outside this command
-sandbox and retain their existing trust and network behavior. The workspace
-indicator therefore does not promise isolation of an opaque MCP server. On
-macOS, workspace restrictions are policy-only.
+boundary separately. Native network-denied turns omit/reject web and MCP tools.
+When allowed, configured MCP servers execute outside this command sandbox;
+the workspace indicator does not promise isolation of an opaque MCP server.
+On macOS, workspace restrictions are policy-only. Organization network-denial
+policy refuses native host scope because it cannot enforce that restriction.
+
+## Shared native task runtime
+
+The live shell, public `aishe agent`, native resume, and background workers share
+admission, the native loop, effect reservations, and typed outcomes. Live shell
+requests use a root-bound shell grant; explicit task commands authorize a task
+directly within its requested scope and current policy. Merely saving agent
+mode does not authorize a headless natural-language invocation. Model/tool work
+starts only after admission, including protected-target checks for host scope.
+
+Checkpointed tasks retain connection/endpoint/auth references, model,
+scope/network/root, transcript, pending tools, execution caps, and cumulative
+reservations. Background resume continues its linked native checkpoint rather
+than replaying the objective; current defaults cannot replace its saved identity
+or reset spent allowances. Credential and environment values are not saved.
+
+Completion means a nonempty model final answer with no tool calls, not an
+independent proof of task success. Provider errors, interruption, declined
+approval, exhausted budgets, and iteration caps produce distinct non-success
+outcomes. Native exits are `0` completed, `130` cancelled, `124` budget exhausted,
+`75` iteration limit, `1` failed, and `2` declined. See
+[Native agent execution](configuration.md#native-agent-execution) for exact
+budget semantics, resume policy, and cancellation limits. Network allowances
+count recognized network-capable tool dispatches and MCP RPCs, not arbitrary
+internal requests in a command or server. Synchronous RPC effects may continue
+until that RPC returns or times out after cancellation.
 
 ## How to run
 
@@ -200,9 +244,12 @@ AISHE_SPY_WIRE_NS=/tmp/wire \
 - **F05/F46 agent transcript:** `StdoutRedirect` splices agent `println!`
   output into the terminal display sink; FIFO returns `RAN` only. No OpenCode on the
   default agent path.
-- **F18 compsys:** bounded `compinit` + `.zcompdump` / `.zcompcache` under the
-  private ZDOTDIR. First interactive start may rebuild the dump (tens–low
-  hundreds of ms); later prompts use `compinit -C`. No user plugins / `~/.zshrc`.
+- **F18 compsys:** bounded `compinit` + `.zcompdump` / `.zcompcache`. The original
+  wave used private ZDOTDIR storage; clean-profile caches now persist under a
+  private user cache directory and separate zsh versions/completion paths and
+  directory modification times.
+  First startup may rebuild the dump; later launches use `compinit -C`.
+  Personal profiles retain their own completion setup and cache policy.
 - **F10/F11 `/reset` / `/undo`:** `/reset` clears the in-process FIFO `Session`;
   `/undo` calls `undo::undo_last` and prints the summary into the PTY.
 - **F28 lean smoke:** `tests/lean_hotpath.rs` + `tests/lean_parity_wave1.rs`
@@ -304,10 +351,11 @@ multi-step work. Controllers are layered:
 ### Agent path details
 
 - Entry: `src/lean/nl.rs::agent_reply` / `run_nl(LeanMode::Agent)`.
-- Loop: `src/modes/yolo.rs` — multi-step tool calls until the model stops with
-  a no-tool turn. Same tools and safety gate as legacy yolo; executor prefers
-  `dash -c` (fallback `zsh -f -c`). Linux workspace scope requires functional
-  bubblewrap; unavailable isolation refuses the agent turn.
+- Loop: `src/modes/yolo.rs` — multi-step tool calls until a nonempty no-tool
+  answer or an explicit stop outcome. Shared native admission prepares scope
+  through `src/agent/native.rs`; executor prefers `dash -c` (fallback
+  `zsh -f -c`). Linux workspace scope requires functional bubblewrap;
+  unavailable isolation refuses the agent turn.
 - Provider is constructed once per live shell (FIFO parent) and kept warm —
   no per-turn `backend::supervisor::ensure_running`, no 45–63 MB OpenCode boot.
 - Ask/allow stay one-shot (suggest). Escalate to agent with Shift-Tab / grant

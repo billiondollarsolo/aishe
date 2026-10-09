@@ -218,7 +218,7 @@ impl LeanWarm {
     fn ensure_mcp(&mut self, config: &Config) {
         if self.mcp.is_none() {
             // Empty/disabled config → empty registry; never touches OpenCode.
-            self.mcp = Some(crate::mcp::McpRegistry::connect(&config.mcp_servers));
+            self.mcp = Some(crate::mcp::McpRegistry::deferred(&config.mcp_servers));
         }
     }
 
@@ -246,14 +246,18 @@ impl LeanWarm {
     }
 
     pub fn mcp_tool_len(&self) -> usize {
-        self.mcp.as_ref().map(|m| m.list().len()).unwrap_or(0)
+        self.mcp
+            .as_ref()
+            .filter(|m| !m.is_deferred())
+            .map(|m| m.list().len())
+            .unwrap_or(0)
     }
 
     pub fn mcp_server_hint(&self, config: &Config) -> String {
         let configured = config.mcp_servers.iter().filter(|(_, c)| c.enabled).count();
         if configured == 0 {
             "none configured".into()
-        } else if self.mcp.is_none() {
+        } else if self.mcp.as_ref().is_none_or(|m| m.is_deferred()) {
             format!("{configured} configured (not warmed)")
         } else {
             let tools = self.mcp_tool_len();
@@ -357,16 +361,18 @@ pub fn run_nl(
     };
     let nl = prepare_nl_prompt(nl, executor.cwd(), config);
     match lean_mode {
-        LeanMode::Agent => modes::yolo::run(
-            &nl,
-            provider,
-            executor,
-            config,
-            &crate::agent::controller::INTERRUPTED,
-            skills,
-            mcp,
-            session,
-        )?,
+        LeanMode::Agent => {
+            modes::yolo::run(
+                &nl,
+                provider,
+                executor,
+                config,
+                &crate::agent::controller::INTERRUPTED,
+                skills,
+                mcp,
+                session,
+            )?;
+        }
         LeanMode::Allow => {
             modes::suggest::run(&nl, provider, executor, config, false, true, session)?
         }
@@ -396,35 +402,12 @@ fn prepare_scoped_executor(
     mode: LeanMode,
     workspace: &Path,
 ) -> Result<()> {
+    if mode == LeanMode::Agent {
+        return crate::agent::native::prepare_executor(executor, config, workspace);
+    }
     executor.prefer_posix_capture();
     executor.set_sandbox_wrap(Vec::new());
     executor.set_lean_scope(None);
-    if mode == LeanMode::Agent {
-        let host = config.backend.default_scope == "host";
-        validate_scope(config, mode, host, workspace)?;
-        let network = crate::agent::NetworkPolicy::parse(&config.backend.workspace_network)
-            .unwrap_or(crate::agent::NetworkPolicy::Deny);
-        executor.set_lean_scope(Some((
-            if host {
-                crate::agent::ExecutionScope::Host
-            } else {
-                crate::agent::ExecutionScope::Workspace
-            },
-            workspace.canonicalize()?,
-            network,
-        )));
-        if host {
-            return Ok(());
-        }
-        #[cfg(target_os = "linux")]
-        {
-            executor.set_sandbox_wrap(crate::sandbox::agent_bwrap_argv(
-                workspace,
-                executor.cwd(),
-                network,
-            )?);
-        }
-    }
     Ok(())
 }
 
@@ -896,12 +879,23 @@ fn agent_reply(
     warm: &mut LeanWarm,
     pty: &PtyOut,
 ) -> String {
-    warm.ensure(config);
+    warm.ensure_local();
+    let denied_network = executor
+        .lean_scope()
+        .is_some_and(|(_, _, network)| *network == crate::agent::NetworkPolicy::Deny);
+    let empty_mcp = crate::mcp::McpRegistry::connect(&std::collections::BTreeMap::new());
+    if !denied_network {
+        warm.ensure_mcp(config);
+    }
     if executor.is_cancelled() {
         return "CANCELLED".into();
     }
     let skills = warm.skills.as_ref().expect("skills warmed");
-    let mcp = warm.mcp.as_ref().expect("mcp warmed");
+    let mcp = if denied_network {
+        &empty_mcp
+    } else {
+        warm.mcp.as_ref().expect("mcp warmed")
+    };
     let capabilities = crate::ui::TerminalCapabilities::detect_stdout();
     let _redirect = StdoutRedirect::to_pty(pty.clone());
     match modes::yolo::run_with_terminal(
@@ -915,7 +909,19 @@ fn agent_reply(
         session,
         capabilities,
     ) {
-        Ok(()) => "RAN".into(),
+        Ok(outcome) => match outcome.state {
+            crate::agent::native::NativeTurnState::Completed => "RAN".into(),
+            crate::agent::native::NativeTurnState::Cancelled => "CANCELLED".into(),
+            _ => format!(
+                "ERROR\t{}",
+                one_line(
+                    outcome
+                        .detail
+                        .as_deref()
+                        .unwrap_or("native task did not complete")
+                )
+            ),
+        },
         Err(error) => format!("ERROR\t{}", one_line(&error.to_string())),
     }
 }
@@ -2220,7 +2226,7 @@ mod tests {
                 &pty,
                 "NL\tagent\t/tmp\tspend one remaining call",
             );
-            assert_eq!(reply, "RAN");
+            assert_eq!(reply, "ERROR\tSession cost budget is exhausted.");
             let usage = provider.as_ref().unwrap().meter().snapshot();
             assert_eq!(usage.requests, 2, "agent exceeded the remaining allowance");
             assert_eq!(usage.input, 2_000_000);

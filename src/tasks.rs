@@ -56,6 +56,18 @@ impl From<Usage> for UsageSummary {
     }
 }
 
+/// Cumulative native execution, carried across every checkpoint continuation.
+/// Reservations are recorded before effects so interruption cannot replenish a
+/// tool or network allowance by starting another process.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct ExecutionCounters {
+    pub provider_turns: u32,
+    pub tool_calls: u32,
+    pub network_calls: u32,
+    pub elapsed_ms: u64,
+    pub cost_usd: f64,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Record {
     pub schema_version: u32,
@@ -68,6 +80,17 @@ pub struct Record {
     pub mode: String,
     pub provider: String,
     pub model: String,
+    #[serde(default)]
+    pub connection_id: String,
+    /// Connection settings contain credential references, never key values.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub connection: Option<crate::config::ConnectionConfig>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub execution_scope: Option<crate::agent::ExecutionScope>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub network_policy: Option<crate::agent::NetworkPolicy>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace_root: Option<PathBuf>,
     pub cwd: PathBuf,
     pub objective: String,
     pub messages: Vec<Msg>,
@@ -77,6 +100,14 @@ pub struct Record {
     pub pending_tool: Option<PendingTool>,
     #[serde(default)]
     pub usage: UsageSummary,
+    #[serde(default)]
+    pub execution: ExecutionCounters,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub execution_limits: Option<crate::agent::native::NativeLimits>,
+    #[serde(default)]
+    pub steering_revision: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub native_state: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub last_error_kind: Option<ErrorKind>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -86,6 +117,8 @@ pub struct Record {
 pub struct Active {
     record: Record,
     path: Option<PathBuf>,
+    usage_base: UsageSummary,
+    usage_meter_start: Usage,
 }
 
 impl Active {
@@ -106,29 +139,52 @@ impl Active {
             updated_at_ms: now,
             status: Status::Active,
             mode: config.aishe.mode.clone(),
-            provider: config.aishe.provider.clone(),
+            provider: config.active_provider_name().into(),
             model: config.active_model().into(),
+            connection_id: config.active_connection_id().into(),
+            connection: snapshot_connection(config),
+            execution_scope: None,
+            network_policy: None,
+            workspace_root: None,
             cwd: cwd.to_path_buf(),
             objective: crate::redact::redact(objective),
             messages: Vec::new(),
             completed_tools: Vec::new(),
             pending_tool: None,
             usage: UsageSummary::default(),
+            execution: ExecutionCounters::default(),
+            execution_limits: None,
+            steering_revision: 0,
+            native_state: None,
             last_error_kind: None,
             last_error: None,
         };
-        let path = persistence_enabled()
+        let path = (persistence_enabled() || background_task_id().is_some())
             .then(|| task_path(&record.id))
             .flatten();
-        let mut active = Self { record, path };
+        let mut active = Self {
+            record,
+            path,
+            usage_base: UsageSummary::default(),
+            usage_meter_start: Usage::default(),
+        };
         active.save();
         active
     }
 
     pub fn resume(record: Record) -> Self {
         let path = task_path(&record.id);
-        let mut active = Self { record, path };
+        let usage_base = record.usage.clone();
+        let mut active = Self {
+            record,
+            path,
+            usage_base,
+            usage_meter_start: Usage::default(),
+        };
         active.record.status = Status::Active;
+        active.record.native_state = None;
+        active.record.last_error = None;
+        active.record.last_error_kind = None;
         active.record.updated_at_ms = now_ms();
         active.save();
         active
@@ -142,9 +198,102 @@ impl Active {
         &self.record
     }
 
+    pub fn background_cancelled(&self) -> bool {
+        background_task_id().is_some_and(|id| crate::background::is_cancelled(&id).unwrap_or(false))
+    }
+
+    /// A detached worker must have both its task checkpoint and background
+    /// linkage on disk before contacting a provider or starting a tool.
+    pub fn ensure_persisted(&mut self) -> Result<()> {
+        let background_id = background_task_id();
+        let Some(path) = &self.path else {
+            if background_id.is_some() {
+                anyhow::bail!("background execution requires a durable task checkpoint");
+            }
+            return Ok(());
+        };
+        self.record.updated_at_ms = now_ms();
+        save_record_to(path, &self.record)?;
+        if let Some(id) = background_id.filter(|_| self.record.status == Status::Active) {
+            crate::background::attach_native_task(&id, self.id())?;
+        }
+        Ok(())
+    }
+
+    pub fn checkpoint_execution(&mut self, counters: ExecutionCounters) {
+        self.record.execution = counters;
+        self.save();
+    }
+
+    pub fn checkpoint_limits(&mut self, limits: crate::agent::native::NativeLimits) {
+        self.record.execution_limits = Some(limits);
+        self.save();
+    }
+
+    pub fn checkpoint_admission(&mut self, executor: &crate::executor::Executor) {
+        if let Some((scope, root, network)) = executor.lean_scope() {
+            self.record.execution_scope = Some(*scope);
+            self.record.network_policy = Some(*network);
+            self.record.workspace_root = Some(root.clone());
+            self.save();
+        }
+    }
+
+    pub fn checkpoint_cwd(&mut self, cwd: &Path) {
+        self.record.cwd = cwd.to_path_buf();
+        self.save();
+    }
+
+    pub fn set_usage_baseline(&mut self, usage: Usage) {
+        self.usage_meter_start = usage;
+    }
+
+    fn cumulative_usage(&self, usage: Usage) -> UsageSummary {
+        UsageSummary {
+            input: self
+                .usage_base
+                .input
+                .saturating_add(usage.input.saturating_sub(self.usage_meter_start.input)),
+            output: self
+                .usage_base
+                .output
+                .saturating_add(usage.output.saturating_sub(self.usage_meter_start.output)),
+            requests: self.usage_base.requests.saturating_add(
+                usage
+                    .requests
+                    .saturating_sub(self.usage_meter_start.requests),
+            ),
+        }
+    }
+
+    pub fn finish_native(
+        &mut self,
+        outcome: &crate::agent::native::NativeTurnOutcome,
+        messages: &[Msg],
+        usage: Usage,
+    ) {
+        use crate::agent::native::NativeTurnState;
+        let (status, reason) = match outcome.state {
+            NativeTurnState::Completed => (Status::Completed, "completed"),
+            NativeTurnState::Cancelled => (Status::Interrupted, "cancelled"),
+            NativeTurnState::BudgetExhausted => (Status::Interrupted, "budget_exhausted"),
+            NativeTurnState::IterationLimit => (Status::Interrupted, "iteration_limit"),
+            NativeTurnState::Failed => (Status::Failed, "failed"),
+            NativeTurnState::Declined => (Status::Interrupted, "declined"),
+        };
+        self.record.status = status;
+        self.record.native_state = Some(reason.into());
+        self.record.last_error = outcome.detail.as_deref().map(crate::redact::redact);
+        if status == Status::Completed {
+            self.record.pending_tool = None;
+            self.record.last_error_kind = None;
+        }
+        self.checkpoint_messages(messages, usage);
+    }
+
     pub fn checkpoint_messages(&mut self, messages: &[Msg], usage: Usage) {
         self.record.messages = sanitize_messages(messages);
-        self.record.usage = usage.into();
+        self.record.usage = self.cumulative_usage(usage);
         self.record.updated_at_ms = now_ms();
         self.save();
     }
@@ -155,7 +304,7 @@ impl Active {
             call: sanitize_tool_call(call),
             may_have_started: false,
         });
-        self.record.usage = usage.into();
+        self.record.usage = self.cumulative_usage(usage);
         self.record.updated_at_ms = now_ms();
         self.save();
     }
@@ -357,6 +506,12 @@ fn persistence_enabled() -> bool {
     }
 }
 
+fn background_task_id() -> Option<String> {
+    std::env::var("AISHE_BACKGROUND_TASK_ID")
+        .ok()
+        .filter(|value| !value.is_empty())
+}
+
 fn task_path(id: &str) -> Option<PathBuf> {
     valid_id(id)
         .then(|| root().map(|root| root.join(format!("{id}.json"))))
@@ -399,6 +554,82 @@ pub fn list() -> Vec<Record> {
 pub fn load(id: &str) -> Result<Record> {
     let path = task_path(id).context("invalid task ID")?;
     load_path(&path)
+}
+
+/// Restore a task's provider identity and execution bounds without restoring a
+/// grant. Callers must apply current organization policy and obtain fresh
+/// admission before continuing the checkpoint.
+pub fn restore_config(record: &Record, current: &Config) -> Result<Config> {
+    let mut config = current.clone();
+    let id = if record.connection_id.is_empty() {
+        record.provider.as_str()
+    } else {
+        record.connection_id.as_str()
+    };
+    restore_connection(
+        &mut config,
+        id,
+        &record.provider,
+        &record.model,
+        record.connection.as_ref(),
+    )
+    .with_context(|| format!("cannot restore task {} connection '{id}'", record.id))?;
+    config.aishe.mode.clone_from(&record.mode);
+    config.backend.default_scope = match record.execution_scope {
+        Some(crate::agent::ExecutionScope::Host) => "host",
+        Some(crate::agent::ExecutionScope::Workspace) | None => "workspace",
+    }
+    .into();
+    config.backend.workspace_network = match record.network_policy {
+        Some(crate::agent::NetworkPolicy::Allow) => "allow",
+        Some(crate::agent::NetworkPolicy::Deny) | None => "deny",
+    }
+    .into();
+    Ok(config)
+}
+
+pub(crate) fn restore_connection(
+    config: &mut Config,
+    id: &str,
+    provider: &str,
+    model: &str,
+    snapshot: Option<&crate::config::ConnectionConfig>,
+) -> Result<()> {
+    if let Some(connection) = snapshot {
+        if connection.provider != provider {
+            anyhow::bail!("task connection does not match its saved provider");
+        }
+        if connection.settings.base_url.contains("<redacted>") {
+            anyhow::bail!("saved task endpoint contains redacted private data; use credential references in the connection before resuming");
+        }
+        config.connections.insert(id.into(), connection.clone());
+        // Canonical Auto still consults the compatibility provider block.
+        if matches!(connection.auth, crate::config::ConnectionAuth::Auto)
+            && id == connection.provider
+        {
+            if connection.provider == "anthropic" {
+                config.providers.anthropic = connection.settings.clone();
+            } else {
+                config.providers.openai = connection.settings.clone();
+            }
+        }
+    }
+    config.select_connection(id)?;
+    if config.active_provider_name() != provider {
+        anyhow::bail!("saved task provider no longer matches connection '{id}'");
+    }
+    config.set_active_model(model.into());
+    Ok(())
+}
+
+pub(crate) fn snapshot_connection(config: &Config) -> Option<crate::config::ConnectionConfig> {
+    config.active_connection().cloned().map(|mut connection| {
+        connection.settings = config.active_provider_config().clone();
+        connection.label = crate::redact::redact(&connection.label);
+        connection.settings.base_url = crate::redact::redact(&connection.settings.base_url);
+        connection.settings.model = crate::redact::redact(&connection.settings.model);
+        connection
+    })
 }
 
 fn load_path(path: &Path) -> Result<Record> {
@@ -458,6 +689,20 @@ pub fn delete(id: &str) -> Result<()> {
     }
 }
 
+pub(crate) fn mark_background_cancelled(id: &str) -> Result<()> {
+    let mut record = load(id)?;
+    reconcile_background_cancellation(&mut record);
+    save_record_to(&task_path(id).context("invalid task ID")?, &record)
+}
+
+pub(crate) fn reconcile_background_cancellation(record: &mut Record) {
+    record.status = Status::Interrupted;
+    record.native_state = Some("cancelled".into());
+    record.last_error_kind = None;
+    record.last_error = Some("Cancelled by user.".into());
+    record.updated_at_ms = now_ms();
+}
+
 #[cfg(unix)]
 fn set_private(path: &Path, mode: u32) {
     use std::os::unix::fs::PermissionsExt;
@@ -496,6 +741,128 @@ mod tests {
         assert!(valid_id("123-abcd"));
         assert!(!valid_id("../task"));
         assert!(!valid_id("task/name"));
+    }
+
+    #[test]
+    fn resume_preserves_usage_and_counts_only_the_new_attempt() {
+        let mut task = Active::start(&Config::default(), Path::new("/tmp"), "continue");
+        task.path = None;
+        task.record.usage = UsageSummary {
+            input: 100,
+            output: 20,
+            requests: 2,
+        };
+        let mut resumed = Active {
+            record: task.record.clone(),
+            path: None,
+            usage_base: task.record.usage.clone(),
+            usage_meter_start: Usage::default(),
+        };
+        resumed.set_usage_baseline(Usage {
+            input: 50,
+            output: 10,
+            requests: 1,
+        });
+        resumed.checkpoint_messages(
+            &[],
+            Usage {
+                input: 80,
+                output: 17,
+                requests: 2,
+            },
+        );
+        assert_eq!(resumed.record.usage.input, 130);
+        assert_eq!(resumed.record.usage.output, 27);
+        assert_eq!(resumed.record.usage.requests, 3);
+        // Repeated checkpoints must not add the attempt twice.
+        resumed.checkpoint_messages(
+            &[],
+            Usage {
+                input: 90,
+                output: 18,
+                requests: 3,
+            },
+        );
+        assert_eq!(resumed.record.usage.input, 140);
+        assert_eq!(resumed.record.usage.requests, 4);
+    }
+
+    #[test]
+    fn native_terminal_reasons_are_durable_without_false_completion() {
+        use crate::agent::{NativeTurnOutcome, NativeTurnState};
+        for (state, reason, status) in [
+            (NativeTurnState::Cancelled, "cancelled", Status::Interrupted),
+            (
+                NativeTurnState::BudgetExhausted,
+                "budget_exhausted",
+                Status::Interrupted,
+            ),
+            (
+                NativeTurnState::IterationLimit,
+                "iteration_limit",
+                Status::Interrupted,
+            ),
+            (NativeTurnState::Failed, "failed", Status::Failed),
+            (NativeTurnState::Declined, "declined", Status::Interrupted),
+        ] {
+            let mut task = Active::start(&Config::default(), Path::new("/tmp"), "test");
+            task.path = None;
+            let outcome = NativeTurnOutcome::new(task.id(), state, Some("bounded stop".into()));
+            task.finish_native(&outcome, &[], Usage::default());
+            assert_eq!(task.record.status, status);
+            assert_eq!(task.record.native_state.as_deref(), Some(reason));
+            assert_eq!(task.record.last_error.as_deref(), Some("bounded stop"));
+        }
+    }
+
+    #[test]
+    fn checkpoint_restores_original_endpoint_model_and_bounds() {
+        let mut original = Config::default();
+        original.select_connection("openai").unwrap();
+        original.providers.openai.base_url = "http://127.0.0.1:8123/v1".into();
+        original.set_active_model("original-model".into());
+        let mut task = Active::start(&original, Path::new("/tmp"), "test");
+        task.record.execution_scope = Some(crate::agent::ExecutionScope::Workspace);
+        task.record.network_policy = Some(crate::agent::NetworkPolicy::Deny);
+        let mut changed = original.clone();
+        changed.providers.openai.base_url = "http://127.0.0.1:9999/v1".into();
+        changed.set_active_model("different-model".into());
+        changed.backend.default_scope = "host".into();
+        changed.backend.workspace_network = "allow".into();
+        let restored = restore_config(&task.record, &changed).unwrap();
+        assert_eq!(
+            restored.active_provider_config().base_url,
+            "http://127.0.0.1:8123/v1"
+        );
+        assert_eq!(restored.active_model(), "original-model");
+        assert_eq!(restored.backend.default_scope, "workspace");
+        assert_eq!(restored.backend.workspace_network, "deny");
+    }
+
+    #[test]
+    fn older_checkpoints_default_to_bounded_authority_and_empty_counters() {
+        let task = Active::start(&Config::default(), Path::new("/tmp"), "old");
+        let mut value = serde_json::to_value(task.record()).unwrap();
+        for field in [
+            "connection_id",
+            "connection",
+            "execution_scope",
+            "network_policy",
+            "workspace_root",
+            "execution",
+            "steering_revision",
+            "native_state",
+        ] {
+            value.as_object_mut().unwrap().remove(field);
+        }
+        let old: Record = serde_json::from_value(value).unwrap();
+        assert_eq!(old.execution, ExecutionCounters::default());
+        let mut current = Config::default();
+        current.backend.default_scope = "host".into();
+        current.backend.workspace_network = "allow".into();
+        let restored = restore_config(&old, &current).unwrap();
+        assert_eq!(restored.backend.default_scope, "workspace");
+        assert_eq!(restored.backend.workspace_network, "deny");
     }
 
     #[test]
