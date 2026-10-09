@@ -5,6 +5,12 @@ on:
     branches: ["**"]
   pull_request:
 
+# Push and PR events for one head branch share a gate. Preserve other branches
+# while discarding superseded/duplicate work from the same PR iteration.
+concurrency:
+  group: ci-${{ github.event.pull_request.head.repo.full_name || github.repository }}-${{ github.head_ref || github.ref_name }}
+  cancel-in-progress: true
+
 env:
   CARGO_TERM_COLOR: always
 

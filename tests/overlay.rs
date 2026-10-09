@@ -115,6 +115,11 @@ fn yolo_dry_run_session_previews_applies_and_is_undoable() {
             .unwrap()
             .env("XDG_CONFIG_HOME", &cfg_home)
             .env("XDG_DATA_HOME", &data_home)
+            // This fixture qualifies the historical batch dry-run contract,
+            // whose explicit preview/auto-apply policy predates native shell
+            // grants. Keep it on that front-end; native admission stays gated.
+            .env("AISHE_LEAN", "0")
+            .env("AISHE_LEGACY_OPENCODE", "1")
             .env("ANTHROPIC_API_KEY", "sk-test")
             .env("AISHE_FAKE_LLM", "done")
             .env(
