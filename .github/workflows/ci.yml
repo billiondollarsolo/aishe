@@ -144,6 +144,24 @@ jobs:
       - name: Build on 1.88
         run: cargo build --verbose --locked
 
+  sandbox-diagnostics:
+    name: Linux namespace diagnostics
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install bubblewrap
+        run: sudo apt-get update && sudo apt-get install -y bubblewrap
+      - name: Record actual runner policy and namespace probes
+        run: python3 tests/sandbox_profile.py
+      - name: Upload namespace diagnostic evidence
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: linux-namespace-diagnostics
+          path: test-results/sandbox-profile.json
+          if-no-files-found: error
+
   pty-native:
     name: Native shell (${{ matrix.os }})
     runs-on: ${{ matrix.os }}

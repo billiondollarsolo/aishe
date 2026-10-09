@@ -46,7 +46,9 @@ fn temp_root(label: &str) -> std::path::PathBuf {
         NEXT.fetch_add(1, Ordering::Relaxed)
     ));
     std::fs::create_dir_all(&dir).unwrap();
-    dir
+    // Darwin's temporary directory can be spelled /var while process cwd and
+    // task admission correctly resolve it to /private/var. Compare real paths.
+    dir.canonicalize().unwrap()
 }
 
 #[test]
@@ -834,7 +836,18 @@ fn background_task_isolates_reviews_applies_and_discards() {
         }
         std::thread::sleep(std::time::Duration::from_millis(50));
     }
-    assert!(state.contains("\"state\": \"completed\""), "{state}");
+    let activity = std::fs::read(
+        data.join("aishe/background-tasks")
+            .join(&id)
+            .join("activity.log"),
+    )
+    .unwrap_or_default();
+    let tail = &activity[activity.len().saturating_sub(8_000)..];
+    assert!(
+        state.contains("\"state\": \"completed\""),
+        "{state}\nworker activity:\n{}",
+        aishe::commands::display_safe(&aishe::redact::redact(&String::from_utf8_lossy(tail)))
+    );
     let stored: serde_json::Value = serde_json::from_str(&state).unwrap();
     assert_eq!(stored["scope"], "host");
     assert!(stored["worktree"].is_string());

@@ -84,8 +84,15 @@ class Prompt:
         env = dict(os.environ)
         env.update(TERM="xterm-256color", NO_COLOR="1", AISHE_UNICODE="ascii",
                    AISHE_MOTION="static" if static else "live")
+        # Darwin revokes a controlling tty when its session leader exits. Keep
+        # an outer owner alive until the prompt's exact restored attributes
+        # have been measured, then preserve the fixture's exit status.
         self.process = subprocess.Popen(
-            [str(fixture), kind], stdin=self.slave, stdout=self.slave, stderr=self.slave,
+            ["/bin/sh", "-c", '"$@"; result=$?; '
+             'printf "\\nPROMPT_PROCESS_EXIT=%s\\n" "$result"; '
+             'IFS= read -r finish; exit "$result"',
+             "prompt-tty-owner", str(fixture), kind],
+            stdin=self.slave, stdout=self.slave, stderr=self.slave,
             env=env, close_fds=True,
             preexec_fn=lambda: (os.setsid(), fcntl.ioctl(0, termios.TIOCSCTTY, 0)),
         )
@@ -132,12 +139,13 @@ class Prompt:
 
     def finished(self, expected):
         self.expect("RESULT:" + expected)
-        self.process.wait(timeout=3)
-        self.drain()
-        if self.process.returncode != 0:
-            raise AssertionError("prompt failed: %s\n%s" % (self.process.returncode, self.transcript))
+        self.expect("PROMPT_PROCESS_EXIT=0")
         if termios.tcgetattr(self.slave) != self.initial_termios:
             raise AssertionError("prompt did not restore terminal attributes\n" + self.transcript)
+        self.send(b"\r")
+        self.process.wait(timeout=3)
+        if self.process.returncode != 0:
+            raise AssertionError("prompt failed: %s\n%s" % (self.process.returncode, self.transcript))
 
     def close(self):
         if self.process.poll() is None:
