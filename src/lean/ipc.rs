@@ -167,7 +167,7 @@ fn spawn_background_watcher(
     };
     mkfifo(events)?;
     let initial = crate::background::shell_status_text(None, files.background_seen.as_deref())
-        .unwrap_or_else(|_| "running\t0\nready\t0\nattention\t0\n".into());
+        .unwrap_or_else(|_| "running\t0\nready\t0\nattention\t0\nneeds_you\t0\n".into());
     crate::config::write_atomic(status, initial.as_bytes())?;
     let status = status.clone();
     let events = events.clone();

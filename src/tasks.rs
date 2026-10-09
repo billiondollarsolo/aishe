@@ -15,6 +15,9 @@ use crate::config::Config;
 use crate::providers::{ErrorKind, Msg, ToolCall};
 use crate::usage::Usage;
 
+pub mod evidence;
+pub use evidence::{CheckEvidence, CheckSummary, ExecutionKind, ExecutionOutcome};
+
 pub const TASK_SCHEMA_VERSION: u32 = 1;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -30,6 +33,8 @@ pub enum Status {
 pub struct PendingTool {
     pub call: ToolCall,
     pub may_have_started: bool,
+    #[serde(default)]
+    pub execution_evidence_recorded: bool,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -106,12 +111,36 @@ pub struct Record {
     pub execution_limits: Option<crate::agent::native::NativeLimits>,
     #[serde(default)]
     pub steering_revision: u32,
+    #[serde(default)]
+    pub followup_revision: u32,
+    /// Command evidence is independent of model-written plans and conclusions.
+    #[serde(default)]
+    pub evidence: Vec<CheckEvidence>,
+    #[serde(default)]
+    pub workspace_revision: u64,
+    #[serde(default)]
+    pub evidence_dropped: usize,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub native_state: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub last_error_kind: Option<ErrorKind>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub last_error: Option<String>,
+}
+
+impl Record {
+    pub fn check_summary(&self) -> CheckSummary {
+        evidence::summary(self)
+    }
+
+    /// Reconcile a stopped worker without inventing an observed command result.
+    /// Presentation may use this on a checkpoint whose background worker died;
+    /// resume persists it before admitting any continuation effects.
+    pub fn reconcile_unfinished_evidence(&mut self, cancelled: bool) {
+        for entry in &mut self.evidence {
+            entry.interrupted(cancelled);
+        }
+    }
 }
 
 pub struct Active {
@@ -155,6 +184,10 @@ impl Active {
             execution: ExecutionCounters::default(),
             execution_limits: None,
             steering_revision: 0,
+            followup_revision: 0,
+            evidence: Vec::new(),
+            workspace_revision: 0,
+            evidence_dropped: 0,
             native_state: None,
             last_error_kind: None,
             last_error: None,
@@ -185,6 +218,7 @@ impl Active {
         active.record.native_state = None;
         active.record.last_error = None;
         active.record.last_error_kind = None;
+        active.record.reconcile_unfinished_evidence(false);
         active.record.updated_at_ms = now_ms();
         active.save();
         active
@@ -244,6 +278,118 @@ impl Active {
         self.save();
     }
 
+    /// Append and acknowledge a follow-up in the same durable checkpoint.
+    /// The caller may mark its mailbox item received only after this succeeds.
+    pub fn checkpoint_followup_revision(
+        &mut self,
+        revision: u32,
+        messages: &[Msg],
+        usage: Usage,
+    ) -> Result<()> {
+        self.record.followup_revision = self.record.followup_revision.max(revision);
+        self.record.messages = sanitize_messages(messages);
+        self.record.usage = self.cumulative_usage(usage);
+        self.ensure_persisted()
+    }
+
+    /// Invalidate prior checks before an effect that may change the workspace.
+    /// Opaque commands and MCP calls are conservative even when they only read.
+    pub fn note_workspace_change(&mut self) -> Result<()> {
+        self.record.workspace_revision = self.record.workspace_revision.saturating_add(1);
+        self.ensure_persisted()
+    }
+
+    /// Record a started command durably before passing it to the executor.
+    /// An uncertain command is never made safe to replay by this journal.
+    pub fn begin_execution_evidence(
+        &mut self,
+        call_id: &str,
+        command: &str,
+        cwd: &Path,
+        kind: ExecutionKind,
+    ) -> Result<()> {
+        if self
+            .record
+            .evidence
+            .iter()
+            .any(|entry| entry.call_id == call_id && entry.outcome == ExecutionOutcome::Running)
+        {
+            anyhow::bail!("execution evidence for tool call {call_id} is already recorded");
+        }
+        // Both tool names accept opaque shell commands. A check can modify
+        // sources too, so it cannot exempt earlier results from staleness.
+        self.record.workspace_revision = self.record.workspace_revision.saturating_add(1);
+        self.retain_bounded_evidence();
+        self.record.evidence.push(CheckEvidence::started(
+            call_id,
+            command,
+            cwd,
+            kind,
+            self.record.workspace_revision,
+        ));
+        if let Some(pending) = self
+            .record
+            .pending_tool
+            .as_mut()
+            .filter(|pending| pending.call.id == call_id)
+        {
+            pending.execution_evidence_recorded = true;
+        }
+        self.ensure_persisted()
+    }
+
+    pub fn finish_execution_evidence(
+        &mut self,
+        call_id: &str,
+        exit_code: i32,
+        output: &str,
+        duration_ms: u64,
+        cancelled: bool,
+    ) -> Result<()> {
+        let entry = self
+            .record
+            .evidence
+            .iter_mut()
+            .rev()
+            .find(|entry| entry.call_id == call_id && entry.outcome == ExecutionOutcome::Running)
+            .with_context(|| format!("no started execution evidence for tool call {call_id}"))?;
+        entry.finish(exit_code, output, duration_ms, cancelled);
+        self.ensure_persisted()
+    }
+
+    /// Declined or refused checks remain visible without inventing an exit code.
+    pub fn record_not_run_evidence(
+        &mut self,
+        call_id: &str,
+        command: &str,
+        cwd: &Path,
+        kind: ExecutionKind,
+        reason: &str,
+    ) -> Result<()> {
+        if self
+            .record
+            .evidence
+            .iter()
+            .any(|entry| entry.call_id == call_id && entry.outcome == ExecutionOutcome::Running)
+        {
+            anyhow::bail!("execution evidence for tool call {call_id} is already recorded");
+        }
+        self.retain_bounded_evidence();
+        let mut entry =
+            CheckEvidence::started(call_id, command, cwd, kind, self.record.workspace_revision);
+        entry.not_run(reason);
+        self.record.evidence.push(entry);
+        self.ensure_persisted()
+    }
+
+    fn retain_bounded_evidence(&mut self) {
+        if self.record.evidence.len() >= evidence::MAX_EVIDENCE {
+            let discarded = self.record.evidence.len() + 1 - evidence::MAX_EVIDENCE;
+            self.record.evidence.drain(..discarded);
+            self.record.evidence_dropped = self.record.evidence_dropped.saturating_add(discarded);
+        }
+    }
+
     pub fn set_usage_baseline(&mut self, usage: Usage) {
         self.usage_meter_start = usage;
     }
@@ -280,6 +426,7 @@ impl Active {
             NativeTurnState::IterationLimit => (Status::Interrupted, "iteration_limit"),
             NativeTurnState::Failed => (Status::Failed, "failed"),
             NativeTurnState::Declined => (Status::Interrupted, "declined"),
+            NativeTurnState::Waiting => (Status::Interrupted, "waiting"),
         };
         self.record.status = status;
         self.record.native_state = Some(reason.into());
@@ -287,6 +434,10 @@ impl Active {
         if status == Status::Completed {
             self.record.pending_tool = None;
             self.record.last_error_kind = None;
+        }
+        if outcome.state != NativeTurnState::Waiting {
+            self.record
+                .reconcile_unfinished_evidence(outcome.state == NativeTurnState::Cancelled);
         }
         self.checkpoint_messages(messages, usage);
     }
@@ -303,6 +454,7 @@ impl Active {
         self.record.pending_tool = Some(PendingTool {
             call: sanitize_tool_call(call),
             may_have_started: false,
+            execution_evidence_recorded: false,
         });
         self.record.usage = self.cumulative_usage(usage);
         self.record.updated_at_ms = now_ms();
@@ -324,6 +476,7 @@ impl Active {
         messages: &[Msg],
         usage: Usage,
     ) {
+        self.record_unexecuted_check(call, result);
         if !self
             .record
             .completed_tools
@@ -341,7 +494,21 @@ impl Active {
     }
 
     pub fn clear_pending_with_result(&mut self, result: &str) -> Option<Msg> {
-        let pending = self.record.pending_tool.take()?;
+        self.clear_pending_result(result, true)
+    }
+
+    /// A parked approval has not attempted an execution. Approval itself is a
+    /// mailbox result; only an explicit denial belongs in the check journal.
+    pub fn clear_pending_interaction_result(&mut self, result: &str, denied: bool) -> Option<Msg> {
+        self.clear_pending_result(result, denied)
+    }
+
+    fn clear_pending_result(&mut self, result: &str, record_not_run: bool) -> Option<Msg> {
+        let pending = self.record.pending_tool.as_ref()?.clone();
+        if record_not_run {
+            self.record_unexecuted_check(&pending.call, result);
+        }
+        self.record.pending_tool = None;
         let message = Msg::ToolResult {
             call_id: pending.call.id.clone(),
             content: crate::redact::redact(result),
@@ -352,8 +519,42 @@ impl Active {
         Some(message)
     }
 
+    fn record_unexecuted_check(&mut self, call: &ToolCall, result: &str) {
+        let already_recorded = self
+            .record
+            .pending_tool
+            .as_ref()
+            .filter(|pending| pending.call.id == call.id)
+            .map(|pending| pending.execution_evidence_recorded)
+            .unwrap_or_else(|| {
+                self.record
+                    .evidence
+                    .iter()
+                    .any(|entry| entry.call_id == call.id)
+            });
+        if call.name != "run_check" || already_recorded {
+            return;
+        }
+        let command = call
+            .arguments
+            .get("command")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("");
+        self.retain_bounded_evidence();
+        let mut entry = CheckEvidence::started(
+            &call.id,
+            command,
+            &self.record.cwd,
+            ExecutionKind::Check,
+            self.record.workspace_revision,
+        );
+        entry.not_run(result);
+        self.record.evidence.push(entry);
+    }
+
     pub fn interrupted(&mut self, messages: &[Msg], usage: Usage) {
         self.record.status = Status::Interrupted;
+        self.record.reconcile_unfinished_evidence(false);
         self.checkpoint_messages(messages, usage);
     }
 
@@ -361,12 +562,14 @@ impl Active {
         self.record.status = Status::Failed;
         self.record.last_error_kind = Some(kind);
         self.record.last_error = Some(crate::redact::redact(error));
+        self.record.reconcile_unfinished_evidence(false);
         self.checkpoint_messages(messages, usage);
     }
 
     pub fn completed(&mut self, messages: &[Msg], usage: Usage) {
         self.record.status = Status::Completed;
         self.record.pending_tool = None;
+        self.record.reconcile_unfinished_evidence(false);
         self.checkpoint_messages(messages, usage);
     }
 
@@ -384,10 +587,16 @@ fn sanitize_messages(messages: &[Msg]) -> Vec<Msg> {
 fn sanitize_message(message: &Msg) -> Msg {
     match message {
         Msg::User(text) => {
-            let objective = text
-                .rsplit_once("User request:")
-                .map(|(_, request)| request.trim())
-                .unwrap_or(text);
+            // Only the initial generated context block has this prefix. A
+            // follow-up or answer can quote "User request:" as ordinary text;
+            // stripping that text would lose its durable delivery identity.
+            let objective = if text.starts_with("OS: ") {
+                text.split_once("\nUser request:")
+                    .map(|(_, request)| request.trim())
+                    .unwrap_or(text)
+            } else {
+                text
+            };
             Msg::User(crate::redact::redact(objective))
         }
         Msg::Assistant(assistant) => Msg::Assistant(crate::providers::AssistantMsg {
@@ -644,7 +853,7 @@ fn load_path(path: &Path) -> Result<Record> {
             "Run `aishe sessions` to list what can be resumed.",
         ));
     }
-    let record: Record = serde_json::from_slice(
+    let mut record: Record = serde_json::from_slice(
         &std::fs::read(path).with_context(|| format!("reading task {}", path.display()))?,
     )?;
     if record.schema_version != TASK_SCHEMA_VERSION {
@@ -653,6 +862,9 @@ fn load_path(path: &Path) -> Result<Record> {
             record.id,
             record.schema_version
         );
+    }
+    if record.status != Status::Active {
+        record.reconcile_unfinished_evidence(record.native_state.as_deref() == Some("cancelled"));
     }
     Ok(record)
 }
@@ -701,6 +913,7 @@ pub(crate) fn reconcile_background_cancellation(record: &mut Record) {
     record.last_error_kind = None;
     record.last_error = Some("Cancelled by user.".into());
     record.updated_at_ms = now_ms();
+    record.reconcile_unfinished_evidence(true);
 }
 
 #[cfg(unix)]
@@ -724,6 +937,224 @@ mod tests {
     use super::*;
 
     #[test]
+    fn execution_start_is_durable_and_completion_uses_the_actual_result() {
+        let mut task = Active::start(&Config::default(), Path::new("/tmp"), "check changes");
+        let dir = std::env::temp_dir().join(format!("aishe-evidence-{}", task.id()));
+        task.path = Some(dir.join("task.json"));
+        task.begin_execution_evidence(
+            "check-1",
+            "cargo test",
+            Path::new("/tmp"),
+            ExecutionKind::Check,
+        )
+        .unwrap();
+        let pending = load_path(task.path.as_ref().unwrap()).unwrap();
+        assert_eq!(pending.evidence[0].outcome, ExecutionOutcome::Running);
+        assert_eq!(pending.evidence[0].exit_code, None);
+        task.finish_execution_evidence("check-1", 1, "test failed", 123, false)
+            .unwrap();
+        let finished = load_path(task.path.as_ref().unwrap()).unwrap();
+        assert_eq!(finished.evidence[0].outcome, ExecutionOutcome::Failed);
+        assert_eq!(finished.evidence[0].exit_code, Some(1));
+        assert_eq!(finished.evidence[0].duration_ms, Some(123));
+        assert_eq!(finished.evidence[0].output, "test failed");
+        assert_eq!(finished.check_summary().passed, 0);
+        assert_eq!(finished.check_summary().failed, 1);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn checks_are_explicit_and_known_effects_make_earlier_results_stale() {
+        let mut task = Active::start(&Config::default(), Path::new("/tmp"), "check changes");
+        task.path = None;
+        task.begin_execution_evidence("check-1", "test", Path::new("/tmp"), ExecutionKind::Check)
+            .unwrap();
+        task.finish_execution_evidence("check-1", 0, "passed", 1, false)
+            .unwrap();
+        assert_eq!(task.record.check_summary().passed, 1);
+        task.begin_execution_evidence(
+            "command-1",
+            "printf 'all tests passed'",
+            Path::new("/tmp"),
+            ExecutionKind::Activity,
+        )
+        .unwrap();
+        task.finish_execution_evidence("command-1", 0, "all tests passed", 1, false)
+            .unwrap();
+        let summary = task.record.check_summary();
+        assert_eq!(summary.total, 1);
+        assert_eq!(summary.passed, 0);
+        assert_eq!(summary.stale, 1);
+        task.begin_execution_evidence("check-2", "test", Path::new("/tmp"), ExecutionKind::Check)
+            .unwrap();
+        task.finish_execution_evidence("check-2", 0, "passed", 1, false)
+            .unwrap();
+        assert_eq!(task.record.check_summary().passed, 1);
+        task.note_workspace_change().unwrap();
+        assert_eq!(task.record.check_summary().passed, 0);
+        assert_eq!(task.record.check_summary().stale, 2);
+    }
+
+    #[test]
+    fn a_refused_check_has_no_exit_and_does_not_invalidate_completed_checks() {
+        let mut task = Active::start(&Config::default(), Path::new("/tmp"), "check changes");
+        task.path = None;
+        task.begin_execution_evidence("check-1", "test", Path::new("/tmp"), ExecutionKind::Check)
+            .unwrap();
+        task.finish_execution_evidence("check-1", 0, "passed", 1, false)
+            .unwrap();
+        task.record_not_run_evidence(
+            "check-2",
+            "blocked check",
+            Path::new("/tmp"),
+            ExecutionKind::Check,
+            "User declined.",
+        )
+        .unwrap();
+        let summary = task.record.check_summary();
+        assert_eq!(summary.passed, 1);
+        assert_eq!(summary.not_run, 1);
+        assert_eq!(summary.stale, 0);
+        assert_eq!(task.record.evidence[1].exit_code, None);
+        assert!(!summary.unresolved.is_empty());
+    }
+
+    #[test]
+    fn undispatched_checks_are_recorded_even_when_the_policy_path_returns_a_tool_error() {
+        let mut task = Active::start(&Config::default(), Path::new("/tmp"), "check changes");
+        task.path = None;
+        let call = ToolCall {
+            id: "refused-check".into(),
+            name: "run_check".into(),
+            arguments: serde_json::json!({"command":"blocked command", "reason":"check"}),
+        };
+        task.tool_completed(
+            &call,
+            "Not executed: budget exhausted.",
+            &[],
+            Usage::default(),
+        );
+        assert_eq!(task.record.check_summary().not_run, 1);
+        assert_eq!(task.record.evidence[0].exit_code, None);
+        assert_eq!(task.record.evidence[0].command, "blocked command");
+        task.tool_completed(
+            &call,
+            "Not executed: budget exhausted.",
+            &[],
+            Usage::default(),
+        );
+        assert_eq!(task.record.evidence.len(), 1);
+    }
+
+    #[test]
+    fn approval_responses_do_not_manufacture_a_not_run_check() {
+        let mut task = Active::start(&Config::default(), Path::new("/tmp"), "check changes");
+        task.path = None;
+        let call = ToolCall {
+            id: "parked-check".into(),
+            name: "run_check".into(),
+            arguments: serde_json::json!({"command":"test", "reason":"check"}),
+        };
+        task.pending(&call, &[], Usage::default());
+        assert!(task
+            .clear_pending_interaction_result("User approved the action.", false)
+            .is_some());
+        assert!(task.record.evidence.is_empty());
+        task.pending(&call, &[], Usage::default());
+        task.clear_pending_interaction_result("User declined the action.", true);
+        assert_eq!(task.record.check_summary().not_run, 1);
+    }
+
+    #[test]
+    fn stopped_and_resumed_checkpoints_preserve_uncertainty_without_replay() {
+        let mut task = Active::start(&Config::default(), Path::new("/tmp"), "check changes");
+        task.path = None;
+        task.begin_execution_evidence("check-1", "test", Path::new("/tmp"), ExecutionKind::Check)
+            .unwrap();
+        task.record.reconcile_unfinished_evidence(false);
+        assert_eq!(task.record.check_summary().uncertain, 1);
+        assert_eq!(task.record.evidence[0].exit_code, None);
+        assert!(task
+            .finish_execution_evidence("check-1", 0, "invented", 1, false)
+            .is_err());
+    }
+
+    #[test]
+    fn reused_provider_call_ids_record_distinct_completed_turns_and_refusals() {
+        let mut task = Active::start(&Config::default(), Path::new("/tmp"), "check changes");
+        task.path = None;
+        let call = ToolCall {
+            id: "call".into(),
+            name: "run_check".into(),
+            arguments: serde_json::json!({"command":"test", "reason":"check"}),
+        };
+        for code in [0, 1, 0] {
+            task.pending(&call, &[], Usage::default());
+            task.begin_execution_evidence("call", "test", Path::new("/tmp"), ExecutionKind::Check)
+                .unwrap();
+            assert!(task
+                .begin_execution_evidence("call", "test", Path::new("/tmp"), ExecutionKind::Check)
+                .is_err());
+            task.finish_execution_evidence("call", code, "observed", 1, false)
+                .unwrap();
+            task.tool_completed(&call, "observed", &[], Usage::default());
+        }
+        assert_eq!(task.record.evidence.len(), 3);
+        assert_eq!(
+            task.record
+                .evidence
+                .iter()
+                .map(|e| e.exit_code)
+                .collect::<Vec<_>>(),
+            vec![Some(0), Some(1), Some(0)]
+        );
+        task.pending(&call, &[], Usage::default());
+        task.tool_completed(&call, "User declined this command.", &[], Usage::default());
+        assert_eq!(task.record.evidence.len(), 4);
+        assert_eq!(task.record.evidence[3].outcome, ExecutionOutcome::NotRun);
+        assert_eq!(task.record.evidence[3].exit_code, None);
+    }
+
+    #[test]
+    fn started_pending_evidence_is_not_replaced_by_not_run_when_skipped_on_resume() {
+        let mut task = Active::start(&Config::default(), Path::new("/tmp"), "check changes");
+        task.path = None;
+        let call = ToolCall {
+            id: "call".into(),
+            name: "run_check".into(),
+            arguments: serde_json::json!({"command":"test", "reason":"check"}),
+        };
+        task.pending(&call, &[], Usage::default());
+        task.begin_execution_evidence("call", "test", Path::new("/tmp"), ExecutionKind::Check)
+            .unwrap();
+        task.mark_pending_started();
+        task.record.reconcile_unfinished_evidence(false);
+        task.clear_pending_with_result("Skipped on resume; effects may have occurred.");
+        assert_eq!(task.record.evidence.len(), 1);
+        assert_eq!(task.record.evidence[0].outcome, ExecutionOutcome::Uncertain);
+    }
+
+    #[test]
+    fn journal_is_bounded_and_reports_omitted_history() {
+        let mut task = Active::start(&Config::default(), Path::new("/tmp"), "check changes");
+        task.path = None;
+        for index in 0..=evidence::MAX_EVIDENCE {
+            let id = format!("check-{index}");
+            task.begin_execution_evidence(&id, "test", Path::new("/tmp"), ExecutionKind::Check)
+                .unwrap();
+            task.finish_execution_evidence(&id, 0, "passed", 1, false)
+                .unwrap();
+        }
+        assert_eq!(task.record.evidence.len(), evidence::MAX_EVIDENCE);
+        assert_eq!(task.record.evidence_dropped, 1);
+        let summary = task.record.check_summary();
+        assert_eq!(summary.passed, 1);
+        assert_eq!(summary.stale, evidence::MAX_EVIDENCE - 1);
+        assert_eq!(summary.omitted, 1);
+        assert!(!summary.unresolved.is_empty());
+    }
+
+    #[test]
     fn sanitization_strips_context_and_secrets() {
         let messages = vec![Msg::User(
             "OS: Linux\nInstalled tools: x\nUser request: use sk-proj-abcdefghijklmnopqrstuvwxyz1234567890"
@@ -734,6 +1165,19 @@ mod tests {
         assert!(!text.contains("Installed tools"));
         assert!(!text.contains("abcdefghijklmnopqrstuvwxyz"));
         assert!(text.contains("<redacted>"));
+    }
+
+    #[test]
+    fn sanitization_preserves_followup_identity_and_quoted_request_text() {
+        let text = "Follow-up #7:\nUse the literal label User request: before the result";
+        let sanitized = sanitize_message(&Msg::User(text.into()));
+        assert!(matches!(sanitized, Msg::User(value) if value == text));
+        let context =
+            "OS: Linux\nShell backend: zsh\nUser request: Preserve User request: in my title";
+        let sanitized = sanitize_message(&Msg::User(context.into()));
+        assert!(
+            matches!(sanitized, Msg::User(value) if value == "Preserve User request: in my title")
+        );
     }
 
     #[test]
@@ -851,12 +1295,20 @@ mod tests {
             "workspace_root",
             "execution",
             "steering_revision",
+            "followup_revision",
+            "evidence",
+            "workspace_revision",
+            "evidence_dropped",
             "native_state",
         ] {
             value.as_object_mut().unwrap().remove(field);
         }
         let old: Record = serde_json::from_value(value).unwrap();
         assert_eq!(old.execution, ExecutionCounters::default());
+        assert!(old.evidence.is_empty());
+        assert_eq!(old.workspace_revision, 0);
+        assert_eq!(old.followup_revision, 0);
+        assert_eq!(old.evidence_dropped, 0);
         let mut current = Config::default();
         current.backend.default_scope = "host".into();
         current.backend.workspace_network = "allow".into();

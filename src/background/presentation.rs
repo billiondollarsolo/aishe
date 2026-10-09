@@ -3,7 +3,7 @@
 //! Workers update one shared index while saving their authoritative records.
 //! Shell watchers read that index, never task transcripts, git, or processes.
 //! Reconciliation is throttled across shells and only checks active workers.
-//! Opening details acknowledges that exact terminal revision for this shell.
+//! Opening details acknowledges that exact terminal result across shells.
 
 use std::collections::BTreeMap;
 use std::fs::{self, File, OpenOptions};
@@ -18,7 +18,7 @@ use serde::{Deserialize, Serialize};
 
 use super::{Record, State, StepState};
 
-const CACHE_SCHEMA: u32 = 1;
+const CACHE_SCHEMA: u32 = 2;
 const MAX_ENTRIES: usize = 4096;
 const MAX_CACHE_BYTES: u64 = 8 * 1024 * 1024;
 const MAX_RECORD_BYTES: u64 = 1024 * 1024;
@@ -28,10 +28,14 @@ const MAX_PATCH_BYTES: usize = 256 * 1024;
 const RECONCILE_INTERVAL_MS: u128 = 2_000;
 const REDISCOVER_INTERVAL_MS: u128 = 60_000;
 const MAX_UNTRACKED_PREVIEW_FILES: usize = 32;
+// A valid mailbox text is at most 16 KiB. Escaping a one-byte terminal
+// control can expand it fourfold, so preserve the entire accepted text.
+const MAX_INTERACTION_PREVIEW_CHARS: usize = 4 * 16 * 1024;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TaskAttention {
+    NeedsYou,
     Running,
     Ready,
     Attention,
@@ -41,6 +45,7 @@ pub enum TaskAttention {
 impl From<State> for TaskAttention {
     fn from(state: State) -> Self {
         match state {
+            State::Waiting => Self::NeedsYou,
             State::Starting | State::Running => Self::Running,
             State::Completed => Self::Ready,
             State::Failed | State::Interrupted | State::Cancelled => Self::Attention,
@@ -54,6 +59,15 @@ pub struct TaskEntry {
     pub id: String,
     pub state: State,
     pub objective: String,
+    pub title: String,
+    pub pinned: bool,
+    pub archived: bool,
+    pub reviewed: bool,
+    pub result_revision: String,
+    pub metadata_revision: u64,
+    pub pending_requests: usize,
+    pub followups_queued: usize,
+    pub followups_received: usize,
     pub source_cwd: PathBuf,
     pub project: PathBuf,
     pub updated_at_ms: u128,
@@ -65,10 +79,54 @@ pub struct TaskEntry {
 
 impl TaskEntry {
     pub fn from_record(record: &Record) -> Self {
+        let metadata = super::metadata::read_for(&record.id).unwrap_or_default();
+        Self::with_metadata(record, metadata)
+    }
+
+    pub(super) fn with_metadata(record: &Record, metadata: super::metadata::TaskMetadata) -> Self {
+        let result_revision = super::metadata::result_revision(record);
+        let reviewed = !result_revision.is_empty()
+            && metadata.reviewed_revision.as_deref() == Some(result_revision.as_str());
+        let pending_requests = record
+            .mailbox
+            .requests
+            .iter()
+            .filter(|request| request.status == super::InteractionStatus::Pending)
+            .count();
+        let attention = if record.state == State::Waiting && pending_requests == 0 {
+            TaskAttention::Attention
+        } else {
+            record.state.into()
+        };
         Self {
             id: record.id.clone(),
             state: record.state,
             objective: safe_line(&record.objective, 320),
+            title: metadata
+                .title
+                .unwrap_or_else(|| safe_line(&record.objective, 320)),
+            pinned: metadata.pinned,
+            // Old archived preferences never conceal an active/newly waiting task.
+            archived: metadata.archived
+                && !result_revision.is_empty()
+                && pending_requests == 0
+                && metadata.archived_revision.as_deref() == Some(result_revision.as_str()),
+            reviewed,
+            result_revision,
+            metadata_revision: metadata.revision,
+            pending_requests,
+            followups_queued: record
+                .mailbox
+                .followups
+                .iter()
+                .filter(|entry| entry.status == super::FollowupStatus::Queued)
+                .count(),
+            followups_received: record
+                .mailbox
+                .followups
+                .iter()
+                .filter(|entry| entry.status == super::FollowupStatus::Received)
+                .count(),
             source_cwd: record.source_cwd.clone(),
             project: record
                 .source_repo
@@ -76,7 +134,7 @@ impl TaskEntry {
                 .unwrap_or_else(|| record.source_cwd.clone()),
             updated_at_ms: record.updated_at_ms,
             elapsed_ms: super::elapsed(record),
-            attention: record.state.into(),
+            attention,
             isolated: record.worktree.is_some(),
             activity: record_activity(record),
         }
@@ -91,6 +149,7 @@ impl TaskEntry {
 
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 pub struct TaskStatus {
+    pub needs_you: usize,
     pub running: usize,
     pub ready: usize,
     pub attention: usize,
@@ -100,9 +159,12 @@ pub struct TaskStatus {
 struct SeenRevision {
     updated_at_ms: u128,
     state: State,
+    #[serde(default)]
+    result_revision: String,
 }
 
-/// Per-shell acknowledgments. Merely listing tasks never marks them as read.
+/// Compatibility for old per-shell files. Current reviews persist in metadata;
+/// merely listing tasks never marks them as reviewed.
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct SeenTasks {
     #[serde(default)]
@@ -111,18 +173,22 @@ pub struct SeenTasks {
 
 impl SeenTasks {
     pub fn is_seen(&self, entry: &TaskEntry) -> bool {
-        self.revisions.get(&entry.id).is_some_and(|revision| {
-            revision.updated_at_ms == entry.updated_at_ms && revision.state == entry.state
-        })
+        entry.reviewed
+            || self.revisions.get(&entry.id).is_some_and(|revision| {
+                !entry.result_revision.is_empty()
+                    && revision.result_revision == entry.result_revision
+                    && revision.state == entry.state
+            })
     }
 
     fn acknowledge(&mut self, entry: &TaskEntry) {
-        if entry.attention != TaskAttention::Running {
+        if super::metadata::is_terminal(entry.state) {
             self.revisions.insert(
                 entry.id.clone(),
                 SeenRevision {
                     updated_at_ms: entry.updated_at_ms,
                     state: entry.state,
+                    result_revision: entry.result_revision.clone(),
                 },
             );
         }
@@ -151,12 +217,19 @@ pub struct TaskCheckpoint {
     pub completed_tools: usize,
     pub last_error: Option<String>,
     pub latest_result: Option<String>,
+    pub check_summary: crate::tasks::CheckSummary,
+    pub evidence: Vec<crate::tasks::CheckEvidence>,
+    pub evidence_dropped: usize,
+    pub workspace_revision: u64,
 }
 
 #[derive(Clone, Debug)]
 pub struct TaskDetails {
     /// Display-only copy. Actions must continue loading the authoritative ID.
     pub record: Record,
+    /// Exact result revision before display sanitization. Use this for review.
+    pub entry: TaskEntry,
+    pub interaction: super::InteractionSummary,
     pub checkpoint: Option<TaskCheckpoint>,
     pub log_lines: Vec<String>,
     pub activity: String,
@@ -200,9 +273,10 @@ pub fn read_seen(path: &Path) -> SeenTasks {
 /// Acknowledge the record revision that was actually opened, never a newer
 /// revision that might finish concurrently while the details page is visible.
 pub fn acknowledge_task(entry: &TaskEntry, path: &Path) -> Result<()> {
-    if entry.attention == TaskAttention::Running {
+    if !super::metadata::is_terminal(entry.state) {
         return Ok(());
     }
+    super::metadata::mark_task_reviewed(entry)?;
     let parent = path.parent().context("seen file has no parent")?;
     fs::create_dir_all(parent)?;
     let lock_path = path.with_extension("lock");
@@ -215,11 +289,28 @@ pub fn acknowledge_task(entry: &TaskEntry, path: &Path) -> Result<()> {
 
 /// Fast path: one bounded cache read, with no record, process, or git inspection.
 pub fn cached_task_entries(project: Option<&Path>) -> Result<Vec<TaskEntry>> {
+    cached_task_entries_with_query(project, EntryQuery::default())
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+pub struct EntryQuery {
+    pub include_closed: bool,
+    pub include_archived: bool,
+}
+
+pub fn cached_task_entries_with_query(
+    project: Option<&Path>,
+    query: EntryQuery,
+) -> Result<Vec<TaskEntry>> {
     let cache = read_cache(&cache_path()?)?;
     let mut entries = cache
         .entries
         .into_iter()
-        .filter(|entry| entry.attention != TaskAttention::Closed && entry.belongs_to(project))
+        .filter(|entry| {
+            entry.belongs_to(project)
+                && (query.include_closed || entry.attention != TaskAttention::Closed)
+                && (query.include_archived || !entry.archived)
+        })
         .collect::<Vec<_>>();
     sort_display_entries(&mut entries);
     Ok(entries)
@@ -233,15 +324,19 @@ pub fn shell_status_text(project: Option<&Path>, seen_path: Option<&Path>) -> Re
     let seen = seen_path.map(read_seen).unwrap_or_default();
     let status = task_status(project, &seen)?;
     Ok(format!(
-        "running\t{}\nready\t{}\nattention\t{}\n",
-        status.running, status.ready, status.attention
+        "running\t{}\nready\t{}\nattention\t{}\nneeds_you\t{}\n",
+        status.running, status.ready, status.attention, status.needs_you
     ))
 }
 
 fn status_for(entries: &[TaskEntry], seen: &SeenTasks) -> TaskStatus {
     let mut status = TaskStatus::default();
     for entry in entries {
+        if entry.archived {
+            continue;
+        }
         match entry.attention {
+            TaskAttention::NeedsYou => status.needs_you += 1,
             TaskAttention::Running => status.running += 1,
             TaskAttention::Ready if !seen.is_seen(entry) => status.ready += 1,
             TaskAttention::Attention if !seen.is_seen(entry) => status.attention += 1,
@@ -319,6 +414,19 @@ pub fn refresh_task_cache() -> Result<()> {
 
 /// Explicit browser reads reconcile stale workers before showing their states.
 pub fn task_entries(project: Option<&Path>, include_closed: bool) -> Result<Vec<TaskEntry>> {
+    task_entries_with_query(
+        project,
+        EntryQuery {
+            include_closed,
+            include_archived: false,
+        },
+    )
+}
+
+pub fn task_entries_with_query(
+    project: Option<&Path>,
+    query: EntryQuery,
+) -> Result<Vec<TaskEntry>> {
     // Explicit refresh discovers records written by older aishe versions and
     // imported task fixtures. Timer refreshes inspect only indexed workers.
     let mut records = bounded_records()?;
@@ -332,17 +440,7 @@ pub fn task_entries(project: Option<&Path>, include_closed: bool) -> Result<Vec<
         cache.reconciled_at_ms = super::now_ms();
         cache.discovered_at_ms = cache.reconciled_at_ms;
     })?;
-    let mut entries = if include_closed {
-        records
-            .iter()
-            .map(TaskEntry::from_record)
-            .collect::<Vec<_>>()
-    } else {
-        cached_task_entries(project)?
-    };
-    entries.retain(|entry| {
-        entry.belongs_to(project) && (include_closed || entry.attention != TaskAttention::Closed)
-    });
+    let mut entries = cached_task_entries_with_query(project, query)?;
     sort_display_entries(&mut entries);
     Ok(entries)
 }
@@ -354,13 +452,21 @@ pub(super) fn record_saved(record: &Record) -> Result<()> {
     })
 }
 
-fn replace_entry(entries: &mut Vec<TaskEntry>, new: TaskEntry) {
+fn replace_entry(entries: &mut Vec<TaskEntry>, mut new: TaskEntry) {
     if let Some(index) = entries.iter().position(|entry| entry.id == new.id) {
         if entries[index].updated_at_ms > new.updated_at_ms
             || (entries[index].updated_at_ms == new.updated_at_ms
                 && entries[index].state != new.state)
         {
             return;
+        }
+        if entries[index].metadata_revision > new.metadata_revision {
+            let previous = &entries[index];
+            new.title = previous.title.clone();
+            new.pinned = previous.pinned;
+            new.archived = previous.archived && previous.result_revision == new.result_revision;
+            new.reviewed = previous.reviewed && previous.result_revision == new.result_revision;
+            new.metadata_revision = previous.metadata_revision;
         }
         entries.remove(index);
     }
@@ -373,12 +479,18 @@ fn trim_entries(entries: &mut Vec<TaskEntry>) {
     // Retain active workers and the newest failures before finished history.
     entries.sort_by_key(|entry| {
         let priority = match entry.attention {
-            TaskAttention::Running => 0,
-            TaskAttention::Attention => 1,
-            TaskAttention::Ready => 2,
-            TaskAttention::Closed => 3,
+            TaskAttention::NeedsYou => 0,
+            TaskAttention::Running => 1,
+            TaskAttention::Attention => 2,
+            TaskAttention::Ready => 3,
+            TaskAttention::Closed => 4,
         };
-        (priority, std::cmp::Reverse(entry.updated_at_ms))
+        (
+            entry.archived,
+            priority,
+            !entry.pinned,
+            std::cmp::Reverse(entry.updated_at_ms),
+        )
     });
     entries.truncate(MAX_ENTRIES);
 }
@@ -386,12 +498,18 @@ fn trim_entries(entries: &mut Vec<TaskEntry>) {
 fn sort_display_entries(entries: &mut [TaskEntry]) {
     entries.sort_by_key(|entry| {
         let priority = match entry.attention {
-            TaskAttention::Attention => 0,
-            TaskAttention::Running => 1,
-            TaskAttention::Ready => 2,
-            TaskAttention::Closed => 3,
+            TaskAttention::NeedsYou => 0,
+            TaskAttention::Attention => 1,
+            TaskAttention::Running => 2,
+            TaskAttention::Ready => 3,
+            TaskAttention::Closed => 4,
         };
-        (priority, std::cmp::Reverse(entry.updated_at_ms))
+        (
+            entry.attention != TaskAttention::NeedsYou,
+            !entry.pinned,
+            priority,
+            std::cmp::Reverse(entry.updated_at_ms),
+        )
     });
 }
 
@@ -490,10 +608,11 @@ fn read_bounded(path: &Path, limit: u64) -> Result<Vec<u8>> {
 pub fn task_details(id: &str) -> Result<TaskDetails> {
     let mut record = read_record(id)?;
     super::reconcile(&mut record)?;
+    let entry = TaskEntry::from_record(&record);
     let checkpoint = record
         .native_task_id
         .as_deref()
-        .and_then(load_checkpoint_summary);
+        .and_then(|id| load_checkpoint_summary(id, record.state));
     let activity = checkpoint
         .as_ref()
         .and_then(|checkpoint| checkpoint.pending_tool.as_ref())
@@ -502,8 +621,23 @@ pub fn task_details(id: &str) -> Result<TaskDetails> {
         .unwrap_or_else(|| record_activity(&record));
     let log_lines = preview_log(&super::log_path(id)?).unwrap_or_default();
     sanitize_record(&mut record);
+    let interaction = super::InteractionSummary {
+        pending: record
+            .mailbox
+            .requests
+            .iter()
+            .filter(|request| request.status == super::InteractionStatus::Pending)
+            .cloned()
+            .collect(),
+        requests: record.mailbox.requests.clone(),
+        followups: record.mailbox.followups.clone(),
+        queued: entry.followups_queued,
+        received: entry.followups_received,
+    };
     Ok(TaskDetails {
         record,
+        entry,
+        interaction,
         checkpoint,
         log_lines,
         activity,
@@ -520,7 +654,7 @@ fn read_record(id: &str) -> Result<Record> {
     Ok(record)
 }
 
-fn load_checkpoint_summary(id: &str) -> Option<TaskCheckpoint> {
+fn load_checkpoint_summary(id: &str, state: State) -> Option<TaskCheckpoint> {
     if id.is_empty()
         || !id
             .bytes()
@@ -530,9 +664,12 @@ fn load_checkpoint_summary(id: &str) -> Option<TaskCheckpoint> {
     }
     let path = crate::tasks::root()?.join(format!("{id}.json"));
     let bytes = read_bounded(&path, MAX_CHECKPOINT_BYTES).ok()?;
-    let record: crate::tasks::Record = serde_json::from_slice(&bytes).ok()?;
+    let mut record: crate::tasks::Record = serde_json::from_slice(&bytes).ok()?;
     if record.schema_version != crate::tasks::TASK_SCHEMA_VERSION || record.id != id {
         return None;
+    }
+    if !matches!(state, State::Starting | State::Running) {
+        record.reconcile_unfinished_evidence(state == State::Cancelled);
     }
     Some(checkpoint_summary(&record))
 }
@@ -570,11 +707,38 @@ fn checkpoint_summary(record: &crate::tasks::Record) -> TaskCheckpoint {
             .as_deref()
             .map(|error| safe_multiline(error, 4096)),
         latest_result,
+        check_summary: record.check_summary(),
+        evidence: record
+            .evidence
+            .iter()
+            .rev()
+            .take(100)
+            .rev()
+            .cloned()
+            .map(|mut evidence| {
+                evidence.command = safe_line(&evidence.command, 2048);
+                evidence.output = safe_multiline(&evidence.output, 8192);
+                evidence.cwd = safe_path(&evidence.cwd);
+                evidence
+            })
+            .collect(),
+        evidence_dropped: record.evidence_dropped,
+        workspace_revision: record.workspace_revision,
     }
 }
 
 fn record_activity(record: &Record) -> String {
     match record.state {
+        State::Waiting
+            if record
+                .mailbox
+                .requests
+                .iter()
+                .any(|request| request.status == super::InteractionStatus::Pending) =>
+        {
+            "Needs your response".into()
+        }
+        State::Waiting => "Response saved · ready to resume".into(),
         State::Starting => "Starting".into(),
         State::Running => record
             .plan
@@ -603,6 +767,33 @@ fn sanitize_record(record: &mut Record) {
         .map(|branch| safe_line(branch, 256));
     record.connection = None;
     record.process_start = None;
+    record.mailbox.requests.truncate(128);
+    for request in &mut record.mailbox.requests {
+        request.prompt = safe_multiline(&request.prompt, MAX_INTERACTION_PREVIEW_CHARS);
+        request.choices.truncate(12);
+        for choice in &mut request.choices {
+            *choice = safe_multiline(choice, MAX_INTERACTION_PREVIEW_CHARS);
+        }
+        match &mut request.response {
+            Some(super::InteractionResponse::Answer { text }) => {
+                *text = safe_multiline(text, MAX_INTERACTION_PREVIEW_CHARS)
+            }
+            Some(super::InteractionResponse::Denied { reason }) => {
+                *reason = safe_multiline(reason, MAX_INTERACTION_PREVIEW_CHARS)
+            }
+            _ => {}
+        }
+        request.binding.tool_name = safe_line(&request.binding.tool_name, 120);
+        request.binding.cwd = safe_path(&request.binding.cwd);
+        request.binding.workspace_root = safe_path(&request.binding.workspace_root);
+        if let Some(preimage) = &mut request.binding.file_preimage {
+            preimage.path = safe_path(&preimage.path);
+        }
+    }
+    record.mailbox.followups.truncate(256);
+    for followup in &mut record.mailbox.followups {
+        followup.text = safe_multiline(&followup.text, MAX_INTERACTION_PREVIEW_CHARS);
+    }
     record.steering.truncate(20);
     for steering in &mut record.steering {
         *steering = safe_multiline(steering, 2048);
@@ -635,6 +826,10 @@ fn sanitize_record(record: &mut Record) {
     ] {
         *value = safe_line(value, 256);
     }
+}
+
+fn safe_path(path: &Path) -> PathBuf {
+    PathBuf::from(safe_line(&path.to_string_lossy(), 4096))
 }
 
 fn preview_log(path: &Path) -> Result<Vec<String>> {
@@ -926,7 +1121,13 @@ mod tests {
         let mut record = super::super::tests::fixture_record();
         record.state = state;
         record.updated_at_ms = updated_at_ms;
-        TaskEntry::from_record(&record)
+        record.result_revision = updated_at_ms as u64;
+        let mut entry = TaskEntry::from_record(&record);
+        if state == State::Waiting {
+            entry.attention = TaskAttention::NeedsYou;
+            entry.pending_requests = 1;
+        }
+        entry
     }
 
     #[test]
@@ -944,6 +1145,7 @@ mod tests {
         assert_eq!(
             status_for(&entries, &SeenTasks::default()),
             TaskStatus {
+                needs_you: 0,
                 running: 2,
                 ready: 1,
                 attention: 3,
@@ -952,7 +1154,7 @@ mod tests {
     }
 
     #[test]
-    fn opening_details_acknowledges_only_that_shell_and_revision() {
+    fn legacy_seen_files_acknowledge_only_exact_result_revision() {
         let finished = entry(State::Completed, 3);
         let mut first_shell = SeenTasks::default();
         let second_shell = SeenTasks::default();
@@ -972,6 +1174,65 @@ mod tests {
             status_for(&[entry(State::Completed, 9)], &first_shell).ready,
             1
         );
+    }
+
+    #[test]
+    fn persistent_review_is_shared_without_hiding_new_results_or_requests() {
+        let mut reviewed = entry(State::Completed, 3);
+        reviewed.reviewed = true;
+        assert_eq!(
+            status_for(&[reviewed.clone()], &SeenTasks::default()).ready,
+            0
+        );
+        let mut first_shell = SeenTasks::default();
+        first_shell.acknowledge(&reviewed);
+        let mut renamed = reviewed.clone();
+        renamed.title = "My task".into();
+        renamed.updated_at_ms = 999;
+        renamed.pinned = true;
+        assert_eq!(status_for(&[renamed], &SeenTasks::default()).ready, 0);
+        assert_eq!(
+            status_for(&[entry(State::Completed, 4)], &first_shell).ready,
+            1
+        );
+        let waiting = entry(State::Waiting, 5);
+        first_shell.acknowledge(&waiting);
+        assert_eq!(status_for(&[waiting], &first_shell).needs_you, 1);
+    }
+
+    #[test]
+    fn waiting_without_unanswered_requests_remains_visible_as_attention() {
+        let mut record = super::super::tests::fixture_record();
+        record.state = State::Waiting;
+        let entry =
+            TaskEntry::with_metadata(&record, super::super::metadata::TaskMetadata::default());
+        assert_eq!(entry.attention, TaskAttention::Attention);
+        assert_eq!(entry.pending_requests, 0);
+        assert_eq!(status_for(&[entry], &SeenTasks::default()).attention, 1);
+        assert_eq!(record_activity(&record), "Response saved · ready to resume");
+    }
+
+    #[test]
+    fn needs_you_precedes_pinned_tasks_and_archived_results_are_quiet() {
+        let mut pinned = entry(State::Completed, 8);
+        pinned.id = "pinned".into();
+        pinned.pinned = true;
+        let mut waiting = entry(State::Waiting, 2);
+        waiting.id = "waiting".into();
+        let mut failed = entry(State::Failed, 9);
+        failed.id = "failed".into();
+        let mut archived = entry(State::Completed, 10);
+        archived.archived = true;
+        let mut entries = vec![failed, pinned, waiting];
+        sort_display_entries(&mut entries);
+        assert_eq!(
+            entries
+                .iter()
+                .map(|entry| entry.id.as_str())
+                .collect::<Vec<_>>(),
+            ["waiting", "pinned", "failed"]
+        );
+        assert_eq!(status_for(&[archived], &SeenTasks::default()).ready, 0);
     }
 
     #[test]
@@ -1047,6 +1308,42 @@ mod tests {
             .as_ref()
             .unwrap()
             .contains("user:pass"));
+    }
+
+    #[test]
+    fn accepted_long_interaction_previews_preserve_action_and_choice_tails() {
+        let mut record = super::super::tests::fixture_record();
+        let action_tail = "\nactual action at the end";
+        let prompt = format!("{}{action_tail}", "a".repeat(16 * 1024 - action_tail.len()));
+        let choice_tail = "selected choice tail";
+        // Escaping controls must not push a valid choice's tail past a preview cap.
+        let choice = format!(
+            "{}{choice_tail}",
+            "\u{1b}".repeat(16 * 1024 - choice_tail.len())
+        );
+        record.mailbox.requests.push(
+            serde_json::from_value(serde_json::json!({
+                "id": "request", "nonce": "nonce", "kind": "approval",
+                "prompt": prompt, "choices": [choice], "status": "pending",
+                "created_at_ms": 1,
+                "binding": {
+                    "native_task_id": "native", "call_id": "call", "tool_name": "run_command",
+                    "arguments_sha256": "0".repeat(64), "cwd": "/tmp", "workspace_root": "/tmp",
+                    "scope": crate::agent::ExecutionScope::Host,
+                    "network": crate::agent::NetworkPolicy::Allow,
+                    "action_digest": "0".repeat(64)
+                }
+            }))
+            .unwrap(),
+        );
+        sanitize_record(&mut record);
+        let request = &record.mailbox.requests[0];
+        assert_eq!(request.prompt.len(), 16 * 1024);
+        assert!(request.prompt.ends_with(action_tail));
+        assert!(request.choices[0].ends_with(choice_tail));
+        assert!(!request.choices[0].contains('\u{1b}'));
+        assert!(!request.prompt.ends_with('…'));
+        assert!(!request.choices[0].ends_with('…'));
     }
 
     #[test]

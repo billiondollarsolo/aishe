@@ -21,6 +21,57 @@ legacy hook and CLI surface; the current shell's `/commands` is authoritative.
 keeping the editable command and cursor; `aishe task browse [TASK_ID] [--all]`
 opens it from the CLI. Navigation, attention counts, and review behavior are
 described in [background work](front-ends.md#background-work).
+`/inbox` or `aishe inbox` opens **Needs you** for background questions and
+specific action approvals across all projects.
+
+## Background task controls
+
+Use the browser for decisions in context, or the following commands for a
+scriptable workflow. `aishe task show TASK_ID --json` exposes the durable
+request IDs and follow-up revisions used by these controls.
+
+```sh
+aishe task browse --needs-you --all
+aishe task answer TASK_ID REQUEST_ID 'Use the existing API'
+aishe task approve TASK_ID REQUEST_ID
+aishe task deny TASK_ID REQUEST_ID 'Keep the existing public behavior'
+
+aishe task followup TASK_ID 'Focus on the startup delay first'
+aishe task edit-followup TASK_ID REVISION 'Measure startup before editing'
+aishe task remove-followup TASK_ID REVISION
+
+aishe task rename TASK_ID 'Startup performance'
+aishe task pin TASK_ID
+aishe task unpin TASK_ID
+aishe task reviewed TASK_ID
+aishe task archive TASK_ID
+aishe task browse --archived --all
+aishe task unarchive TASK_ID
+```
+
+Answer, approve, and deny persist your response before continuing the saved
+task. Approval is one-shot for the exact proposed action; it does not change
+scope, network access, or policy. The interactive approval menu defaults to
+**Leave for later**.
+
+Follow-ups are **queued** until the worker durably receives them at a safe
+boundary. Edit and remove work only while the message is queued and delivery
+has not begun. A running command can finish before steering is received; use
+cancel to stop execution. For completed work, use `aishe task rework` instead.
+If a message arrives during final completion, the task shows attention and
+retains it queued; `aishe task resume` delivers it through the saved transcript.
+
+Renaming does not change the objective. Pinning affects browser order. Archive
+hides finished work while keeping its result and workspace; running or waiting
+tasks cannot be archived. Opening finished details, or `task reviewed`, marks
+that exact result reviewed across shells. A subsequent result becomes unseen
+again. `--needs-you` and `--archived` select separate views and cannot be combined.
+
+Task details include the native journal's recorded-check summary and unresolved
+items. Press **e** for actual commands, exit statuses, durations, and bounded
+output; a plan's free-form evidence is not a recorded execution. Conservative
+freshness and the distinction between completion and verification are explained
+in [Native agent execution](configuration.md#native-agent-execution).
 
 ## Subcommands
 

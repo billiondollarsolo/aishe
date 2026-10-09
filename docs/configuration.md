@@ -183,11 +183,23 @@ snapshot and workspace-access boundaries.
 | `iteration_limit` | `75` | The model/tool loop reached its configured iteration cap. |
 | `failed` | `1` | A provider, execution, or checkpoint failure prevented completion. |
 | `declined` | `2` | Required approval was declined. |
+| `waiting` | `75` | A background task saved a question or action approval and paused for your response. |
 
-A final model answer does not independently verify task success. Verification
-commands and their output remain available in the transcript; an enforced
-acceptance-criteria/proof workflow is future work. Errors, cancellations, and
-limits cannot publish a successful background completion.
+A final model answer does not independently verify task success. The native
+agent can use `run_check` for an explicit verification command. Its evidence
+journal records the command, directory, observed exit status, duration, and
+bounded output; model-written plans and claims do not count as recorded checks.
+Errors, cancellations, and limits cannot publish a successful background
+completion. The durable state distinguishes a waiting task from an iteration
+limit even though both return exit `75`.
+
+Recorded checks show passed, failed, cancelled, not run, uncertain, or stale
+outcomes. Subsequent command activity, another check, file edits, or opaque MCP
+calls make earlier checks stale because AIShe cannot establish that those
+actions left the workspace unchanged. Their original exit status and output
+remain available. This tracks task activity; it does not detect every change
+made by another process or certify all task requirements. Review the recorded
+checks and unresolved items alongside the result and patch.
 
 ### Checkpoints and resume
 
@@ -209,6 +221,16 @@ saved caps. Older records without a native checkpoint require an explicitly
 started new task. Protected host targets require fresh typed confirmation and
 fail closed headlessly. Organization policy that denies network also refuses
 native host scope, which cannot enforce that restriction.
+
+A background question or approval pauses the worker rather than leaving a
+process waiting on terminal input. Your response is saved before continuation;
+the worker resumes the same transcript, connection/model, scope, and remaining
+allowances. Time spent waiting for you does not consume its active execution
+time allowance. Approval applies once to the exact proposed action and its
+execution context. It does not change the task's scope, network access, or
+organization policy. It cannot authorize a changed action or file target.
+Configured confirmation tiers and file previews become inbox requests for a
+background worker rather than unattended terminal prompts.
 
 ### Budget and cancellation boundaries
 

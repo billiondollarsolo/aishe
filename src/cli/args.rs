@@ -700,6 +700,12 @@ pub(crate) enum BackgroundTaskCmd {
         /// Include work from every project.
         #[arg(long)]
         all: bool,
+        /// Show only unanswered questions and specific action approvals.
+        #[arg(long, conflicts_with = "archived")]
+        needs_you: bool,
+        /// Browse archived results.
+        #[arg(long)]
+        archived: bool,
     },
     /// Start an agent in the background; git worktree isolation is the default.
     Start {
@@ -786,6 +792,52 @@ pub(crate) enum BackgroundTaskCmd {
         /// Task whose changes to discard
         id: String,
     },
+    /// Answer a background question and continue its saved task.
+    Answer {
+        id: String,
+        request_id: String,
+        #[arg(required = true)]
+        text: Vec<String>,
+    },
+    /// Approve only the exact action identified by this pending request.
+    Approve { id: String, request_id: String },
+    /// Deny a pending action and continue with the decision.
+    Deny {
+        id: String,
+        request_id: String,
+        reason: Vec<String>,
+    },
+    /// Queue steering for a running task at its next safe boundary.
+    Followup {
+        id: String,
+        #[arg(required = true)]
+        text: Vec<String>,
+    },
+    /// Edit a follow-up that has not yet been received.
+    EditFollowup {
+        id: String,
+        revision: u32,
+        #[arg(required = true)]
+        text: Vec<String>,
+    },
+    /// Remove a follow-up that has not yet been received.
+    RemoveFollowup { id: String, revision: u32 },
+    /// Set a display name without changing the task's objective.
+    Rename {
+        id: String,
+        #[arg(required = true)]
+        name: Vec<String>,
+    },
+    /// Keep a task near the top of the browser.
+    Pin { id: String },
+    /// Remove a task's pin.
+    Unpin { id: String },
+    /// Hide a finished task while retaining its result and workspace.
+    Archive { id: String },
+    /// Return an archived result to the task browser.
+    Unarchive { id: String },
+    /// Mark the current result reviewed across shell sessions.
+    Reviewed { id: String },
     /// Replace a task's durable checkpoint plan.
     Plan {
         /// Task whose plan to inspect or edit
@@ -1321,9 +1373,16 @@ pub(crate) fn session_action(command: &TaskSessionCmd) -> aishe::cli::session::A
 pub(crate) fn background_task_action(command: &BackgroundTaskCmd) -> aishe::background::Action {
     use aishe::background::{Action, StepState};
     match command {
-        BackgroundTaskCmd::Browse { id, all } => Action::Browse {
+        BackgroundTaskCmd::Browse {
+            id,
+            all,
+            needs_you,
+            archived,
+        } => Action::Browse {
             id: id.clone(),
             all: *all,
+            needs_you: *needs_you,
+            archived: *archived,
         },
         BackgroundTaskCmd::Start {
             objective,
@@ -1367,6 +1426,62 @@ pub(crate) fn background_task_action(command: &BackgroundTaskCmd) -> aishe::back
             hunks: hunks.clone(),
         },
         BackgroundTaskCmd::Discard { id } => Action::Discard { id: id.clone() },
+        BackgroundTaskCmd::Answer {
+            id,
+            request_id,
+            text,
+        } => Action::Answer {
+            id: id.clone(),
+            request_id: request_id.clone(),
+            text: text.join(" "),
+        },
+        BackgroundTaskCmd::Approve { id, request_id } => Action::Approve {
+            id: id.clone(),
+            request_id: request_id.clone(),
+        },
+        BackgroundTaskCmd::Deny {
+            id,
+            request_id,
+            reason,
+        } => Action::Deny {
+            id: id.clone(),
+            request_id: request_id.clone(),
+            reason: reason.join(" "),
+        },
+        BackgroundTaskCmd::Followup { id, text } => Action::Followup {
+            id: id.clone(),
+            text: text.join(" "),
+        },
+        BackgroundTaskCmd::EditFollowup { id, revision, text } => Action::EditFollowup {
+            id: id.clone(),
+            revision: *revision,
+            text: text.join(" "),
+        },
+        BackgroundTaskCmd::RemoveFollowup { id, revision } => Action::RemoveFollowup {
+            id: id.clone(),
+            revision: *revision,
+        },
+        BackgroundTaskCmd::Rename { id, name } => Action::Rename {
+            id: id.clone(),
+            name: name.join(" "),
+        },
+        BackgroundTaskCmd::Pin { id } => Action::Pin {
+            id: id.clone(),
+            pinned: true,
+        },
+        BackgroundTaskCmd::Unpin { id } => Action::Pin {
+            id: id.clone(),
+            pinned: false,
+        },
+        BackgroundTaskCmd::Archive { id } => Action::Archive {
+            id: id.clone(),
+            archived: true,
+        },
+        BackgroundTaskCmd::Unarchive { id } => Action::Archive {
+            id: id.clone(),
+            archived: false,
+        },
+        BackgroundTaskCmd::Reviewed { id } => Action::Reviewed { id: id.clone() },
         BackgroundTaskCmd::Plan { id, steps } => Action::Plan {
             id: id.clone(),
             steps: steps.clone(),

@@ -230,9 +230,11 @@ the checkpoint.
 
 Completion returns exit `0`; cancellation, exhausted budgets, iteration caps,
 failure, and declined approval have separate nonzero exits. A completed task
-means the model supplied its final answer, so review the change and verification
-output before applying it. Exact exit codes and budget/cancellation boundaries
-are in [Native agent execution](configuration.md#native-agent-execution).
+means the model supplied its final answer, so review the change, recorded
+checks, and unresolved items before applying it. Background tasks can also pause
+for a question or specific action approval. Exact exit codes and budget and
+cancellation boundaries are in
+[Native agent execution](configuration.md#native-agent-execution).
 
 ### Keep track of background work
 
@@ -241,13 +243,29 @@ a quiet badge for running work and unseen results or problems; it disappears
 when there is nothing to show. Press **Ctrl-X b** to open the task browser and
 return to your current command with its cursor intact. A personal shortcut
 already bound to that key stays yours; `/tasks` also opens the browser.
+**Needs you** marks a paused question or action approval. Open `/inbox` to answer
+those requests across all projects; leaving an approval for later is the default.
 
 Type to search, use arrows and **Enter** for details, **Ctrl-R** to refresh, and
-**Tab** to include other projects. In details, **l** opens activity, **p**
-shows read-only changes, **?** shows actions, and **Esc** goes back. **Ctrl-C**
-closes the browser from any page. Inspect the
-result and limits before deciding to resume, stop, rework, apply, or discard.
+**Tab** to include other projects. **Ctrl-V** switches between Current work,
+Needs you, and Archived history. In details, **Enter** or **u** responds to a
+request, **f** sends a follow-up, **e** opens recorded checks, **l** opens
+activity, **p** shows read-only changes, **?** opens searchable Task actions,
+and **Esc** goes back. **Ctrl-C** closes the browser from any page. Inspect the
+result, checks, unresolved items, and limits before deciding to resume, stop,
+rework, apply, or discard.
 Those actions ask for confirmation. Looking at a result does not apply it.
+Follow-ups show **queued** until saved in the worker's transcript, then
+**received**. Press **q** in details, or choose queued follow-ups in Task actions,
+to edit or remove a message before delivery. Send a new follow-up once delivery
+begins. Existing commands can finish before the worker reads your message.
+
+Opening a finished result marks that exact result reviewed across shells. Give
+it a useful name, pin work you return to, or archive finished work from **?**.
+Archive keeps the result and workspace; Archived history brings it back. A new
+attempt or result becomes visible again. For a scriptable response or follow-up,
+see [background task controls](commands.md#background-task-controls).
+
 Personal themes can use `AISHE_BACKGROUND_INDICATOR`; setting
 `AISHE_PERSONAL_INDICATOR=1` opts into AIShe's right-prompt suffix.
 

@@ -332,7 +332,9 @@ def browser_views_and_acknowledgement():
         assert probe(shell, fixture.root)[:2] == before[:2], "browser changed editing buffer/cursor"
         assert termios.tcgetattr(shell.master) == flags, "browser did not restore terminal modes"
         badge = probe(shell, fixture.root)[3]
-        assert "1 ready" in badge and "2 ready" not in badge, "viewed completion was not acknowledged per shell"
+        assert "1 ready" in badge and "2 ready" not in badge, "viewed completion was not acknowledged"
+        metadata = json.loads((fixture.data / "background-tasks" / task_id / "metadata.json").read_text())
+        assert metadata.get("reviewed_revision"), "review did not persist the exact result revision"
         assert fixture.persisted(task_id)["state"] == "completed", "viewing changed durable task lifecycle"
         shell.send("\x05\r")
         wait_until(shell, lambda: (fixture.root / "browser-effect").exists(), "browser-restored draft effect")
@@ -434,7 +436,7 @@ def narrow_ctrl_c_and_cli_fallback():
         fixture.close()
 
 
-def personal_theme_and_ack_isolation():
+def personal_theme_and_persistent_review():
     for enabled in (False, True):
         fixture = Fixture("personal-" + str(enabled), personal=True, indicator=enabled)
         try:
@@ -458,7 +460,18 @@ def personal_theme_and_ack_isolation():
             first.send("\x1b")
             first.drain(.15)
             wait_until(first, lambda: "ready" not in probe(first, fixture.root)[3], "read completion acknowledgement")
-            assert "1 ready" in probe(second, fixture.root)[3], "viewing acknowledged another shell's completion"
+            wait_until(second, lambda: "ready" not in probe(second, fixture.root)[3],
+                       "review acknowledgement reaches another shell", 10)
+            metadata_path = fixture.data / "background-tasks/personal-complete-001/metadata.json"
+            reviewed = json.loads(metadata_path.read_text()).get("reviewed_revision")
+            assert reviewed, "reviewed result revision was not persisted"
+            restarted = fixture.shell()
+            assert restarted.ready()
+            assert "ready" not in probe(restarted, fixture.root)[3], "reviewed result reappeared in a new shell"
+            fixture.cli("task", "rename", "personal-complete-001", "PERSONAL_NAMED_PROOF")
+            fixture.cli("task", "pin", "personal-complete-001")
+            assert json.loads(metadata_path.read_text())["reviewed_revision"] == reviewed
+            assert "ready" not in probe(first, fixture.root)[3], "name or pin resurrected a reviewed result"
             fixture.update("personal-complete-001", error="new revision detail")
             wait_until(first, lambda: "1 ready" in probe(first, fixture.root)[3], "new terminal revision becomes unread", 10)
             fixture.record("personal-failed-001", "failed", "ATTENTION_PROOF failed task")
@@ -475,7 +488,7 @@ def personal_theme_and_ack_isolation():
             fixture.assert_quiet()
         finally:
             fixture.close()
-    print("  ok   personal RPROMPT preserved/opt-in supported; acknowledgements isolated and revision-aware")
+    print("  ok   personal RPROMPT preserved/opt-in supported; reviews persist across shells/restarts and track exact results")
 
 
 def static_plain_browser():
@@ -551,7 +564,7 @@ def standalone_reconcile_and_wrapped_end():
 def run():
     scenarios = [quiet_idle_and_live_badge, browser_views_and_acknowledgement,
                  confirmed_controls, narrow_ctrl_c_and_cli_fallback,
-                 personal_theme_and_ack_isolation, static_plain_browser,
+                 personal_theme_and_persistent_review, static_plain_browser,
                  standalone_reconcile_and_wrapped_end]
     failed = []
     for scenario in scenarios:

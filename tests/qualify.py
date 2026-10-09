@@ -31,7 +31,7 @@ from harness_identity import cargo_version, parse_binary_identity, require_curre
 
 
 SCHEMA_VERSION = 1
-PROFILE_REVISION = "2026-10-09.1"
+PROFILE_REVISION = "2026-10-09.2"
 THREAT_MODEL_VERSION = "2026-07-31.1"
 THREAT_MODEL_REVIEWED = "2026-07-31"
 BINARY = "{release_binary}"
@@ -266,6 +266,14 @@ NATIVE_BACKGROUND_UI = python_gate(
     "native-background-ui", "Quiet task indicators, browser, controls, and terminal restoration",
     "tests/background_tasks_pty.py", BINARY, required_tools=("zsh", "git"), timeout=300,
 )
+NATIVE_TASK_INTERACTIONS = python_gate(
+    "native-task-interactions", "Durable background questions, approvals, steering, evidence, and metadata",
+    "tests/native_task_interactions.py", BINARY, timeout=300,
+)
+NATIVE_TASK_INTERACTIONS_UI = python_gate(
+    "native-task-interactions-ui", "Needs you, live follow-ups, checks, and history with terminal restoration",
+    "tests/task_interactions_pty.py", BINARY, required_tools=("zsh", "git"), timeout=300,
+)
 BASH_HOOK_CURRENT = python_gate(
     "bash-hook-current",
     "Native Bash hook declared-tier matrix for the current Bash",
@@ -449,6 +457,8 @@ LOCAL_FULL_GATES = (
     NATIVE_SHELL_STATE,
     NATIVE_BACKGROUND_LIFECYCLE,
     NATIVE_BACKGROUND_UI,
+    NATIVE_TASK_INTERACTIONS,
+    NATIVE_TASK_INTERACTIONS_UI,
     python_gate(
         "legacy-pty-smoke", "Explicit legacy zsh smoke", "tests/pty_smoke.py", BINARY,
         required_tools=("zsh",), execution_env=LEGACY_ENV,

@@ -30,6 +30,24 @@ const FETCH_BYTE_CAP: u64 = 4 * 1024 * 1024;
 /// Timeout for a single `fetch_url` request.
 const FETCH_TIMEOUT_SECS: u64 = 20;
 
+/// An explicit verification command. Dispatch it through the same executor,
+/// authority, confirmations, and budgets as `run_command`; its observed result
+/// is additionally stored in the task's durable evidence journal.
+pub fn run_check_tool() -> ToolDef {
+    ToolDef {
+        name: "run_check".into(),
+        description: "Run an explicit test or verification command and record its actual exit status and output as a check. Uses the same permissions and limits as run_command. A passing command is evidence for this check, not proof that every task requirement was met.".into(),
+        schema: json!({
+            "type": "object",
+            "properties": {
+                "command": {"type": "string"},
+                "reason": {"type": "string", "description": "what this check verifies"}
+            },
+            "required": ["command", "reason"]
+        }),
+    }
+}
+
 /// The built-in file tool definitions, offered to yolo when `file_tools` is on.
 pub fn file_tool_defs() -> Vec<ToolDef> {
     vec![

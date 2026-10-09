@@ -12,11 +12,21 @@ use serde::{Deserialize, Serialize};
 
 use crate::config::Config;
 
+mod interactions;
+mod metadata;
 mod presentation;
+pub use interactions::{
+    acknowledge_followups, claim_followups, consume_interaction, create_approval, create_question,
+    interaction_for_call, interaction_response, interaction_summary, queued_followups, Followup,
+    FollowupStatus, InteractionBinding, InteractionKind, InteractionMailbox, InteractionRequest,
+    InteractionResponse, InteractionStatus, InteractionSummary,
+};
+pub use metadata::{archive_task, mark_task_reviewed, pin_task, rename_task, TaskMetadata};
 pub use presentation::{
-    acknowledge_task, cached_task_entries, read_seen, refresh_task_cache, shell_status_text,
-    task_details, task_entries, task_patch_lines, task_status, SeenTasks, TaskAttention,
-    TaskCheckpoint, TaskDetails, TaskEntry, TaskStatus,
+    acknowledge_task, cached_task_entries, cached_task_entries_with_query, read_seen,
+    refresh_task_cache, shell_status_text, task_details, task_entries, task_entries_with_query,
+    task_patch_lines, task_status, EntryQuery, SeenTasks, TaskAttention, TaskCheckpoint,
+    TaskDetails, TaskEntry, TaskStatus,
 };
 
 const SCHEMA_VERSION: u32 = 1;
@@ -28,6 +38,7 @@ const MAX_OBJECTIVE_BYTES: usize = 64 * 1024;
 pub enum State {
     Starting,
     Running,
+    Waiting,
     Completed,
     Failed,
     Interrupted,
@@ -83,6 +94,10 @@ pub struct Record {
     pub created_at_ms: u128,
     pub updated_at_ms: u128,
     pub state: State,
+    #[serde(default)]
+    pub result_revision: u64,
+    #[serde(default)]
+    pub mailbox: InteractionMailbox,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub native_task_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -132,6 +147,8 @@ pub enum Action {
     Browse {
         id: Option<String>,
         all: bool,
+        needs_you: bool,
+        archived: bool,
     },
     Start {
         objective: String,
@@ -189,11 +206,58 @@ pub enum Action {
         state: StepState,
         evidence: Option<String>,
     },
+    Answer {
+        id: String,
+        request_id: String,
+        text: String,
+    },
+    Approve {
+        id: String,
+        request_id: String,
+    },
+    Deny {
+        id: String,
+        request_id: String,
+        reason: String,
+    },
+    Followup {
+        id: String,
+        text: String,
+    },
+    EditFollowup {
+        id: String,
+        revision: u32,
+        text: String,
+    },
+    RemoveFollowup {
+        id: String,
+        revision: u32,
+    },
+    Rename {
+        id: String,
+        name: String,
+    },
+    Pin {
+        id: String,
+        pinned: bool,
+    },
+    Archive {
+        id: String,
+        archived: bool,
+    },
+    Reviewed {
+        id: String,
+    },
 }
 
 pub fn command(config: &Config, action: Action) -> Result<u8> {
     let result = match action {
-        Action::Browse { id, all } => crate::cli::taskui::browse(config, id.as_deref(), all),
+        Action::Browse {
+            id,
+            all,
+            needs_you,
+            archived,
+        } => crate::cli::taskui::browse_filtered(config, id.as_deref(), all, needs_you, archived),
         Action::Start {
             objective,
             no_isolation,
@@ -235,9 +299,66 @@ pub fn command(config: &Config, action: Action) -> Result<u8> {
             state,
             evidence,
         } => set_step(&id, step, state, evidence.as_deref()),
+        Action::Answer {
+            id,
+            request_id,
+            text,
+        } => interactions::respond(
+            config,
+            &id,
+            &request_id,
+            InteractionResponse::Answer { text },
+        ),
+        Action::Approve { id, request_id } => {
+            interactions::respond(config, &id, &request_id, InteractionResponse::Approved)
+        }
+        Action::Deny {
+            id,
+            request_id,
+            reason,
+        } => interactions::respond(
+            config,
+            &id,
+            &request_id,
+            InteractionResponse::Denied { reason },
+        ),
+        Action::Followup { id, text } => interactions::queue_followup(&id, &text),
+        Action::EditFollowup { id, revision, text } => {
+            interactions::edit_followup(&id, revision, &text)
+        }
+        Action::RemoveFollowup { id, revision } => interactions::remove_followup(&id, revision),
+        Action::Rename { id, name } => rename_task(&id, &name).map(|_| 0),
+        Action::Pin { id, pinned } => pin_task(&id, pinned).map(|_| 0),
+        Action::Archive { id, archived } => archive_task(&id, archived).map(|_| 0),
+        Action::Reviewed { id } => {
+            let details = task_details(&id)?;
+            mark_task_reviewed(&details.entry).map(|_| 0)
+        }
     };
     refresh_status();
     result
+}
+
+/// Background workers own a new session as well as a process group. A group
+/// alone still inherits the drawer's controlling terminal and can interfere
+/// with its input or terminal state when the drawer resumes the task.
+fn detach_worker(child: &mut Command) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        // SAFETY: setsid is async-signal-safe and this closure accesses no
+        // shared process state between fork and exec.
+        unsafe {
+            child.pre_exec(|| {
+                if libc::setsid() < 0 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                Ok(())
+            });
+        }
+    }
+    #[cfg(not(unix))]
+    let _ = child;
 }
 
 fn start(config: &Config, objective: &str, no_isolation: bool, budget: Budget) -> Result<u8> {
@@ -297,6 +418,8 @@ fn start(config: &Config, objective: &str, no_isolation: bool, budget: Budget) -
         created_at_ms: now,
         updated_at_ms: now,
         state: State::Starting,
+        result_revision: 0,
+        mailbox: InteractionMailbox::default(),
         native_task_id: None,
         engine: Some(actual_engine(config, crate::lean::enabled()).into()),
         connection_id: config.active_connection_id().into(),
@@ -361,11 +484,7 @@ fn start(config: &Config, objective: &str, no_isolation: bool, budget: Budget) -
         );
     set_budget_environment(&mut child, &record.budget);
     set_worker_engine_environment(&mut child, &record, config)?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::process::CommandExt;
-        child.process_group(0);
-    }
+    detach_worker(&mut child);
     let child = match child.spawn() {
         Ok(child) => child,
         Err(error) => {
@@ -471,7 +590,12 @@ pub fn resume_checkpoint(id: &str) -> Result<Option<crate::tasks::Record>> {
             )));
     }
     checkpoint.steering_revision = record.steering_revision;
-    if checkpoint.status == crate::tasks::Status::Completed && has_new_steering {
+    let has_followups = record
+        .mailbox
+        .followups
+        .iter()
+        .any(|entry| entry.status == FollowupStatus::Queued);
+    if checkpoint.status == crate::tasks::Status::Completed && (has_new_steering || has_followups) {
         checkpoint.status = crate::tasks::Status::Interrupted;
     }
     Ok(Some(checkpoint))
@@ -632,6 +756,7 @@ fn native_finish_state(state: crate::agent::NativeTurnState) -> State {
     use crate::agent::NativeTurnState;
     match state {
         NativeTurnState::Completed => State::Completed,
+        NativeTurnState::Waiting => State::Waiting,
         NativeTurnState::Cancelled => State::Cancelled,
         NativeTurnState::Declined => State::Interrupted,
         NativeTurnState::BudgetExhausted
@@ -653,8 +778,28 @@ fn finish_record(record: &mut Record, state: State, code: i32, error: Option<Str
     record.state = state;
     record.exit_code = Some(code);
     record.error = error;
-    record.pid = None;
-    record.process_start = None;
+    // A paused worker is about to exit but may still be alive. Retain its
+    // identity so an immediate response cannot race another writer against
+    // the same native checkpoint. Waiting time is excluded by settle_elapsed.
+    if state != State::Waiting {
+        record.pid = None;
+        record.process_start = None;
+    }
+    if state == State::Completed
+        && record
+            .mailbox
+            .followups
+            .iter()
+            .any(|entry| entry.status == FollowupStatus::Queued)
+    {
+        record.state = State::Interrupted;
+        record.exit_code = Some(75);
+        record.error =
+            Some("a follow-up arrived as the task finished; resume to deliver it".into());
+    }
+    if matches!(state, State::Cancelled | State::Applied | State::Discarded) {
+        interactions::invalidate_pending(record);
+    }
     if let Some((files, bytes)) = changed_usage(record) {
         if (record.budget.max_changed_files > 0 && files > record.budget.max_changed_files)
             || (record.budget.max_changed_bytes > 0 && bytes > record.budget.max_changed_bytes)
@@ -665,6 +810,17 @@ fn finish_record(record: &mut Record, state: State, code: i32, error: Option<Str
                 "task change budget exceeded: {files} files / {bytes} bytes"
             ));
             record.budget_exceeded = true;
+        }
+    }
+    if record.budget_exceeded {
+        interactions::invalidate_pending(record);
+    } else if record.state != State::Waiting {
+        // A budget/cancellation/failure can win just after request creation.
+        // Do not leave an unanswerable question looking live in a failed task.
+        for request in &mut record.mailbox.requests {
+            if request.status == InteractionStatus::Pending {
+                request.status = InteractionStatus::Invalidated;
+            }
         }
     }
 }
@@ -707,6 +863,7 @@ fn list(json: bool) -> Result<u8> {
     for record in &mut records {
         reconcile(record)?;
     }
+    records.retain(|record| !TaskEntry::from_record(record).archived);
     if json {
         println!(
             "{}",
@@ -719,12 +876,15 @@ fn list(json: bool) -> Result<u8> {
         println!("no background tasks");
     } else {
         for record in records {
+            let entry = TaskEntry::from_record(&record);
             println!(
-                "{}  {:?}  {}  {}",
+                "{}  {:?}  {}  {}{}{}",
                 record.id,
                 record.state,
                 branch_label(&record),
-                record.objective.chars().take(72).collect::<String>()
+                entry.title.chars().take(72).collect::<String>(),
+                if entry.pinned { " · pinned" } else { "" },
+                if entry.reviewed { " · reviewed" } else { "" },
             );
         }
     }
@@ -732,80 +892,52 @@ fn list(json: bool) -> Result<u8> {
 }
 
 pub fn inbox(config: &Config, json: bool) -> Result<u8> {
-    let mut attention = records()?
-        .into_iter()
-        .filter(|record| !matches!(record.state, State::Applied | State::Discarded))
-        .collect::<Vec<_>>();
-    for record in &mut attention {
+    if !json && std::io::stdin().is_terminal() && std::io::stdout().is_terminal() {
+        return crate::cli::taskui::browse_filtered(config, None, true, true, false);
+    }
+    let mut items = records()?;
+    for record in &mut items {
         reconcile(record)?;
     }
-    attention.sort_by_key(|record| std::cmp::Reverse(record.updated_at_ms));
+    items.retain(|record| {
+        record.state == State::Waiting
+            && record
+                .mailbox
+                .requests
+                .iter()
+                .any(|request| request.status == InteractionStatus::Pending)
+    });
+    items.sort_by_key(|record| std::cmp::Reverse(record.updated_at_ms));
     if json {
         println!(
             "{}",
             serde_json::to_string_pretty(&serde_json::json!({
                 "schema_version": 1,
-                "items": attention,
+                "items": items,
             }))?
         );
-        return Ok(0);
-    }
-    if attention.is_empty() {
-        println!("inbox zero · no active or reviewable agent tasks");
-        return Ok(0);
-    }
-    if !std::io::stdin().is_terminal() || !std::io::stdout().is_terminal() {
-        for record in attention {
-            println!("{}  {:?}  {}", record.id, record.state, record.objective);
-        }
-        return Ok(0);
-    }
-    let labels = attention
-        .iter()
-        .map(|record| format!("{:?} · {} · {}", record.state, record.id, record.objective))
-        .collect::<Vec<_>>();
-    let crate::promptui::PickerResult::Use(index) =
-        crate::promptui::filter_picker("Agent inbox", &labels, 0)?
-    else {
-        return Ok(0);
-    };
-    let record = &attention[index];
-    match record.state {
-        State::Starting | State::Running => {
-            let choices = vec!["Tail activity".into(), "Cancel task".into(), "Leave".into()];
-            let crate::promptui::PickerResult::Use(choice) =
-                crate::promptui::filter_picker("Running task", &choices, 0)?
-            else {
-                return Ok(0);
-            };
-            match choice {
-                0 => tail(&record.id, 100),
-                1 => cancel(&record.id),
-                _ => Ok(0),
+    } else if items.is_empty() {
+        println!("inbox zero · no tasks need your response");
+    } else {
+        for record in items {
+            let entry = TaskEntry::from_record(&record);
+            println!("{}  needs you  {}", record.id, entry.title);
+            for request in record
+                .mailbox
+                .requests
+                .iter()
+                .filter(|request| request.status == InteractionStatus::Pending)
+            {
+                println!(
+                    "  {}  {:?}  {}",
+                    request.id,
+                    request.kind,
+                    crate::commands::display_safe_multiline(&request.prompt)
+                );
             }
         }
-        State::Completed => review(config, &record.id),
-        State::Failed | State::Interrupted | State::Cancelled => {
-            let choices = vec![
-                "Review changes".into(),
-                "Resume task".into(),
-                "Show details".into(),
-                "Leave".into(),
-            ];
-            let crate::promptui::PickerResult::Use(choice) =
-                crate::promptui::filter_picker("Task needs attention", &choices, 0)?
-            else {
-                return Ok(0);
-            };
-            match choice {
-                0 => review(config, &record.id),
-                1 => resume(config, &record.id),
-                2 => show(&record.id, false),
-                _ => Ok(0),
-            }
-        }
-        State::Applied | State::Discarded => Ok(0),
     }
+    Ok(0)
 }
 
 pub fn palette_summaries() -> Vec<(String, State, String)> {
@@ -950,10 +1082,16 @@ fn cancel(id: &str) -> Result<u8> {
     let mut signalled = None;
     let mut cancelled = false;
     update(id, |record| {
-        if !matches!(record.state, State::Starting | State::Running) {
+        if !matches!(
+            record.state,
+            State::Starting | State::Running | State::Waiting
+        ) {
             return Ok(());
         }
-        if let Some(pid) = record.pid {
+        let pid_to_signal = record.pid.filter(|pid| {
+            record.state != State::Waiting || same_process(*pid, record.process_start.as_deref())
+        });
+        if let Some(pid) = pid_to_signal {
             if !same_process(pid, record.process_start.as_deref()) {
                 anyhow::bail!("refusing to signal task {id}: process identity changed");
             }
@@ -974,6 +1112,14 @@ fn cancel(id: &str) -> Result<u8> {
         record.state = State::Cancelled;
         record.exit_code = Some(130);
         record.error = Some("cancelled by user".into());
+        interactions::invalidate_pending(record);
+        if signalled.is_none() {
+            record.pid = None;
+            record.process_start = None;
+            if let Some(native_id) = &record.native_task_id {
+                crate::tasks::mark_background_cancelled(native_id)?;
+            }
+        }
         cancelled = true;
         Ok(())
     })?;
@@ -999,6 +1145,9 @@ fn cancel(id: &str) -> Result<u8> {
             {
                 record.pid = None;
                 record.process_start = None;
+                if let Some(native_id) = &record.native_task_id {
+                    crate::tasks::mark_background_cancelled(native_id)?;
+                }
             }
             Ok(())
         })?;
@@ -1016,9 +1165,12 @@ fn resume(config: &Config, id: &str) -> Result<u8> {
     reconcile(&mut record)?;
     if !matches!(
         record.state,
-        State::Interrupted | State::Failed | State::Cancelled
+        State::Waiting | State::Interrupted | State::Failed | State::Cancelled
     ) {
         anyhow::bail!("task {id} cannot resume from state {:?}", record.state);
+    }
+    if record.state == State::Waiting {
+        interactions::ready_to_resume(&record)?;
     }
     if !record.run_cwd.is_dir() {
         anyhow::bail!("task workspace {} is missing", record.run_cwd.display());
@@ -1045,9 +1197,12 @@ fn resume(config: &Config, id: &str) -> Result<u8> {
     update(id, |fresh| {
         if !matches!(
             fresh.state,
-            State::Interrupted | State::Failed | State::Cancelled
+            State::Waiting | State::Interrupted | State::Failed | State::Cancelled
         ) {
             anyhow::bail!("task {id} cannot resume from state {:?}", fresh.state);
+        }
+        if fresh.state == State::Waiting {
+            interactions::ready_to_resume(fresh)?;
         }
         fresh.state = State::Starting;
         fresh.attempt_started_at_ms = Some(now_ms());
@@ -1080,11 +1235,7 @@ fn resume(config: &Config, id: &str) -> Result<u8> {
         .env("AISHE_TASK_SCOPE", &record.scope);
     set_budget_environment(&mut child, &record.budget);
     set_worker_engine_environment(&mut child, &record, &config)?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::process::CommandExt;
-        child.process_group(0);
-    }
+    detach_worker(&mut child);
     let child = match child.spawn() {
         Ok(child) => child,
         Err(error) => {
@@ -1248,7 +1399,7 @@ fn rework(config: &Config, id: &str, instructions: &str) -> Result<u8> {
     update(id, |record| {
         if matches!(
             record.state,
-            State::Running | State::Starting | State::Applied | State::Discarded
+            State::Running | State::Starting | State::Waiting | State::Applied | State::Discarded
         ) {
             anyhow::bail!("task {id} cannot be reworked from state {:?}", record.state);
         }
@@ -1924,12 +2075,29 @@ fn reconcile(record: &mut Record) -> Result<()> {
             .is_some_and(|pid| same_process(pid, fresh.process_start.as_deref()));
         if !still_live {
             settle_elapsed(&mut fresh);
-            fresh.state = State::Interrupted;
+            let paused = fresh
+                .native_task_id
+                .as_deref()
+                .and_then(|native_id| crate::tasks::load(native_id).ok())
+                .is_some_and(|checkpoint| checkpoint.native_state.as_deref() == Some("waiting"));
+            fresh.state = if paused
+                && fresh.mailbox.requests.iter().any(|request| {
+                    matches!(
+                        request.status,
+                        InteractionStatus::Pending | InteractionStatus::Responded
+                    )
+                }) {
+                State::Waiting
+            } else {
+                State::Interrupted
+            };
             fresh.pid = None;
             fresh.process_start = None;
             fresh.updated_at_ms = now_ms().max(fresh.updated_at_ms.saturating_add(1));
-            fresh.error = Some("background process ended without a final checkpoint".into());
+            fresh.error = (fresh.state != State::Waiting)
+                .then(|| "background process ended without a final checkpoint".into());
             save(&fresh)?;
+            fresh = load(&id)?;
         }
     }
     *record = fresh;
@@ -2017,7 +2185,7 @@ fn records() -> Result<Vec<Record>> {
     Ok(records)
 }
 
-fn load(id: &str) -> Result<Record> {
+pub(crate) fn load(id: &str) -> Result<Record> {
     validate_id(id)?;
     load_path(&record_path(id)?)
 }
@@ -2036,11 +2204,31 @@ fn load_path(path: &Path) -> Result<Record> {
 fn save(record: &Record) -> Result<()> {
     validate_id(&record.id)?;
     let path = record_path(&record.id)?;
-    crate::config::write_atomic(&path, &serde_json::to_vec_pretty(record)?)?;
+    let mut stored = record.clone();
+    stored.mailbox.validate_size()?;
+    if let Ok(previous) = load_path(&path) {
+        advance_result_revision(&mut stored, &previous);
+    }
+    crate::config::write_atomic(&path, &serde_json::to_vec_pretty(&stored)?)?;
     set_private(&path, 0o600);
     // Presentation failure must never prevent the authoritative task checkpoint.
-    let _ = presentation::record_saved(record);
+    let _ = presentation::record_saved(&stored);
     Ok(())
+}
+
+fn advance_result_revision(stored: &mut Record, previous: &Record) {
+    stored.result_revision = previous.result_revision.max(stored.result_revision);
+    if !matches!(
+        stored.state,
+        State::Starting | State::Running | State::Waiting
+    ) && (previous.state != stored.state
+        || previous.exit_code != stored.exit_code
+        || previous.error != stored.error
+        || previous.budget_exceeded != stored.budget_exceeded
+        || previous.native_task_id != stored.native_task_id)
+    {
+        stored.result_revision = stored.result_revision.saturating_add(1);
+    }
 }
 
 fn update(id: &str, change: impl FnOnce(&mut Record) -> Result<()>) -> Result<()> {
@@ -2434,6 +2622,69 @@ mod tests {
             assert!(record.pid.is_none());
             assert_eq!(record.error.as_deref(), Some("stop reason"));
         }
+    }
+
+    #[test]
+    fn waiting_stops_active_time_without_losing_the_departing_worker_identity() {
+        let mut record = fixture_record();
+        record.state = State::Running;
+        record.pid = Some(4242);
+        record.process_start = Some("worker-start".into());
+        record.elapsed_ms = 100;
+        record.attempt_started_at_ms = Some(now_ms().saturating_sub(25));
+        finish_record(&mut record, State::Waiting, 75, Some("Needs you".into()));
+        assert_eq!(
+            native_finish_state(crate::agent::NativeTurnState::Waiting),
+            State::Waiting
+        );
+        assert_eq!(record.state, State::Waiting);
+        assert!(record.elapsed_ms >= 125);
+        assert!(record.attempt_started_at_ms.is_none());
+        assert_eq!(elapsed(&record), record.elapsed_ms);
+        assert_eq!(record.pid, Some(4242));
+        assert_eq!(record.process_start.as_deref(), Some("worker-start"));
+    }
+
+    #[test]
+    fn completion_racing_an_accepted_followup_leaves_a_visible_resumable_result() {
+        let mut record = fixture_record();
+        record.state = State::Running;
+        record.mailbox.followups.push(
+            serde_json::from_value(serde_json::json!({
+                "revision": 1, "text": "also check the cache", "status": "queued",
+                "created_at_ms": 1, "updated_at_ms": 1,
+            }))
+            .unwrap(),
+        );
+        finish_record(&mut record, State::Completed, 0, None);
+        assert_eq!(record.state, State::Interrupted);
+        assert_eq!(record.exit_code, Some(75));
+        assert!(record
+            .error
+            .as_deref()
+            .unwrap()
+            .contains("resume to deliver"));
+        assert_eq!(record.mailbox.followups[0].status, FollowupStatus::Queued);
+    }
+
+    #[test]
+    fn result_generations_ignore_mailbox_updates_but_distinguish_repeated_completion() {
+        let mut previous = fixture_record();
+        previous.result_revision = 5;
+        let mut updated = previous.clone();
+        updated.updated_at_ms += 10;
+        updated.plan_revision += 1;
+        updated.mailbox.next_followup_revision += 1;
+        advance_result_revision(&mut updated, &previous);
+        assert_eq!(updated.result_revision, 5);
+        let mut running = updated.clone();
+        running.state = State::Running;
+        advance_result_revision(&mut running, &updated);
+        assert_eq!(running.result_revision, 5);
+        let mut completed = running.clone();
+        completed.state = State::Completed;
+        advance_result_revision(&mut completed, &running);
+        assert_eq!(completed.result_revision, 6);
     }
 
     #[test]

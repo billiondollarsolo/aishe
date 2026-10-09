@@ -45,17 +45,17 @@ _aishe_background_refresh() {
   zmodload zsh/system 2>/dev/null || return 0
   sysopen -r -o nonblock,nofollow -u _AISHE_BACKGROUND_FD "$_AISHE_BACKGROUND_CONTROL_FILE" 2>/dev/null || return 0
   while IFS=$'\t' read -r -u $_AISHE_BACKGROUND_FD _AISHE_BACKGROUND_NAME _AISHE_BACKGROUND_COUNT; do
-    (( ++_AISHE_BACKGROUND_LINES <= 3 )) || break
+    (( ++_AISHE_BACKGROUND_LINES <= 4 )) || break
     [[ "$_AISHE_BACKGROUND_COUNT" == [0-9]## && ${#_AISHE_BACKGROUND_COUNT} -le 9 ]] || continue
     case "$_AISHE_BACKGROUND_NAME" in
-      running|ready|attention) _AISHE_BACKGROUND_COUNTS[$_AISHE_BACKGROUND_NAME]="$_AISHE_BACKGROUND_COUNT" ;;
+      running|ready|attention|needs_you) _AISHE_BACKGROUND_COUNTS[$_AISHE_BACKGROUND_NAME]="$_AISHE_BACKGROUND_COUNT" ;;
     esac
   done
   exec {_AISHE_BACKGROUND_FD}<&-
-  for _AISHE_BACKGROUND_NAME in attention running ready; do
+  for _AISHE_BACKGROUND_NAME in needs_you attention running ready; do
     _AISHE_BACKGROUND_COUNT="${_AISHE_BACKGROUND_COUNTS[$_AISHE_BACKGROUND_NAME]:-0}"
     [[ "$_AISHE_BACKGROUND_COUNT" == 0 ]] && continue
-    _AISHE_BACKGROUND_PARTS+=("$_AISHE_BACKGROUND_COUNT $_AISHE_BACKGROUND_NAME")
+    _AISHE_BACKGROUND_PARTS+=("$_AISHE_BACKGROUND_COUNT ${_AISHE_BACKGROUND_NAME//_/ }")
   done
   if [[ "${AISHE_UNICODE:-unicode}" == ascii ]]; then
     AISHE_BACKGROUND_INDICATOR="${(j: | :)_AISHE_BACKGROUND_PARTS}"
@@ -953,6 +953,7 @@ _aishe_lean_slash() {
     /tour) command aishe tour "${(@)_AISHE_LOCAL_CLI_ARGS}" <&$_AISHE_INPUT_FD ;;
     /context) command aishe context "${(@)_AISHE_LOCAL_CLI_ARGS}" <&$_AISHE_INPUT_FD ;;
     /doctor) command aishe doctor "${(@)_AISHE_LOCAL_CLI_ARGS}" <&$_AISHE_INPUT_FD ;;
+    /inbox) command aishe inbox "${(@)_AISHE_LOCAL_CLI_ARGS}" <&$_AISHE_INPUT_FD ;;
     /tasks)
       # The browser and any explicit action own the child terminal. Forward
       # tokenized arguments literally; model text never becomes shell syntax.

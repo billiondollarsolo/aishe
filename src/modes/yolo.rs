@@ -11,13 +11,16 @@ use crate::agent::{NativeTurnOutcome, NativeTurnState};
 use crate::ui::SemanticStylize;
 use crate::ui::{StyleToken, TerminalCapabilities};
 use anyhow::Result;
+use sha2::Digest;
 
 use super::{render_markdown, run_command_tool, safety_gate, use_skill_tool, GateOutcome};
 use crate::config::Config;
 use crate::context;
 use crate::executor::{Executor, DEFAULT_CAPTURE_TIMEOUT};
 use crate::mcp::McpRegistry;
-use crate::providers::{AssistantMsg, Completion, Msg, Provider, ResponseFormat};
+use crate::providers::{
+    AssistantMsg, Completion, Msg, Provider, ResponseFormat, ToolCall, ToolDef,
+};
 use crate::sandbox::{self, Tier};
 use crate::session::Session;
 use crate::skills::SkillRegistry;
@@ -341,13 +344,15 @@ fn run_loop(
     // Effective confirmation tier (resolves `yolo_confirm` and the legacy
     // `yolo_confirm_dangerous` boolean). Writes outside the tree by the file
     // tools are confirmed whenever the tier is not "never".
-    // A validated lean session grant authorizes autonomous actions within its
-    // explicit scope. Legacy turns keep their configured confirmation tier.
-    let tier = if executor.lean_scope().is_some() {
-        Tier::Never
-    } else {
-        sandbox::confirm_tier(config)
-    };
+    // Foreground lean grants retain their established autonomy. A background
+    // worker has no terminal to ask for configured action confirmations, so it
+    // parks the task in the inbox rather than treating closed stdin as consent.
+    let background_id = background_task_id();
+    let tier = confirmation_tier(
+        config,
+        executor.lean_scope().is_some(),
+        background_id.is_some(),
+    );
     let confirm_writes = tier != Tier::Never;
     // Sandbox backend (Off / Policy gate / bwrap OS isolation). A `bwrap` request
     // with bubblewrap missing degrades to the policy gate — warn once.
@@ -362,7 +367,10 @@ fn run_loop(
     }
     // Tools: always run_command; the built-in file tools when enabled; use_skill
     // when skills exist.
-    let mut tools = vec![run_command_tool()];
+    let mut tools = vec![run_command_tool(), crate::tools::run_check_tool()];
+    if background_id.is_some() {
+        tools.extend(interaction_tool_defs());
+    }
     if config.aishe.file_tools {
         tools.extend(crate::tools::file_tool_defs());
     }
@@ -379,6 +387,10 @@ fn run_loop(
         tools.push(use_skill_tool());
     }
     let mut system = YOLO_SYSTEM.to_string();
+    system.push_str("\n\nUse run_check for an actual verification command, with a short label describing what it checks. Results record the real command, exit status and output; do not claim checks passed without running them. A successful agent response alone is not verification.");
+    if background_id.is_some() {
+        system.push_str("\n\nThis is a background task. When missing information blocks useful work, call ask_user with a concise question and optional choices. Use request_approval for one concrete tool/action needing user permission. Either parks the task in the user's Needs you inbox. After approval, reissue exactly the requested tool and arguments: approval is one-shot and does not change workspace, network or policy restrictions. New User messages marked Follow-up #N: are live instructions; incorporate them before further effects.");
+    }
     if executor.lean_scope().is_some() {
         system.push_str("\n\nCommands run in a fresh restricted POSIX shell (dash, or zsh without startup files). They inherit filtered exports, PATH and environment from the live shell, but do not import interactive aliases, functions, plugins or startup code. Use POSIX syntax for run_command.");
     }
@@ -499,6 +511,7 @@ fn run_loop(
                 &budget,
             );
         }
+        receive_followups(background_id.as_deref(), task, &mut messages, provider)?;
         // Stop before the next model call if the session budget is spent.
         if super::budget_reached(provider, config) {
             renderer.clear_status();
@@ -619,6 +632,19 @@ fn run_loop(
 
         // No tool calls → final answer.
         if completion.tool_calls.is_empty() {
+            if let Some(id) = background_id.as_deref() {
+                // A follow-up arriving during the provider call must be seen
+                // before declaring the old answer complete.
+                if !crate::background::queued_followups(id)?.is_empty() {
+                    messages.push(Msg::Assistant(AssistantMsg {
+                        text: completion.text.clone(),
+                        tool_calls: Vec::new(),
+                    }));
+                    if receive_followups(Some(id), task, &mut messages, provider)? {
+                        continue;
+                    }
+                }
+            }
             if task.background_cancelled() {
                 return finish_turn(
                     task,
@@ -690,6 +716,12 @@ fn run_loop(
         task.checkpoint_messages(&messages, provider.meter().snapshot());
 
         for call in &completion.tool_calls {
+            // Steering a returned batch cancels its remaining, unstarted
+            // calls. Complete their transcript before appending the User
+            // message so no stale action executes before the model reads it.
+            if receive_followups(background_id.as_deref(), task, &mut messages, provider)? {
+                break;
+            }
             task.pending(call, &messages, provider.meter().snapshot());
             if interrupt.load(Ordering::SeqCst) || executor.is_cancelled() {
                 messages.push(Msg::ToolResult {
@@ -706,7 +738,7 @@ fn run_loop(
                     &budget,
                 );
             }
-            if let Err(reason) = budget.admit_tool(call) {
+            if let Err(reason) = budget.check_tool(call) {
                 messages.push(Msg::ToolResult {
                     call_id: call.id.clone(),
                     content: format!("Not executed: {reason}."),
@@ -727,6 +759,103 @@ fn run_loop(
                     &budget,
                 );
             }
+            let mut approval_binding = None;
+            if let Some(id) = background_id.as_deref() {
+                if tools.iter().any(|tool| tool.name == call.name)
+                    && !matches!(call.name.as_str(), "ask_user" | "request_approval")
+                    && (background_requires_approval(
+                        call,
+                        tier,
+                        config.aishe.yolo_preview,
+                        executor.cwd(),
+                    ) || has_action_response(id, task.id(), call)?)
+                {
+                    let binding = match interaction_binding(task, call, executor) {
+                        Ok(binding) => binding,
+                        Err(error) => {
+                            let content = format!(
+                                "Error: action approval could not bind this target: {}",
+                                crate::redact::redact(&error.to_string())
+                            );
+                            messages.push(Msg::ToolResult {
+                                call_id: call.id.clone(),
+                                content: content.clone(),
+                            });
+                            task.tool_completed(
+                                call,
+                                &content,
+                                &messages,
+                                provider.meter().snapshot(),
+                            );
+                            continue;
+                        }
+                    };
+                    match crate::background::interaction_response(id, &binding)? {
+                        Some(crate::background::InteractionResponse::Approved) => {
+                            approval_binding = Some(binding);
+                        }
+                        Some(crate::background::InteractionResponse::Denied { .. }) => {
+                            let content = "User declined this specific action. Do not execute it; adapt the plan or ask a different question.";
+                            messages.push(Msg::ToolResult {
+                                call_id: call.id.clone(),
+                                content: content.into(),
+                            });
+                            task.tool_completed(
+                                call,
+                                content,
+                                &messages,
+                                provider.meter().snapshot(),
+                            );
+                            continue;
+                        }
+                        _ if background_requires_approval(
+                            call,
+                            tier,
+                            config.aishe.yolo_preview,
+                            executor.cwd(),
+                        ) =>
+                        {
+                            let summary = match action_preview(call) {
+                                Ok(summary) => summary,
+                                Err(error) => {
+                                    let content = format!(
+                                        "Error: {}",
+                                        crate::redact::redact(&error.to_string())
+                                    );
+                                    messages.push(Msg::ToolResult {
+                                        call_id: call.id.clone(),
+                                        content: content.clone(),
+                                    });
+                                    task.tool_completed(
+                                        call,
+                                        &content,
+                                        &messages,
+                                        provider.meter().snapshot(),
+                                    );
+                                    continue;
+                                }
+                            };
+                            crate::background::create_approval(id, binding, &summary)?;
+                            renderer.clear_status();
+                            return finish_turn(
+                                task,
+                                NativeTurnState::Waiting,
+                                Some(
+                                    "Needs you: approve or decline the specific action in /tasks."
+                                        .into(),
+                                ),
+                                &messages,
+                                provider,
+                                &budget,
+                            );
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            // Only actual dispatch reserves an action. A parked approval above
+            // will acquire this reservation once, when its exact reissue runs.
+            budget.admit_tool(call).map_err(anyhow::Error::msg)?;
             task.checkpoint_execution(budget.counters());
             task.ensure_persisted()?;
             renderer.render(&AgentEvent::ToolStarted {
@@ -752,9 +881,49 @@ fn run_loop(
                 continue;
             }
 
+            if matches!(call.name.as_str(), "ask_user" | "request_approval") {
+                let Some(id) = background_id.as_deref() else {
+                    unreachable!("interaction tools are only offered to background workers");
+                };
+                let interaction = create_model_interaction(id, task, call, executor, &tools);
+                match interaction {
+                    Ok(()) => {
+                        renderer.clear_status();
+                        return finish_turn(
+                            task,
+                            NativeTurnState::Waiting,
+                            Some("Needs you: answer the request in /tasks.".into()),
+                            &messages,
+                            provider,
+                            &budget,
+                        );
+                    }
+                    Err(error) => {
+                        let content =
+                            format!("Error: {}", crate::redact::redact(&error.to_string()));
+                        render_tool_result(renderer, &call.id, None, &content);
+                        messages.push(Msg::ToolResult {
+                            call_id: call.id.clone(),
+                            content: content.clone(),
+                        });
+                        task.tool_completed(call, &content, &messages, provider.meter().snapshot());
+                        continue;
+                    }
+                }
+            }
+
             // Skill loading (progressive disclosure): return the skill body so
             // the model has its instructions in context, then continue.
             if call.name == "use_skill" {
+                consume_approval(
+                    background_id.as_deref(),
+                    approval_binding.as_ref(),
+                    call,
+                    task,
+                    executor,
+                    interrupt,
+                    &budget,
+                )?;
                 let name = call
                     .arguments
                     .get("name")
@@ -776,7 +945,20 @@ fn run_loop(
             // Built-in tools (file read/write/edit/list, web fetch_url) run
             // directly here, relative to the cwd where applicable.
             if crate::tools::is_builtin_tool(&call.name) {
+                consume_approval(
+                    background_id.as_deref(),
+                    approval_binding.as_ref(),
+                    call,
+                    task,
+                    executor,
+                    interrupt,
+                    &budget,
+                )?;
+                if matches!(call.name.as_str(), "write_file" | "edit_file") {
+                    task.note_workspace_change()?;
+                }
                 task.mark_pending_started();
+                task.ensure_persisted()?;
                 // File previews and approvals temporarily own the cursor.
                 renderer.clear_status();
                 let (label, content) = super::yolo_workspace::execute_rendered(
@@ -784,8 +966,8 @@ fn run_loop(
                     &call.name,
                     &call.arguments,
                     executor.cwd(),
-                    confirm_writes,
-                    config.aishe.yolo_preview,
+                    confirm_writes && background_id.is_none(),
+                    config.aishe.yolo_preview && background_id.is_none(),
                     effective_density(config) == "detailed",
                 );
                 render_tool_result(renderer, &call.id, None, &content);
@@ -826,7 +1008,18 @@ fn run_loop(
                     task.tool_completed(call, &content, &messages, provider.meter().snapshot());
                     continue;
                 }
+                consume_approval(
+                    background_id.as_deref(),
+                    approval_binding.as_ref(),
+                    call,
+                    task,
+                    executor,
+                    interrupt,
+                    &budget,
+                )?;
+                task.note_workspace_change()?;
                 task.mark_pending_started();
+                task.ensure_persisted()?;
                 let (label, content) = mcp.call(&call.name, &call.arguments);
                 render_tool_result(renderer, &call.id, None, &content);
                 crate::audit::action(&format!("yolo:{}", call.name), &label, None);
@@ -910,7 +1103,7 @@ fn run_loop(
             // red panel; tier-only confirms use a plain yes/no prompt. Both
             // proceed automatically when stdin is not a terminal.
             let (need_confirm, dangerous) = sandbox::needs_confirm(tier, &command);
-            if need_confirm {
+            if need_confirm && background_id.is_none() {
                 renderer.clear_status();
                 let declined = if dangerous {
                     matches!(safety_gate(&command), GateOutcome::Declined)
@@ -973,12 +1166,40 @@ fn run_loop(
             if verbose {
                 renderer.clear_status();
             }
+            consume_approval(
+                background_id.as_deref(),
+                approval_binding.as_ref(),
+                call,
+                task,
+                executor,
+                interrupt,
+                &budget,
+            )?;
+            let execution_kind = if call.name == "run_check" {
+                crate::tasks::ExecutionKind::Check
+            } else {
+                crate::tasks::ExecutionKind::Activity
+            };
+            task.begin_execution_evidence(&call.id, &command, executor.cwd(), execution_kind)?;
             task.mark_pending_started();
+            task.ensure_persisted()?;
+            let command_started = std::time::Instant::now();
             let (code, output) = executor.run_captured(
                 &command,
                 budget.command_timeout(DEFAULT_CAPTURE_TIMEOUT),
                 verbose,
             );
+            let cancelled = interrupt.load(Ordering::SeqCst) || executor.is_cancelled();
+            task.finish_execution_evidence(
+                &call.id,
+                code,
+                &output,
+                command_started
+                    .elapsed()
+                    .as_millis()
+                    .min(u128::from(u64::MAX)) as u64,
+                cancelled,
+            )?;
             task.checkpoint_cwd(executor.cwd());
             if interrupt.load(Ordering::SeqCst) || executor.is_cancelled() {
                 renderer.render(&AgentEvent::Aborted);
@@ -1099,6 +1320,47 @@ pub fn resume(
         ));
     }
     if let Some(pending) = task.record().pending_tool.clone() {
+        if let Some(background_id) = background_task_id() {
+            if let Some(request) = crate::background::interaction_for_call(
+                &background_id,
+                task.id(),
+                &pending.call.id,
+            )? {
+                let Some(response) = request.response.clone() else {
+                    let outcome = NativeTurnOutcome::new(task.id(), NativeTurnState::Waiting,
+                        Some("Needs you: this task is waiting for its question or approval response.".into()));
+                    task.finish_native(&outcome, &messages, provider.meter().snapshot());
+                    task.ensure_persisted()?;
+                    return Ok(outcome);
+                };
+                if pending.may_have_started {
+                    anyhow::bail!("a parked interaction unexpectedly claims its action started; refusing automatic continuation");
+                }
+                let content = interaction_result(&response, &request.binding.tool_name);
+                if let Some(result) = task.clear_pending_interaction_result(
+                    &content,
+                    matches!(
+                        response,
+                        crate::background::InteractionResponse::Denied { .. }
+                    ),
+                ) {
+                    messages.push(result);
+                }
+                // Record the original call's response before acknowledging it.
+                // A crash here resumes the already-present ToolResult, rather
+                // than answering twice or repeating any parked action.
+                task.checkpoint_messages(&messages, provider.meter().snapshot());
+                task.ensure_persisted()?;
+                if matches!(
+                    response,
+                    crate::background::InteractionResponse::Answer { .. }
+                ) {
+                    crate::background::consume_interaction(&background_id, &request.binding)?;
+                }
+            }
+        }
+    }
+    if let Some(pending) = task.record().pending_tool.clone() {
         println!(
             "{}",
             format!(
@@ -1175,10 +1437,13 @@ fn fail_internal(
     error: anyhow::Error,
 ) -> NativeTurnOutcome {
     let cancelled = cancelled || task.background_cancelled();
+    let budget_exhausted = error.downcast_ref::<EffectBudgetExhausted>().is_some();
     let outcome = NativeTurnOutcome::new(
         task.id(),
         if cancelled {
             NativeTurnState::Cancelled
+        } else if budget_exhausted {
+            NativeTurnState::BudgetExhausted
         } else {
             NativeTurnState::Failed
         },
@@ -1196,6 +1461,10 @@ fn fail_internal(
     );
     outcome
 }
+
+#[derive(Debug, thiserror::Error)]
+#[error("{0}; no action was started")]
+struct EffectBudgetExhausted(String);
 
 fn record_provider_cost(
     budget: &mut NativeBudget,
@@ -1247,6 +1516,329 @@ fn canonical_messages(messages: &[Msg]) -> Vec<Msg> {
             other => other.clone(),
         })
         .collect()
+}
+
+fn background_task_id() -> Option<String> {
+    std::env::var("AISHE_BACKGROUND_TASK_ID")
+        .ok()
+        .filter(|id| !id.trim().is_empty())
+}
+
+fn confirmation_tier(config: &Config, lean_grant: bool, background: bool) -> Tier {
+    if lean_grant && !background {
+        Tier::Never
+    } else {
+        sandbox::confirm_tier(config)
+    }
+}
+
+fn interaction_tool_defs() -> Vec<ToolDef> {
+    vec![
+        ToolDef {
+            name: "ask_user".into(),
+            description: "Ask one concise question when missing information blocks this background task. Parks the task until the user answers; optionally offer up to eight choices.".into(),
+            schema: serde_json::json!({
+                "type":"object",
+                "properties":{
+                    "question":{"type":"string"},
+                    "choices":{"type":"array","items":{"type":"string"},"maxItems":8}
+                },
+                "required":["question"],
+                "additionalProperties":false
+            }),
+        },
+        ToolDef {
+            name: "request_approval".into(),
+            description: "Request permission for exactly one offered tool and its exact arguments. Parks the task; after approval, reissue that exact action. Approval never changes scope, network or policy restrictions.".into(),
+            schema: serde_json::json!({
+                "type":"object",
+                "properties":{
+                    "tool":{"type":"string"},
+                    "arguments":{"type":"object"},
+                    "reason":{"type":"string"}
+                },
+                "required":["tool","arguments","reason"],
+                "additionalProperties":false
+            }),
+        },
+    ]
+}
+
+fn interaction_binding(
+    task: &crate::tasks::Active,
+    call: &ToolCall,
+    executor: &Executor,
+) -> Result<crate::background::InteractionBinding> {
+    let (scope, root, network) = executor.lean_scope().ok_or_else(|| {
+        anyhow::anyhow!("background interaction requires accepted native authority")
+    })?;
+    crate::background::InteractionBinding::for_call(
+        task.id(),
+        call,
+        executor.cwd(),
+        root,
+        *scope,
+        *network,
+    )
+}
+
+fn create_model_interaction(
+    background_id: &str,
+    task: &crate::tasks::Active,
+    call: &ToolCall,
+    executor: &Executor,
+    tools: &[ToolDef],
+) -> Result<()> {
+    if call.name == "ask_user" {
+        let question = call
+            .arguments
+            .get("question")
+            .and_then(serde_json::Value::as_str)
+            .filter(|value| !value.trim().is_empty())
+            .ok_or_else(|| anyhow::anyhow!("ask_user requires a nonempty question"))?;
+        let choices = match call.arguments.get("choices") {
+            None => Vec::new(),
+            Some(serde_json::Value::Array(choices)) if choices.len() <= 8 => choices
+                .iter()
+                .map(|value| {
+                    value
+                        .as_str()
+                        .filter(|value| !value.trim().is_empty())
+                        .map(str::to_owned)
+                        .ok_or_else(|| anyhow::anyhow!("question choices must be nonempty strings"))
+                })
+                .collect::<Result<Vec<_>>>()?,
+            Some(_) => anyhow::bail!("choices must be an array of at most eight strings"),
+        };
+        crate::background::create_question(
+            background_id,
+            interaction_binding(task, call, executor)?,
+            question,
+            &choices,
+        )?;
+        return Ok(());
+    }
+    let target = call
+        .arguments
+        .get("tool")
+        .and_then(serde_json::Value::as_str)
+        .filter(|name| {
+            !matches!(*name, "ask_user" | "request_approval")
+                && tools.iter().any(|tool| tool.name == *name)
+        })
+        .ok_or_else(|| anyhow::anyhow!("approval must name one offered action tool"))?;
+    let arguments = call
+        .arguments
+        .get("arguments")
+        .filter(|arguments| arguments.is_object())
+        .ok_or_else(|| anyhow::anyhow!("approval requires the exact action arguments object"))?;
+    let reason = call
+        .arguments
+        .get("reason")
+        .and_then(serde_json::Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| anyhow::anyhow!("approval requires a concise reason"))?;
+    let action = ToolCall {
+        id: call.id.clone(),
+        name: target.into(),
+        arguments: arguments.clone(),
+    };
+    let preview = format!(
+        "{}\n{}",
+        crate::redact::redact(reason),
+        action_preview(&action)?
+    );
+    crate::background::create_approval(
+        background_id,
+        interaction_binding(task, &action, executor)?,
+        &preview,
+    )?;
+    Ok(())
+}
+
+fn action_preview(call: &ToolCall) -> Result<String> {
+    // Approval must expose the whole redacted action. Clipping arguments can
+    // hide a later command or a file edit while still authorizing its digest.
+    let arguments = serde_json::to_string(&call.arguments)?;
+    let preview = crate::commands::display_safe_multiline(&crate::redact::redact(&format!(
+        "{} {}",
+        call.name, arguments
+    )));
+    if preview.len() > 16 * 1024 {
+        anyhow::bail!("this action is too large to review safely (16 KiB limit); split it into smaller explicit actions. No action was started");
+    }
+    Ok(preview)
+}
+
+fn has_action_response(background_id: &str, native_id: &str, call: &ToolCall) -> Result<bool> {
+    let arguments_sha256 = format!(
+        "{:x}",
+        sha2::Sha256::digest(serde_json::to_vec(&call.arguments)?)
+    );
+    Ok(crate::background::load(background_id)?
+        .mailbox
+        .requests
+        .iter()
+        .any(|request| {
+            request.kind == crate::background::InteractionKind::Approval
+                && request.binding.native_task_id == native_id
+                && request.binding.tool_name == call.name
+                && request.binding.arguments_sha256 == arguments_sha256
+                && request.response.is_some()
+                && request.status != crate::background::InteractionStatus::Invalidated
+        }))
+}
+
+fn background_requires_approval(
+    call: &ToolCall,
+    tier: Tier,
+    preview: bool,
+    cwd: &std::path::Path,
+) -> bool {
+    if matches!(call.name.as_str(), "run_command" | "run_check") {
+        return call
+            .arguments
+            .get("command")
+            .and_then(serde_json::Value::as_str)
+            .filter(|command| !command.trim().is_empty())
+            .is_some_and(|command| sandbox::needs_confirm(tier, command).0);
+    }
+    if matches!(call.name.as_str(), "write_file" | "edit_file") {
+        return preview
+            || match tier {
+                Tier::Never => false,
+                Tier::Writes | Tier::All => true,
+                Tier::Dangerous => call
+                    .arguments
+                    .get("path")
+                    .and_then(serde_json::Value::as_str)
+                    .is_none_or(|path| write_outside_cwd(path, cwd)),
+            };
+    }
+    // MCP tools are opaque: a configured confirmation policy cannot establish
+    // that they are read-only from their name or schema.
+    crate::mcp::is_mcp_tool(&call.name) && tier != Tier::Never
+        || tier == Tier::All && call.name == "fetch_url"
+}
+
+fn write_outside_cwd(path: &str, cwd: &std::path::Path) -> bool {
+    use std::path::{Component, Path, PathBuf};
+    if path.is_empty() || path.contains('\0') || path.starts_with('~') {
+        return true;
+    }
+    let Ok(cwd) = cwd.canonicalize() else {
+        return true;
+    };
+    let candidate = if Path::new(path).is_absolute() {
+        PathBuf::from(path)
+    } else {
+        cwd.join(path)
+    };
+    let mut resolved = PathBuf::new();
+    for component in candidate.components() {
+        match component {
+            Component::RootDir => resolved.push(component.as_os_str()),
+            Component::CurDir => {}
+            Component::ParentDir => {
+                resolved.pop();
+            }
+            Component::Normal(part) => {
+                resolved.push(part);
+                match std::fs::symlink_metadata(&resolved) {
+                    Ok(_) => match resolved.canonicalize() {
+                        Ok(canonical) => resolved = canonical,
+                        Err(_) => return true,
+                    },
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(_) => return true,
+                }
+            }
+            Component::Prefix(_) => return true,
+        }
+    }
+    !resolved.starts_with(&cwd)
+}
+
+fn consume_approval(
+    background_id: Option<&str>,
+    binding: Option<&crate::background::InteractionBinding>,
+    call: &ToolCall,
+    task: &mut crate::tasks::Active,
+    executor: &Executor,
+    interrupt: &AtomicBool,
+    budget: &NativeBudget,
+) -> Result<()> {
+    if interrupt.load(Ordering::SeqCst) || executor.is_cancelled() || task.background_cancelled() {
+        anyhow::bail!("task cancelled before the proposed action");
+    }
+    if let Some(reason) = budget.exhausted() {
+        return Err(EffectBudgetExhausted(reason).into());
+    }
+    task.ensure_persisted()?;
+    if let (Some(id), Some(binding)) = (background_id, binding) {
+        let current = interaction_binding(task, call, executor)?;
+        if current.action_digest != binding.action_digest {
+            anyhow::bail!("the approved action context changed; no action was started");
+        }
+        if !matches!(
+            crate::background::consume_interaction(id, binding)?,
+            Some(crate::background::InteractionResponse::Approved)
+        ) {
+            anyhow::bail!(
+                "the exact action approval is no longer available; no action was started"
+            );
+        }
+    }
+    Ok(())
+}
+
+fn receive_followups(
+    background_id: Option<&str>,
+    task: &mut crate::tasks::Active,
+    messages: &mut Vec<Msg>,
+    provider: &dyn Provider,
+) -> Result<bool> {
+    let Some(id) = background_id else {
+        return Ok(false);
+    };
+    // Most boundaries have no incoming work. Keep that path read-only rather
+    // than rewriting and syncing the mailbox for every tool or provider turn.
+    if crate::background::queued_followups(id)?.is_empty() {
+        return Ok(false);
+    }
+    let followups = crate::background::claim_followups(id, task.id())?;
+    if followups.is_empty() {
+        return Ok(false);
+    }
+    let mut added = false;
+    let mut revision = task.record().followup_revision;
+    for followup in &followups {
+        let text = followup.message();
+        if !messages
+            .iter()
+            .any(|message| matches!(message, Msg::User(existing) if existing == &text))
+        {
+            *messages = resolve_unanswered_tools(messages);
+            messages.push(Msg::User(text));
+            added = true;
+        }
+        revision = revision.max(followup.revision);
+    }
+    task.checkpoint_followup_revision(revision, messages, provider.meter().snapshot())?;
+    let revisions = followups
+        .iter()
+        .map(|followup| followup.revision)
+        .collect::<Vec<_>>();
+    crate::background::acknowledge_followups(id, task.id(), &revisions)?;
+    Ok(added)
+}
+
+fn interaction_result(response: &crate::background::InteractionResponse, tool: &str) -> String {
+    match response {
+        crate::background::InteractionResponse::Answer { text } => format!("User answered: {text}"),
+        crate::background::InteractionResponse::Approved => format!("User approved this specific {tool} action. It has not been executed. Reissue exactly the originally requested tool and arguments; the approval is one-shot, bound to its execution context and cannot bypass scope or policy. If the original values are unavailable, ask instead of reconstructing secrets."),
+        crate::background::InteractionResponse::Denied { reason } => format!("User declined this specific action: {reason}. It was not executed. Adapt the plan and do not repeat it."),
+    }
 }
 
 fn resolve_unanswered_tools(messages: &[Msg]) -> Vec<Msg> {
@@ -1457,3 +2049,174 @@ fn completion_summary(c: &Completion) -> String {
 }
 
 const YOLO_SYSTEM: &str = super::YOLO_SYSTEM_PROMPT;
+
+#[cfg(test)]
+mod interaction_tests {
+    use super::*;
+    use serde_json::json;
+
+    fn call(id: &str, name: &str, arguments: serde_json::Value) -> ToolCall {
+        ToolCall {
+            id: id.into(),
+            name: name.into(),
+            arguments,
+        }
+    }
+
+    #[test]
+    fn background_confirmation_keeps_configured_policy_with_a_lean_grant() {
+        let mut config = Config::default();
+        config.aishe.yolo_confirm = "all".into();
+        assert_eq!(confirmation_tier(&config, true, false), Tier::Never);
+        assert_eq!(confirmation_tier(&config, true, true), Tier::All);
+        config.aishe.yolo_confirm = "never".into();
+        assert_eq!(confirmation_tier(&config, true, true), Tier::Never);
+    }
+
+    #[test]
+    fn check_tools_receive_command_approval_and_opaque_actions_fail_closed() {
+        let cwd = std::env::current_dir().unwrap();
+        let command = call(
+            "command",
+            "run_command",
+            json!({"command":"touch result","reason":"write result"}),
+        );
+        let check = call("check", "run_check", command.arguments.clone());
+        assert_eq!(
+            background_requires_approval(&command, Tier::Writes, false, &cwd),
+            background_requires_approval(&check, Tier::Writes, false, &cwd)
+        );
+        assert!(background_requires_approval(&check, Tier::All, false, &cwd));
+        assert!(!background_requires_approval(
+            &check,
+            Tier::Never,
+            false,
+            &cwd
+        ));
+        assert!(background_requires_approval(
+            &call(
+                "file",
+                "write_file",
+                json!({"path":"output","content":"value"})
+            ),
+            Tier::Never,
+            true,
+            &cwd,
+        ));
+        assert!(background_requires_approval(
+            &call("mcp", "mcp__server__read", json!({})),
+            Tier::Dangerous,
+            false,
+            &cwd,
+        ));
+    }
+
+    #[test]
+    fn default_background_file_policy_keeps_in_tree_writes_autonomous() {
+        let temporary = std::env::temp_dir().join(format!(
+            "aishe-approval-path-{}-{}",
+            std::process::id(),
+            rand::random::<u64>()
+        ));
+        let cwd = temporary.join("project");
+        let outside = temporary.join("outside");
+        std::fs::create_dir_all(cwd.join("src")).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+        for path in ["src/new", "src/../new"] {
+            let action = call("file", "write_file", json!({"path":path,"content":"value"}));
+            assert!(!background_requires_approval(
+                &action,
+                Tier::Dangerous,
+                false,
+                &cwd
+            ));
+            assert!(background_requires_approval(
+                &action,
+                Tier::Writes,
+                false,
+                &cwd
+            ));
+            assert!(background_requires_approval(
+                &action,
+                Tier::Dangerous,
+                true,
+                &cwd
+            ));
+        }
+        assert!(!write_outside_cwd(cwd.join("new").to_str().unwrap(), &cwd));
+        assert!(write_outside_cwd("../outside/new", &cwd));
+        assert!(write_outside_cwd(
+            outside.join("new").to_str().unwrap(),
+            &cwd
+        ));
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(&outside, cwd.join("src/link")).unwrap();
+            assert!(write_outside_cwd("src/link/new", &cwd));
+            assert!(write_outside_cwd("src/link/../new", &cwd));
+        }
+        std::fs::remove_dir_all(temporary).unwrap();
+    }
+
+    #[test]
+    fn steering_completes_the_unstarted_batch_without_repeating_finished_calls() {
+        let messages = vec![
+            Msg::Assistant(AssistantMsg {
+                text: None,
+                tool_calls: vec![
+                    call("finished", "run_command", json!({})),
+                    call("unstarted", "run_command", json!({})),
+                ],
+            }),
+            Msg::ToolResult {
+                call_id: "finished".into(),
+                content: "exit code 0".into(),
+            },
+        ];
+        let mut resolved = resolve_unanswered_tools(&messages);
+        resolved.push(Msg::User("[followup:1]\nUse the alternate path".into()));
+        assert_eq!(resolved.len(), 4);
+        assert!(
+            matches!(&resolved[2], Msg::ToolResult { call_id, content } if call_id == "unstarted" && content.starts_with("Not executed"))
+        );
+        assert!(matches!(&resolved[3], Msg::User(text) if text.starts_with("[followup:1]")));
+        let again = resolve_unanswered_tools(&resolved);
+        assert_eq!(again.len(), resolved.len());
+    }
+
+    #[test]
+    fn approval_response_requires_exact_reissue_instead_of_claiming_execution() {
+        let result = interaction_result(
+            &crate::background::InteractionResponse::Approved,
+            "run_command",
+        );
+        assert!(result.contains("has not been executed"));
+        assert!(result.contains("exactly"));
+        assert!(result.contains("one-shot"));
+        let denied = interaction_result(
+            &crate::background::InteractionResponse::Denied {
+                reason: "different target needed".into(),
+            },
+            "run_command",
+        );
+        assert!(denied.contains("different target needed"));
+        assert!(denied.contains("not executed"));
+    }
+
+    #[test]
+    fn approval_preview_refuses_hidden_arguments_instead_of_clipping_them() {
+        let action = call(
+            "large",
+            "run_command",
+            json!({"command":format!("{}; touch hidden-target", "x".repeat(17 * 1024)), "reason":"large action"}),
+        );
+        let error = action_preview(&action).unwrap_err().to_string();
+        assert!(error.contains("too large to review safely"));
+        let visible = call(
+            "normal",
+            "run_command",
+            json!({"command":"printf visible; touch final-target", "reason":"explicit action"}),
+        );
+        assert!(action_preview(&visible).unwrap().contains("final-target"));
+    }
+}

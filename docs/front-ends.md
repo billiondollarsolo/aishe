@@ -141,33 +141,84 @@ for exit codes, durable resume, budget semantics, and cancellation limits.
 Background work stays out of your command output. In the clean profile a small
 prompt badge appears only when tasks are running or a result or problem has not
 been seen. It counts work across all projects: for example, `2 running · 1 ready`.
-`attention` marks work needing review. Empty activity has no badge. Failed,
-interrupted, or stopped work is attention; it does not mean the agent is waiting for a live
-approval or answer.
+**Needs you** marks a paused agent question or action approval. `attention`
+marks failed, interrupted, or stopped work; `ready` marks an unseen result.
+Empty activity has no badge. Requests stay visible until you respond, while
+reviewed results stay quiet across shell sessions.
 
 Press **Ctrl-X b** to open the task browser, inspect a task, and return to the
 same editable buffer and cursor position. An existing binding in the personal
 profile is preserved; set `AISHE_BACKGROUND_KEY` to explicitly choose a
 shortcut. `/tasks` opens the same browser. Outside the shell, use
 `aishe task browse` or `aishe task browse TASK_ID`; add `--all` to include other
-projects.
+projects. `/inbox` and `aishe inbox` open **Needs you** across all projects.
 
 The browser starts with the current project, or all projects if no local tasks
 exist. Type to search, use the arrow keys to select a task, and **Enter** to
 inspect it. **Tab** toggles the current project and all projects; **Ctrl-R**
-refreshes. Details expose the final result, checkpoint counters, and limits.
-Press **l** for activity, **p** for read-only changes, or **?** for the task's
-available actions. **Esc** goes back or closes the browser; **Ctrl-C** closes
-it from any page. Resume, stop,
-rework, apply, and discard are explicit actions with confirmation;
+refreshes. **Ctrl-V** chooses Current work, Needs you, or Archived history.
+Details expose the result, recorded-check summary, checkpoint counters, and
+limits. Press **Enter** or **u** to respond to a request, **f** to send a
+follow-up, **e** for recorded checks, **l** for activity, **p** for read-only
+changes, or **?** for the searchable Task actions menu. **Esc** goes back or closes
+the browser; **Ctrl-C** closes it from any page. Resume, stop, rework, apply,
+and discard are explicit actions with confirmation;
 opening a task or patch does not apply its changes. Existing `aishe task`
 start, list, tail, review, and lifecycle commands remain available. Tasks that
 run in the source directory still offer confirmed stop, resume, and rework
 controls. Changes, review, and apply require an isolated git worktree.
 
-Opening details acknowledges that finished revision in this shell; listing tasks
-does not. The task and its changes stay available. A later attempt or result
-appears in the counts again.
+Opening finished details marks exactly that result reviewed across shells;
+listing tasks does not. The task and its changes stay available, and a later
+attempt or result appears in the counts again. Choose rename, pin, or archive
+in Task actions; **n**, **i**, and **h** provide the same controls directly from
+details. Names are display labels; the original objective stays intact. Archiving
+keeps results and workspaces available in Archived history. Running tasks and
+tasks waiting for your response cannot be archived.
+
+#### Answer a request without losing your place
+
+An agent can pause when missing information blocks useful work or when a
+specific action needs approval. Open `/inbox`, select the task, and respond.
+Questions can offer choices or accept a written answer. Approval shows the
+proposed action and offers **Approve this exact action**, **Deny and continue**,
+or **Leave for later**. Leaving it for later is the default; opening the inbox
+does not approve anything. Denial returns the decision to the agent so it can
+adapt its plan.
+
+The paused worker exits after saving its request. A response continues the same
+task with its saved transcript, model, scope, and remaining allowances; time
+waiting for you does not consume active execution time. Approval is one-shot
+and applies only to the exact action and execution context. It does not widen
+workspace or network access. A file edit approval also binds the target's
+current contents, so an intervening change cannot use the old decision.
+
+#### Steer running work
+
+Press **f** in task details to send a follow-up. It starts as **queued** and
+becomes **received** when the worker saves it in the task transcript. The worker
+reads follow-ups at safe boundaries, including before another tool action;
+an already running command or provider request can finish first. Received
+means delivered, not that the agent has completed the instruction.
+
+Details show queued and received messages. Press **q**, or choose queued
+follow-ups in Task actions, to edit or remove a queued message before the worker
+starts delivering it. Once it is
+being delivered or received, send a new follow-up instead. Follow-ups do not
+answer a pending question or approve an action; use the request's response
+control for that. Use rework when the task has already finished.
+If a follow-up arrives just as the agent finishes, the task keeps it queued and
+shows attention; resume the saved task to deliver it.
+
+#### Inspect recorded checks
+
+Press **e** for the commands actually run as checks, with their directory,
+duration, observed exit status, and bounded output. The summary distinguishes
+passed, failed, cancelled, not run, uncertain, and stale checks, and lists
+unresolved items. Planned checks and the agent's own claims do not count.
+Subsequent command activity, another check, edits, or opaque MCP calls mark
+earlier checks stale; the original result remains visible. This records task
+activity rather than monitoring every change made by another process.
 
 Personal prompts keep their `RPROMPT` by default. Themes can display
 `AISHE_BACKGROUND_INDICATOR`, or `AISHE_PERSONAL_INDICATOR=1` adds the optional
@@ -179,9 +230,9 @@ theme variable. Logs remain in the browser rather than streaming across
 your input line.
 
 A native task's completion means the model finished its turn. Review its
-result, changes, and actual check output before applying. Automatic verification,
-live steering of a running task, and resumable background requests for approval
-or answers are not yet implemented.
+result, changes, recorded checks, and unresolved items before applying. A
+passing recorded command supports that check; it does not independently
+certify every requirement of the task.
 
 ### Managed legacy shell
 

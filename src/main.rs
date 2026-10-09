@@ -995,7 +995,16 @@ fn run() -> Result<u8> {
     executor.set_history_log(aishe::cli::history::history_paths(&config).1);
 
     let cache = CommandCache::new();
-    cache.build(executor.shell());
+    if (background_request.is_some() || matches!(args.cmd, Some(Cmd::Agent(_))))
+        && (aishe::lean::enabled() || config.backend.engine == "native")
+    {
+        // Explicit native work needs no interactive alias/startup probe. Such
+        // probes can run user rc code and reclaim a shared terminal before
+        // admission; local PATH/builtin discovery is sufficient here.
+        cache.discover_local();
+    } else {
+        cache.build(executor.shell());
+    }
 
     // Hidden hook invocations get one conservative local typo cue per command
     // head and live shell. Intercept before constructing anything capable of a

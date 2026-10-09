@@ -130,9 +130,11 @@ Full routing, Option/Alt+Return, and Mac terminal Meta settings:
   apply. Network-call limits count recognized network tools and MCP calls, not
   every request made inside a subprocess.
 - **Quiet background awareness.** A small prompt badge shows running work and
-  unseen results or problems. **Ctrl-X b** opens the task browser without losing
-  your editable command; `/tasks` opens it too. Inspect results, activity, limits,
-  and changes before choosing a follow-up. See
+  unseen results or problems. **Needs you** marks an agent question or specific
+  action approval; `/inbox` opens those requests. **Ctrl-X b** opens the task
+  browser without losing your editable command; `/tasks` opens it too. Send
+  follow-ups with queued/received status, inspect recorded checks and changes,
+  and name, pin, or archive work. Reviewed results stay quiet across shells. See
   [background work](docs/front-ends.md#background-work).
 - **Explicit context and automation.** Agent-only `@file`, `@dir`, `@diff`, and
   `@clipboard` attachments are bounded; `aishe index` searches tracked code
@@ -280,7 +282,7 @@ aishe model [NAME]     shell-local model on active (or --connection) account
 aishe usage            tokens, cache, cost, and plan usage (--by / --since / --json)
 aishe mode|scope|network|output|reasoning|status|config|mcp|role|…
 aishe agent            guided/scriptable foreground or isolated background agent
-aishe inbox            review, resume, rework, or inspect background work
+aishe inbox            answer background questions and decide specific approvals
 aishe capabilities     cached evidence for text/JSON/tools/streaming
 aishe test [--live]    offline health check; --live makes minimal paid probes
 aishe task|plan|context|last|index|palette|ask|sessions|resume|reset|undo|…
@@ -303,6 +305,7 @@ Daily-driver examples and safety boundaries:
 /details        cycle focus / compact / detailed (also Ctrl-O)
 /status         mode, scope, grant, model, session, usage and budget
 /tasks          browse background work, results, activity and changes
+/inbox          answer questions and decide specific action approvals
 /usage          cumulative tokens and cost for this shell
 /settings       edit saved defaults with grouped change review
 /setup          configure or resume setup
@@ -335,8 +338,9 @@ CLI commands and the legacy shell surface are described in
 `aishe agent '…'` is an explicit autonomous task request. Selecting agent mode
 in configuration alone does not authorize an unattended natural-language turn.
 Native tasks return distinct exit codes for completion, cancellation, exhausted
-budgets, iteration limits, failure, and declined approval. Completion means the
-model supplied a final answer; it is not independent verification of the result.
+budgets, iteration limits, failure, and declined approval. Background tasks can
+also pause for your response. Completion means the model supplied a final
+answer; review its recorded checks and unresolved items alongside the changes.
 See [native agent execution](docs/configuration.md#native-agent-execution).
 
 Details: [docs/front-ends.md](docs/front-ends.md) ·

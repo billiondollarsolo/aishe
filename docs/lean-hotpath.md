@@ -171,22 +171,38 @@ periodic refresh and explicit inspection still read local task state. Ordinary
 commands continue to execute in zsh. Background logs do not stream into the
 editable prompt, and an empty cache produces no activity badge. Counts cover
 all projects; the browser starts with the current project, falling back to all
-projects when none are local.
+projects when none are local. **Needs you** counts waiting questions and exact
+action approvals separately from ready results and attention outcomes.
 
 Ctrl-X b (`AISHE_BACKGROUND_KEY`) hands off to the task browser while preserving
 `BUFFER` and `CURSOR`; a bound personal shortcut wins unless explicitly
 replaced. `/tasks` and `aishe task browse [TASK_ID] [--all]` provide the same
 inspection without relying on the shortcut. Arrow selection, search, Enter
-details, Ctrl-R refresh, and Tab project/all keep the browser separate from zsh
-completion. Details offer `l` activity, `p` read-only changes, `?` contextual
-actions, Esc back, and Ctrl-C close from any page. Changes, review, and apply
+details, Ctrl-R refresh, Tab project/all, and Ctrl-V views keep the browser
+separate from zsh completion. `/inbox` opens Needs you across all projects;
+`aishe task browse --needs-you` and `--archived` select the corresponding CLI
+views. Details offer Enter/`u` response, `f` follow-up, `e` recorded checks,
+`l` activity, `p` read-only changes, `?` contextual actions, Esc back, and
+Ctrl-C close from any page. Changes, review, and apply
 require an isolated git worktree; source-directory tasks retain confirmed
 lifecycle controls. Personal `RPROMPT` is unchanged by default.
 
+Workers persist questions and exact action approvals before pausing. A response
+resumes the linked checkpoint without charging paused time or changing saved
+authority and spent allowances. Approval is consumed once for the matching
+action and context, with file target contents included for edits. Received
+follow-ups have a matching durable User message in the native transcript;
+queued messages remain editable until the worker claims delivery. The worker
+reads them between provider turns and tool dispatches rather than interrupting
+an action already running.
+
+Task names, pins, archive, and reviewed result stamps persist separately from
+the objective. Opening terminal details acknowledges exactly the displayed
+result across shells. Waiting requests cannot be hidden by review or archive.
 Native completion is model completion, with no automatic acceptance check.
-Live steering and durable requests for background approvals or answers remain
-future runtime work; attention counts currently represent unseen non-success
-outcomes, not a waiting agent.
+`run_check` records observed command evidence and unresolved outcomes; later
+opaque command/check dispatch, writes, or MCP activity makes earlier evidence
+stale. See [background work](front-ends.md#background-work) for the user flow.
 
 ## Shared native task runtime
 
@@ -207,7 +223,8 @@ Completion means a nonempty model final answer with no tool calls, not an
 independent proof of task success. Provider errors, interruption, declined
 approval, exhausted budgets, and iteration caps produce distinct non-success
 outcomes. Native exits are `0` completed, `130` cancelled, `124` budget exhausted,
-`75` iteration limit, `1` failed, and `2` declined. See
+`75` iteration limit or waiting for a human response, `1` failed, and `2` declined.
+The saved outcome distinguishes the two uses of `75`. See
 [Native agent execution](configuration.md#native-agent-execution) for exact
 budget semantics, resume policy, and cancellation limits. Network allowances
 count recognized network-capable tool dispatches and MCP RPCs, not arbitrary

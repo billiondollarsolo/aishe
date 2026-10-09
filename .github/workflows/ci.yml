@@ -229,6 +229,12 @@ jobs:
         timeout-minutes: 5
         run: python3 tests/require_gate.py python3 tests/background_tasks_pty.py target/release/aishe
 
+      - name: Background questions, approvals, steering, and recorded checks
+        timeout-minutes: 10
+        run: |
+          python3 tests/require_gate.py python3 tests/native_task_interactions.py target/release/aishe
+          python3 tests/require_gate.py python3 tests/task_interactions_pty.py target/release/aishe
+
       - name: Clean and personal zsh feature matrices
         timeout-minutes: 5
         run: |

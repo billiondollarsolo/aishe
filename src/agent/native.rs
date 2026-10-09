@@ -23,6 +23,8 @@ pub enum NativeTurnState {
     IterationLimit,
     Failed,
     Declined,
+    /// Parked at a durable question or approval, with no action started.
+    Waiting,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -62,6 +64,7 @@ impl NativeTurnOutcome {
             NativeTurnState::IterationLimit => 75,
             NativeTurnState::Failed => 1,
             NativeTurnState::Declined => 2,
+            NativeTurnState::Waiting => 75,
         }
     }
 }
@@ -296,7 +299,9 @@ impl NativeBudget {
         Ok(())
     }
 
-    pub fn admit_tool(&mut self, call: &ToolCall) -> std::result::Result<(), String> {
+    /// Validate a prospective action without consuming its reservation. A
+    /// background approval must not charge an action which has not run yet.
+    pub fn check_tool(&self, call: &ToolCall) -> std::result::Result<(), String> {
         if let Some(reason) = self.exhausted() {
             return Err(reason);
         }
@@ -316,6 +321,12 @@ impl NativeBudget {
         {
             return Err("task network-call budget is exhausted".into());
         }
+        Ok(())
+    }
+
+    pub fn admit_tool(&mut self, call: &ToolCall) -> std::result::Result<(), String> {
+        self.check_tool(call)?;
+        let network = tool_uses_network(call);
         self.counters.tool_calls = self.counters.tool_calls.saturating_add(1);
         if network {
             self.counters.network_calls = self.counters.network_calls.saturating_add(1);
@@ -370,6 +381,7 @@ mod tests {
             (NativeTurnState::IterationLimit, 75),
             (NativeTurnState::Failed, 1),
             (NativeTurnState::Declined, 2),
+            (NativeTurnState::Waiting, 75),
         ];
         for (state, code) in cases {
             assert_eq!(NativeTurnOutcome::new("id", state, None).exit_code(), code);
@@ -399,6 +411,31 @@ mod tests {
             .is_err());
         assert_eq!(budget.counters().tool_calls, 2);
         assert_eq!(budget.counters().network_calls, 0);
+    }
+
+    #[test]
+    fn approval_preview_does_not_spend_the_action_reservation() {
+        let mut budget = NativeBudget::new(
+            NativeLimits {
+                tool_calls: Some(1),
+                network_calls: Some(1),
+                ..NativeLimits::default()
+            },
+            ExecutionCounters::default(),
+        );
+        let action = call(
+            "run_check",
+            json!({"command":"curl https://example.com", "reason":"check endpoint"}),
+        );
+        for _ in 0..3 {
+            assert!(budget.check_tool(&action).is_ok());
+        }
+        assert_eq!(budget.counters().tool_calls, 0);
+        assert_eq!(budget.counters().network_calls, 0);
+        assert!(budget.admit_tool(&action).is_ok());
+        assert_eq!(budget.counters().tool_calls, 1);
+        assert_eq!(budget.counters().network_calls, 1);
+        assert!(budget.check_tool(&action).is_err());
     }
 
     #[test]
