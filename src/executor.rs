@@ -222,6 +222,9 @@ impl Executor {
             .ok_or_else(|| anyhow!("neither zsh nor bash found on $PATH"))?;
         let env: HashMap<String, String> = std::env::vars().collect();
         let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/"));
+        let session_rc = source_user_rc
+            .then(|| init_session_rc(&shell))
+            .and_then(Result::ok);
         Ok(Self {
             shell,
             env,
@@ -233,7 +236,7 @@ impl Executor {
             cdpath: Vec::new(),
             named_dirs: HashMap::new(),
             history: VecDeque::with_capacity(10),
-            session_rc: source_user_rc.then(init_session_rc).and_then(Result::ok),
+            session_rc,
             dir_stack: Vec::new(),
             jobs: Vec::new(),
             history_log: None,
@@ -1672,25 +1675,38 @@ pub fn sensitive_environment_names(config: &crate::config::Config) -> HashSet<St
 /// Create the per-session rc file that every delegated command sources. It
 /// begins by loading the user's `~/.aishrc` and `~/.config/aishe/aishrc` (if
 /// present); interactively-defined aliases/options are appended later.
-fn init_session_rc() -> std::io::Result<PathBuf> {
+fn init_session_rc(shell: &Path) -> std::io::Result<PathBuf> {
+    let home = dirs::home_dir();
+    let config = crate::config::config_root();
+    init_session_rc_for_paths(shell, home.as_deref(), config.as_deref())
+}
+
+fn init_session_rc_for_paths(
+    shell: &Path,
+    home: Option<&Path>,
+    config: Option<&Path>,
+) -> std::io::Result<PathBuf> {
     use std::os::unix::fs::OpenOptionsExt;
     let path = std::env::temp_dir().join(format!(
         "aishe-session-{}-{:016x}.zsh",
         std::process::id(),
         rand::random::<u64>()
     ));
-    // Ensure aliases expand in the non-interactive `-c` shell (bash needs the
-    // shopt; zsh has it on by default). Each line is harmless in the other shell.
-    let mut content = String::from(
-        "# aishe session rc (generated)\n\
-         shopt -s expand_aliases 2>/dev/null\n\
-         setopt aliases 2>/dev/null\n",
-    );
-    if let Some(home) = dirs::home_dir() {
+    // A foreign builtin is an external-command lookup and an extra fork:
+    // `shopt` is absent in zsh, and `setopt` is absent in bash. Select from the
+    // actual backing executable rather than spoofable version environment vars.
+    let alias_option = if shell.file_name().is_some_and(|name| name == "zsh") {
+        "setopt aliases 2>/dev/null\n"
+    } else {
+        "shopt -s expand_aliases 2>/dev/null\n"
+    };
+    let mut content = String::from("# aishe session rc (generated)\n");
+    content.push_str(alias_option);
+    if let Some(home) = home {
         let p = single_quote(&home.join(".aishrc"));
         content.push_str(&format!("[ -f {p} ] && source {p}\n"));
     }
-    if let Some(cfg) = crate::config::config_root() {
+    if let Some(cfg) = config {
         let p = single_quote(&cfg.join("aishe").join("aishrc"));
         content.push_str(&format!("[ -f {p} ] && source {p}\n"));
     }
@@ -1794,6 +1810,101 @@ pub fn which(name: &str) -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn shell_specific_rc_preserves_aliases_without_launching_a_foreign_builtin() {
+        use std::os::unix::fs::PermissionsExt;
+
+        struct Fixture(PathBuf);
+        impl Drop for Fixture {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_dir_all(&self.0);
+            }
+        }
+        let root = Fixture(std::env::temp_dir().join(format!(
+            "aishe-native-alias-{}-{:016x}",
+            std::process::id(),
+            rand::random::<u64>()
+        )));
+        let home = root.0.join("home");
+        let config = root.0.join("config");
+        let bin = root.0.join("bin");
+        std::fs::create_dir_all(&home).unwrap();
+        std::fs::create_dir_all(config.join("aishe")).unwrap();
+        std::fs::create_dir_all(&bin).unwrap();
+        std::fs::write(home.join(".aishrc"), "alias home_alias='printf home_ok'\n").unwrap();
+        std::fs::write(
+            config.join("aishe/aishrc"),
+            "alias config_alias='printf config_ok'\n",
+        )
+        .unwrap();
+        let marker = root.0.join("foreign-builtin-ran");
+        for name in ["shopt", "setopt"] {
+            let path = bin.join(name);
+            std::fs::write(&path, "#!/bin/sh\nprintf ran > \"$AISHE_BUILTIN_CANARY\"\n").unwrap();
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700)).unwrap();
+        }
+        let mut tested = 0;
+        for name in ["zsh", "bash"] {
+            let Some(shell) = which(name) else {
+                continue;
+            };
+            let mut executor = Executor::new_with_session_rc(false).unwrap();
+            executor.shell = shell.clone();
+            executor.session_rc =
+                Some(init_session_rc_for_paths(&shell, Some(&home), Some(&config)).unwrap());
+            let search = std::env::join_paths(std::iter::once(bin.clone()).chain(
+                std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default()),
+            ))
+            .unwrap();
+            executor
+                .env
+                .insert("PATH".into(), search.to_string_lossy().into());
+            executor
+                .env
+                .insert("HOME".into(), home.to_string_lossy().into());
+            executor.env.insert(
+                "AISHE_BUILTIN_CANARY".into(),
+                marker.to_string_lossy().into(),
+            );
+            executor.env.insert("ZSH_VERSION".into(), "spoofed".into());
+            for variable in ["BASH_ENV", "ENV", "ZDOTDIR"] {
+                executor.env.remove(variable);
+            }
+            // Prove the canary catches the actual unsupported command before
+            // testing the generated rc, rather than inspecting its strings.
+            let foreign = if name == "zsh" { "shopt" } else { "setopt" };
+            let control = Command::new(&shell)
+                .args(["-c", foreign])
+                .env_clear()
+                .envs(&executor.env)
+                .output()
+                .unwrap();
+            assert!(control.status.success());
+            assert!(marker.is_file(), "{name}: PATH canary did not run");
+            std::fs::remove_file(&marker).unwrap();
+            let (code, output) = executor.run_captured(
+                "home_alias; printf /; config_alias",
+                Duration::from_secs(5),
+                false,
+            );
+            assert_eq!((code, output.as_str()), (0, "home_ok/config_ok"), "{name}");
+            assert!(
+                !marker.exists(),
+                "{name} launched the foreign builtin from its rc"
+            );
+            executor.persist_definition("alias saved_alias='printf persisted_ok'");
+            let (code, output) =
+                executor.run_captured("saved_alias", Duration::from_secs(5), false);
+            assert_eq!((code, output.as_str()), (0, "persisted_ok"), "{name}");
+            assert!(
+                !marker.exists(),
+                "{name} launched the foreign builtin on a later command"
+            );
+            tested += 1;
+        }
+        assert!(tested > 0, "the executor requires an installed zsh or bash");
+    }
 
     #[test]
     fn sandbox_wrap_prefixes_the_shell() {

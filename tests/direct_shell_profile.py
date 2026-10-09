@@ -57,11 +57,10 @@ def main():
         assert not version.stderr
         identity = parse_binary_identity(version.stdout.decode())
         # Mirror init_session_rc and Executor::configure_shell_command exactly,
-        # including the shell-specific alias commands and absent user rc files.
+        # including the zsh-specific alias builtin and absent user rc files.
         rc = root / "session.zsh"
         rc.write_text(
             "# aishe session rc (generated)\n"
-            "shopt -s expand_aliases 2>/dev/null\n"
             "setopt aliases 2>/dev/null\n"
             f"[ -f {shlex.quote(str(root / '.aishrc'))} ] && "
             f"source {shlex.quote(str(root / '.aishrc'))}\n"
