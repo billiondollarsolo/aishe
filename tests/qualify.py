@@ -262,6 +262,10 @@ NATIVE_BACKGROUND_LIFECYCLE = python_gate(
     "native-background-lifecycle", "Detached native cancellation, truthful outcomes, checkpoint resume, and rework",
     "tests/native_background_lifecycle.py", BINARY, timeout=180,
 )
+NATIVE_BACKGROUND_UI = python_gate(
+    "native-background-ui", "Quiet task indicators, browser, controls, and terminal restoration",
+    "tests/background_tasks_pty.py", BINARY, required_tools=("zsh", "git"), timeout=300,
+)
 BASH_HOOK_CURRENT = python_gate(
     "bash-hook-current",
     "Native Bash hook declared-tier matrix for the current Bash",
@@ -444,6 +448,7 @@ LOCAL_FULL_GATES = (
     NATIVE_PROFILE,
     NATIVE_SHELL_STATE,
     NATIVE_BACKGROUND_LIFECYCLE,
+    NATIVE_BACKGROUND_UI,
     python_gate(
         "legacy-pty-smoke", "Explicit legacy zsh smoke", "tests/pty_smoke.py", BINARY,
         required_tools=("zsh",), execution_env=LEGACY_ENV,

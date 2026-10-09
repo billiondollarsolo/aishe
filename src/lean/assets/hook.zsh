@@ -26,6 +26,65 @@ export AISHE_LEAN=1
 # redirect the producer or weaken credential filtering for an agent request.
 (( ${+_AISHE_STATE_CONTROL_FILE} )) || readonly _AISHE_STATE_CONTROL_FILE="${AISHE_EXECUTION_STATE_FILE:-}"
 (( ${+_AISHE_STATE_CONTROL_DENY} )) || readonly _AISHE_STATE_CONTROL_DENY="${AISHE_EXECUTION_STATE_DENY:-}"
+(( ${+_AISHE_BACKGROUND_CONTROL_FILE} )) || readonly _AISHE_BACKGROUND_CONTROL_FILE="${AISHE_BACKGROUND_FILE:-}"
+(( ${+_AISHE_BACKGROUND_CONTROL_EVENTS} )) || readonly _AISHE_BACKGROUND_CONTROL_EVENTS="${AISHE_BACKGROUND_EVENTS:-}"
+
+# The parent writes counts, never task output. Read the small private cache only
+# before a prompt or after a native fd notification, never on each keystroke.
+_aishe_background_refresh() {
+  emulate -L zsh
+  setopt extendedglob
+  local _AISHE_BACKGROUND_NAME _AISHE_BACKGROUND_COUNT
+  local -i _AISHE_BACKGROUND_FD _AISHE_BACKGROUND_LINES=0
+  local -A _AISHE_BACKGROUND_COUNTS
+  local -a _AISHE_BACKGROUND_PARTS
+  typeset -gx AISHE_BACKGROUND_INDICATOR=''
+  [[ "${AISHE_BACKGROUND_INDICATOR_ENABLED:-1}" != 0 &&
+      -n "$_AISHE_BACKGROUND_CONTROL_FILE" && -f "$_AISHE_BACKGROUND_CONTROL_FILE" &&
+      ! -L "$_AISHE_BACKGROUND_CONTROL_FILE" ]] || return 0
+  zmodload zsh/system 2>/dev/null || return 0
+  sysopen -r -o nonblock,nofollow -u _AISHE_BACKGROUND_FD "$_AISHE_BACKGROUND_CONTROL_FILE" 2>/dev/null || return 0
+  while IFS=$'\t' read -r -u $_AISHE_BACKGROUND_FD _AISHE_BACKGROUND_NAME _AISHE_BACKGROUND_COUNT; do
+    (( ++_AISHE_BACKGROUND_LINES <= 3 )) || break
+    [[ "$_AISHE_BACKGROUND_COUNT" == [0-9]## && ${#_AISHE_BACKGROUND_COUNT} -le 9 ]] || continue
+    case "$_AISHE_BACKGROUND_NAME" in
+      running|ready|attention) _AISHE_BACKGROUND_COUNTS[$_AISHE_BACKGROUND_NAME]="$_AISHE_BACKGROUND_COUNT" ;;
+    esac
+  done
+  exec {_AISHE_BACKGROUND_FD}<&-
+  for _AISHE_BACKGROUND_NAME in attention running ready; do
+    _AISHE_BACKGROUND_COUNT="${_AISHE_BACKGROUND_COUNTS[$_AISHE_BACKGROUND_NAME]:-0}"
+    [[ "$_AISHE_BACKGROUND_COUNT" == 0 ]] && continue
+    _AISHE_BACKGROUND_PARTS+=("$_AISHE_BACKGROUND_COUNT $_AISHE_BACKGROUND_NAME")
+  done
+  if [[ "${AISHE_UNICODE:-unicode}" == ascii ]]; then
+    AISHE_BACKGROUND_INDICATOR="${(j: | :)_AISHE_BACKGROUND_PARTS}"
+  else
+    AISHE_BACKGROUND_INDICATOR="${(j: · :)_AISHE_BACKGROUND_PARTS}"
+  fi
+}
+
+aishe-background-event() {
+  emulate -L zsh
+  local _AISHE_BACKGROUND_EVENT _AISHE_BACKGROUND_PREVIOUS="$AISHE_BACKGROUND_INDICATOR"
+  # The opened descriptor is nonblocking. Drain a burst into one redraw.
+  sysread -i "$1" -s 256 _AISHE_BACKGROUND_EVENT 2>/dev/null || true
+  if [[ -n "${2:-}" ]]; then
+    zle -F "$1" 2>/dev/null || true
+    return 0
+  fi
+  _aishe_background_refresh
+  [[ "$AISHE_BACKGROUND_INDICATOR" != "$_AISHE_BACKGROUND_PREVIOUS" ]] || return 0
+  local _AISHE_BACKGROUND_BUFFER="$BUFFER" _AISHE_BACKGROUND_CURSOR="$CURSOR"
+  local _AISHE_BACKGROUND_MARK="$MARK" _AISHE_BACKGROUND_REGION="$REGION_ACTIVE"
+  local _AISHE_BACKGROUND_REDRAW=1
+  aishe_set_prompt
+  BUFFER="$_AISHE_BACKGROUND_BUFFER"
+  CURSOR="$_AISHE_BACKGROUND_CURSOR"
+  MARK="$_AISHE_BACKGROUND_MARK"
+  REGION_ACTIVE="$_AISHE_BACKGROUND_REGION"
+  zle reset-prompt
+}
 
 _aishe_lean_glyph() {
   if [[ "${AISHE_UNICODE:-unicode}" == ascii ]]; then
@@ -66,9 +125,12 @@ _aishe_lean_prompt_fit() {
 
 aishe_set_prompt() {
   emulate -L zsh
+  _aishe_background_refresh
   # A CLI child stages mode changes for this parent shell; the mode controller
   # consumes them before any mode or grant state is displayed.
-  (( $+functions[_aishe_lean_apply_pending_mode] )) && _aishe_lean_apply_pending_mode
+  if [[ "${_AISHE_BACKGROUND_REDRAW:-0}" != 1 ]]; then
+    (( $+functions[_aishe_lean_apply_pending_mode] )) && _aishe_lean_apply_pending_mode
+  fi
   if [[ -n "${AISHE_SELECTION_FILE:-}" && -r "$AISHE_SELECTION_FILE" ]]; then
     {
       IFS= read -r AISHE_CONNECTION
@@ -134,7 +196,7 @@ aishe_set_prompt() {
       mode_label+=' [grant]'
     else
       mode_label+='?'
-      if [[ -o interactive && "${_AISHE_GRANT_HINT_SHOWN:-0}" != 1 ]]; then
+      if [[ -o interactive && "${_AISHE_GRANT_HINT_SHOWN:-0}" != 1 && "${_AISHE_BACKGROUND_REDRAW:-0}" != 1 ]]; then
         print -r -- 'aishe: mode? awaits a grant; an AI request shows the grant prompt.'
         typeset -g _AISHE_GRANT_HINT_SHOWN=1
       fi
@@ -153,6 +215,10 @@ aishe_set_prompt() {
       typeset -g _AISHE_USER_RPROMPT="$RPROMPT"
       psvar[88]="$AISHE_MODE_INDICATOR"
       typeset -g _AISHE_COMPOSED_RPROMPT="${RPROMPT}${RPROMPT:+$separator}%88v"
+      if [[ -n "$AISHE_BACKGROUND_INDICATOR" ]]; then
+        psvar[87]="$AISHE_BACKGROUND_INDICATOR"
+        _AISHE_COMPOSED_RPROMPT+="${separator}%87v"
+      fi
       RPROMPT="$_AISHE_COMPOSED_RPROMPT"
     fi
     return 0
@@ -205,6 +271,12 @@ aishe_set_prompt() {
           ;;
       esac
     done < "$AISHE_STATUS_FILE"
+  fi
+  # Activity comes first so a narrow terminal still exposes work awaiting the
+  # person. Existing model/connection metrics fill the remaining right margin.
+  if [[ -n "$AISHE_BACKGROUND_INDICATOR" ]]; then
+    values+=("$AISHE_BACKGROUND_INDICATOR")
+    colors+=("$AISHE_COLOR_METRIC")
   fi
   _aishe_lean_prompt_value "${AISHE_MODEL:-}"
   if [[ -n "$REPLY" ]]; then
@@ -881,6 +953,17 @@ _aishe_lean_slash() {
     /tour) command aishe tour "${(@)_AISHE_LOCAL_CLI_ARGS}" <&$_AISHE_INPUT_FD ;;
     /context) command aishe context "${(@)_AISHE_LOCAL_CLI_ARGS}" <&$_AISHE_INPUT_FD ;;
     /doctor) command aishe doctor "${(@)_AISHE_LOCAL_CLI_ARGS}" <&$_AISHE_INPUT_FD ;;
+    /tasks)
+      # The browser and any explicit action own the child terminal. Forward
+      # tokenized arguments literally; model text never becomes shell syntax.
+      if (( ${#_AISHE_LOCAL_CLI_ARGS} == 1 )) && [[ "${_AISHE_LOCAL_CLI_ARGS[1]}" == [[:xdigit:]]##-[[:xdigit:]]## ]]; then
+        command aishe task browse "${_AISHE_LOCAL_CLI_ARGS[1]}" <&$_AISHE_INPUT_FD
+      elif (( ${#_AISHE_LOCAL_CLI_ARGS} )); then
+        command aishe task "${(@)_AISHE_LOCAL_CLI_ARGS}" <&$_AISHE_INPUT_FD
+      else
+        command aishe task browse <&$_AISHE_INPUT_FD
+      fi
+      ;;
     /help|/commands|/status|/reset|/undo|/usage|/details|/mcp|/skills|/sessions|/backend)
       local _AISHE_LOCAL_REPLY
       _AISHE_LOCAL_REPLY="$(_aishe_lean_send "SLASH	${AISHE_MODE:-ask}	$PWD	$(_aishe_lean_flatten "$_AISHE_LOCAL_LINE")")" || return
@@ -1003,6 +1086,28 @@ aishe-fix-command() {
   zle reset-prompt
 }
 
+
+# Open background work without submitting, saving, or replacing the draft. The
+# child browser owns terminal input; the parent's IPC thread never reads it.
+aishe-background-tasks() {
+  emulate -L zsh
+  local _AISHE_BACKGROUND_BUFFER="$BUFFER" _AISHE_BACKGROUND_CURSOR="$CURSOR"
+  local _AISHE_BACKGROUND_MARK="$MARK" _AISHE_BACKGROUND_REGION="$REGION_ACTIVE"
+  local _AISHE_BACKGROUND_LAST_EXIT="${AISHE_LAST_EXIT:-0}"
+  zle -I
+  {
+    command aishe task browse <&$_AISHE_INPUT_FD
+  } always {
+    BUFFER="$_AISHE_BACKGROUND_BUFFER"
+    CURSOR="$_AISHE_BACKGROUND_CURSOR"
+    MARK="$_AISHE_BACKGROUND_MARK"
+    REGION_ACTIVE="$_AISHE_BACKGROUND_REGION"
+    AISHE_LAST_EXIT="$_AISHE_BACKGROUND_LAST_EXIT"
+    aishe_set_prompt
+    zle reset-prompt
+  }
+  return 0
+}
 
 # Density toggle (default Ctrl-O; override with AISHE_DETAILS_KEY). Parent owns
 # config.backend.output + PtyOut message; child syncs AISHE_AGENT_OUTPUT.
@@ -1225,6 +1330,8 @@ if [[ -o interactive ]]; then
 zle -N aishe-show-route
   zle -N aishe-cycle-mode
   zle -N aishe-toggle-agent-details
+  zle -N aishe-background-tasks
+  zle -N aishe-background-event
   zle -N aishe-slash-tab
   zle -C aishe-complete-slashes complete-word _aishe_slash_completion
   zstyle ':completion:aishe-slashes:*' group-name ''
@@ -1271,7 +1378,20 @@ zle -N aishe-show-route
     _aishe_bind_optional "$_aishe_keymap" "${AISHE_ROUTE_KEY:-^X?}" aishe-show-route "${+AISHE_ROUTE_KEY}"
     _aishe_bind_optional "$_aishe_keymap" "${AISHE_MODE_KEY:-^[[Z}" aishe-cycle-mode "${+AISHE_MODE_KEY}"
     _aishe_bind_optional "$_aishe_keymap" "${AISHE_DETAILS_KEY:-^O}" aishe-toggle-agent-details "${+AISHE_DETAILS_KEY}"
+    # A new shortcut is opt-in when already bound, even in the clean profile.
+    # Ctrl-X followed by the letter b leaves conventional Ctrl-B untouched.
+    _aishe_binding=(${(z)$(bindkey -M "$_aishe_keymap" "${AISHE_BACKGROUND_KEY:-^Xb}" 2>/dev/null)})
+    if [[ "${+AISHE_BACKGROUND_KEY}" == 1 || "${_aishe_binding[2]:-undefined-key}" == undefined-key ]]; then
+      bindkey -M "$_aishe_keymap" "${AISHE_BACKGROUND_KEY:-^Xb}" aishe-background-tasks
+    fi
   done
+  if [[ -n "$_AISHE_BACKGROUND_CONTROL_EVENTS" && -p "$_AISHE_BACKGROUND_CONTROL_EVENTS" &&
+        ! -L "$_AISHE_BACKGROUND_CONTROL_EVENTS" ]] && zmodload zsh/system 2>/dev/null; then
+    typeset -gi _AISHE_BACKGROUND_EVENT_FD
+    if sysopen -r -w -o nonblock,nofollow -u _AISHE_BACKGROUND_EVENT_FD "$_AISHE_BACKGROUND_CONTROL_EVENTS" 2>/dev/null; then
+      zle -F -w "$_AISHE_BACKGROUND_EVENT_FD" aishe-background-event
+    fi
+  fi
   # Late native customization deliberately sees the installed AIShe widgets.
   # It can override a binding or extend a widget without being replaced below.
   if [[ -n "${AISHE_LEANRC_POST:-}" && -r "$AISHE_LEANRC_POST" ]]; then

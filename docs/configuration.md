@@ -516,8 +516,13 @@ server launched from `command`. List connected tools with `aishe mcp`. See
   for exports, aliases, and completion paths before AIShe installs widgets.
 - `AISHE_LEANRC_POST`: late native startup file, default
   `~/.aishe/leanrc.post`; use it to extend or override installed widgets/bindings.
-- `AISHE_PERSONAL_INDICATOR=1`: opt into a mode/scope suffix on the personal
-  right prompt. Themes can instead display the refreshed `AISHE_MODE_INDICATOR`.
+- `AISHE_PERSONAL_INDICATOR=1`: opt into a mode/scope and background-work suffix
+  on the personal right prompt. Themes can instead display the refreshed
+  `AISHE_MODE_INDICATOR` and `AISHE_BACKGROUND_INDICATOR`; the latter is empty
+  when there is no running or unseen work. Counts cover all projects.
+- `AISHE_BACKGROUND_INDICATOR_ENABLED=0`: hide the native background-work badge
+  and clear `AISHE_BACKGROUND_INDICATOR` for personal themes. The task browser
+  remains available.
 - `AISHE_PTY_PROMPT=force`: request AIShe's full prompt even in the personal
   profile; `0` suppresses it.
 - `AISHE_MANAGE_HISTORY=1`: opt the personal profile into AIShe's history policy.
@@ -531,6 +536,9 @@ server launched from `command`. List connected tools with `aishe mcp`. See
   agent transcripts. Ctrl-O toggles `focus`/`detailed` in the interactive shell.
 - `AISHE_DETAILS_KEY`: override that zsh detail-toggle key (default `^O`,
   Ctrl-O).
+- `AISHE_BACKGROUND_KEY`: override the native zsh task-browser shortcut (default
+  `^Xb`, Ctrl-X b). Personal bindings are preserved unless this override is
+  explicitly set. Opening the browser retains the editable buffer and cursor.
 - `AISHE_THEME`: one-process theme override: `auto`, `dark`, `light`, `mono`, or `none`.
 - `AISHE_COLOR_DEPTH`: one-process color override: `auto`, `16`, `256`, `truecolor`, or `none`.
 - `AISHE_UNICODE`: one-process character override: `auto`, `unicode`, or `ascii`.

@@ -225,6 +225,10 @@ jobs:
         timeout-minutes: 5
         run: python3 tests/require_gate.py python3 tests/live_shell_state_pty.py target/release/aishe
 
+      - name: Quiet background work and task browser
+        timeout-minutes: 5
+        run: python3 tests/require_gate.py python3 tests/background_tasks_pty.py target/release/aishe
+
       - name: Clean and personal zsh feature matrices
         timeout-minutes: 5
         run: |

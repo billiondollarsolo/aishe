@@ -216,6 +216,7 @@ on a saved agent mode:
 aishe agent --scope workspace 'inspect and fix the failing tests'
 aishe agent --background --scope workspace 'update the project documentation'
 aishe task list
+aishe task browse
 aishe task resume TASK_ID
 aishe resume NATIVE_TASK_ID
 ```
@@ -232,6 +233,23 @@ failure, and declined approval have separate nonzero exits. A completed task
 means the model supplied its final answer, so review the change and verification
 output before applying it. Exact exit codes and budget/cancellation boundaries
 are in [Native agent execution](configuration.md#native-agent-execution).
+
+### Keep track of background work
+
+Continue using the shell while a background task runs. The clean prompt shows
+a quiet badge for running work and unseen results or problems; it disappears
+when there is nothing to show. Press **Ctrl-X b** to open the task browser and
+return to your current command with its cursor intact. A personal shortcut
+already bound to that key stays yours; `/tasks` also opens the browser.
+
+Type to search, use arrows and **Enter** for details, **Ctrl-R** to refresh, and
+**Tab** to include other projects. In details, **l** opens activity, **p**
+shows read-only changes, **?** shows actions, and **Esc** goes back. **Ctrl-C**
+closes the browser from any page. Inspect the
+result and limits before deciding to resume, stop, rework, apply, or discard.
+Those actions ask for confirmation. Looking at a result does not apply it.
+Personal themes can use `AISHE_BACKGROUND_INDICATOR`; setting
+`AISHE_PERSONAL_INDICATOR=1` opts into AIShe's right-prompt suffix.
 
 ## 5. Force a route when needed
 

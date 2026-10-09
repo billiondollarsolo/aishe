@@ -3,6 +3,7 @@
 use std::fs::OpenOptions;
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::ffi::OsStrExt;
+use std::os::unix::fs::{FileTypeExt, MetadataExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -30,6 +31,9 @@ pub struct LeanShellFiles {
     pub status: Option<PathBuf>,
     pub commands: Option<PathBuf>,
     pub execution_state: Option<PathBuf>,
+    pub background_status: Option<PathBuf>,
+    pub background_events: Option<PathBuf>,
+    pub background_seen: Option<PathBuf>,
 }
 
 impl LeanShellFiles {
@@ -146,6 +150,65 @@ pub struct IpcGuard {
     pub cancelled: Arc<AtomicBool>,
     stop: Arc<AtomicBool>,
     thread: Option<JoinHandle<()>>,
+    background_thread: Option<JoinHandle<()>>,
+    background_events: Option<PathBuf>,
+}
+
+/// Poll the shared task index independently of the foreground agent. Only a
+/// changed summary wakes ZLE; the shell never spawns a process or parses JSON
+/// while editing a command. The FIFO writer is nonblocking so a busy or closed
+/// shell cannot delay a task or the parent shutdown.
+fn spawn_background_watcher(
+    files: &LeanShellFiles,
+    stop: &Arc<AtomicBool>,
+) -> Result<Option<JoinHandle<()>>> {
+    let (Some(status), Some(events)) = (&files.background_status, &files.background_events) else {
+        return Ok(None);
+    };
+    mkfifo(events)?;
+    let initial = crate::background::shell_status_text(None, files.background_seen.as_deref())
+        .unwrap_or_else(|_| "running\t0\nready\t0\nattention\t0\n".into());
+    crate::config::write_atomic(status, initial.as_bytes())?;
+    let status = status.clone();
+    let events = events.clone();
+    let seen = files.background_seen.clone();
+    let stop = Arc::clone(stop);
+    Ok(Some(
+        std::thread::Builder::new()
+            .name("aishe-task-status".into())
+            .spawn(move || {
+                let mut previous = initial;
+                let mut notification_pending = true;
+                while !stop.load(Ordering::Relaxed) {
+                    let _ = crate::background::refresh_task_cache();
+                    if let Ok(summary) = crate::background::shell_status_text(None, seen.as_deref())
+                    {
+                        if summary != previous
+                            && crate::config::write_atomic(&status, summary.as_bytes()).is_ok()
+                        {
+                            previous = summary;
+                            notification_pending = true;
+                        }
+                    }
+                    if notification_pending {
+                        if let Ok(mut signal) = OpenOptions::new()
+                            .write(true)
+                            .custom_flags(libc::O_NONBLOCK | libc::O_NOFOLLOW)
+                            .open(&events)
+                        {
+                            if signal.metadata().is_ok_and(|metadata| {
+                                metadata.file_type().is_fifo()
+                                    && metadata.uid() == unsafe { libc::geteuid() }
+                            }) && signal.write_all(b"\n").is_ok()
+                            {
+                                notification_pending = false;
+                            }
+                        }
+                    }
+                    std::thread::park_timeout(std::time::Duration::from_secs(2));
+                }
+            })?,
+    ))
 }
 
 pub fn spawn_ipc(config: Config, pty: PtyOut) -> Result<IpcGuard> {
@@ -180,6 +243,8 @@ pub fn spawn_ipc_with_files(
     let stop = Arc::new(AtomicBool::new(false));
     let busy = Arc::new(AtomicBool::new(false));
     let cancelled = Arc::new(AtomicBool::new(false));
+    let background_thread = spawn_background_watcher(&files, &stop)?;
+    let background_events = files.background_events.clone();
     let busy_thread = Arc::clone(&busy);
     let cancelled_thread = Arc::clone(&cancelled);
     let stop_thread = Arc::clone(&stop);
@@ -347,6 +412,8 @@ pub fn spawn_ipc_with_files(
         cancelled,
         stop,
         thread: Some(thread),
+        background_thread,
+        background_events,
     })
 }
 
@@ -355,6 +422,10 @@ impl Drop for IpcGuard {
         self.cancelled.store(true, Ordering::SeqCst);
         crate::agent::controller::INTERRUPTED.store(true, Ordering::SeqCst);
         self.stop.store(true, Ordering::SeqCst);
+        if let Some(thread) = self.background_thread.take() {
+            thread.thread().unpark();
+            let _ = thread.join();
+        }
         if let Ok(mut wake) = OpenOptions::new().write(true).open(&self.req_path) {
             let _ = wake.write_all(b"STOP\n");
         }
@@ -363,6 +434,9 @@ impl Drop for IpcGuard {
         }
         let _ = std::fs::remove_file(&self.req_path);
         let _ = std::fs::remove_file(&self.rep_path);
+        if let Some(events) = &self.background_events {
+            let _ = std::fs::remove_file(events);
+        }
     }
 }
 

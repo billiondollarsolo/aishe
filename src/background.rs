@@ -12,6 +12,13 @@ use serde::{Deserialize, Serialize};
 
 use crate::config::Config;
 
+mod presentation;
+pub use presentation::{
+    acknowledge_task, cached_task_entries, read_seen, refresh_task_cache, shell_status_text,
+    task_details, task_entries, task_patch_lines, task_status, SeenTasks, TaskAttention,
+    TaskCheckpoint, TaskDetails, TaskEntry, TaskStatus,
+};
+
 const SCHEMA_VERSION: u32 = 1;
 const MAX_LOG_BYTES: u64 = 8 * 1024 * 1024;
 const MAX_OBJECTIVE_BYTES: usize = 64 * 1024;
@@ -122,6 +129,10 @@ pub struct Record {
 
 #[derive(Clone, Debug)]
 pub enum Action {
+    Browse {
+        id: Option<String>,
+        all: bool,
+    },
     Start {
         objective: String,
         no_isolation: bool,
@@ -182,6 +193,7 @@ pub enum Action {
 
 pub fn command(config: &Config, action: Action) -> Result<u8> {
     let result = match action {
+        Action::Browse { id, all } => crate::cli::taskui::browse(config, id.as_deref(), all),
         Action::Start {
             objective,
             no_isolation,
@@ -674,11 +686,9 @@ fn refresh_status() {
     let Some(path) = std::env::var_os("AISHE_STATUS_FILE").filter(|value| !value.is_empty()) else {
         return;
     };
-    let active = records()
-        .unwrap_or_default()
-        .into_iter()
-        .filter(|record| matches!(record.state, State::Starting | State::Running))
-        .count();
+    let active = task_status(None, &SeenTasks::default())
+        .map(|status| status.running)
+        .unwrap_or_default();
     crate::usagelog::merge_status(
         Path::new(&path),
         &[(
@@ -1326,7 +1336,7 @@ fn apply(id: &str, hunks: &[usize]) -> Result<u8> {
         use sha2::{Digest, Sha256};
         format!("{:x}", Sha256::digest(&bytes))
     });
-    record.updated_at_ms = now_ms();
+    record.updated_at_ms = now_ms().max(record.updated_at_ms.saturating_add(1));
     save(&record)?;
     println!("applied task {id} changes to {}", repo.display());
     Ok(0)
@@ -1463,7 +1473,7 @@ fn discard(id: &str) -> Result<u8> {
         }
     }
     record.state = State::Discarded;
-    record.updated_at_ms = now_ms();
+    record.updated_at_ms = now_ms().max(record.updated_at_ms.saturating_add(1));
     save(&record)?;
     println!("discarded task {id} worktree");
     Ok(0)
@@ -1917,7 +1927,7 @@ fn reconcile(record: &mut Record) -> Result<()> {
             fresh.state = State::Interrupted;
             fresh.pid = None;
             fresh.process_start = None;
-            fresh.updated_at_ms = now_ms();
+            fresh.updated_at_ms = now_ms().max(fresh.updated_at_ms.saturating_add(1));
             fresh.error = Some("background process ended without a final checkpoint".into());
             save(&fresh)?;
         }
@@ -1927,7 +1937,27 @@ fn reconcile(record: &mut Record) -> Result<()> {
 }
 
 fn process_start(pid: u32) -> Option<String> {
-    let output = Command::new("ps")
+    #[cfg(target_os = "linux")]
+    {
+        // Kernel start ticks identify PID reuse without spawning ps, and remain
+        // stable across shell locale/time-zone changes.
+        let stat = fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+        let start = stat.rsplit_once(") ")?.1.split_ascii_whitespace().nth(19)?;
+        start.parse::<u64>().ok()?;
+        Some(format!("proc:{start}"))
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        ps_process_start(pid, true).map(|start| format!("utc:{start}"))
+    }
+}
+
+fn ps_process_start(pid: u32, utc: bool) -> Option<String> {
+    let mut command = Command::new("ps");
+    if utc {
+        command.env("TZ", "UTC").env("LC_ALL", "C");
+    }
+    let output = command
         .args(["-o", "lstart=", "-p", &pid.to_string()])
         .output()
         .ok()?;
@@ -1939,8 +1969,14 @@ fn process_start(pid: u32) -> Option<String> {
 }
 
 fn same_process(pid: u32, expected: Option<&str>) -> bool {
-    expected.is_some_and(|expected| process_start(pid).as_deref() == Some(expected))
-        && process_running(pid)
+    expected.is_some_and(|expected| {
+        if expected.starts_with("proc:") || expected.starts_with("utc:") {
+            process_start(pid).as_deref() == Some(expected)
+        } else {
+            // Older records used unprefixed ps output in the caller's locale.
+            ps_process_start(pid, false).as_deref() == Some(expected)
+        }
+    }) && process_running(pid)
 }
 
 fn process_running(pid: u32) -> bool {
@@ -2002,6 +2038,8 @@ fn save(record: &Record) -> Result<()> {
     let path = record_path(&record.id)?;
     crate::config::write_atomic(&path, &serde_json::to_vec_pretty(record)?)?;
     set_private(&path, 0o600);
+    // Presentation failure must never prevent the authoritative task checkpoint.
+    let _ = presentation::record_saved(record);
     Ok(())
 }
 
@@ -2016,7 +2054,9 @@ fn update(id: &str, change: impl FnOnce(&mut Record) -> Result<()>) -> Result<()
     lock.lock_exclusive()?;
     let mut record = load(id)?;
     change(&mut record)?;
-    record.updated_at_ms = now_ms();
+    // Revision stamps remain distinct even when several actions finish in the
+    // same millisecond or the wall clock moves backward.
+    record.updated_at_ms = now_ms().max(record.updated_at_ms.saturating_add(1));
     save(&record)
 }
 
@@ -2112,7 +2152,59 @@ mod tests {
         assert!(validate_id("short").is_err());
     }
 
-    fn fixture_record() -> Record {
+    #[cfg(unix)]
+    #[test]
+    fn worker_identity_tracks_live_process_and_rejects_reused_or_exited_pid() {
+        let mut child = Command::new("sleep")
+            .arg("10")
+            .env("TZ", "Pacific/Honolulu")
+            .spawn()
+            .unwrap();
+        let pid = child.id();
+        let identity = process_start(pid).unwrap();
+        let legacy = ps_process_start(pid, false).unwrap();
+        let alive = same_process(pid, Some(&identity));
+        let legacy_alive = same_process(pid, Some(&legacy));
+        let mismatch = same_process(pid, Some("proc:0"));
+        child.kill().unwrap();
+        child.wait().unwrap();
+        assert!(alive);
+        assert!(legacy_alive, "legacy ps fixture remains recognized");
+        assert!(!mismatch);
+        assert!(!same_process(pid, Some(&identity)));
+        #[cfg(target_os = "linux")]
+        assert!(identity.starts_with("proc:"));
+        #[cfg(not(target_os = "linux"))]
+        assert!(identity.starts_with("utc:"));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn kernel_worker_identity_is_independent_of_ps_time_zone_display() {
+        let pid = std::process::id();
+        let identity = process_start(pid).unwrap();
+        let ps_time = |timezone| {
+            let output = Command::new("ps")
+                .args(["-o", "lstart=", "-p", &pid.to_string()])
+                .env("TZ", timezone)
+                .env("LC_ALL", "C")
+                .output()
+                .unwrap();
+            assert!(output.status.success());
+            String::from_utf8(output.stdout).unwrap()
+        };
+        assert_ne!(ps_time("UTC"), ps_time("Pacific/Honolulu"));
+        assert_eq!(process_start(pid).as_deref(), Some(identity.as_str()));
+        assert!(same_process(pid, Some(&identity)));
+        let ticks = identity
+            .strip_prefix("proc:")
+            .unwrap()
+            .parse::<u64>()
+            .unwrap();
+        assert!(!same_process(pid, Some(&format!("proc:{}", ticks + 1))));
+    }
+
+    pub(super) fn fixture_record() -> Record {
         serde_json::from_value(serde_json::json!({
             "schema_version": 1,
             "id": "12345678-abcd",

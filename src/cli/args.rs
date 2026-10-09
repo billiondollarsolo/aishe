@@ -693,6 +693,14 @@ pub(crate) enum Cmd {
 
 #[derive(Subcommand, Debug)]
 pub(crate) enum BackgroundTaskCmd {
+    /// Browse live background work, results, activity, and changes.
+    Browse {
+        /// Open one task directly.
+        id: Option<String>,
+        /// Include work from every project.
+        #[arg(long)]
+        all: bool,
+    },
     /// Start an agent in the background; git worktree isolation is the default.
     Start {
         #[arg(required = true)]
@@ -1313,6 +1321,10 @@ pub(crate) fn session_action(command: &TaskSessionCmd) -> aishe::cli::session::A
 pub(crate) fn background_task_action(command: &BackgroundTaskCmd) -> aishe::background::Action {
     use aishe::background::{Action, StepState};
     match command {
+        BackgroundTaskCmd::Browse { id, all } => Action::Browse {
+            id: id.clone(),
+            all: *all,
+        },
         BackgroundTaskCmd::Start {
             objective,
             no_isolation,

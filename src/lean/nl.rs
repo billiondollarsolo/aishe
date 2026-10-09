@@ -1161,6 +1161,10 @@ fn emit_lean_help(warm: &LeanWarm, pty: &PtyOut, all_commands: bool, topic: &str
                 "  Ctrl-C        cancel work or clear the current input",
             );
             emit_text(pty, "  Ctrl-X ?      explain the current route");
+            emit_text(
+                pty,
+                "  Ctrl-X b      view background work and keep your input",
+            );
             emit_text(pty, "  Ctrl-X Ctrl-F suggest a fix for the last failure");
         } else if let Some(command) = super::slash::find(topic) {
             emit_text(pty, &format!("AIShe · /{}", command.name));

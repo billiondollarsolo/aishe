@@ -310,6 +310,17 @@ fn run_zsh_inner(config: &Config, history_log: &std::path::Path, shell_id: Strin
     );
     cmd.env("AISHE_STATUS_FILE", &status_file);
     lean_files.status = Some(status_file.clone());
+    if lean {
+        let background_status = zdotdir.join("background-status");
+        let background_events = zdotdir.join("background-events");
+        let background_seen = zdotdir.join("background-seen");
+        cmd.env("AISHE_BACKGROUND_FILE", &background_status);
+        cmd.env("AISHE_BACKGROUND_EVENTS", &background_events);
+        cmd.env("AISHE_BACKGROUND_SEEN_FILE", &background_seen);
+        lean_files.background_status = Some(background_status);
+        lean_files.background_events = Some(background_events);
+        lean_files.background_seen = Some(background_seen);
+    }
     cmd.env(
         "AISHE_STATUS_POSITION",
         if config.aishe.status_line {

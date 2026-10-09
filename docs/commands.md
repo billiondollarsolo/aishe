@@ -17,6 +17,11 @@ included native engine; subscription OAuth explicitly uses the managed legacy
 shell. The generated slash-command reference below describes the broader
 legacy hook and CLI surface; the current shell's `/commands` is authoritative.
 
+`/tasks` opens the native background task browser. **Ctrl-X b** opens it while
+keeping the editable command and cursor; `aishe task browse [TASK_ID] [--all]`
+opens it from the CLI. Navigation, attention counts, and review behavior are
+described in [background work](front-ends.md#background-work).
+
 ## Subcommands
 
 <!-- BEGIN GENERATED CLI SURFACE -->

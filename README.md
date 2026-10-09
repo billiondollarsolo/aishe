@@ -129,6 +129,11 @@ Full routing, Option/Alt+Return, and Mac terminal Meta settings:
   limits, durable state, cancellation/resume, numbered hunk review, and three-way
   apply. Network-call limits count recognized network tools and MCP calls, not
   every request made inside a subprocess.
+- **Quiet background awareness.** A small prompt badge shows running work and
+  unseen results or problems. **Ctrl-X b** opens the task browser without losing
+  your editable command; `/tasks` opens it too. Inspect results, activity, limits,
+  and changes before choosing a follow-up. See
+  [background work](docs/front-ends.md#background-work).
 - **Explicit context and automation.** Agent-only `@file`, `@dir`, `@diff`, and
   `@clipboard` attachments are bounded; `aishe index` searches tracked code
   locally; `aishe ask --json|--schema` produces validated machine output.
@@ -297,6 +302,7 @@ Daily-driver examples and safety boundaries:
 /mode           ask, allow, agent, or agent-host
 /details        cycle focus / compact / detailed (also Ctrl-O)
 /status         mode, scope, grant, model, session, usage and budget
+/tasks          browse background work, results, activity and changes
 /usage          cumulative tokens and cost for this shell
 /settings       edit saved defaults with grouped change review
 /setup          configure or resume setup
@@ -313,7 +319,8 @@ Daily-driver examples and safety boundaries:
 
 Pickers apply to this shell; an explicit Yes promotes a saved default. Settings
 applies defaults to new shells. **Shift-Tab** cycles modes on empty input,
-**Ctrl-O** cycles output detail, and **`?`** forces natural language. Additional
+**Ctrl-O** cycles output detail, **Ctrl-X b** opens background work while
+retaining the command line, and **`?`** forces natural language. Additional
 CLI commands and the legacy shell surface are described in
 [docs/commands.md](docs/commands.md).
 

@@ -61,7 +61,7 @@ pub enum PickerResult {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum PickerKey {
+pub(crate) enum PickerKey {
     Up,
     Down,
     Home,
@@ -71,6 +71,7 @@ enum PickerKey {
     Enter,
     Backspace,
     Cancel,
+    Interrupt,
     Character(char),
     Other,
 }
@@ -582,7 +583,11 @@ pub fn performance_picker_frame(
 /// `drawn_rows` is the number of content lines written on the previous frame.
 /// After each frame the cursor sits on the blank line immediately below the
 /// last content row, so the next redraw moves up exactly `drawn_rows` lines.
-fn draw_raw_frame(lines: &[String], drawn_rows: &mut usize, capabilities: &TerminalCapabilities) {
+pub(crate) fn draw_raw_frame(
+    lines: &[String],
+    drawn_rows: &mut usize,
+    capabilities: &TerminalCapabilities,
+) {
     // Reserve the last column. Autowrap there creates an extra physical row
     // that would make the next in-place redraw move to the wrong line.
     let width = columns().saturating_sub(1).max(1);
@@ -637,7 +642,7 @@ fn style_picker_line(line: &str, _index: usize, capabilities: &TerminalCapabilit
 /// into the user-space buffer; a subsequent `poll(STDIN)` then sees no kernel
 /// data and times out as bare Esc → cancel. That is why ↑ looked like cancel
 /// in `/model` and `/connection` over SSH and local PTYs.
-struct PickerInput {
+pub(crate) struct PickerInput {
     #[cfg(unix)]
     file: std::fs::File,
     #[cfg(not(unix))]
@@ -648,7 +653,7 @@ struct PickerInput {
 }
 
 impl PickerInput {
-    fn open() -> Result<Self> {
+    pub(crate) fn open() -> Result<Self> {
         #[cfg(unix)]
         {
             // The inherited fd is essential under the zsh-PTY front-end:
@@ -784,10 +789,38 @@ impl PickerInput {
         }
     }
 
+    /// Bounded wait for a live inline view. No process-global event reader or
+    /// signal handler is needed, and EOF remains an ordinary close action.
+    pub(crate) fn read_live_key(&mut self, timeout_ms: i32) -> std::io::Result<Option<PickerKey>> {
+        if !self.poll_ready(timeout_ms) {
+            return Ok(None);
+        }
+        match self.read_byte() {
+            Ok(3 | 4) => return Ok(Some(PickerKey::Interrupt)),
+            Ok(27) => return self.read_escape_sequence_with_timeout(40).map(Some),
+            Ok(byte) => self.pending.insert(0, byte),
+            Err(error) if error.kind() == std::io::ErrorKind::UnexpectedEof => {
+                return Ok(Some(PickerKey::Interrupt));
+            }
+            Err(error) => return Err(error),
+        }
+        match self.read_key() {
+            Ok(key) => Ok(Some(key)),
+            Err(error) if error.kind() == std::io::ErrorKind::UnexpectedEof => {
+                Ok(Some(PickerKey::Cancel))
+            }
+            Err(error) => Err(error),
+        }
+    }
+
     /// Parse navigation keys encoded as ESC + CSI or SS3 sequences.
     fn read_escape_sequence(&mut self) -> std::io::Result<PickerKey> {
+        self.read_escape_sequence_with_timeout(300)
+    }
+
+    fn read_escape_sequence_with_timeout(&mut self, timeout_ms: i32) -> std::io::Result<PickerKey> {
         // Prefer bytes already available; only then wait (SSH lag).
-        let Some(second) = self.poll_byte(300)? else {
+        let Some(second) = self.poll_byte(timeout_ms)? else {
             return Ok(PickerKey::Cancel);
         };
         match second {
@@ -806,6 +839,13 @@ impl PickerInput {
             }
             // CSI: ESC [ … final
             b'[' => {}
+            _ if timeout_ms < 300 => {
+                // A second Escape should back out another level, rather than
+                // being swallowed as an unsupported Alt key. Likewise keep a
+                // following printable key for the view reached by Escape.
+                self.pending.insert(0, second);
+                return Ok(PickerKey::Cancel);
+            }
             _ => return Ok(PickerKey::Other),
         }
 
@@ -855,10 +895,10 @@ impl PickerInput {
     }
 }
 
-struct RawGuard;
+pub(crate) struct RawGuard;
 
 impl RawGuard {
-    fn enter() -> Result<Self> {
+    pub(crate) fn enter() -> Result<Self> {
         crossterm::terminal::enable_raw_mode().context("enabling terminal raw mode")?;
         Ok(Self)
     }
@@ -890,7 +930,7 @@ fn columns() -> usize {
     terminal_size().0
 }
 
-fn terminal_size() -> (usize, usize) {
+pub(crate) fn terminal_size() -> (usize, usize) {
     crossterm::terminal::size()
         .ok()
         .map(|(width, height)| (usize::from(width).max(1), usize::from(height).max(1)))
@@ -2228,5 +2268,33 @@ mod tests {
             PickerKey::Cancel
         );
         assert!(PickerInput::from_bytes(b"").read_key().is_err());
+    }
+
+    #[test]
+    fn live_views_distinguish_interrupt_from_back_and_refresh() {
+        for (bytes, expected) in [
+            (&b"\x03"[..], PickerKey::Interrupt),
+            (&b"\x04"[..], PickerKey::Interrupt),
+            (&b"\x1b"[..], PickerKey::Cancel),
+            (&b"\x12"[..], PickerKey::Character('\x12')),
+            (&b"\x1b[B"[..], PickerKey::Down),
+        ] {
+            assert_eq!(
+                PickerInput::from_bytes(bytes).read_live_key(0).unwrap(),
+                Some(expected)
+            );
+        }
+        assert_eq!(
+            PickerInput::from_bytes(b"").read_live_key(0).unwrap(),
+            Some(PickerKey::Interrupt),
+            "detached input must close the drawer"
+        );
+    }
+
+    #[test]
+    fn live_view_escape_back_then_close_keeps_both_keys() {
+        let mut input = PickerInput::from_bytes(b"\x1b\x1b");
+        assert_eq!(input.read_live_key(0).unwrap(), Some(PickerKey::Cancel));
+        assert_eq!(input.read_live_key(0).unwrap(), Some(PickerKey::Cancel));
     }
 }

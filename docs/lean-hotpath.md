@@ -89,6 +89,12 @@ Verify the actual editable buffers and side effects with:
   custom commands. Completion preserves arguments and leaves file paths to zsh.
   `/` Enter opens a short guide; `/help model` explains one command, `/help keys`
   lists keyboard controls, and `/commands` shows the complete catalogue.
+- `/tasks` opens the background task browser; Ctrl-X b opens it while preserving
+  the editable command and cursor. A compact prompt badge appears for running
+  tasks and unseen results or problems. The browser exposes recent activity,
+  results, checkpoint counters/limits, and read-only changes. Search and project
+  filtering keep older work discoverable without filling the prompt. Lifecycle
+  actions remain explicit and confirmed.
 - `/model` and `/connection` open searchable, paged pickers on the inner shell's
   terminal. Picks apply to this shell; a separate explicit Yes saves a default.
   Lean model choices use configuration and capability cache without starting a
@@ -103,8 +109,9 @@ Verify the actual editable buffers and side effects with:
   Prompt colors and command highlighting follow the shared palette, `NO_COLOR`,
   and `TERM=dumb`; ASCII mode supplies plain glyphs.
 - The personal profile preserves `PROMPT`, `RPROMPT`, history variables/options,
-  and custom optional keybindings. Themes can display `AISHE_MODE_INDICATOR`;
-  `AISHE_PERSONAL_INDICATOR=1` appends a mode/scope right-prompt suffix.
+  and custom optional keybindings. Themes can display `AISHE_MODE_INDICATOR`
+  and `AISHE_BACKGROUND_INDICATOR`; `AISHE_PERSONAL_INDICATOR=1` appends an
+  optional mode/scope and background-work right-prompt suffix.
   `AISHE_PTY_PROMPT=force` opts into the full AIShe prompt, and
   `AISHE_MANAGE_HISTORY=1` opts into AIShe history policy. Existing Enter/Tab
   widgets are chained per keymap; late rc overrides run after installation.
@@ -154,6 +161,32 @@ When allowed, configured MCP servers execute outside this command sandbox;
 the workspace indicator does not promise isolation of an opaque MCP server.
 On macOS, workspace restrictions are policy-only. Organization network-denial
 policy refuses native host scope because it cannot enforce that restriction.
+
+### Background awareness
+
+The native parent checks a bounded local task cache every two seconds and
+supplies changed activity counts through the shell FIFO. This avoids
+per-keystroke process spawning;
+periodic refresh and explicit inspection still read local task state. Ordinary
+commands continue to execute in zsh. Background logs do not stream into the
+editable prompt, and an empty cache produces no activity badge. Counts cover
+all projects; the browser starts with the current project, falling back to all
+projects when none are local.
+
+Ctrl-X b (`AISHE_BACKGROUND_KEY`) hands off to the task browser while preserving
+`BUFFER` and `CURSOR`; a bound personal shortcut wins unless explicitly
+replaced. `/tasks` and `aishe task browse [TASK_ID] [--all]` provide the same
+inspection without relying on the shortcut. Arrow selection, search, Enter
+details, Ctrl-R refresh, and Tab project/all keep the browser separate from zsh
+completion. Details offer `l` activity, `p` read-only changes, `?` contextual
+actions, Esc back, and Ctrl-C close from any page. Changes, review, and apply
+require an isolated git worktree; source-directory tasks retain confirmed
+lifecycle controls. Personal `RPROMPT` is unchanged by default.
+
+Native completion is model completion, with no automatic acceptance check.
+Live steering and durable requests for background approvals or answers remain
+future runtime work; attention counts currently represent unseen non-success
+outcomes, not a waiting agent.
 
 ## Shared native task runtime
 

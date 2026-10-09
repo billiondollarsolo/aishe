@@ -55,8 +55,9 @@ Workspace grants remain tied to the accepted canonical directory.
 
 The clean profile supplies a bounded mode/scope prompt and configurable right
 status. The personal profile preserves both `PROMPT` and `RPROMPT`. AIShe
-refreshes `AISHE_MODE_INDICATOR` for a theme to display, or you can opt into a
-mode/scope suffix on the right prompt with `AISHE_PERSONAL_INDICATOR=1`:
+refreshes `AISHE_MODE_INDICATOR` and `AISHE_BACKGROUND_INDICATOR` for a theme
+to display, or you can opt into a mode/scope and background-work suffix on the
+right prompt with `AISHE_PERSONAL_INDICATOR=1`:
 
 ```sh
 AISHE_ZSH_PROFILE=personal AISHE_PERSONAL_INDICATOR=1 aishe
@@ -134,6 +135,53 @@ resume does not save environment values.
 Foreground, CLI, and background native agent turns share execution admission
 and typed outcomes. See [native agent execution](configuration.md#native-agent-execution)
 for exit codes, durable resume, budget semantics, and cancellation limits.
+
+### Background work
+
+Background work stays out of your command output. In the clean profile a small
+prompt badge appears only when tasks are running or a result or problem has not
+been seen. It counts work across all projects: for example, `2 running · 1 ready`.
+`attention` marks work needing review. Empty activity has no badge. Failed,
+interrupted, or stopped work is attention; it does not mean the agent is waiting for a live
+approval or answer.
+
+Press **Ctrl-X b** to open the task browser, inspect a task, and return to the
+same editable buffer and cursor position. An existing binding in the personal
+profile is preserved; set `AISHE_BACKGROUND_KEY` to explicitly choose a
+shortcut. `/tasks` opens the same browser. Outside the shell, use
+`aishe task browse` or `aishe task browse TASK_ID`; add `--all` to include other
+projects.
+
+The browser starts with the current project, or all projects if no local tasks
+exist. Type to search, use the arrow keys to select a task, and **Enter** to
+inspect it. **Tab** toggles the current project and all projects; **Ctrl-R**
+refreshes. Details expose the final result, checkpoint counters, and limits.
+Press **l** for activity, **p** for read-only changes, or **?** for the task's
+available actions. **Esc** goes back or closes the browser; **Ctrl-C** closes
+it from any page. Resume, stop,
+rework, apply, and discard are explicit actions with confirmation;
+opening a task or patch does not apply its changes. Existing `aishe task`
+start, list, tail, review, and lifecycle commands remain available. Tasks that
+run in the source directory still offer confirmed stop, resume, and rework
+controls. Changes, review, and apply require an isolated git worktree.
+
+Opening details acknowledges that finished revision in this shell; listing tasks
+does not. The task and its changes stay available. A later attempt or result
+appears in the counts again.
+
+Personal prompts keep their `RPROMPT` by default. Themes can display
+`AISHE_BACKGROUND_INDICATOR`, or `AISHE_PERSONAL_INDICATOR=1` adds the optional
+AIShe suffix. Activity uses a bounded local cache and shell FIFO updates;
+the parent checks it every two seconds and redraws only when the counts change.
+This does local work, while individual keystrokes do not launch a task-scanning
+process. `AISHE_BACKGROUND_INDICATOR_ENABLED=0` hides the badge and clears the
+theme variable. Logs remain in the browser rather than streaming across
+your input line.
+
+A native task's completion means the model finished its turn. Review its
+result, changes, and actual check output before applying. Automatic verification,
+live steering of a running task, and resumable background requests for approval
+or answers are not yet implemented.
 
 ### Managed legacy shell
 
