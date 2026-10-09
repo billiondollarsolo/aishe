@@ -22,6 +22,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", type=Path,
                         default=Path("test-results/sandbox-profile.json"))
+    parser.add_argument("--require-namespaces", action="store_true")
     args = parser.parse_args()
     binary = shutil.which("bwrap")
     policy = Path("/proc/sys/kernel/apparmor_restrict_unprivileged_userns")
@@ -55,6 +56,10 @@ def main():
     args.output.write_text(json.dumps(report, indent=2) + "\n")
     print(json.dumps(report, indent=2))
     print(f"diagnostic report: {args.output}; functional isolation gate remains separate")
+    if args.require_namespaces and (
+        not binary or any(probe.get("exit_code") != 0 for probe in report["probes"].values())
+    ):
+        raise SystemExit("Required strict user/network namespace probes did not pass")
 
 
 if __name__ == "__main__":

@@ -80,6 +80,10 @@ jobs:
         if: runner.os == 'macOS'
         run: brew install shellcheck
 
+      - name: Enable strict namespaces on the disposable Linux runner
+        if: runner.os == 'Linux'
+        run: sh tests/prepare_linux_sandbox.sh
+
       # Group-writable zsh dirs make stock `compinit` interactive; lean hook
       # now passes `-u`, but harden the image too (mirrors the ubuntu step).
       - name: Harden zsh dirs (macOS)
@@ -153,13 +157,19 @@ jobs:
       - name: Install bubblewrap
         run: sudo apt-get update && sudo apt-get install -y bubblewrap
       - name: Record actual runner policy and namespace probes
-        run: python3 tests/sandbox_profile.py
+        run: python3 tests/sandbox_profile.py --output test-results/sandbox-profile-before.json
+      - name: Enable strict namespaces on the disposable runner
+        run: sh tests/prepare_linux_sandbox.sh
+      - name: Require actual user and network namespaces
+        run: >-
+          python3 tests/sandbox_profile.py --require-namespaces
+          --output test-results/sandbox-profile-after.json
       - name: Upload namespace diagnostic evidence
         if: always()
         uses: actions/upload-artifact@v6
         with:
           name: linux-namespace-diagnostics
-          path: test-results/sandbox-profile.json
+          path: test-results/sandbox-profile-*.json
           if-no-files-found: error
 
   pty-native:
@@ -189,6 +199,10 @@ jobs:
         run: |
           sudo apt-get update && sudo apt-get install -y zsh bubblewrap tmux screen
           sudo chmod -R go-w /usr/share/zsh /usr/local/share/zsh 2>/dev/null || true
+
+      - name: Enable strict namespaces on the disposable Linux runner
+        if: runner.os == 'Linux'
+        run: sh tests/prepare_linux_sandbox.sh
 
       - name: Harden zsh directories (macOS)
         if: runner.os == 'macOS'
@@ -360,6 +374,10 @@ jobs:
         run: |
           sudo apt-get update && sudo apt-get install -y zsh bubblewrap
           sudo chmod -R go-w /usr/share/zsh /usr/local/share/zsh 2>/dev/null || true
+
+      - name: Enable strict namespaces on the disposable Linux runner
+        if: runner.os == 'Linux'
+        run: sh tests/prepare_linux_sandbox.sh
 
       - name: Harden zsh directories (macOS)
         if: runner.os == 'macOS'
