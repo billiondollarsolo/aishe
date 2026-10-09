@@ -23,6 +23,7 @@ enum Page {
     Activity,
     Changes,
     Evidence,
+    Timeline,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -40,6 +41,59 @@ enum Control {
     Archive,
     Views,
     Actions,
+    Foreground,
+    TimelineFilter,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+enum TimelineFilter {
+    #[default]
+    All,
+    Tools,
+    Checks,
+    Interactions,
+    Handoffs,
+    Workflow,
+}
+
+impl TimelineFilter {
+    fn label(self) -> &'static str {
+        match self {
+            Self::All => "All events",
+            Self::Tools => "Tools",
+            Self::Checks => "Checks",
+            Self::Interactions => "Questions and follow-ups",
+            Self::Handoffs => "Handoffs",
+            Self::Workflow => "Workflow",
+        }
+    }
+
+    fn includes(self, kind: crate::tasks::EventKind) -> bool {
+        use crate::tasks::EventKind;
+        match self {
+            Self::All => true,
+            Self::Tools => matches!(
+                kind,
+                EventKind::ToolPlanned | EventKind::ToolStarted | EventKind::ToolResult
+            ),
+            Self::Checks => kind == EventKind::CheckResult,
+            Self::Interactions => matches!(
+                kind,
+                EventKind::Question
+                    | EventKind::Approval
+                    | EventKind::FollowupQueued
+                    | EventKind::FollowupReceived
+            ),
+            Self::Handoffs => matches!(
+                kind,
+                EventKind::HandoffRequested | EventKind::HandoffCompleted | EventKind::Resumed
+            ),
+            Self::Workflow => matches!(
+                kind,
+                EventKind::WorkflowQueued | EventKind::WorkflowReleased | EventKind::PlanNote
+            ),
+        }
+    }
 }
 
 #[derive(Default)]
@@ -54,6 +108,7 @@ struct Browser {
     patch: Vec<String>,
     scroll: usize,
     notice: Option<String>,
+    timeline_filter: TimelineFilter,
 }
 
 /// Non-terminal callers receive a bounded readable snapshot rather than an
@@ -133,6 +188,12 @@ pub fn browse_filtered(
                     page = Page::List;
                     continue;
                 }
+                if control == Control::TimelineFilter {
+                    choose_timeline_filter(&mut browser)?;
+                    browser.scroll = 0;
+                    page = Page::Timeline;
+                    continue;
+                }
                 let Some(details) = &browser.details else {
                     continue;
                 };
@@ -186,21 +247,43 @@ impl Browser {
 
     fn matches(&self) -> Vec<&TaskEntry> {
         let words = self.query.to_lowercase();
-        self.entries
+        let matches = self
+            .entries
             .iter()
             .filter(|entry| {
                 let text = format!(
-                    "{} {} {} {} {}",
+                    "{} {} {} {} {} {} {} {}",
                     entry.id,
                     entry.title,
                     entry.objective,
                     state_label(entry.state),
-                    entry.project.display()
+                    entry.project.display(),
+                    entry.stage_name.as_deref().unwrap_or(""),
+                    entry.stage_key.as_deref().unwrap_or(""),
+                    entry.workflow_id.as_deref().unwrap_or("")
                 )
                 .to_lowercase();
                 words.split_whitespace().all(|word| text.contains(word))
             })
-            .collect()
+            .collect::<Vec<_>>();
+        // Use the same group order for arrow movement and rendered rows.
+        let mut groups = std::collections::BTreeSet::new();
+        let mut ordered = Vec::with_capacity(matches.len());
+        for entry in &matches {
+            if let Some(workflow) = &entry.workflow_id {
+                if groups.insert(workflow.as_str()) {
+                    ordered.extend(
+                        matches
+                            .iter()
+                            .copied()
+                            .filter(|stage| stage.workflow_id.as_ref() == Some(workflow)),
+                    );
+                }
+            } else {
+                ordered.push(*entry);
+            }
+        }
+        ordered
     }
 
     fn move_selection(&mut self, delta: isize) {
@@ -222,7 +305,7 @@ impl Browser {
         let details = background::task_details(id)?;
         if !matches!(
             details.record.state,
-            State::Starting | State::Running | State::Waiting
+            State::Starting | State::Running | State::Waiting | State::Blocked
         ) {
             if let Some(path) = seen {
                 background::acknowledge_task(&details.entry, path)?;
@@ -312,7 +395,10 @@ fn interact(
             PickerKey::Interrupt => return Ok(None),
             PickerKey::Cancel if *page == Page::List => return Ok(None),
             PickerKey::Cancel => {
-                *page = if matches!(*page, Page::Activity | Page::Changes | Page::Evidence) {
+                *page = if matches!(
+                    *page,
+                    Page::Activity | Page::Changes | Page::Evidence | Page::Timeline
+                ) {
                     Page::Details
                 } else {
                     Page::List
@@ -321,6 +407,9 @@ fn interact(
                 browser.notice = None;
             }
             PickerKey::Character('\x16') if *page == Page::List => return Ok(Some(Control::Views)),
+            PickerKey::Character('\x06') if *page == Page::Timeline => {
+                return Ok(Some(Control::TimelineFilter))
+            }
             PickerKey::Enter
                 if *page == Page::Details
                     && browser
@@ -341,7 +430,7 @@ fn interact(
                     {
                         browser.open(&id, seen)?;
                         if *page == Page::Changes {
-                            browser.patch = background::task_patch_lines(&id, 2_000)
+                            browser.patch = change_lines(&id)
                                 .unwrap_or_else(|error| vec![safe(&error.to_string())]);
                         }
                         browser.scroll = scroll;
@@ -410,6 +499,10 @@ fn interact(
                 *page = Page::Evidence;
                 browser.scroll = 0;
             }
+            PickerKey::Character('t') if *page == Page::Details => {
+                *page = Page::Timeline;
+                browser.scroll = 0;
+            }
             PickerKey::Character('l') if *page == Page::Details => {
                 *page = Page::Activity;
                 browser.scroll = 0;
@@ -419,7 +512,7 @@ fn interact(
             }
             PickerKey::Character('p') if *page == Page::Details => {
                 if let Some(details) = &browser.details {
-                    browser.patch = background::task_patch_lines(&details.record.id, 2_000)
+                    browser.patch = change_lines(&details.record.id)
                         .unwrap_or_else(|error| vec![safe(&error.to_string())]);
                     *page = Page::Changes;
                     browser.scroll = 0;
@@ -448,6 +541,7 @@ fn frame_lines(browser: &Browser, page: Page, size: (usize, usize)) -> Vec<Strin
         Page::Activity => "Task activity",
         Page::Changes => "Task changes",
         Page::Evidence => "Recorded checks",
+        Page::Timeline => "Task timeline",
     };
     let mut lines = vec![format!("  {title}")];
     if budget == 1 {
@@ -461,22 +555,24 @@ fn frame_lines(browser: &Browser, page: Page, size: (usize, usize)) -> Vec<Strin
             .as_ref()
             .is_some_and(|d| !d.interaction.pending.is_empty())
         {
-            "Enter respond · f follow-up · e checks · ? actions · Esc back".into()
+            "Enter respond · f follow-up · t timeline · ? actions · Esc back".into()
         } else if browser
             .details
             .as_ref()
             .is_some_and(|d| matches!(d.record.state, State::Starting | State::Running))
         {
-            "f follow-up · e checks · l activity · ? actions · Esc back".into()
+            "f follow-up · t timeline · e checks · ? actions · Esc back".into()
         } else if browser
             .details
             .as_ref()
             .is_some_and(|details| details.record.worktree.is_some())
         {
-            "e checks · l activity · p changes · ? actions · Esc back".into()
+            "e checks · t timeline · p changes · ? actions · Esc back".into()
         } else {
-            "e checks · l activity · ? actions · Esc back".into()
+            "e checks · t timeline · ? actions · Esc back".into()
         }
+    } else if page == Page::Timeline {
+        "↑/↓ scroll · Ctrl-F filter · Ctrl-R refresh · Esc back".into()
     } else {
         "↑/↓ scroll · Ctrl-R refresh · Esc back".into()
     };
@@ -495,7 +591,10 @@ fn frame_lines(browser: &Browser, page: Page, size: (usize, usize)) -> Vec<Strin
         if budget > 4 {
             lines.push(format!("  search: {}", browser.query));
         }
-        let available = budget.saturating_sub(lines.len() + 1).max(1);
+        let reserve_project = usize::from(budget > 7 && browser.all);
+        let available = budget
+            .saturating_sub(lines.len() + 1 + reserve_project)
+            .max(1);
         if entries.is_empty() {
             lines.push(if browser.needs_you && browser.query.is_empty() {
                 "  Inbox zero. No tasks need your response.".into()
@@ -507,36 +606,26 @@ fn frame_lines(browser: &Browser, page: Page, size: (usize, usize)) -> Vec<Strin
                 "  No matching tasks. Backspace edits the search.".into()
             });
         } else {
-            let selected = entries
+            let rows = task_rows(&entries, browser.selected_id.as_deref());
+            let selected = rows
                 .iter()
-                .position(|entry| Some(&entry.id) == browser.selected_id.as_ref())
+                .position(|(id, _)| *id == browser.selected_id.as_deref())
                 .unwrap_or(0);
             let start = selected
                 .saturating_sub(available / 2)
-                .min(entries.len().saturating_sub(available));
-            for entry in entries.iter().skip(start).take(available) {
-                lines.push(format!(
-                    "  {} {} · {} · {}",
-                    if Some(&entry.id) == browser.selected_id.as_ref() {
-                        ">"
-                    } else {
-                        " "
-                    },
-                    entry_state(entry),
-                    elapsed_label(entry.elapsed_ms),
-                    format_args!(
-                        "{}{}",
-                        if entry.pinned { "[pin] " } else { "" },
-                        entry.title
-                    )
-                ));
-            }
+                .min(rows.len().saturating_sub(available));
+            lines.extend(
+                rows.into_iter()
+                    .skip(start)
+                    .take(available)
+                    .map(|(_, line)| line),
+            );
             if budget > 7 && browser.all {
-                if let Some(entry) = entries.get(selected) {
+                if let Some(entry) = entries
+                    .iter()
+                    .find(|entry| Some(entry.id.as_str()) == browser.selected_id.as_deref())
+                {
                     let project_line = format!("  project: {}", entry.project.display());
-                    if lines.len() + 1 >= budget {
-                        lines.pop();
-                    }
                     lines.push(project_line);
                 }
             }
@@ -556,6 +645,72 @@ fn frame_lines(browser: &Browser, page: Page, size: (usize, usize)) -> Vec<Strin
         lines.push(format!("  keys: {footer}"));
     }
     fit_lines(lines, width, budget)
+}
+
+fn task_rows<'a>(
+    entries: &[&'a TaskEntry],
+    selected: Option<&str>,
+) -> Vec<(Option<&'a str>, String)> {
+    let mut groups = std::collections::BTreeSet::new();
+    let mut rows = Vec::new();
+    for entry in entries {
+        if let Some(workflow) = &entry.workflow_id {
+            if !groups.insert(workflow.as_str()) {
+                continue;
+            }
+            rows.push((
+                None,
+                format!(
+                    "  Workflow {} · {}/{} finished",
+                    workflow.chars().take(8).collect::<String>(),
+                    entry.workflow_completed,
+                    entry.workflow_total
+                ),
+            ));
+            for stage in entries
+                .iter()
+                .filter(|stage| stage.workflow_id.as_deref() == Some(workflow))
+            {
+                rows.push((
+                    Some(stage.id.as_str()),
+                    format!(
+                        "    {} {} · {} · {}",
+                        if selected == Some(stage.id.as_str()) {
+                            ">"
+                        } else {
+                            " "
+                        },
+                        entry_state(stage),
+                        elapsed_label(stage.elapsed_ms),
+                        stage.stage_name.as_deref().unwrap_or(&stage.title)
+                    ),
+                ));
+            }
+        } else {
+            rows.push((
+                Some(entry.id.as_str()),
+                format!(
+                    "  {} {} · {} · {}{}",
+                    if selected == Some(entry.id.as_str()) {
+                        ">"
+                    } else {
+                        " "
+                    },
+                    entry_state(entry),
+                    elapsed_label(entry.elapsed_ms),
+                    if entry.pinned { "[pin] " } else { "" },
+                    entry.title
+                ),
+            ));
+        }
+    }
+    rows
+}
+
+fn change_lines(id: &str) -> Result<Vec<String>> {
+    Ok(crate::cli::changeui::review_lines(
+        &background::task_change_review(id)?,
+    ))
 }
 
 fn fit_lines(lines: Vec<String>, width: usize, budget: usize) -> Vec<String> {
@@ -586,6 +741,7 @@ fn page_body(browser: &Browser, page: Page) -> Vec<String> {
             }
         }
         Page::Evidence => evidence_lines(details),
+        Page::Timeline => timeline_lines(details, browser.timeline_filter),
         _ => detail_lines(details, browser.notice.as_deref()),
     }
 }
@@ -607,6 +763,11 @@ fn body_viewport(_browser: &Browser, _page: Page, size: (usize, usize)) -> usize
 
 fn detail_lines(details: &TaskDetails, notice: Option<&str>) -> Vec<String> {
     let record = &details.record;
+    let limits = display_limits(details);
+    let bounded = limits.provider_turns.is_some()
+        && limits.tool_calls.is_some()
+        && limits.network_calls.is_some()
+        && limits.elapsed.is_some();
     let mut lines = vec![
         details.entry.title.clone(),
         format!(
@@ -619,6 +780,36 @@ fn detail_lines(details: &TaskDetails, notice: Option<&str>) -> Vec<String> {
     ];
     if details.entry.title != record.objective {
         lines.push(format!("Objective: {}", record.objective));
+    }
+    if let Some(stage) = &record.workflow {
+        lines.push(format!(
+            "Workflow: {} · stage {}",
+            stage.run_id, stage.stage_name
+        ));
+        if !stage.dependencies.is_empty() {
+            lines.push(format!("Depends on: {}", stage.dependencies.join(", ")));
+        }
+        if !stage.required_checks.is_empty() {
+            lines.push(format!(
+                "Required checks: {}",
+                stage.required_checks.join("; ")
+            ));
+        }
+    }
+    if let Some(handoff) = &details.handoff {
+        use crate::agent::native::handoff::Status;
+        match (handoff.status, handoff.requested) {
+            (Status::Queued, Some(direction)) => lines.push(format!(
+                "Handoff: queued to {} · waits for a safe execution boundary",
+                direction.label()
+            )),
+            (Status::Parked, Some(direction)) => lines.push(format!(
+                "Handoff: received · checkpoint parked for {} continuation",
+                direction.label()
+            )),
+            (Status::Active, _) => lines.push(format!("Execution: {}", handoff.direction.label())),
+            _ => {}
+        }
     }
     for request in &details.interaction.pending {
         lines.push(
@@ -674,15 +865,22 @@ fn detail_lines(details: &TaskDetails, notice: Option<&str>) -> Vec<String> {
             }
         }
         let execution = checkpoint.execution;
-        lines.push(format!(
-            "Used: {}/{} turns · {}/{} tools · {}/{} network",
-            execution.provider_turns,
-            record.budget.max_provider_turns,
-            execution.tool_calls,
-            record.budget.max_tool_calls,
-            execution.network_calls,
-            record.budget.max_network_calls
-        ));
+        lines.push(if bounded {
+            format!(
+                "Used: {}/{} turns · {}/{} tools · {}/{} network",
+                execution.provider_turns,
+                limits.provider_turns.unwrap(),
+                execution.tool_calls,
+                limits.tool_calls.unwrap(),
+                execution.network_calls,
+                limits.network_calls.unwrap()
+            )
+        } else {
+            format!(
+                "Used: {} turns · {} tools · {} network",
+                execution.provider_turns, execution.tool_calls, execution.network_calls
+            )
+        });
         lines.push(format!(
             "Usage: {} input · {} output tokens · recorded cost ${:.4}",
             checkpoint.usage.input, checkpoint.usage.output, execution.cost_usd
@@ -721,16 +919,44 @@ fn detail_lines(details: &TaskDetails, notice: Option<&str>) -> Vec<String> {
             }
         ),
         format!("Source: {}", record.source_cwd.display()),
-        format!(
-            "Time limit: {}m · turns {} · tools {} · network {}",
-            record.budget.max_minutes,
-            record.budget.max_provider_turns,
-            record.budget.max_tool_calls,
-            record.budget.max_network_calls
-        ),
     ]);
-    if record.budget.max_cost_usd > 0.0 {
-        lines.push(format!("Cost limit: ${:.2}", record.budget.max_cost_usd));
+    let count_cap = |value: Option<u32>| {
+        value
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| "no task cap".into())
+    };
+    let time_cap = limits
+        .elapsed
+        .map(|duration| {
+            if duration.as_secs().is_multiple_of(60) {
+                format!("{}m", duration.as_secs() / 60)
+            } else {
+                format!("{}s", duration.as_secs())
+            }
+        })
+        .unwrap_or_else(|| "no task cap".into());
+    if bounded {
+        lines.push(format!(
+            "Time limit: {} · turns {} · tools {} · network {}",
+            time_cap,
+            count_cap(limits.provider_turns),
+            count_cap(limits.tool_calls),
+            count_cap(limits.network_calls)
+        ));
+    } else {
+        lines.push(format!(
+            "Limits: turns {} · tools {}",
+            count_cap(limits.provider_turns),
+            count_cap(limits.tool_calls)
+        ));
+        lines.push(format!(
+            "Time: {} · network {}",
+            time_cap,
+            count_cap(limits.network_calls)
+        ));
+    }
+    if let Some(cost) = limits.cost_usd {
+        lines.push(format!("Cost limit: ${cost:.2}"));
     }
     if record.state == State::Completed {
         lines.push("Finished by the agent; review its result and checks before applying.".into());
@@ -747,11 +973,34 @@ fn detail_lines(details: &TaskDetails, notice: Option<&str>) -> Vec<String> {
     lines
 }
 
+fn display_limits(details: &TaskDetails) -> crate::agent::native::NativeLimits {
+    if let Some(limits) = details
+        .checkpoint
+        .as_ref()
+        .and_then(|checkpoint| checkpoint.execution_limits.as_ref())
+    {
+        return limits.clone();
+    }
+    // Compatibility for older checkpoints. The adoption ledger used sentinel
+    // values where the native task had no explicit effect/time allowance.
+    let budget = &details.record.budget;
+    crate::agent::native::NativeLimits {
+        provider_turns: (budget.max_provider_turns != u32::MAX)
+            .then_some(budget.max_provider_turns),
+        tool_calls: (budget.max_tool_calls != u32::MAX).then_some(budget.max_tool_calls),
+        network_calls: (budget.max_network_calls != u32::MAX).then_some(budget.max_network_calls),
+        elapsed: (budget.max_minutes != u32::MAX / 60)
+            .then(|| Duration::from_secs(u64::from(budget.max_minutes) * 60)),
+        cost_usd: (budget.max_cost_usd > 0.0).then_some(budget.max_cost_usd),
+    }
+}
+
 fn state_label(state: State) -> &'static str {
     match state {
         State::Starting => "starting",
         State::Running => "running",
         State::Waiting => "waiting",
+        State::Blocked => "queued",
         State::Completed => "finished",
         State::Failed => "failed",
         State::Interrupted => "interrupted",
@@ -780,6 +1029,7 @@ fn view_text(text: &str) -> String {
         text.replace(" · ", " | ")
             .replace("↑/↓", "Up/Down")
             .replace('…', "...")
+            .replace("↳ ", "> ")
     } else {
         text
     }
@@ -788,10 +1038,26 @@ fn view_text(text: &str) -> String {
 fn controls(details: &TaskDetails) -> Vec<(char, &'static str, Control)> {
     let record = &details.record;
     let mut choices = Vec::new();
+    if record.native_task_id.is_some()
+        && !record.foreground
+        && details.interaction.pending.is_empty()
+        && matches!(
+            record.state,
+            State::Starting | State::Running | State::Waiting | State::Interrupted | State::Failed
+        )
+        && details
+            .checkpoint
+            .as_ref()
+            .is_none_or(|checkpoint| checkpoint.status != crate::tasks::Status::Completed)
+    {
+        choices.push(('g', "continue in foreground", Control::Foreground));
+    }
     if !details.interaction.pending.is_empty() {
         choices.push(('u', "respond", Control::Respond));
     }
-    if matches!(
+    if record.state == State::Blocked {
+        choices.push(('c', "stop queued stage", Control::Stop));
+    } else if matches!(
         record.state,
         State::Starting | State::Running | State::Waiting
     ) {
@@ -873,6 +1139,164 @@ fn choose_view(browser: &mut Browser) -> Result<()> {
         browser.selected_id = None;
     }
     Ok(())
+}
+
+fn choose_timeline_filter(browser: &mut Browser) -> Result<()> {
+    let filters = [
+        TimelineFilter::All,
+        TimelineFilter::Tools,
+        TimelineFilter::Checks,
+        TimelineFilter::Interactions,
+        TimelineFilter::Handoffs,
+        TimelineFilter::Workflow,
+    ];
+    let labels = filters
+        .iter()
+        .map(|filter| filter.label().to_string())
+        .collect::<Vec<_>>();
+    let selected = filters
+        .iter()
+        .position(|filter| *filter == browser.timeline_filter)
+        .unwrap_or(0);
+    if let promptui::PickerResult::Use(index) =
+        promptui::filter_picker("Timeline filter", &labels, selected)?
+    {
+        if let Some(filter) = filters.get(index) {
+            browser.timeline_filter = *filter;
+        }
+    }
+    Ok(())
+}
+
+fn event_label(kind: crate::tasks::EventKind) -> &'static str {
+    use crate::tasks::EventKind;
+    match kind {
+        EventKind::TaskStarted => "task started",
+        EventKind::Admission => "admission",
+        EventKind::ProviderTurn => "provider reservation",
+        EventKind::ToolPlanned => "tool planned",
+        EventKind::ToolStarted => "tool started",
+        EventKind::ToolResult => "tool result",
+        EventKind::Question => "question",
+        EventKind::Approval => "specific approval",
+        EventKind::FollowupQueued => "follow-up queued",
+        EventKind::FollowupReceived => "follow-up received",
+        EventKind::CheckResult => "recorded check",
+        EventKind::HandoffRequested => "handoff requested",
+        EventKind::HandoffCompleted => "handoff received",
+        EventKind::Resumed => "resumed",
+        EventKind::Finished => "attempt ended",
+        EventKind::WorkflowQueued => "workflow queued",
+        EventKind::WorkflowReleased => "workflow released",
+        EventKind::PlanNote => "plan note",
+    }
+}
+
+fn outcome_label(outcome: crate::tasks::EventOutcome) -> &'static str {
+    use crate::tasks::EventOutcome;
+    match outcome {
+        EventOutcome::Completed => "completed",
+        EventOutcome::Failed => "failed",
+        EventOutcome::Cancelled => "cancelled",
+        EventOutcome::Declined => "declined",
+        EventOutcome::NotExecuted => "not executed",
+        EventOutcome::Uncertain => "uncertain",
+        EventOutcome::Waiting => "waiting",
+        EventOutcome::HandedOff => "handed off",
+    }
+}
+
+fn timeline_rows(
+    events: &[crate::tasks::TaskTimelineEvent],
+    dropped: usize,
+    warning: Option<&str>,
+    filter: TimelineFilter,
+) -> Vec<String> {
+    let mut lines = vec![if filter == TimelineFilter::All {
+        "All events · recorded actions and outcomes".into()
+    } else {
+        format!("{} · recorded events", filter.label())
+    }];
+    if let Some(warning) = warning {
+        lines.push(warning.into());
+    }
+    if dropped > 0 {
+        lines.push(format!(
+            "{dropped} older events omitted by the history limit."
+        ));
+    }
+    let selected = events
+        .iter()
+        .filter(|event| filter.includes(event.kind))
+        .collect::<Vec<_>>();
+    if selected.is_empty() {
+        lines.push("No recorded events in this view.".into());
+    }
+    for event in selected {
+        lines.push(format!(
+            "{} · {}{} · {}",
+            recorded_time(event.at_ms),
+            event_label(event.kind),
+            event
+                .outcome
+                .map(|outcome| format!(" ({})", outcome_label(outcome)))
+                .unwrap_or_default(),
+            event.subject
+        ));
+        lines.extend(event.detail.lines().map(|line| format!("  {line}")));
+    }
+    lines
+}
+
+fn timeline_lines(details: &TaskDetails, filter: TimelineFilter) -> Vec<String> {
+    timeline_rows(
+        &details.timeline,
+        details.timeline_dropped,
+        details.timeline_warning.as_deref(),
+        filter,
+    )
+}
+
+pub fn timeline_command(id: &str, json: bool) -> Result<u8> {
+    let timeline = background::task_timeline(id)?;
+    if json {
+        crate::cli::json_contract::print_object(&timeline)?;
+    } else {
+        println!("Task timeline · {}", safe(id));
+        for line in timeline_rows(
+            &timeline.events,
+            timeline.dropped,
+            timeline.warning.as_deref(),
+            TimelineFilter::All,
+        ) {
+            println!("{}", view_text(&line));
+        }
+    }
+    Ok(0)
+}
+
+/// Queue a transfer for one exact native lease. This command does not start a
+/// second execution owner or replay a task objective.
+pub fn background_handoff(id: Option<&str>) -> Result<u8> {
+    use crate::agent::native::handoff::{self, Direction};
+    let snapshot = if let Some(id) = id {
+        let native_id = match background::task_details(id) {
+            Ok(details) => details
+                .record
+                .native_task_id
+                .context("this task has no native checkpoint to hand off")?,
+            Err(_) => crate::tasks::load(id)?.id,
+        };
+        handoff::request_task(&native_id, Direction::Background)?
+    } else {
+        let path = std::env::var_os("AISHE_NATIVE_HANDOFF_CONTROL").filter(|value| !value.is_empty()).map(PathBuf::from).context("no active foreground task is available; use /bg during a native task or specify its task ID")?;
+        handoff::request_control(&path, Direction::Background)?
+    };
+    println!(
+        "Handoff queued to background · {}. The task will checkpoint at its next safe boundary.",
+        safe(&snapshot.task_id)
+    );
+    Ok(0)
 }
 
 fn read_message(label: &str, default: &str) -> Result<Option<String>> {
@@ -1004,6 +1428,18 @@ fn run_control(config: &Config, details: &TaskDetails, control: Control) -> Resu
     let id = record.id.clone();
     promptui::section(&crate::ui::truncate_cells(&safe(&details.entry.title), 100));
     let (question, action) = match control {
+        Control::Foreground => {
+            let question = if matches!(record.state, State::Starting | State::Running) {
+                "Bring this task into the foreground? It will pause at a safe boundary, then continue in this terminal with its saved scope and remaining budget."
+            } else {
+                "Continue this checkpoint in the foreground using its saved scope, model, and remaining budget?"
+            };
+            if promptui::confirm(question, false)? == Some(true) {
+                crate::cli::runtime::resume_foreground_task(config, &id)?;
+            }
+            return Ok(());
+        }
+        Control::Apply => return crate::cli::changeui::review_and_apply(&id),
         Control::Respond => return respond(config, details),
         Control::Queue => return manage_queue(config, details),
         Control::Followup => {
@@ -1042,13 +1478,6 @@ fn run_control(config: &Config, details: &TaskDetails, control: Control) -> Resu
             "Resume this task using its saved scope, model, and remaining budget?",
             Action::Resume { id },
         ),
-        Control::Apply => (
-            "Apply all task changes to the source repository? Review changes first.",
-            Action::Apply {
-                id,
-                hunks: Vec::new(),
-            },
-        ),
         Control::Discard => (
             "Discard this task's isolated worktree and its unapplied changes?",
             Action::Discard { id },
@@ -1062,7 +1491,7 @@ fn run_control(config: &Config, details: &TaskDetails, control: Control) -> Resu
                 Action::Rework { id, instructions },
             )
         }
-        Control::Views | Control::Actions => return Ok(()),
+        Control::Views | Control::Actions | Control::TimelineFilter => return Ok(()),
     };
     if promptui::confirm(question, false)? == Some(true) {
         background::command(config, action)?;
@@ -1200,13 +1629,12 @@ fn print_snapshot(browser: &Browser, page: Page) {
             }
         );
     } else {
-        for entry in &browser.entries {
+        let entries = browser.entries.iter().collect::<Vec<_>>();
+        for (id, line) in task_rows(&entries, None) {
             println!(
-                "{}  {}  {}  {}",
-                entry.id,
-                entry_state(entry),
-                elapsed_label(entry.elapsed_ms),
-                safe(&entry.title)
+                "{}{}",
+                id.map(|id| format!("{id} ")).unwrap_or_default(),
+                view_text(&line)
             );
         }
     }
@@ -1229,7 +1657,7 @@ fn browse_static(
                         "{} · {} · {}",
                         entry_state(entry),
                         elapsed_label(entry.elapsed_ms),
-                        entry.title
+                        entry.stage_name.as_deref().unwrap_or(&entry.title)
                     ))
                 })
                 .collect::<Vec<_>>();
@@ -1280,6 +1708,7 @@ fn browse_static(
                 "View activity".into(),
                 "View changes".into(),
                 "Recorded checks".into(),
+                "Task timeline".into(),
             ];
             labels.extend(controls.iter().map(|(_, label, _)| label.to_string()));
             labels.push("Back to tasks".into());
@@ -1292,7 +1721,7 @@ fn browse_static(
                 }
                 promptui::PickerResult::Use(1) => {
                     promptui::section("Task changes");
-                    for line in background::task_patch_lines(&record.id, 2_000)? {
+                    for line in change_lines(&record.id)? {
                         promptui::note(&safe(&line));
                     }
                 }
@@ -1302,8 +1731,14 @@ fn browse_static(
                         promptui::note(&safe(&line));
                     }
                 }
-                promptui::PickerResult::Use(index) if index < controls.len() + 3 => {
-                    run_control(config, details, controls[index - 3].2)?;
+                promptui::PickerResult::Use(3) => {
+                    promptui::section("Task timeline");
+                    for line in timeline_lines(details, TimelineFilter::All) {
+                        promptui::note(&view_text(&line));
+                    }
+                }
+                promptui::PickerResult::Use(index) if index < controls.len() + 4 => {
+                    run_control(config, details, controls[index - 4].2)?;
                     let id = record.id.clone();
                     browser.refresh(project, true)?;
                     browser.open(&id, seen)?;

@@ -32,10 +32,11 @@ def run():
         shell.drain(.2)
         start = len(shell.transcript)
         shell.send("? give an answer only\r")
-        shell.drain(1)
+        assert shell.expect(f"touch {marker}", 10), (
+            "answer never reached display:\n" + shell.plain()[start:]
+        )
         assert not marker.exists(), "ask answer executed as shell input"
         shown = shell.transcript[start:]
-        assert f"touch {marker}" in shell.plain(), "answer never reached display"
         assert len(shown) < 20000, "answer recursively resubmitted itself"
         shell.send("print -r -- DISPLAY_''STILL_RESPONSIVE\r")
         assert shell.expect("DISPLAY_STILL_RESPONSIVE", 3), "output left shell busy"

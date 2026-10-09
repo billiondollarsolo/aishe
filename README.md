@@ -60,6 +60,9 @@ echo 'eval "$(aishe init zsh)"' >> ~/.zshrc   # or: aishe init bash
 | Cycle mode | **Shift-Tab** on empty input → ask `❯` · allow `»` · agent `*` |
 | **Force English to the AI** | Start with **`?`** — e.g. `? install kubectl please` |
 | Force raw shell | Start with **`! command`** (bypasses the safety gate; `!!` keeps zsh history expansion) |
+| Send agent work to the background | **Ctrl-X d** during a native turn; **g** in task details brings it back |
+| Review work / inspect its timeline | **Ctrl-X b** · **p** changes · **a** select files/hunks · **t** timeline |
+| Reuse a task workflow | **`/workflow`** · `aishe workflow browse` |
 
 **Common trap:** lines whose **first word is a real binary** run as shell — even
 if the rest is English. `install` is `/usr/bin/install` on every Mac/Linux box,
@@ -136,6 +139,16 @@ Full routing, Option/Alt+Return, and Mac terminal Meta settings:
   follow-ups with queued/received status, inspect recorded checks and changes,
   and name, pin, or archive work. Reviewed results stay quiet across shells. See
   [background work](docs/front-ends.md#background-work).
+- **Move work without restarting it.** Ctrl-X d queues a native conversation
+  for background continuation at a safe boundary; g brings its saved context
+  back into your terminal. Scope and remaining budgets stay attached to the task.
+- **Review the exact changes.** Select files or text hunks alongside actual
+  recorded checks. Application requires the reviewed source/patch revision;
+  a selected subset is clearly labeled as not independently checked.
+- **Inspect execution and reuse workflows.** Typed timelines distinguish tool
+  effects, human decisions, uncertain results, and plan notes. Parameterized
+  task graphs run in separate Git worktrees with bounded parallelism and
+  recorded-check gates. See [agentic workflows](docs/agentic-workflows.md).
 - **Explicit context and automation.** Agent-only `@file`, `@dir`, `@diff`, and
   `@clipboard` attachments are bounded; `aishe index` searches tracked code
   locally; `aishe ask --json|--schema` produces validated machine output.

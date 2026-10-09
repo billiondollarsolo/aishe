@@ -882,12 +882,20 @@ impl PickerInput {
 #[cfg(test)]
 impl PickerInput {
     fn from_bytes(bytes: &[u8]) -> Self {
+        #[cfg(unix)]
+        let file = {
+            // /dev/null is readable at EOF on Linux, but Darwin poll does not
+            // report it as ready. A closed stream models a detached input on
+            // both platforms and keeps the EOF cancellation assertion real.
+            let (reader, writer) =
+                std::os::unix::net::UnixStream::pair().expect("create detached input fixture");
+            drop(writer);
+            let descriptor: std::os::fd::OwnedFd = reader.into();
+            std::fs::File::from(descriptor)
+        };
         Self {
             #[cfg(unix)]
-            file: std::fs::OpenOptions::new()
-                .read(true)
-                .open("/dev/null")
-                .expect("open /dev/null"),
+            file,
             #[cfg(not(unix))]
             _stdin: std::io::stdin(),
             pending: bytes.to_vec(),
@@ -933,7 +941,11 @@ fn columns() -> usize {
 pub(crate) fn terminal_size() -> (usize, usize) {
     crossterm::terminal::size()
         .ok()
-        .map(|(width, height)| (usize::from(width).max(1), usize::from(height).max(1)))
+        // A newly allocated PTY can report a successful zero-size ioctl until
+        // its owner supplies dimensions. Use the same fallback as an absent
+        // terminal rather than rendering every character on a separate line.
+        .filter(|(width, height)| *width > 0 && *height > 0)
+        .map(|(width, height)| (usize::from(width), usize::from(height)))
         .unwrap_or((80, 24))
 }
 

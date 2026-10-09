@@ -45,14 +45,14 @@ _aishe_background_refresh() {
   zmodload zsh/system 2>/dev/null || return 0
   sysopen -r -o nonblock,nofollow -u _AISHE_BACKGROUND_FD "$_AISHE_BACKGROUND_CONTROL_FILE" 2>/dev/null || return 0
   while IFS=$'\t' read -r -u $_AISHE_BACKGROUND_FD _AISHE_BACKGROUND_NAME _AISHE_BACKGROUND_COUNT; do
-    (( ++_AISHE_BACKGROUND_LINES <= 4 )) || break
+    (( ++_AISHE_BACKGROUND_LINES <= 5 )) || break
     [[ "$_AISHE_BACKGROUND_COUNT" == [0-9]## && ${#_AISHE_BACKGROUND_COUNT} -le 9 ]] || continue
     case "$_AISHE_BACKGROUND_NAME" in
-      running|ready|attention|needs_you) _AISHE_BACKGROUND_COUNTS[$_AISHE_BACKGROUND_NAME]="$_AISHE_BACKGROUND_COUNT" ;;
+      running|ready|attention|needs_you|queued) _AISHE_BACKGROUND_COUNTS[$_AISHE_BACKGROUND_NAME]="$_AISHE_BACKGROUND_COUNT" ;;
     esac
   done
   exec {_AISHE_BACKGROUND_FD}<&-
-  for _AISHE_BACKGROUND_NAME in needs_you attention running ready; do
+  for _AISHE_BACKGROUND_NAME in needs_you attention running queued ready; do
     _AISHE_BACKGROUND_COUNT="${_AISHE_BACKGROUND_COUNTS[$_AISHE_BACKGROUND_NAME]:-0}"
     [[ "$_AISHE_BACKGROUND_COUNT" == 0 ]] && continue
     _AISHE_BACKGROUND_PARTS+=("$_AISHE_BACKGROUND_COUNT ${_AISHE_BACKGROUND_NAME//_/ }")
@@ -680,6 +680,9 @@ _aishe_lean_read_grant() {
   # canonical mode. Read one byte immediately so Esc does not need Enter.
   tty_state="$(command stty -g <&$input_fd 2>/dev/null)" || return 1
   command stty -icanon -echo min 1 time 0 <&$input_fd 2>/dev/null || return 1
+  # Publish readiness only after stty finishes: on macOS its transition can
+  # flush a reply that arrived while the terminal was still changing modes.
+  [[ -n "${1:-}" ]] && print -n -- "$1"
   {
     while IFS= read -r -k 1 -u $input_fd key; do
       case "$key" in
@@ -736,8 +739,7 @@ _aishe_lean_take_grant() {
       if [[ "$want" == agent && "${AISHE_MCP_ENABLED:-0}" != 0 ]]; then
         print -r -- "MCP tools retain their configured server access."
       fi
-      print -n -- "Type ${want} to continue (Esc cancels): "
-      if ! _aishe_lean_read_grant || [[ "$REPLY" != "$want" ]]; then
+      if ! _aishe_lean_read_grant "Type ${want} to continue (Esc cancels): " || [[ "$REPLY" != "$want" ]]; then
         print -r -- "grant declined · mode stays ${AISHE_MODE:-ask}"
         return 1
       fi
@@ -954,6 +956,13 @@ _aishe_lean_slash() {
     /context) command aishe context "${(@)_AISHE_LOCAL_CLI_ARGS}" <&$_AISHE_INPUT_FD ;;
     /doctor) command aishe doctor "${(@)_AISHE_LOCAL_CLI_ARGS}" <&$_AISHE_INPUT_FD ;;
     /inbox) command aishe inbox "${(@)_AISHE_LOCAL_CLI_ARGS}" <&$_AISHE_INPUT_FD ;;
+    /workflow)
+      if (( ${#_AISHE_LOCAL_CLI_ARGS} )); then
+        command aishe workflow "${(@)_AISHE_LOCAL_CLI_ARGS}" <&$_AISHE_INPUT_FD
+      else
+        command aishe workflow browse <&$_AISHE_INPUT_FD
+      fi
+      ;;
     /tasks)
       # The browser and any explicit action own the child terminal. Forward
       # tokenized arguments literally; model text never becomes shell syntax.

@@ -34,6 +34,7 @@ pub struct LeanShellFiles {
     pub background_status: Option<PathBuf>,
     pub background_events: Option<PathBuf>,
     pub background_seen: Option<PathBuf>,
+    pub handoff_control: Option<PathBuf>,
 }
 
 impl LeanShellFiles {
@@ -167,7 +168,7 @@ fn spawn_background_watcher(
     };
     mkfifo(events)?;
     let initial = crate::background::shell_status_text(None, files.background_seen.as_deref())
-        .unwrap_or_else(|_| "running\t0\nready\t0\nattention\t0\nneeds_you\t0\n".into());
+        .unwrap_or_else(|_| "running\t0\nready\t0\nattention\t0\nneeds_you\t0\nqueued\t0\n".into());
     crate::config::write_atomic(status, initial.as_bytes())?;
     let status = status.clone();
     let events = events.clone();
@@ -180,6 +181,7 @@ fn spawn_background_watcher(
                 let mut previous = initial;
                 let mut notification_pending = true;
                 while !stop.load(Ordering::Relaxed) {
+                    crate::background::scheduler::wake_pending_workflows();
                     let _ = crate::background::refresh_task_cache();
                     if let Ok(summary) = crate::background::shell_status_text(None, seen.as_deref())
                     {
@@ -350,6 +352,10 @@ pub fn spawn_ipc_with_files(
                 cancelled_thread.store(false, Ordering::SeqCst);
                 crate::agent::controller::INTERRUPTED.store(false, Ordering::SeqCst);
                 busy_thread.store(true, Ordering::SeqCst);
+                let _handoff_control = files
+                    .handoff_control
+                    .as_deref()
+                    .map(crate::agent::native::handoff::ControlGuard::set);
                 let mut reply = crate::lean::handle_ipc_line(
                     &mut config,
                     &mut provider,

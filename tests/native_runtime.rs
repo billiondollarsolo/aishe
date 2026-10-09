@@ -423,6 +423,124 @@ fn iteration_limit_is_not_completion_but_a_final_summary_is() {
 }
 
 #[test]
+fn resuming_a_spent_configured_iteration_ceiling_cannot_contact_provider_or_repeat_effects() {
+    let _lock = ENV.lock().unwrap();
+    let fixture = Fixture::new();
+    let mut config = fixture.config();
+    config.aishe.max_yolo_iterations = 1;
+    let original = Script::new(vec![completion(vec![write("original", "original-effect")])]);
+    // Foreground auto-persistence is intentionally disabled for integration
+    // harness binaries. Resume a seeded record to exercise the durable path.
+    let seed = aishe::tasks::Active::start(&config, &fixture.root, "Complete this task");
+    let outcome = yolo::resume(
+        seed.record().clone(),
+        &original,
+        &mut fixture.executor(),
+        &config,
+        &AtomicBool::new(false),
+        &SkillRegistry::default(),
+        &McpRegistry::default(),
+    )
+    .unwrap();
+    assert_eq!(outcome.state, NativeTurnState::IterationLimit);
+    let checkpoint = aishe::tasks::load(&outcome.task_id).unwrap();
+    assert_eq!(checkpoint.execution.provider_turns, 1);
+    assert_eq!(
+        checkpoint.execution_limits.as_ref().unwrap().provider_turns,
+        Some(1)
+    );
+    config.aishe.max_yolo_iterations = 40;
+    let forbidden = Script::new(Vec::new());
+    let resumed = yolo::resume(
+        checkpoint,
+        &forbidden,
+        &mut fixture.executor(),
+        &config,
+        &AtomicBool::new(false),
+        &SkillRegistry::default(),
+        &McpRegistry::default(),
+    )
+    .unwrap();
+    assert_eq!(resumed.state, NativeTurnState::BudgetExhausted);
+    assert_eq!(forbidden.calls.load(Ordering::SeqCst), 0);
+    assert_eq!(
+        std::fs::read_to_string(fixture.root.join("original-effect")).unwrap(),
+        "effect"
+    );
+    let saved = aishe::tasks::load(&outcome.task_id).unwrap();
+    assert_eq!(saved.execution.provider_turns, 1);
+    assert_eq!(saved.execution_limits.unwrap().provider_turns, Some(1));
+}
+
+#[test]
+fn legacy_uncapped_checkpoints_use_only_the_remaining_configured_provider_allowance() {
+    let _lock = ENV.lock().unwrap();
+    let fixture = Fixture::new();
+    let mut config = fixture.config();
+    config.aishe.max_yolo_iterations = 40;
+    for spent in [39, 40] {
+        let mut active =
+            aishe::tasks::Active::start(&config, &fixture.root, "Continue existing work");
+        active.checkpoint_limits(aishe::agent::native::NativeLimits::default());
+        active.checkpoint_execution(aishe::tasks::ExecutionCounters {
+            provider_turns: spent,
+            ..Default::default()
+        });
+        active.interrupted(&[], Usage::default());
+        let responses = if spent == 39 {
+            vec![completion(vec![write("last", "last-allowed-effect")])]
+        } else {
+            Vec::new()
+        };
+        let provider = Script::new(responses);
+        let outcome = yolo::resume(
+            active.record().clone(),
+            &provider,
+            &mut fixture.executor(),
+            &config,
+            &AtomicBool::new(false),
+            &SkillRegistry::default(),
+            &McpRegistry::default(),
+        )
+        .unwrap();
+        assert_eq!(outcome.state, NativeTurnState::BudgetExhausted);
+        assert_eq!(provider.calls.load(Ordering::SeqCst), 40 - spent);
+        let saved = aishe::tasks::load(&outcome.task_id).unwrap();
+        assert_eq!(saved.execution.provider_turns, 40);
+        assert_eq!(saved.execution_limits.unwrap().provider_turns, Some(40));
+    }
+    assert_eq!(
+        std::fs::read_to_string(fixture.root.join("last-allowed-effect")).unwrap(),
+        "effect"
+    );
+}
+
+#[test]
+fn zero_configured_iterations_stops_without_provider_work() {
+    let _lock = ENV.lock().unwrap();
+    let fixture = Fixture::new();
+    let mut config = fixture.config();
+    config.aishe.max_yolo_iterations = 0;
+    let provider = Script::new(Vec::new());
+    let seed = aishe::tasks::Active::start(&config, &fixture.root, "Complete this task");
+    let outcome = yolo::resume(
+        seed.record().clone(),
+        &provider,
+        &mut fixture.executor(),
+        &config,
+        &AtomicBool::new(false),
+        &SkillRegistry::default(),
+        &McpRegistry::default(),
+    )
+    .unwrap();
+    assert_eq!(outcome.state, NativeTurnState::IterationLimit);
+    assert_eq!(provider.calls.load(Ordering::SeqCst), 0);
+    let saved = aishe::tasks::load(&outcome.task_id).unwrap();
+    assert_eq!(saved.execution.provider_turns, 0);
+    assert_eq!(saved.execution_limits.unwrap().provider_turns, None);
+}
+
+#[test]
 fn unoffered_tools_and_disabled_file_tools_cannot_invoke_effects() {
     let _lock = ENV.lock().unwrap();
     let fixture = Fixture::new();

@@ -152,6 +152,9 @@ fn run_zsh_inner(config: &Config, history_log: &std::path::Path, shell_id: Strin
         let state_file = std::fs::canonicalize(&state_dir)?.join("state");
         cmd.env("AISHE_EXECUTION_STATE_FILE", &state_file);
         lean_files.execution_state = Some(state_file);
+        let handoff_control = state_dir.join("handoff.json");
+        cmd.env("AISHE_NATIVE_HANDOFF_CONTROL", &handoff_control);
+        lean_files.handoff_control = Some(handoff_control);
         let mut denied_names: Vec<_> = crate::executor::sensitive_environment_names(config)
             .into_iter()
             .collect();
@@ -383,8 +386,9 @@ fn run_zsh_inner(config: &Config, history_log: &std::path::Path, shell_id: Strin
 
     // Explicit paths belong to this shell, not the parent's inherited env.
     let _ipc = if lean {
-        let ipc = crate::lean::spawn_ipc_with_files(config.clone(), pty_out.clone(), lean_files)
-            .context("starting lean NL ipc")?;
+        let ipc =
+            crate::lean::spawn_ipc_with_files(config.clone(), pty_out.clone(), lean_files.clone())
+                .context("starting lean NL ipc")?;
         cmd.env("AISHE_LEAN_REQ", &ipc.req_path);
         cmd.env("AISHE_LEAN_REP", &ipc.rep_path);
         Some(ipc)
@@ -438,33 +442,57 @@ fn run_zsh_inner(config: &Config, history_log: &std::path::Path, shell_id: Strin
             .as_ref()
             .map(|ipc| (Arc::clone(&ipc.busy), Arc::clone(&ipc.cancelled)));
         let display = pty_out.clone();
+        let handoff_control = lean_files.handoff_control.clone();
         std::thread::spawn(move || {
             let mut pty_stdin = input_writer;
             let mut stdin = std::io::stdin();
             let mut buf = [0u8; 4096];
+            let mut handoff_prefix = false;
             while !done.load(Ordering::Relaxed) {
                 match stdin.read(&mut buf) {
                     Ok(0) => break,
                     Ok(n) => {
-                        let mut input = &buf[..n];
                         let mut filtered = Vec::new();
-                        if input.contains(&3) {
+                        for &byte in &buf[..n] {
                             if let Some((busy, cancelled)) = &activity {
-                                for &byte in input {
-                                    if byte == 3 && busy.load(Ordering::SeqCst) {
-                                        if !cancelled.swap(true, Ordering::SeqCst) {
-                                            crate::agent::controller::INTERRUPTED
-                                                .store(true, Ordering::SeqCst);
-                                            display.write_user_line("\naishe: cancelling; waiting for current operation");
+                                if handoff_prefix {
+                                    handoff_prefix = false;
+                                    if byte == b'd' {
+                                        if let Some(path) = &handoff_control {
+                                            match crate::agent::native::handoff::request_control(
+                                                    path,
+                                                    crate::agent::native::handoff::Direction::Background,
+                                                ) {
+                                                    Ok(_) => display.write_user_line("\naishe: background handoff queued; finishing the current operation"),
+                                                    Err(error) if busy.load(Ordering::SeqCst) => display.write_user_line(&format!("\naishe: {error}")),
+                                                    Err(_) => {
+                                                        filtered.extend_from_slice(&[24, byte]);
+                                                    }
+                                                }
                                         }
-                                    } else {
-                                        filtered.push(byte);
+                                        continue;
                                     }
+                                    filtered.push(24);
+                                } else if byte == 24 && handoff_control.is_some() {
+                                    handoff_prefix = true;
+                                    continue;
                                 }
-                                input = &filtered;
+                                if byte == 3 && busy.load(Ordering::SeqCst) {
+                                    if !cancelled.swap(true, Ordering::SeqCst) {
+                                        crate::agent::controller::INTERRUPTED
+                                            .store(true, Ordering::SeqCst);
+                                        display.write_user_line(
+                                            "\naishe: cancelling; waiting for current operation",
+                                        );
+                                    }
+                                } else {
+                                    filtered.push(byte);
+                                }
+                            } else {
+                                filtered.push(byte);
                             }
                         }
-                        if pty_stdin.write_all(input).is_err() {
+                        if pty_stdin.write_all(&filtered).is_err() {
                             break;
                         }
                         let _ = pty_stdin.flush();

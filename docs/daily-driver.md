@@ -143,16 +143,18 @@ Before keeping work, review the exact patch:
 
 ```sh
 aishe task review TASK_ID
-aishe task apply TASK_ID                 # whole patch, git apply --3way
-aishe task apply TASK_ID --hunk 2 --hunk 5
+aishe task review TASK_ID --json          # exact revision and selection IDs
+aishe task apply TASK_ID                 # all remaining changes
+aishe task apply TASK_ID --revision REVIEW_REVISION --hunk 2 --hunk 5
 aishe task discard TASK_ID               # validates the owned worktree first
 ```
 
-`aishe inbox` is the daily attention queue. It refreshes task state and offers
-tail, cancel, review, resume, show, or rework. `aishe inbox --json` is stable for
-scripts. The interactive review panel can apply everything, toggle selected
-hunks, send bounded rework instructions, reject/discard, or leave the isolated
-workspace untouched.
+`aishe inbox` opens pending questions and specific action approvals. The task
+drawer shows live work, recorded checks, timelines, and results. Its change
+review starts with an empty selection and asks before applying selected files
+or hunks. A changed patch or source preimage invalidates the review revision.
+`aishe inbox --json` is stable for scripts. See [Task changes](task-changes.md)
+and [Agentic workflows](agentic-workflows.md) for the full controls.
 
 Review numbers every text hunk; binary and mode-only changes remain file-level.
 An exceeded changed-file/byte budget blocks apply. Conflicts fail without

@@ -250,7 +250,8 @@ Type to search, use arrows and **Enter** for details, **Ctrl-R** to refresh, and
 **Tab** to include other projects. **Ctrl-V** switches between Current work,
 Needs you, and Archived history. In details, **Enter** or **u** responds to a
 request, **f** sends a follow-up, **e** opens recorded checks, **l** opens
-activity, **p** shows read-only changes, **?** opens searchable Task actions,
+activity, **t** opens the execution timeline, **p** shows read-only changes,
+**?** opens searchable Task actions,
 and **Esc** goes back. **Ctrl-C** closes the browser from any page. Inspect the
 result, checks, unresolved items, and limits before deciding to resume, stop,
 rework, apply, or discard.
@@ -265,6 +266,15 @@ it a useful name, pin work you return to, or archive finished work from **?**.
 Archive keeps the result and workspace; Archived history brings it back. A new
 attempt or result becomes visible again. For a scriptable response or follow-up,
 see [background task controls](commands.md#background-task-controls).
+
+For a long native conversation, press **Ctrl-X d** while it is running to queue
+background continuation. Its current operation can finish before the checkpoint
+transfers. Press **g** in task details to continue with its context in your
+terminal. Scope, model, and spent allowances carry forward. Press **a** to review
+and select files or hunks alongside checks before applying work. Open `/workflow`
+to inspect a saved, parameterized task graph. See
+[Agentic task workflows](agentic-workflows.md) for examples and the limits of
+handoffs, check evidence, partial application, and parallel stages.
 
 Personal themes can use `AISHE_BACKGROUND_INDICATOR`; setting
 `AISHE_PERSONAL_INDICATOR=1` opts into AIShe's right-prompt suffix.

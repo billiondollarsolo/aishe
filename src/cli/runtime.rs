@@ -37,6 +37,42 @@ pub struct NativeAdmission {
     network: crate::agent::NetworkPolicy,
 }
 
+/// Background records require concrete administrative ceilings, while a saved
+/// foreground contract can leave individual native limits absent. Restore the
+/// latter before constructing its continuation budget instead of turning
+/// absence into a sentinel limit. The exact elapsed duration stays in the
+/// checkpoint; an integer minute environment value would round that contract.
+pub fn restore_checkpoint_budget_environment(record: &crate::tasks::Record) {
+    let Some(limits) = &record.execution_limits else {
+        return;
+    };
+    for (name, value) in [
+        (
+            "AISHE_TASK_MAX_TOOL_CALLS",
+            limits.tool_calls.map(|value| value.to_string()),
+        ),
+        (
+            "AISHE_TASK_MAX_NETWORK_CALLS",
+            limits.network_calls.map(|value| value.to_string()),
+        ),
+        (
+            "AISHE_TASK_MAX_PROVIDER_TURNS",
+            limits.provider_turns.map(|value| value.to_string()),
+        ),
+        (
+            "AISHE_TASK_MAX_COST_USD",
+            limits.cost_usd.map(|value| value.to_string()),
+        ),
+        ("AISHE_TASK_MAX_MINUTES", None),
+    ] {
+        if let Some(value) = value {
+            std::env::set_var(name, value);
+        } else {
+            std::env::remove_var(name);
+        }
+    }
+}
+
 /// CLI task exits include the reason, even when admission stopped the loop
 /// before it could render a provider or tool event.
 pub fn native_exit_code(outcome: &crate::agent::native::NativeTurnOutcome) -> u8 {
@@ -46,7 +82,84 @@ pub fn native_exit_code(outcome: &crate::agent::native::NativeTurnOutcome) -> u8
             crate::commands::display_safe(&crate::redact::redact(detail))
         );
     }
-    outcome.exit_code()
+    if outcome.state == crate::agent::NativeTurnState::HandedOff {
+        // A requested transfer is successful foreground control flow. Detached
+        // workers still use outcome.exit_code() to journal their parked state.
+        0
+    } else {
+        outcome.exit_code()
+    }
+}
+
+/// Bring an existing native task back to this terminal after its detached
+/// worker has checkpointed and relinquished exclusive execution ownership.
+/// Provider identity, transcript, scope and cumulative limits come from the
+/// accepted task, rather than the currently selected shell mode or objective.
+pub fn resume_foreground_task(current: &Config, background_id: &str) -> Result<u8> {
+    if std::env::var_os("AISHE_BACKGROUND_TASK_ID").is_some() {
+        anyhow::bail!("a background worker cannot claim another task's foreground terminal");
+    }
+    install_sigint_handler();
+    INTERRUPTED.store(false, Ordering::SeqCst);
+    let (config, record) = crate::background::claim_foreground(current, background_id)?;
+    let _linked_task = crate::agent::native::handoff::LinkedTaskGuard::set(background_id);
+    let native_id = record.id.clone();
+    let result = (|| {
+        if INTERRUPTED.load(Ordering::SeqCst) {
+            anyhow::bail!("foreground handoff interrupted; its checkpoint remains resumable");
+        }
+        let mut executor = Executor::new_agent(
+            &record.cwd,
+            &crate::executor::sensitive_environment_names(&config),
+        )?;
+        if let Some(exports) = crate::agent::native::handoff::take_environment(&native_id)? {
+            executor.replace_agent_environment(
+                exports,
+                &crate::executor::sensitive_environment_names(&config),
+            );
+        }
+        let root = record.workspace_root.as_deref().unwrap_or(&record.cwd);
+        let admission = admit_native_agent(
+            &mut executor,
+            &config,
+            NativeAuthorization::ExplicitRequest,
+            Some(root),
+        )?
+        .context("saved native task admission was declined")?;
+        let provider = crate::providers::make(&config)
+            .context("cannot restore the task's saved provider connection")?;
+        let skills = SkillRegistry::load();
+        let mcp = crate::mcp::McpRegistry::deferred(&config.mcp_servers);
+        let mut session = Session::new(false);
+        let objective = record.objective.clone();
+        run_admitted_native_agent(
+            &objective,
+            provider.as_ref(),
+            &mut executor,
+            &config,
+            &skills,
+            &mcp,
+            &mut session,
+            &admission,
+            Some(record),
+        )
+    })();
+    match result {
+        Ok(outcome) => {
+            crate::background::finish_foreground(background_id, &outcome)?;
+            Ok(native_exit_code(&outcome))
+        }
+        Err(error) => {
+            let _ = crate::agent::native::handoff::discard_environment(&native_id);
+            let failed = crate::agent::NativeTurnOutcome::new(
+                &native_id,
+                crate::agent::NativeTurnState::Failed,
+                Some(crate::redact::redact(&error.to_string())),
+            );
+            let _ = crate::background::finish_foreground(background_id, &failed);
+            Err(error)
+        }
+    }
 }
 
 /// Admit before connecting MCP or issuing a provider request. The returned

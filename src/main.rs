@@ -402,6 +402,9 @@ fn run() -> Result<u8> {
     }
 
     let mut config = Config::load_or_init()?;
+    if let Some(id) = args.background_workflow.as_deref() {
+        return aishe::background::scheduler::run(&config, id);
+    }
     if aishe::lean::enabled() {
         aishe::lean::prefer_grok_live_auth(&mut config);
     }
@@ -569,6 +572,7 @@ fn run() -> Result<u8> {
         }
         let checkpoint = aishe::background::resume_checkpoint(id)?;
         if let Some(record) = &checkpoint {
+            aishe::cli::runtime::restore_checkpoint_budget_environment(record);
             config = aishe::tasks::restore_config(record, &config)?;
         }
         // Native commands use cooperative deadlines; a process-wide SIGALRM
@@ -690,7 +694,10 @@ fn run() -> Result<u8> {
             return Ok(0);
         }
         Some(Cmd::Task { cmd }) => {
-            return aishe::background::command(&config, background_task_action(cmd));
+            return run_background_task(&config, cmd);
+        }
+        Some(Cmd::Workflow { cmd }) => {
+            return aishe::cli::workflowui::command(&config, workflow_action(cmd))
         }
         Some(Cmd::Inbox { json }) => return aishe::background::inbox(&config, *json),
         Some(Cmd::Plan { id }) => return aishe::background::edit_plan(id.as_deref(), false),

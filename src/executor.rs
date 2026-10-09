@@ -286,6 +286,20 @@ impl Executor {
         self.norc = true;
     }
 
+    /// Transfer only the admitted shell environment to a detached continuation.
+    /// Values stay in memory and are never written to its durable checkpoint.
+    pub fn agent_environment_snapshot(
+        &self,
+        config: &crate::config::Config,
+    ) -> HashMap<String, String> {
+        let denied = sensitive_environment_names(config);
+        self.env
+            .iter()
+            .filter(|(name, _)| agent_environment_allowed(name, &denied))
+            .map(|(name, value)| (name.clone(), value.clone()))
+            .collect()
+    }
+
     /// Read one execution-state field for local admission checks. This does
     /// not expose a serializable snapshot to tasks, audit, or model context.
     pub(crate) fn execution_environment(&self, name: &str) -> Option<&str> {

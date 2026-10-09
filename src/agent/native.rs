@@ -12,6 +12,9 @@ use crate::executor::Executor;
 use crate::providers::ToolCall;
 use crate::tasks::ExecutionCounters;
 
+#[path = "handoff.rs"]
+pub mod handoff;
+
 /// Terminal states describe what actually happened, independently of the UI or
 /// the foreground/background process which owns a turn.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -25,6 +28,8 @@ pub enum NativeTurnState {
     Declined,
     /// Parked at a durable question or approval, with no action started.
     Waiting,
+    /// A durable checkpoint relinquished its exclusive execution owner.
+    HandedOff,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -35,6 +40,8 @@ pub struct NativeTurnOutcome {
     pub final_text: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub detail: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub handoff: Option<handoff::Direction>,
 }
 
 impl NativeTurnOutcome {
@@ -44,6 +51,7 @@ impl NativeTurnOutcome {
             state,
             final_text: None,
             detail,
+            handoff: None,
         }
     }
 
@@ -53,6 +61,7 @@ impl NativeTurnOutcome {
             state: NativeTurnState::Completed,
             final_text,
             detail: None,
+            handoff: None,
         }
     }
 
@@ -65,6 +74,7 @@ impl NativeTurnOutcome {
             NativeTurnState::Failed => 1,
             NativeTurnState::Declined => 2,
             NativeTurnState::Waiting => 75,
+            NativeTurnState::HandedOff => 75,
         }
     }
 }
@@ -155,6 +165,19 @@ impl NativeLimits {
                 .map(|minutes| Duration::from_secs(u64::from(minutes) * 60)),
             cost_usd: cost_limit_env("AISHE_TASK_MAX_COST_USD")?,
         })
+    }
+
+    /// The configured native iteration ceiling travels with the task rather
+    /// than granting a fresh provider allowance whenever ownership changes.
+    /// Zero remains the caller's explicit no-iteration behavior.
+    pub fn with_iteration_limit(mut self, maximum: u32) -> Self {
+        if maximum > 0 {
+            self.provider_turns = Some(
+                self.provider_turns
+                    .map_or(maximum, |value| value.min(maximum)),
+            );
+        }
+        self
     }
 
     /// A resumed task may receive stricter limits, never lose its original cap
@@ -382,6 +405,7 @@ mod tests {
             (NativeTurnState::Failed, 1),
             (NativeTurnState::Declined, 2),
             (NativeTurnState::Waiting, 75),
+            (NativeTurnState::HandedOff, 75),
         ];
         for (state, code) in cases {
             assert_eq!(NativeTurnOutcome::new("id", state, None).exit_code(), code);
@@ -486,6 +510,35 @@ mod tests {
         assert!(budget.admit_tool(&call("write_file", json!({}))).is_err());
         assert!(budget.counters().elapsed_ms >= 2000);
         assert_eq!(budget.counters().cost_usd, 0.4);
+    }
+
+    #[test]
+    fn configured_iteration_ceiling_remains_spent_after_ownership_changes() {
+        let original = NativeLimits::default().with_iteration_limit(40);
+        let restored = original.constrain(&NativeLimits::default().with_iteration_limit(80));
+        let mut budget = NativeBudget::new(
+            restored,
+            ExecutionCounters {
+                provider_turns: 39,
+                ..ExecutionCounters::default()
+            },
+        );
+        assert!(budget.admit_provider().is_ok());
+        assert_eq!(budget.counters().provider_turns, 40);
+        assert!(budget.admit_provider().is_err());
+        assert_eq!(budget.counters().provider_turns, 40);
+        let narrower = NativeLimits {
+            provider_turns: Some(2),
+            ..NativeLimits::default()
+        }
+        .with_iteration_limit(40);
+        assert_eq!(narrower.provider_turns, Some(2));
+        assert_eq!(
+            NativeLimits::default()
+                .with_iteration_limit(0)
+                .provider_turns,
+            None
+        );
     }
 
     #[test]

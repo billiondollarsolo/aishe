@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Real lean mode/grant handoffs, cancellation, policy, and scope regressions."""
 from pathlib import Path
+import shlex
 import shutil
 import sys
 
@@ -25,7 +26,7 @@ def fixture(label, mode="ask", scope="workspace", host_allowed=True):
     bwrap = Path(home) / "bin" / "bwrap"
     bwrap.write_text("#!/bin/sh\nexit 1\n")
     bwrap.chmod(0o755)
-    return home, env
+    return str(Path(home).resolve()), env
 
 
 def send(shell, keys, seconds=0.25):
@@ -51,12 +52,29 @@ def mode(shell, expected):
 
 def main():
     home, env = fixture("handoff")
+    # A visible consent cue must mean terminal input is ready. Make the
+    # stty transition slow enough to expose a cue published before it finishes.
+    real_stty = shutil.which("stty")
+    assert real_stty, "stty is required for mode grant qualification"
+    grant_ready = Path(home) / "grant-terminal-ready"
+    stty = Path(home) / "bin" / "stty"
+    stty.write_text(
+        '#!/bin/sh\nif [ "$1" = "-icanon" ]; then\n'
+        '  sleep 0.25\n'
+        f'  {shlex.quote(real_stty)} "$@"\n'
+        '  result=$?\n'
+        f'  if [ "$result" -eq 0 ]; then : > {shlex.quote(str(grant_ready))}; fi\n'
+        '  exit "$result"\nfi\n'
+        f'exec {shlex.quote(real_stty)} "$@"\n'
+    )
+    stty.chmod(0o755)
     shell = Pty(env)
     try:
         assert shell.ready()
         start = len(shell.plain())
         shell.send("/mode auto\r")
         wait_new(shell, "Type allow to continue", start)
+        assert grant_ready.exists(), "consent cue appeared before terminal input was ready"
         send(shell, "allow\r")
         mode(shell, "allow")
         send(shell, "/mode suggest\r")
@@ -73,9 +91,17 @@ def main():
         assert "Type allow to continue" not in shell.plain()[start:]
         start = len(shell.plain())
         send(shell, "/mode agent\r")
+        if sys.platform == "darwin":
+            # macOS workspace mode deliberately uses an explicit policy-only
+            # grant; Linux refuses the fixture's unusable bubblewrap boundary.
+            wait_new(shell, "Type agent to continue", start)
+            assert "macOS workspace mode is policy-only" in shell.plain()[start:]
+            send(shell, "\x1b")
+            wait_new(shell, "grant declined", start)
         mode(shell, "allow")
-        assert "requires functional bubblewrap" in shell.plain()[start:]
-        assert "Type agent to continue" not in shell.plain()[start:]
+        if sys.platform != "darwin":
+            assert "requires functional bubblewrap" in shell.plain()[start:]
+            assert "Type agent to continue" not in shell.plain()[start:]
     finally:
         shell.close()
         shutil.rmtree(home, ignore_errors=True)

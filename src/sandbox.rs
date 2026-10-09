@@ -68,6 +68,7 @@ pub fn bwrap_wrap_argv(cwd: &std::path::Path) -> Vec<String> {
     let cwd = cwd.display().to_string();
     [
         "bwrap",
+        "--unshare-user",
         "--ro-bind",
         "/",
         "/", // everything read-only …
@@ -134,6 +135,10 @@ fn agent_bwrap_argv_for_home(
     let cwd = cwd.display().to_string();
     let mut args = [
         "bwrap",
+        // Namespace-local capabilities allow bubblewrap to initialize its
+        // network namespace without depending on container-root privileges.
+        // Do not use --unshare-user-try: unavailable isolation fails closed.
+        "--unshare-user",
         "--ro-bind",
         "/",
         "/",
@@ -668,6 +673,7 @@ mod tests {
     fn bwrap_argv_shape() {
         let argv = bwrap_wrap_argv(std::path::Path::new("/home/me/proj"));
         assert_eq!(argv[0], "bwrap");
+        assert!(argv.contains(&"--unshare-user".to_string()));
         assert!(argv.contains(&"--ro-bind".to_string()));
         // the working tree is bound writable and is the chdir target
         assert!(argv
@@ -688,12 +694,16 @@ mod tests {
             .windows(2)
             .any(|values| values == ["--tmpfs", "/tmp"]));
         assert!(denied.iter().any(|value| value == "--unshare-net"));
+        assert!(denied.iter().any(|value| value == "--unshare-user"));
+        assert!(!denied.iter().any(|value| value == "--unshare-user-try"));
         assert!(denied
             .windows(3)
             .any(|values| values[0] == "--bind" && values[1] == values[2]));
         let allowed =
             agent_bwrap_argv(&workspace, &workspace, crate::agent::NetworkPolicy::Allow).unwrap();
         assert!(!allowed.iter().any(|value| value == "--unshare-net"));
+        assert!(allowed.iter().any(|value| value == "--unshare-user"));
+        assert!(!allowed.iter().any(|value| value == "--unshare-user-try"));
         std::fs::remove_dir_all(workspace).unwrap();
     }
 
@@ -748,6 +758,7 @@ mod tests {
         std::fs::create_dir_all(&outside).unwrap();
         let marker = root.join("host-tmp-marker");
         std::fs::write(&marker, b"must be hidden").unwrap();
+        let host_user_namespace = std::fs::read_link("/proc/self/ns/user").unwrap();
         #[cfg(unix)]
         std::os::unix::fs::symlink(&outside, workspace.join("escape")).unwrap();
 
@@ -761,7 +772,8 @@ mod tests {
                 .arg("-c")
                 .arg(command)
                 .env("AISHE_TEST_WORKSPACE", &workspace)
-                .env("AISHE_TEST_MARKER", &marker);
+                .env("AISHE_TEST_MARKER", &marker)
+                .env("AISHE_TEST_USER_NAMESPACE", &host_user_namespace);
             if let Some(port) = port {
                 child.env("AISHE_TEST_PORT", port.to_string());
             }
@@ -772,6 +784,7 @@ mod tests {
             crate::agent::NetworkPolicy::Deny,
             r#"set -eu
 printf 'ok\n' > "$AISHE_TEST_WORKSPACE/created"
+test "$(readlink /proc/self/ns/user)" != "$AISHE_TEST_USER_NAMESPACE"
 test -r /etc/passwd
 if touch /etc/aishe-bwrap-must-not-write 2>/dev/null; then exit 40; fi
 test ! -e "$HOME/.config/aishe"

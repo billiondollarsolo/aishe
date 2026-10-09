@@ -147,7 +147,7 @@ jobs:
   pty-native:
     name: Native shell (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 35
+    timeout-minutes: 50
     strategy:
       fail-fast: false
       matrix:
@@ -190,6 +190,10 @@ jobs:
         run: cargo build --release --locked
 
       - name: Direct commands stay local and meet the startup SLO
+        id: direct_shell_benchmark
+        # Preserve a failed performance result while still collecting the
+        # terminal regressions below. The final step enforces this outcome.
+        continue-on-error: true
         timeout-minutes: 5
         run: >-
           python3 tests/require_gate.py python3 tests/direct_shell_benchmark.py target/release/aishe
@@ -234,6 +238,20 @@ jobs:
         run: |
           python3 tests/require_gate.py python3 tests/native_task_interactions.py target/release/aishe
           python3 tests/require_gate.py python3 tests/task_interactions_pty.py target/release/aishe
+
+      - name: Handoff, selective changes, workflow dependencies, and factual timeline
+        timeout-minutes: 12
+        run: |
+          python3 tests/require_gate.py python3 tests/agentic_workflows.py target/release/aishe
+          python3 tests/require_gate.py python3 tests/task_handoff_pty.py target/release/aishe
+          python3 tests/require_gate.py python3 tests/task_workflows_pty.py target/release/aishe
+
+      - name: Prove functional native workspace sandbox
+        if: runner.os == 'Linux'
+        timeout-minutes: 3
+        env:
+          AISHE_REQUIRE_FUNCTIONAL_SANDBOX: "1"
+        run: python3 tests/require_gate.py python3 tests/native_sandbox_qualification.py target/release/aishe
 
       - name: Clean and personal zsh feature matrices
         timeout-minutes: 5
@@ -290,6 +308,14 @@ jobs:
           python3 tests/require_gate.py python3 tests/native_background_lifecycle.py target/release/aishe
           python3 tests/require_gate.py python3 tests/durable_task_resume.py target/release/aishe
 
+      - name: Record failed startup components
+        if: always() && steps.direct_shell_benchmark.outcome == 'failure'
+        timeout-minutes: 5
+        run: >-
+          python3 tests/require_gate.py python3 tests/direct_shell_profile.py target/release/aishe
+          --commands 100 --warmup 10
+          --output test-results/direct-shell-profile-${{ runner.os }}.json
+
       - name: Upload terminal qualification evidence
         if: always()
         uses: actions/upload-artifact@v6
@@ -297,6 +323,12 @@ jobs:
           name: native-terminal-evidence-${{ runner.os }}
           path: test-results/
           if-no-files-found: ignore
+
+      - name: Enforce direct shell startup SLO
+        if: always() && steps.direct_shell_benchmark.outcome == 'failure'
+        run: |
+          echo "Direct shell startup qualification failed; see its recorded benchmark." >&2
+          exit 1
 
   pty-legacy:
     name: Explicit legacy shell (${{ matrix.os }})

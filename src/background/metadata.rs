@@ -103,7 +103,10 @@ fn review_exact(record: &Record, metadata: &mut TaskMetadata, entry: &TaskEntry)
 }
 
 pub(super) fn is_terminal(state: State) -> bool {
-    !matches!(state, State::Starting | State::Running | State::Waiting)
+    !matches!(
+        state,
+        State::Starting | State::Running | State::Waiting | State::Blocked
+    )
 }
 
 /// The durable terminal generation distinguishes repeated successful attempts;
