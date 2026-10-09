@@ -48,7 +48,10 @@ def kill_fixture_group(pid, identity):
 class Fixture:
     def __init__(self, label):
         self.temporary = tempfile.TemporaryDirectory(prefix="aishe-native-background-" + label + "-")
-        self.root = Path(self.temporary.name)
+        # Match the real cwd visible to detached workers. Darwin's /var temp
+        # alias and symlink-spelled TMPDIR must not turn ordinary fixture file
+        # approvals into correctly refused symlink targets.
+        self.root = Path(self.temporary.name).resolve()
         self.home = self.root / "home"
         self.work = self.root / "work"
         self.config_root = self.root / "config"
