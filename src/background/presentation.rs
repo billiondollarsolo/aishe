@@ -1159,7 +1159,10 @@ mod tests {
         let mut first_shell = SeenTasks::default();
         let second_shell = SeenTasks::default();
         first_shell.acknowledge(&finished);
-        assert_eq!(status_for(&[finished.clone()], &first_shell).ready, 0);
+        assert_eq!(
+            status_for(std::slice::from_ref(&finished), &first_shell).ready,
+            0
+        );
         assert_eq!(status_for(&[finished], &second_shell).ready, 1);
         assert_eq!(
             status_for(&[entry(State::Completed, 4)], &first_shell).ready,

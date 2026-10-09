@@ -190,6 +190,10 @@ jobs:
         run: cargo build --release --locked
 
       - name: Direct commands stay local and meet the startup SLO
+        id: direct_shell_benchmark
+        # Preserve a failed performance result while still collecting the
+        # terminal regressions below. The final step enforces this outcome.
+        continue-on-error: true
         timeout-minutes: 5
         run: >-
           python3 tests/require_gate.py python3 tests/direct_shell_benchmark.py target/release/aishe
@@ -297,6 +301,12 @@ jobs:
           name: native-terminal-evidence-${{ runner.os }}
           path: test-results/
           if-no-files-found: ignore
+
+      - name: Enforce direct shell startup SLO
+        if: always() && steps.direct_shell_benchmark.outcome == 'failure'
+        run: |
+          echo "Direct shell startup qualification failed; see its recorded benchmark." >&2
+          exit 1
 
   pty-legacy:
     name: Explicit legacy shell (${{ matrix.os }})

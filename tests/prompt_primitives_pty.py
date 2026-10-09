@@ -186,6 +186,18 @@ def menu_resize(fixture):
     print("  ok   menu redraw honors a 100-to-20-column resize and keeps selection")
 
 
+def zero_size_terminal(fixture):
+    prompt = Prompt(fixture, "menu", cols=0)
+    try:
+        if "Fixture menu" not in CSI.sub("", prompt.transcript):
+            raise AssertionError("zero-size terminal lost the readable menu title")
+        prompt.send(b"\r")
+        prompt.finished("Ok(Selected(1))")
+    finally:
+        prompt.close()
+    print("  ok   uninitialized terminal dimensions keep prompts readable and restore terminal mode")
+
+
 def text_editing(fixture):
     value = "https://example.invalid/v1/a-long-custom-endpoint"
     for entered, expected in ((value.encode() + b"x\x7f\r", 'Ok(Some("%s"))' % value),
@@ -261,6 +273,7 @@ def main():
         fixture = compile_fixture(binary, pathlib.Path(root))
         cancellation_and_restoration(fixture)
         menu_resize(fixture)
+        zero_size_terminal(fixture)
         text_editing(fixture)
         static_picker(fixture)
         setup_text_cancellation(binary)

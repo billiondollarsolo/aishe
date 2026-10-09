@@ -1124,13 +1124,13 @@ fn run_loop(
 
             // Lean authority retains its accepted root while cwd changes. The
             // compatibility sandbox must never replace that stronger wrapper.
-            if let Some((scope, workspace, network)) = executor.lean_scope().cloned() {
+            if let Some((scope, _workspace, _network)) = executor.lean_scope().cloned() {
                 let wrap = match scope {
                     crate::agent::ExecutionScope::Host => Ok(Vec::new()),
                     crate::agent::ExecutionScope::Workspace => {
                         #[cfg(target_os = "linux")]
                         {
-                            sandbox::agent_bwrap_argv(&workspace, executor.cwd(), network)
+                            sandbox::agent_bwrap_argv(&_workspace, executor.cwd(), _network)
                         }
                         #[cfg(not(target_os = "linux"))]
                         {

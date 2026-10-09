@@ -933,7 +933,11 @@ fn columns() -> usize {
 pub(crate) fn terminal_size() -> (usize, usize) {
     crossterm::terminal::size()
         .ok()
-        .map(|(width, height)| (usize::from(width).max(1), usize::from(height).max(1)))
+        // A newly allocated PTY can report a successful zero-size ioctl until
+        // its owner supplies dimensions. Use the same fallback as an absent
+        // terminal rather than rendering every character on a separate line.
+        .filter(|(width, height)| *width > 0 && *height > 0)
+        .map(|(width, height)| (usize::from(width), usize::from(height)))
         .unwrap_or((80, 24))
 }
 
