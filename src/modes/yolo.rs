@@ -1562,7 +1562,7 @@ fn complete_handoff(
             executor.agent_environment_snapshot(config),
         )?;
         outcome.detail = Some(format!(
-            "Continuing in background task {background_id}. View it with /tasks {background_id}."
+            "Continuing in background. View it with /tasks {background_id}."
         ));
     }
     Ok(outcome)

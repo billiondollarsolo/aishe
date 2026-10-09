@@ -913,13 +913,11 @@ fn agent_reply(
             crate::agent::native::NativeTurnState::Completed => "RAN".into(),
             crate::agent::native::NativeTurnState::Cancelled => "CANCELLED".into(),
             crate::agent::native::NativeTurnState::HandedOff => {
-                emit_text(
-                    pty,
-                    outcome
-                        .detail
-                        .as_deref()
-                        .unwrap_or("Task moved to the background; open /tasks to view it."),
-                );
+                let receipt = outcome
+                    .detail
+                    .as_deref()
+                    .unwrap_or("Task moved to the background; open /tasks to view it.");
+                emit_text(pty, &format!("\n{receipt}"));
                 "RAN".into()
             }
             _ => format!(
