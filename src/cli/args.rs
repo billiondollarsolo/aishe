@@ -128,8 +128,8 @@ pub(crate) struct SetupArgs {
     /// Make minimal live generation requests while validating.
     #[arg(long)]
     pub(crate) live: bool,
-    /// Agent backend (enterprise setup currently supports opencode).
-    #[arg(long, value_parser = ["opencode"], requires = "non_interactive")]
+    /// Agent backend: native (fast default) or managed opencode.
+    #[arg(long, value_parser = ["native", "opencode"], requires = "non_interactive")]
     pub(crate) backend: Option<String>,
     /// Install or repair the pinned managed OpenCode runtime.
     #[arg(long, requires = "non_interactive")]

@@ -41,6 +41,23 @@ Same rule table as `dispatcher::route`:
 `aishe -c` still admits known commands *before* config, credentials, Provider,
 or OpenCode (`dispatcher::fast_shell_line` in `src/main.rs`).
 
+## Slash commands
+
+Type `/` and press **Tab** to browse descriptions grouped by purpose; repeated
+Tab cycles matches. Custom commands appear on first use, without making model
+calls or starting MCP servers. Completion preserves your arguments and leaves
+absolute paths to normal zsh completion.
+
+Press **Enter** on `/` for a short guide. `/help model` explains one command,
+`/help keys` shows shortcuts, and `/commands` lists the full supported catalogue
+plus custom Markdown commands. `/model` and `/connection` open a picker;
+`/settings` edits saved defaults and `/setup` opens guided provider setup.
+`/context` previews local context, `/doctor` checks setup, and `/tour` opens the
+guided walkthrough.
+
+Verify the actual editable buffers and side effects with:
+`python3 tests/lean_slash_pty.py target/release/aishe`.
+
 ## Approval
 
 | Mode | Glyph | Grant | Tools |
@@ -51,6 +68,26 @@ or OpenCode (`dispatcher::fast_shell_line` in `src/main.rs`).
 
 ## Default UI and session state
 
+- Fresh setup recommends the included native engine. Account, behavior, and
+  review are the main decisions; runtime diagnostics and the exact config diff
+  are available when needed. Setup pauses into a private resumable draft;
+  credential secrets stay out of it. Subscription OAuth explicitly selects the
+  managed legacy transport and shows its launch command.
+- `/settings` edits saved defaults through sections with current values, an
+  unsaved-change count, and a grouped review. Edits and writes are transactional;
+  cancelling a provider section or a failed write restores prior state. Current
+  shells retain their selections until `/model` or `/connection` changes them.
+- `/` then Tab browses commands by purpose with descriptions, including local
+  custom commands. Completion preserves arguments and leaves file paths to zsh.
+  `/` Enter opens a short guide; `/help model` explains one command, `/help keys`
+  lists keyboard controls, and `/commands` shows the complete catalogue.
+- `/model` and `/connection` open searchable, paged pickers on the inner shell's
+  terminal. Picks apply to this shell; a separate explicit Yes saves a default.
+  Lean model choices use configuration and capability cache without starting a
+  runtime or contacting the provider. Direct names remain available.
+- Setup, settings, and pickers share bounded frames, width-aware labels and
+  keyboard controls. Static terminals use durable rows and line commands.
+  Esc, Ctrl-C, Ctrl-D, and EOF cancel and restore terminal settings.
 - The left prompt keeps `ask`, `allow`, or `agent:workspace` / `agent:host`
   visible, including when the terminal is narrow. A pending grant is marked
   before AI execution. The right prompt shows the active model, connection,
@@ -193,7 +230,7 @@ AISHE_SPY_WIRE_NS=/tmp/wire \
 
 ### Closed in Wave 3 (2026-09-09)
 
-- **F15 `/connection` + `/model`:** lean FIFO slash list/pick by id, label, or
+- **F15 `/connection` + `/model`:** searchable terminal pickers; FIFO picks by id, label, or
   `#`. Reuses connection store + provider catalog (no OpenCode model discovery).
   Grok subscription remains the default happy path. Selection is shell-local via
   the parent's explicit session selection file.

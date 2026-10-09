@@ -65,31 +65,33 @@ pub fn models(config: &Config, provider: &str, json: bool) -> u8 {
 }
 
 pub fn print_capability_report(report: &crate::capabilities::Report) {
-    println!(
-        "provider validation: {} · {} · {}",
-        crate::commands::display_safe(&report.provider),
-        crate::commands::display_safe(&report.model),
-        crate::commands::display_safe(&report.transport)
-    );
+    crate::promptui::section("Connection check");
+    crate::promptui::key_value("Provider", &report.provider);
+    crate::promptui::key_value("Model", &report.model);
+    crate::promptui::key_value("Transport", &report.transport);
+    let glyphs = crate::ui::stdout_glyphs();
     for (label, check) in [
-        ("credential", &report.credential),
-        ("reachability", &report.reachability),
-        ("model list", &report.model_list),
-        ("model", &report.model_available),
-        ("text", &report.text),
-        ("structured", &report.structured),
-        ("tools", &report.tools),
-        ("streaming", &report.streaming),
+        ("Credential", &report.credential),
+        ("Endpoint", &report.reachability),
+        ("Model list", &report.model_list),
+        ("Model", &report.model_available),
+        ("Text", &report.text),
+        ("Structured", &report.structured),
+        ("Tools", &report.tools),
+        ("Streaming", &report.streaming),
     ] {
-        let marker = match check.state {
-            crate::capabilities::State::Pass => "✓",
-            crate::capabilities::State::Warn => "!",
-            crate::capabilities::State::Fail => "✗",
-            crate::capabilities::State::Skipped => "·",
+        let (marker, status) = match check.state {
+            crate::capabilities::State::Pass => (glyphs.success(), "ready"),
+            crate::capabilities::State::Warn => (glyphs.warning(), "warning"),
+            crate::capabilities::State::Fail => (glyphs.error(), "failed"),
+            crate::capabilities::State::Skipped => (glyphs.pending(), "skipped"),
         };
-        println!(
-            "  {marker} {label}: {}",
-            crate::commands::display_safe(&check.detail)
+        crate::promptui::key_value(
+            label,
+            &format!(
+                "{marker} {status}: {}",
+                crate::redact::redact(&check.detail)
+            ),
         );
     }
 }

@@ -7,6 +7,16 @@
 aishe's interactive shell is your real zsh; aishe adds a small set of
 subcommands, a few inspection commands, and input prefixes that control routing.
 
+The default lean shell has a concise, grouped catalogue: `/` then Tab browses
+commands with descriptions, `/help` gives a quick guide, `/help model` explains
+one command, and `/commands` includes local custom Markdown commands. Use
+`/settings` for saved defaults, `/setup` to configure or resume setup, and
+`/model` or `/connection` for searchable choices in this shell. A separate
+explicit Yes promotes a selection to a saved default. Setup recommends the
+included native engine; subscription OAuth explicitly uses the managed legacy
+shell. The generated slash-command reference below describes the broader
+legacy hook and CLI surface; the current shell's `/commands` is authoritative.
+
 ## Subcommands
 
 <!-- BEGIN GENERATED CLI SURFACE -->
@@ -16,7 +26,7 @@ aishe settings         Edit the current configuration through an interactive sec
 aishe auth ...         Manage provider API keys and OAuth subscriptions in AIShe's private stores
 aishe tour             Run the resumable guided first-session tour
 aishe init             Print a shell integration snippet: `eval "$(aishe init zsh)"`
-aishe zsh              Launch your real interactive zsh (with all native plugins) under aishe
+aishe zsh              Launch the lean interactive zsh shell (legacy: AISHE_LEGACY_OPENCODE=1)
 aishe doctor           Check your environment: shell, config, front-end, provider, API key
 aishe backend ...      Manage AIShe's private, compatibility-pinned agent runtime
 aishe update ...       Check, apply, or roll back the AIShe binary itself

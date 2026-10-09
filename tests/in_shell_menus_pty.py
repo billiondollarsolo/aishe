@@ -28,14 +28,12 @@ def check_menu(shell, command, expected_row, marker):
 
 
 def main():
-    from pty_helper import require_legacy_opencode_world
-    require_legacy_opencode_world()
     _, env = environment("menus")
     shell = Pty(env)
     try:
         if not shell.ready():
             raise AssertionError("shell never became ready")
-        check_menu(shell, "/settings", "Exit without changes", "SETTINGS")
+        check_menu(shell, "/settings", "No unsaved changes", "SETTINGS")
         check_menu(shell, "aishe tour", "Lesson 1", "TOUR")
         print("in-shell menus: ok")
     finally:

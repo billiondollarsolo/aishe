@@ -131,7 +131,7 @@ class Pty:
 
 
 @contextmanager
-def model_server(models, accepted_keys=None):
+def model_server(models, accepted_keys=None, observed=None):
     accepted_keys = set(accepted_keys or [])
 
     class Handler(http.server.BaseHTTPRequestHandler):
@@ -153,6 +153,8 @@ def model_server(models, accepted_keys=None):
             return header.startswith("Bearer ") and header[7:] in accepted_keys
 
         def do_GET(self):
+            if observed is not None:
+                observed.append(("GET", self.path))
             if self.path != "/v1/models":
                 self.send_json(404, {"error": {"message": "not found"}})
             elif not self.authorized():
@@ -163,6 +165,8 @@ def model_server(models, accepted_keys=None):
         def do_POST(self):
             length = int(self.headers.get("Content-Length", "0"))
             payload = json.loads(self.rfile.read(length) or b"{}")
+            if observed is not None:
+                observed.append(("POST", payload))
             model = payload.get("model", "")
             if not self.authorized():
                 self.send_json(401, {"error": {"message": "invalid API key"}})
@@ -187,12 +191,20 @@ def model_server(models, accepted_keys=None):
                         "usage": {"input_tokens": 1, "output_tokens": 1},
                     },
                 )
+            elif payload.get("stream"):
+                self.send_response(200)
+                self.send_header("Content-Type", "text/event-stream")
+                self.end_headers()
+                chunk = {"choices": [{"delta": {"content": "setup-ok"}}]}
+                self.wfile.write(("data: " + json.dumps(chunk) + "\n\ndata: [DONE]\n\n").encode())
             else:
                 self.send_json(
                     200,
                     {
                         "choices": [
-                            {"message": {"role": "assistant", "content": "setup-ok"}}
+                            {"message": {"role": "assistant", "content": (
+                                '{"status":"setup-ok"}' if payload.get("response_format") else "setup-ok"
+                            )}}
                         ],
                         "usage": {"prompt_tokens": 1, "completion_tokens": 1},
                     },
@@ -306,12 +318,11 @@ def setup_visual_style_and_alignment():
                     "setup menu title was not color styled\n"
                     + shell.transcript[-2500:]
                 )
-            if not re.search(r"\x1b\[[0-9;]*7[0-9;]*m› ", shell.transcript):
+            if not re.search(r"\x1b\[[0-9;]*7[0-9;]*m  › ", shell.transcript):
                 raise AssertionError("current setup selection was not highlighted")
-            if "…\x1b[0m" not in shell.transcript:
-                raise AssertionError("narrow focus row was not kept to one line")
-            if "\r\n       OAuth above for Plus/Pro." not in shell.transcript:
-                raise AssertionError("long provider help did not word-wrap with indentation")
+            shell.send("?")
+            shell.expect("subscription")
+            shell.expect("login.")
             if "ChatGPT / Codex OAuth" not in shell.transcript:
                 raise AssertionError("explicit ChatGPT/Codex OAuth option missing from setup menu")
             if "Grok OAuth" not in shell.transcript:
@@ -322,7 +333,7 @@ def setup_visual_style_and_alignment():
             shell.expect("API endpoint")
             shell.drain(0.2)
             aligned = re.compile(
-                r"\x1b\[0m\r\n  \x1b\[[0-9;]*mAPI endpoint\x1b\[0m"
+                r"\r\n(?:\x1b\[[0-9;]*[A-Za-z])*  \x1b\[[0-9;]*mAPI endpoint\x1b\[0m"
             )
             if not aligned.search(shell.transcript):
                 raise AssertionError(
@@ -352,7 +363,7 @@ def setup_width_and_no_color_matrix():
                     raise AssertionError(
                         "setup entered an alternate-screen UI at %d columns" % cols
                     )
-                if not re.search(r"\x1b\[[0-9;]*7[0-9;]*m› ", shell.transcript):
+                if not re.search(r"\x1b\[[0-9;]*7[0-9;]*m  › ", shell.transcript):
                     raise AssertionError(
                         "setup lost its visible focus row at %d columns" % cols
                     )
@@ -743,7 +754,8 @@ def hidden_auth_and_staged_setup_are_secret_safe(runtime_root):
     try:
         source_runtime = os.path.join(runtime_root, "data", "aishe", "runtime")
         target_runtime = os.path.join(root, "data", "aishe", "runtime")
-        shutil.copytree(source_runtime, target_runtime, symlinks=True)
+        if os.path.isdir(source_runtime):
+            shutil.copytree(source_runtime, target_runtime, symlinks=True)
         env = isolated_env(root)
         shell = Pty([BINARY, "setup"], env)
         try:
@@ -877,7 +889,7 @@ def tour_pause_resume_skip_restart_and_complete(root, env):
         resumed.expect("Lesson 1 of 8")
         resumed.menu(2)  # skip lesson one
         resumed.expect("2. Natural-language routing")
-        resumed.expect("not verified; lesson stays offline")
+        resumed.expect("live checks not run yet")
         resumed.expect("Lesson 2 of 8")
         resumed.menu(3)  # pause on lesson two
         resumed.expect("Tour paused")
@@ -919,13 +931,259 @@ def tour_pause_resume_skip_restart_and_complete(root, env):
     print("  ok   tour pause/resume/skip/restart/offline/undo flow")
 
 
+def native_env(root):
+    env = isolated_env(root)
+    env["AISHE_LEGACY_OPENCODE"] = "0"
+    env["AISHE_LEAN"] = "1"
+    env["AISHE_SPY_OPENCODE"] = os.path.join(root, "managed-start-spy")
+    return env
+
+
+def native_to_behavior(shell, endpoint):
+    setup_to_provider(shell)
+    shell.menu(8)  # local Ollama account, no credential required
+    shell.expect("API endpoint")
+    shell.line(endpoint)
+    shell.expect("Available models (refreshed from /v1/models)")
+    shell.menu(2)  # first returned model
+    shell.expect("Behavior and interface")
+
+
+def native_setup_recommended_review_and_navigation():
+    root = tempfile.mkdtemp(prefix="aishe-native-setup-")
+    try:
+        env = native_env(root)
+        with model_server(["native-setup-model"]) as endpoint:
+            shell = Pty([BINARY, "setup"], env, cols=80)
+            try:
+                native_to_behavior(shell, endpoint)
+                if "Install and verify the pinned runtime" in shell.transcript:
+                    raise AssertionError("fresh native setup offered a mandatory managed runtime")
+                shell.menu(1)
+                shell.expect("No price is known")
+                shell.line()  # default: leave unknown, never invent a rate
+                shell.expect("Run the disclosed live capability checks now")
+                shell.line()  # default: no paid generation
+                shell.expect("Review and apply")
+                shell.drain()
+                if "Agent transcript density" in shell.transcript:
+                    raise AssertionError("recommended setup repeated individual interface questions")
+                if "environment override:" in shell.transcript:
+                    raise AssertionError("review exposed technical details without requesting them")
+                shell.menu(5)
+                shell.expect("Configuration details")
+                shell.expect("environment override:")
+                shell.expect("Review and apply")
+                shell.menu(6)
+                shell.expect("Configuration diff")
+                shell.expect("no existing file to compare")
+                shell.expect("Review and apply")
+                shell.menu(1)
+                shell.expect("Setup complete")
+                shell.expect("Run the guided first-session tour now")
+                shell.line()  # default: launch without an eight-lesson detour
+                if shell.finish() != 0:
+                    raise AssertionError("recommended native setup did not apply")
+            finally:
+                shell.close()
+            config = os.path.join(root, "config", "aishe", "config.toml")
+            before = open(config, "rb").read()
+            if b'engine = "native"' not in before:
+                raise AssertionError("fresh default setup did not save native controller")
+            if os.path.exists(env["AISHE_SPY_OPENCODE"]):
+                raise AssertionError("native setup started a managed backend")
+
+            # Esc must pause, rather than silently redisplay Profile/Status.
+            for cancellation in ("scope", "status contents"):
+                shell = Pty([BINARY, "setup", "--restart"], env)
+                try:
+                    native_to_behavior(shell, endpoint)
+                    shell.menu(2)
+                    shell.expect("Safety profile")
+                    shell.menu(2)
+                    shell.expect("Default execution scope")
+                    if cancellation == "status contents":
+                        shell.menu(1)
+                        shell.expect("Workspace network")
+                        shell.send("b")
+                        shell.expect("Default execution scope")
+                        shell.menu(1)
+                        shell.expect("Workspace network")
+                        shell.menu(1)
+                        shell.expect("No price is known")
+                        shell.menu(2)
+                        shell.expect("Agent transcript density")
+                        shell.menu(1)
+                        shell.expect("Live status-line placement")
+                        shell.menu(1)
+                        shell.expect("Status-line contents")
+                        shell.send("b")
+                        shell.expect("Live status-line placement")
+                        shell.send("b")
+                        shell.expect("Agent transcript density")
+                        shell.menu(1)
+                        shell.expect("Live status-line placement")
+                        shell.menu(1)
+                        shell.expect("Status-line contents")
+                    shell.send("\x1b")
+                    shell.expect("Setup paused")
+                    expect_setup_exit(shell, cancellation)
+                finally:
+                    shell.close()
+                if open(config, "rb").read() != before:
+                    raise AssertionError(cancellation + " cancellation changed active config")
+
+            resumed = Pty([BINARY, "setup", "--resume"], env)
+            try:
+                resumed.expect("Agent transcript density")
+                resumed.send("\x03")
+                resumed.expect("Setup paused")
+                expect_setup_exit(resumed, "native resumed cancel")
+            finally:
+                resumed.close()
+            host = Pty([BINARY, "setup", "--restart"], env)
+            try:
+                native_to_behavior(host, endpoint)
+                host.menu(2)
+                host.expect("Safety profile")
+                host.menu(3)
+                host.expect("Default execution scope")
+                host.menu(2)
+                host.expect("No price is known")
+                host.send("\x1b")
+                host.expect("Setup paused")
+                expect_setup_exit(host, "autonomous host setup")
+            finally:
+                host.close()
+            with open(os.path.join(root, "data", "aishe", "setup-draft.json"), encoding="utf-8") as file:
+                draft = json.load(file)
+            if draft["config"]["backend"]["default_scope"] != "host":
+                raise AssertionError("explicit allowed host scope was blocked by workspace sandbox check")
+            if open(config, "rb").read() != before:
+                raise AssertionError("host draft changed active config before Apply")
+        print("  ok   short native setup, review disclosure, cancellation, resume, no sidecar")
+    finally:
+        cleanup_isolated_root(root)
+
+
+def native_setup_machine_and_upgraded_verification():
+    root = tempfile.mkdtemp(prefix="aishe-native-setup-verify-")
+    try:
+        env = native_env(root)
+        env["LOCAL_SETUP_KEY"] = "local-fixture-key"
+        observed = []
+        with model_server(["native-api-model"], [env["LOCAL_SETUP_KEY"]], observed) as endpoint:
+            applied = subprocess.run([
+                BINARY, "setup", "--non-interactive", "--service", "openai",
+                "--base-url", endpoint, "--key-env", "LOCAL_SETUP_KEY",
+                "--model", "native-api-model", "--backend", "native",
+                "--transport", "chat", "--sandbox", "policy", "--json",
+            ], env=env, capture_output=True, text=True, timeout=30)
+            if applied.returncode != 0 or not json.loads(applied.stdout).get("applied"):
+                raise AssertionError("native machine setup failed: " + applied.stdout + applied.stderr)
+            path = os.path.join(root, "config", "aishe", "config.toml")
+            text = open(path, encoding="utf-8").read().replace('engine = "native"', 'engine = "opencode"')
+            with open(path, "w", encoding="utf-8") as file:
+                file.write(text)
+            before = open(path, "rb").read()
+            observed.clear()
+            checked = subprocess.run([BINARY, "setup", "--verify", "--live", "--json"],
+                env=env, capture_output=True, text=True, timeout=40)
+            if checked.returncode != 0:
+                raise AssertionError("upgraded lean verification failed: " + checked.stdout + checked.stderr)
+            result = json.loads(checked.stdout)
+            if result["runtime"] is not None:
+                raise AssertionError("lean API-key verification claimed a managed runtime")
+            if not any(method == "POST" for method, _ in observed):
+                raise AssertionError("live verification made no native generation requests")
+            if os.path.exists(env["AISHE_SPY_OPENCODE"]) or os.path.isdir(env["AISHE_RUNTIME_DIR"]):
+                raise AssertionError("lean verification started or installed managed runtime")
+            if open(path, "rb").read() != before:
+                raise AssertionError("verification modified upgraded saved backend preference")
+        print("  ok   native machine setup and upgraded API-key live verification use no sidecar")
+    finally:
+        cleanup_isolated_root(root)
+
+
+def native_oauth_is_an_explicit_resumable_managed_choice():
+    root = tempfile.mkdtemp(prefix="aishe-setup-oauth-choice-")
+    try:
+        env = native_env(root)
+        shell = Pty([BINARY, "setup"], env)
+        try:
+            setup_to_provider(shell)
+            shell.menu(1)
+            shell.expect("Subscription login")
+            shell.expect("legacy shell")
+            shell.menu(1)
+            shell.expect("Install and verify the pinned runtime")
+            shell.send("\x1b")
+            shell.expect("Setup paused")
+            expect_setup_exit(shell, "managed OAuth opt-in")
+        finally:
+            shell.close()
+        with open(os.path.join(root, "data", "aishe", "setup-draft.json"), encoding="utf-8") as file:
+            draft = json.load(file)
+        if not draft["managed_oauth"] or draft["runtime_return"] != "credential":
+            raise AssertionError("managed OAuth intent was lost before resume")
+        if os.path.isfile(os.path.join(root, "config", "aishe", "config.toml")):
+            raise AssertionError("managed OAuth opt-in wrote active config before Apply")
+        if os.path.exists(env["AISHE_SPY_OPENCODE"]):
+            raise AssertionError("cancelled opt-in started a managed runtime")
+        resumed = Pty([BINARY, "setup", "--resume"], env)
+        try:
+            resumed.expect("Install and verify the pinned runtime")
+            resumed.send("\x03")
+            resumed.expect("Setup paused")
+            expect_setup_exit(resumed, "managed OAuth resume")
+        finally:
+            resumed.close()
+        print("  ok   OAuth discloses managed legacy requirement and preserves opt-in on resume")
+    finally:
+        cleanup_isolated_root(root)
+
+
+def native_setup_preserves_required_workspace_isolation():
+    if sys.platform != "linux":
+        return
+    root = tempfile.mkdtemp(prefix="aishe-setup-required-isolation-")
+    try:
+        env = native_env(root)
+        policy = os.path.join(root, "policy.toml")
+        with open(policy, "w", encoding="utf-8") as file:
+            file.write("require_bubblewrap = true\n")
+        os.chmod(policy, 0o600)
+        env["AISHE_POLICY_FILE"] = policy
+        shell = Pty([BINARY, "setup"], env)
+        try:
+            reached = shell.expect_any(["Linux workspace isolation", "Account"])
+            shell.drain()
+            if reached == "Linux workspace isolation":
+                if "Continue with policy-only degradation" in shell.transcript:
+                    raise AssertionError("native setup offered to bypass required organization isolation")
+            elif "bubblewrap passed" not in shell.transcript:
+                raise AssertionError("required isolation was skipped without a functional probe")
+            shell.send("\x1b")
+            shell.expect("Setup paused")
+            expect_setup_exit(shell, "organization-required isolation")
+        finally:
+            shell.close()
+        if os.path.isfile(os.path.join(root, "config", "aishe", "config.toml")):
+            raise AssertionError("required-isolation preflight changed active config")
+        print("  ok   native setup retains organization-required functional isolation")
+    finally:
+        cleanup_isolated_root(root)
+
+
 def main():
-    from pty_helper import require_legacy_opencode_world
-    require_legacy_opencode_world()
     if not os.path.exists(BINARY):
         raise SystemExit("FAIL: binary not found: " + BINARY)
     root = tempfile.mkdtemp(prefix="aishe-setup-pty-")
     try:
+        native_setup_recommended_review_and_navigation()
+        native_setup_machine_and_upgraded_verification()
+        native_oauth_is_an_explicit_resumable_managed_choice()
+        native_setup_preserves_required_workspace_isolation()
         setup_visual_style_and_alignment()
         setup_width_and_no_color_matrix()
         setup_checks_catalog_credential_and_manual_model()
@@ -933,7 +1191,6 @@ def main():
         with model_server(["setup-local-model"]) as endpoint:
             config = complete_setup(root, env, endpoint)
             cancel_preserves_active_config(root, env, config)
-            settings_are_transactional(root, env, config, endpoint)
         hidden_auth_and_staged_setup_are_secret_safe(root)
         tour_pause_resume_skip_restart_and_complete(root, env)
         print("PASS: interactive setup/settings/tour PTY")

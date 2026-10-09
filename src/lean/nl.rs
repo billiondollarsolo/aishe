@@ -288,7 +288,7 @@ impl LeanWarm {
     }
 }
 
-/// Publish custom slash names for lean tab completion (`AISHE_LEAN_CMDS_FILE`).
+/// Publish safe names and descriptions for lean completion (`AISHE_LEAN_CMDS_FILE`).
 fn refresh_custom_cmds_file(commands: Option<&CommandRegistry>) {
     let Ok(path) = std::env::var("AISHE_LEAN_CMDS_FILE") else {
         return;
@@ -296,16 +296,35 @@ fn refresh_custom_cmds_file(commands: Option<&CommandRegistry>) {
     if path.is_empty() {
         return;
     }
-    let body = commands
+    let _ = std::fs::write(path, command_completion_text(commands));
+}
+
+pub(super) fn command_completion_text(commands: Option<&CommandRegistry>) -> String {
+    let mut body = commands
         .map(|c| {
             c.list()
                 .into_iter()
-                .map(|(n, _)| n)
+                .filter(|(name, _)| {
+                    !name.is_empty()
+                        && name
+                            .chars()
+                            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+                })
+                .map(|(name, description)| {
+                    let description: String = crate::commands::display_safe(&description)
+                        .chars()
+                        .take(96)
+                        .collect();
+                    format!("{name}\t{description}")
+                })
                 .collect::<Vec<_>>()
                 .join("\n")
         })
         .unwrap_or_default();
-    let _ = std::fs::write(path, body);
+    if !body.is_empty() {
+        body.push('\n');
+    }
+    body
 }
 
 /// `-c` / hook NL entry used when lean is on. Skips `backend::supervisor`.
@@ -424,6 +443,10 @@ pub fn handle_ipc_line(
     super::mark_nl_turn_start();
     let (op, rest) = raw.split_once('\t').unwrap_or((raw, ""));
     match op {
+        "COMMANDS" => {
+            warm.ensure_commands();
+            "OK".into()
+        }
         "MODE_CHECK" | "MODE_ACCEPT" => {
             let (word, cwd) = rest.split_once('\t').unwrap_or((rest, ""));
             let (mode, host) = match word.trim().to_ascii_lowercase().as_str() {
@@ -918,7 +941,7 @@ fn handle_slash(
     match name {
         "/help" | "/commands" => {
             warm.ensure_commands();
-            emit_lean_help(warm, pty, name == "/commands");
+            emit_lean_help(warm, pty, name == "/commands" || arg == "all", arg);
             "OK".into()
         }
         "/status" => {
@@ -1112,48 +1135,111 @@ fn handle_slash(
     }
 }
 
-fn emit_lean_help(warm: &LeanWarm, pty: &PtyOut, commands_only: bool) {
-    if !commands_only {
+fn emit_lean_help(warm: &LeanWarm, pty: &PtyOut, all_commands: bool, topic: &str) {
+    if !all_commands && !topic.is_empty() {
+        if topic == "keys" {
+            emit_text(pty, "AIShe · keys");
+            emit_text(pty, "  / then Tab    browse commands; Tab cycles matches");
+            emit_text(
+                pty,
+                "  ?             ask the AI; empty ? explains the last failure",
+            );
+            emit_text(pty, "  !             run a shell line directly");
+            emit_text(pty, "  Shift-Tab     cycle modes on empty input");
+            emit_text(
+                pty,
+                "  Ctrl-O        cycle output detail without losing input",
+            );
+            emit_text(
+                pty,
+                "  Ctrl-C        cancel work or clear the current input",
+            );
+            emit_text(pty, "  Ctrl-X ?      explain the current route");
+            emit_text(pty, "  Ctrl-X Ctrl-F suggest a fix for the last failure");
+        } else if let Some(command) = super::slash::find(topic) {
+            emit_text(pty, &format!("AIShe · /{}", command.name));
+            emit_text(pty, &format!("  {}", command.usage));
+            emit_text(pty, &format!("  {}", command.detail));
+        } else if let Some(custom) = warm
+            .commands
+            .as_ref()
+            .and_then(|commands| commands.get(topic.trim_start_matches('/')))
+        {
+            emit_text(
+                pty,
+                &format!("AIShe · /{}", crate::commands::display_safe(&custom.name)),
+            );
+            emit_text(
+                pty,
+                &format!("  {}", crate::commands::display_safe(&custom.description)),
+            );
+            emit_text(
+                pty,
+                if custom.shell {
+                    "  Custom shell command; existing safety and project trust rules apply."
+                } else {
+                    "  Custom AI request; uses this shell's selected mode and connection."
+                },
+            );
+        } else {
+            emit_text(
+                pty,
+                &format!(
+                    "No help for {}. Use /commands or /help keys.",
+                    crate::commands::display_safe(topic)
+                ),
+            );
+        }
+        return;
+    }
+
+    emit_text(
+        pty,
+        if all_commands {
+            "AIShe · commands"
+        } else {
+            "AIShe · quick guide"
+        },
+    );
+    emit_text(
+        pty,
+        "Type / then Tab to browse. /help <command> for details.",
+    );
+    for group in super::slash::GROUPS {
+        if all_commands {
+            emit_text(pty, &format!("\n{group}"));
+            for command in super::slash::COMMANDS
+                .iter()
+                .filter(|command| command.group == *group)
+            {
+                emit_text(pty, &format!("  /{:<12} {}", command.name, command.summary));
+            }
+        } else {
+            let names = super::slash::COMMANDS
+                .iter()
+                .filter(|command| command.group == *group && command.name != "help")
+                .map(|command| format!("/{}", command.name))
+                .collect::<Vec<_>>()
+                .join(" ");
+            emit_text(pty, &format!("  {group:<8} {names}"));
+        }
+    }
+    if !all_commands {
         emit_text(
             pty,
-            "aishe lean: typed commands run in zsh -f. English goes to the model.",
-        );
-        emit_text(pty, "  ? force NL   ! force shell   Ctrl-X ? show route");
-        emit_text(
-            pty,
-            "  empty ? explains last failure · Ctrl-X Ctrl-F suggests a fix",
-        );
-        emit_text(pty, "  /mode ask|allow|agent|agent-host");
-        emit_text(
-            pty,
-            "  Shift-Tab cycles on empty input; aliases suggest|auto|yolo remain accepted",
-        );
-        emit_text(pty, "  /connection /model   list/pick for this shell");
-        emit_text(
-            pty,
-            "  /sessions list|clear|resume:<id>   /usage /status /reset /undo",
+            "  ? ask · ! shell · Shift-Tab mode · Ctrl-O details · Ctrl-C cancel",
         );
         emit_text(
             pty,
-            "  /details or Ctrl-O   cycle focus|compact|detailed (this shell)",
+            "Ask proposes commands; allow and agent require a grant for this shell.",
         );
-        emit_text(pty, "  /mcp /skills   list names (not just /status counts)");
-        emit_text(pty, "  /commands   list custom markdown slash-commands");
-        emit_text(
-            pty,
-            "  /backend   heavy specialist opt-in note (no auto OpenCode)",
-        );
-        emit_text(
-            pty,
-            "  Default mode is ask. allow/agent need one typed grant per shell.",
-        );
-        emit_text(
-            pty,
-            "  Auth: Grok CLI OAuth (~/.grok/auth.json) · API-key fallback · OpenAI OAuth is LEGACY",
-        );
+        emit_text(pty, "More: /commands · /help keys · /tour");
     }
     let list = warm.command_list();
     if list.is_empty() {
+        if !all_commands {
+            return;
+        }
         let hint = crate::commands::user_dir()
             .map(|p| p.display().to_string())
             .unwrap_or_else(|| "~/.config/aishe/commands".into());
@@ -1166,16 +1252,23 @@ fn emit_lean_help(warm: &LeanWarm, pty: &PtyOut, commands_only: bool) {
         );
     } else {
         emit_text(pty, &format!("custom slash-commands ({}):", list.len()));
-        for (cname, desc) in list.iter().take(64) {
+        for (cname, desc) in list.iter().take(if all_commands { 64 } else { 6 }) {
             let d = if desc.is_empty() {
                 String::new()
             } else {
                 format!(" — {}", crate::commands::display_safe(desc))
             };
-            emit_text(pty, &format!("  /{cname}{d}"));
+            emit_text(
+                pty,
+                &format!("  /{}{d}", crate::commands::display_safe(cname)),
+            );
         }
-        if list.len() > 64 {
-            emit_text(pty, &format!("  … +{} more", list.len() - 64));
+        let displayed = if all_commands { 64 } else { 6 };
+        if list.len() > displayed {
+            emit_text(
+                pty,
+                &format!("  … +{} more · /commands", list.len() - displayed),
+            );
         }
     }
 }
@@ -1221,7 +1314,17 @@ fn handle_custom_or_unknown(
         .and_then(|reg| reg.get(bare))
         .cloned()
     else {
-        return format!("ERROR\tunknown slash {name}");
+        let suggestion = crate::fuzzy::correction(
+            bare,
+            super::slash::COMMANDS.iter().map(|command| command.name),
+            2,
+        );
+        return match suggestion {
+            Some(suggestion) => format!(
+                "ERROR\tunknown slash {name}. Try /{suggestion}; / then Tab lists commands."
+            ),
+            None => format!("ERROR\tunknown slash {name}. Use /commands or / then Tab."),
+        };
     };
     let ex = cmd.expand(args);
     if ex.text.is_empty() {
@@ -1281,41 +1384,8 @@ fn handle_custom_or_unknown(
 /// Lean-safe model list: connection + provider catalog + capability cache.
 /// Never starts OpenCode (unlike `capabilities::known_models` OAuth path).
 fn lean_known_models(config: &Config) -> Vec<String> {
-    let id = config.active_connection_id().to_string();
-    let mut models = Vec::new();
-    if let Some(connection) = config.active_connection() {
-        if !connection.settings.model.is_empty() {
-            models.push(connection.settings.model.clone());
-        }
-        let endpoint = crate::provider_catalog::normalize_base_url(&connection.settings.base_url);
-        models.extend(
-            crate::provider_catalog::SERVICES
-                .iter()
-                .filter(|service| {
-                    !service.model.is_empty()
-                        && crate::provider_catalog::normalize_base_url(service.base_url) == endpoint
-                })
-                .map(|service| service.model.to_string()),
-        );
-    }
-    if let Some(report) = crate::capabilities::load(config) {
-        if report.connection_id == id {
-            models.extend(report.models);
-            if !report.model.is_empty() {
-                models.push(report.model);
-            }
-        }
-    }
-    models.retain(|model| crate::connection::validate_model_id(model).is_ok());
-    models.sort();
-    models.dedup();
-    let active = config.active_model().to_string();
-    if let Some(position) = models.iter().position(|m| m == &active) {
-        models.swap(0, position);
-    } else if !active.is_empty() {
-        models.insert(0, active);
-    }
-    models
+    crate::capabilities::cached_models(config, config.active_connection_id())
+        .unwrap_or_else(|_| vec![config.active_model().to_string()])
 }
 
 fn handle_model_slash(

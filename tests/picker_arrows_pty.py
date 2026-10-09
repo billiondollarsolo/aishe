@@ -40,8 +40,6 @@ def check(command, opened, label):
 
 
 def main():
-    from pty_helper import require_legacy_opencode_world
-    require_legacy_opencode_world()
     check("/model", "type to search", "/model")
     check("/connection", "type to search", "/connection")
     print("picker arrows: ok")

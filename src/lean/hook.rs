@@ -3,6 +3,7 @@
 const HOOK_TEMPLATE: &str = include_str!("assets/hook.zsh");
 const ZSHENV: &str = include_str!("assets/zshenv");
 const QUESTION_GRAMMAR_MARKER: &str = "# __AISHE_GENERATED_QUESTION_GRAMMAR__";
+const SLASH_CATALOGUE_MARKER: &str = "# __AISHE_GENERATED_SLASH_CATALOGUE__";
 
 pub fn wrapper_zshenv() -> &'static str {
     ZSHENV
@@ -16,6 +17,8 @@ pub fn wrapper_zshrc() -> String {
         "lean hook must contain exactly one question-grammar marker"
     );
     let rendered = HOOK_TEMPLATE.replacen(QUESTION_GRAMMAR_MARKER, &grammar, 1);
+    assert_eq!(HOOK_TEMPLATE.matches(SLASH_CATALOGUE_MARKER).count(), 1);
+    let rendered = rendered.replacen(SLASH_CATALOGUE_MARKER, &super::slash::hook_catalogue(), 1);
     assert!(
         !rendered.contains("__AISHE_GENERATED_"),
         "lean hook has an unresolved generated marker"

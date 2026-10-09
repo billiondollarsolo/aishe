@@ -234,40 +234,94 @@ aishe_set_prompt() {
 
 # Tiny owned prompt. No theme compatibility matrix.
 
-# Tab completion for lean builtins + custom cmds (AISHE_LEAN_CMDS_FILE).
+# __AISHE_GENERATED_SLASH_CATALOGUE__
+
+# Use zsh's native completion list: descriptions, grouped rows, and repeated Tab.
+# Only the command head belongs to AIShe; absolute paths and arguments keep
+# their normal completion behavior.
+_aishe_complete_slashes() {
+  setopt localoptions extendedglob
+  if [[ "${_AISHE_SLASH_DISCOVERED:-0}" != 1 ]]; then
+    local reply
+    reply="$(_aishe_lean_send COMMANDS)" || return 1
+    [[ "$reply" == OK ]] || return 1
+    typeset -g _AISHE_SLASH_DISCOVERED=1
+  fi
+  local group name description
+  local -a entries customs
+  for group in "${_AISHE_SLASH_CATEGORIES[@]}"; do
+    entries=()
+    for name in "${_AISHE_SLASH_NAMES[@]}"; do
+      [[ "${_AISHE_SLASH_GROUPS[$name]}" == "$group" ]] || continue
+      description="${_AISHE_SLASH_DESCRIPTIONS[$name]}"
+      entries+=("/$name:${description//:/\\:}")
+    done
+    _describe -t "aishe-${group:l}" "$group" entries -Q -S ' '
+  done
+  if [[ -n "${AISHE_LEAN_CMDS_FILE:-}" && -r "$AISHE_LEAN_CMDS_FILE" ]]; then
+    while IFS=$'\t' read -r name description; do
+      [[ "$name" == [[:alnum:]_-]## ]] || continue
+      [[ -n "${_AISHE_SLASH_DESCRIPTIONS[$name]:-}" ]] && continue
+      description="${description//[[:cntrl:]]/}"
+      [[ -n "$description" ]] || description='Custom command'
+      customs+=("/$name:${description//:/\\:}")
+    done < "$AISHE_LEAN_CMDS_FILE"
+  fi
+  (( ${#customs} )) && _describe -t aishe-custom 'Custom commands' customs -Q -S ' '
+  # A single slash also starts an absolute path. Keep native file completion
+  # when the head does not match a built-in or a custom command.
+  (( compstate[nmatches] )) || _files
+  return 0
+}
+
+_aishe_complete_slash_arguments() {
+  local -a entries
+  case "${words[1]}" in
+    /help)
+      local name
+      entries=('keys:Keyboard shortcuts' 'all:Full command list')
+      for name in "${_AISHE_SLASH_NAMES[@]}"; do
+        entries+=("$name:${_AISHE_SLASH_DESCRIPTIONS[$name]//:/\\:}")
+      done
+      _describe -t aishe-help 'Command help' entries -Q -S ' '
+      ;;
+    /mode)
+      entries=('ask:Propose commands for review' 'allow:Run safe suggestions after a shell grant'
+               'agent:Act within a granted workspace' 'agent-host:Act with a host grant')
+      _describe -t aishe-modes 'Mode' entries -Q -S ' '
+      ;;
+    /context)
+      entries=('--explain:Explain included sections' '--json:Print section metadata')
+      _describe -t aishe-context 'Context preview' entries -Q -S ' '
+      ;;
+    /doctor)
+      entries=('--json:Print diagnostic metadata' '--probe:Check provider reachability'
+               '--live:Check model capabilities' '--fix:Apply safe local repairs')
+      _describe -t aishe-doctor 'Diagnostics' entries -Q -S ' '
+      ;;
+    *) _default ;;
+  esac
+}
+
+_aishe_slash_completion() {
+  # zle calls from another widget retain the caller's WIDGET. Supply an explicit
+  # context and completer so nested dispatch cannot fall back to root files.
+  local curcontext='aishe-slashes:::'
+  _main_complete _aishe_complete_slashes
+}
+
 aishe-slash-tab() {
   emulate -L zsh
   setopt extendedglob
-  local trimmed="${BUFFER##[[:space:]]#}"
-  if [[ "$trimmed" != /* || "$trimmed" == *$'\n'* ]]; then
+  local leading="${BUFFER%%[^[:space:]]*}"
+  local trimmed="${BUFFER#$leading}" head="${BUFFER#$leading}"
+  head="${head%%[[:space:]]*}"
+  if [[ "$head" != /* || "$head" == //* || "$head" == /*/* ||
+        "$trimmed" == *$'\n'* ]] || (( CURSOR > ${#leading} + ${#head} )); then
     zle expand-or-complete
     return
   fi
-  local -a cmds
-  cmds=(help mode status reset undo usage details mcp skills model connection sessions backend commands)
-  if [[ -n "${AISHE_LEAN_CMDS_FILE:-}" && -r "$AISHE_LEAN_CMDS_FILE" ]]; then
-    local custom
-    while IFS= read -r custom; do
-      [[ -n "$custom" ]] && cmds+=("$custom")
-    done < "$AISHE_LEAN_CMDS_FILE"
-  fi
-  local prefix="${trimmed#/}"
-  prefix="${prefix%%[[:space:]]*}"
-  local -a matches
-  local c
-  for c in "${cmds[@]}"; do
-    [[ "$c" == ${prefix}* ]] && matches+=("/$c")
-  done
-  if (( ${#matches} == 0 )); then
-    zle -M "aishe: no slash matches for /$prefix"
-    return
-  fi
-  if (( ${#matches} == 1 )); then
-    BUFFER="${matches[1]} "
-    CURSOR=${#BUFFER}
-    return
-  fi
-  zle -M "aishe slashes: ${(j: :)matches}"
+  zle aishe-complete-slashes
 }
 
 if [[ -o interactive ]]; then
@@ -301,6 +355,7 @@ if [[ -o interactive ]]; then
     else
       compinit -u -d "${_AISHE_COMPDUMP}"
     fi
+    compdef _aishe_complete_slash_arguments /help /mode /context /doctor
   fi
 fi
 
@@ -649,7 +704,16 @@ _aishe_lean_slash() {
   local arg="${line#"$name"}"
   arg="${arg##[[:space:]]#}"
   arg="${arg%%[[:space:]]#}"
+  local -a cli_args
+  # Tokenize quoted CLI arguments without evaluating substitutions or globs.
+  cli_args=()
+  [[ -n "$arg" ]] && cli_args=("${(@Q)${(z)arg}}")
   case "$name" in
+    /)
+      local reply
+      reply="$(_aishe_lean_send "SLASH	${AISHE_MODE:-ask}	$PWD	/help")" || return
+      _aishe_lean_handle_reply "$reply"
+      ;;
     /mode)
       _aishe_lean_mark_mode_interaction
       if [[ -z "$arg" ]]; then
@@ -667,7 +731,29 @@ _aishe_lean_slash() {
       aishe_set_prompt
       print -r -- "mode: ${AISHE_MODE} (${AISHE_SCOPE})"
       ;;
-    /help|/commands|/status|/reset|/undo|/usage|/details|/mcp|/skills|/model|/connection|/sessions|/backend)
+    /model|/connection)
+      if [[ -z "$arg" || "$arg" == default ]]; then
+        # Interactive prompts belong to the inner shell's real terminal, not
+        # the parent FIFO worker. The selection handoff updates the next turn.
+        if [[ "$name" == /model ]]; then
+          if [[ -n "$arg" ]]; then command aishe model "$arg" <&$_AISHE_INPUT_FD
+          else command aishe model <&$_AISHE_INPUT_FD; fi
+        else
+          if [[ -n "$arg" ]]; then command aishe connection pick "$arg" <&$_AISHE_INPUT_FD
+          else command aishe connection pick <&$_AISHE_INPUT_FD; fi
+        fi
+      else
+        local reply
+        reply="$(_aishe_lean_send "SLASH	${AISHE_MODE:-ask}	$PWD	$(_aishe_lean_flatten "$line")")" || return
+        _aishe_lean_handle_reply "$reply"
+      fi
+      ;;
+    /settings) command aishe settings "${(@)cli_args}" <&$_AISHE_INPUT_FD ;;
+    /setup) command aishe setup "${(@)cli_args}" <&$_AISHE_INPUT_FD ;;
+    /tour) command aishe tour "${(@)cli_args}" <&$_AISHE_INPUT_FD ;;
+    /context) command aishe context "${(@)cli_args}" <&$_AISHE_INPUT_FD ;;
+    /doctor) command aishe doctor "${(@)cli_args}" <&$_AISHE_INPUT_FD ;;
+    /help|/commands|/status|/reset|/undo|/usage|/details|/mcp|/skills|/sessions|/backend)
       local reply
       reply="$(_aishe_lean_send "SLASH	${AISHE_MODE:-ask}	$PWD	$(_aishe_lean_flatten "$line")")" || return
       _aishe_lean_handle_reply "$reply"
@@ -976,6 +1062,11 @@ zle -N aishe-show-route
   zle -N aishe-cycle-mode
   zle -N aishe-toggle-agent-details
   zle -N aishe-slash-tab
+  zle -C aishe-complete-slashes complete-word _aishe_slash_completion
+  zstyle ':completion:aishe-slashes:*' group-name ''
+  zstyle ':completion:aishe-slashes:*' list-grouped true
+  zstyle ':completion:aishe-slashes:*' format '%d'
+  zstyle ':completion:aishe-slashes:*' menu auto select
   zle -N _aishe_highlight_command
   if (( ${+widgets[accept-line]} )); then
     typeset -g _aishe_orig_accept_line="${widgets[accept-line]#-}"

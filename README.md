@@ -7,21 +7,20 @@
 **AIShe** is **AI Shell**: your real shell, with an agent built into the command
 line. The CLI package name is `aishe`.
 
-> **Alpha (pre-1.0).** The product is usable day to day, but APIs, config shape,
+> **Alpha.** The product is usable day to day, but APIs, config shape,
 > and UX can still change. Autonomous host access can make irreversible changes —
 > prefer workspace scope and Linux isolation for untrusted work, read
 > [the safety model](docs/safety.md), and keep backups.
 
-AIShe runs an actual interactive zsh rather than emulating one, so aliases,
-plugins, completion, job control, history, and ordinary commands keep their
-native behavior. Input that is not a command becomes a plain-English request to
-the AI.
+AIShe runs an actual interactive zsh with an isolated, lightweight configuration.
+Native completion, job control, history, and ordinary commands stay in zsh.
+Optional aliases live in `~/.aishe/leanrc` or `$AISHE_LEANRC`. Input that is not a
+command becomes a plain-English request to the AI.
 
-The agent layer uses a private, compatibility-pinned OpenCode SDK/runtime for
-reasoning, tools, durable conversations, compaction, and subagents. AIShe stays
-the control plane: routing, execution scope, sandbox policy, approvals,
-credentials, budgets, terminal rendering, and the audit trail. The result is an
-AI-driven systems shell — not a chatbot parked next to a terminal.
+The default agent uses pooled native provider connections and keeps the model,
+execution scope, approvals, budget, and usage visible in the shell. Managed
+OpenCode and its historical shell integration remain available explicitly with
+`AISHE_LEGACY_OPENCODE=1`; subscription OAuth setup discloses that requirement.
 
 ```
 ~/projects/app ❯ git status            # runs exactly like zsh
@@ -53,9 +52,9 @@ echo 'eval "$(aishe init zsh)"' >> ~/.zshrc   # or: aishe init bash
 
 | Do this | How |
 |--------|-----|
-| Help | **`/help`** · topics: `/help accounts` · `models` · `session` · `config` |
+| Help | **`/` then Tab** · `/help` · `/help model` · `/help keys` |
 | Switch account / model | **`/connection`** · **`/model`** (model is *this account only*) |
-| Cycle mode | **Shift-Tab** → suggest `❯` · auto `»` · yolo `*` |
+| Cycle mode | **Shift-Tab** on empty input → ask `❯` · allow `»` · agent `*` |
 | **Force English to the AI** | Start with **`?`** — e.g. `? install kubectl please` |
 | Force raw shell | Start with **`!`** (bypasses the safety gate) |
 
@@ -75,28 +74,32 @@ Full routing, Option/Alt+Return, and Mac terminal Meta settings:
 
 ## Features
 
-- **Your real zsh, untouched.** Plugins, completions, prompt, aliases, key
-  bindings, and job control work unmodified — not a shell reimplementation. A
-  prompt theme is never replaced; the mode glyph moves into the status instead.
-- **A real agent engine, still one shell.** Every AI turn uses AIShe's
-  version-pinned OpenCode backend for durable conversations, reasoning,
-  compaction, and subagents. It starts lazily on authenticated loopback, never
-  opens a second TUI, and never hijacks direct zsh commands.
+- **Your real zsh, with a fast default.** Ordinary commands stay in the child
+  shell. A bounded prompt shows mode and execution scope; optional leanrc aliases
+  and native completion stay available. The explicit legacy integration loads
+  the user's full zsh configuration.
+- **A native agent in the shell.** Provider connections are reused across turns;
+  skills and local commands load when needed, and MCP connects only when asked.
+- **Clean setup and settings.** Setup connects an account, chooses behavior,
+  and reviews the result. Settings shows current values and unsaved changes;
+  grouped review and transactional saves keep edits predictable.
 - **Plain English to commands.** Non-commands go to the model. **`?`** forces
   natural language when the first word is also a real binary (e.g. `install`);
   **`!`** forces raw shell past the safety gate.
-- **Three modes.** `suggest` (propose, you confirm), `auto` (run safe commands,
-  confirm risky ones), `yolo` (agent loop that runs, reads output, iterates).
-  Cycle live with **Shift-Tab**.
+- **Three modes.** `ask` proposes or answers, `allow` runs safe suggestions and
+  confirms risky ones, and `agent` runs a tool loop within an explicitly granted
+  workspace or host scope. **Shift-Tab** cycles on empty input; nonempty input
+  keeps reverse completion. Legacy mode names remain accepted aliases.
 - **Accounts vs models, deliberately split.** `/connection` switches the
   account (provider + auth + endpoint). `/model` lists models for the *active*
   connection only — changing a model never quietly changes logins. Brands:
   **Codex - API** / **Codex - OAuth · {profile}**, **Grok - API** /
   **Grok - OAuth · {profile}**. After `auth login`, a connection is created if
   missing so the new account shows up immediately.
-- **OAuth model catalogs from OpenCode.** Subscription OAuth (`Codex - OAuth`,
-  `Grok - OAuth`) discovers models via the managed runtime; API-key connections
-  use the endpoint `GET /v1/models`.
+- **Searchable account and model choices.** Pickers filter and page without
+  changing accounts implicitly. Native model choices use local configuration
+  and capability cache; explicit provider checks refresh model evidence. A
+  separate Yes saves a selection as the default for new shells.
 - **A safety gate you control.** Quote/subshell/path-aware screening of
   destructive patterns, plus real isolation on Linux with bubblewrap for
   workspace-scoped agent work. Best-effort gate ≠ security boundary — see
@@ -108,20 +111,19 @@ Full routing, Option/Alt+Return, and Mac terminal Meta settings:
   or **Ctrl-X Ctrl-R**). Works fully offline with Ollama embeddings.
 - **Fix the last command.** **Ctrl-X Ctrl-F** asks the model for a correction
   after a failure.
-- **Edit without leaving the prompt.** **Ctrl-X Ctrl-A** improves the current
-  buffer and **Ctrl-X Space** or **`/` then Tab** opens a palette of the slash commands with what each changes; both fill the
-  line for review and never press Enter for you.
+- **Commands stay discoverable.** **`/` then Tab** browses grouped commands
+  with descriptions and fills the line for review. Arguments and file completion
+  keep their native behavior; selecting a command does not execute it.
 - **Isolated background agents.** `aishe task start '…'` runs long work in a
   detached git worktree with finite time/tool/network/change budgets, durable
   state, cancellation/resume, numbered hunk review, and three-way apply.
 - **Explicit context and automation.** Agent-only `@file`, `@dir`, `@diff`, and
   `@clipboard` attachments are bounded; `aishe index` searches tracked code
   locally; `aishe ask --json|--schema` produces validated machine output.
-- **Cost-aware.** `/usage` reports tokens in and out, prompt-cache hit rate,
-  thinking tokens, turns, model time, and cost for this shell, today, and all
-  time, plus plan quota where the provider exposes it. A subscription says
-  `plan` rather than inventing a dollar figure. The numbers come from a
-  content-free ledger, so the report works without enabling the audit log.
+- **Cost-aware.** `/usage` totals this shell across model and connection
+  switches. Known prices support a cumulative budget; unknown prices stay
+  visible. `aishe usage` inspects the content-free saved ledger without enabling
+  the audit log.
 - **Durable AI tasks.** Checkpointed agent sessions; `aishe sessions` /
   `aishe resume` recover interrupted work without blind re-execution.
 - **Private by default.** API keys in a mode-`0600` credentials file; OAuth in
@@ -140,8 +142,8 @@ a deployment through validation — the agent sees command results and can itera
 
 That power stays visible: compact status for the active command, full transcript
 with Ctrl-O / `/details`, live spend and policy with `/status`, token and cache
-accounting with `/usage`, optional redacted JSONL audit. Start in `suggest`, use `auto` for approval-gated work, grant `yolo`
-host scope only when the task truly needs unrestricted system access.
+accounting with `/usage`, optional redacted JSONL audit. Start in `ask`, use `allow`
+for safe suggestions, and grant `agent-host` when the task needs host access.
 
 ---
 
@@ -270,40 +272,34 @@ Daily-driver examples and safety boundaries:
 
 ### In-shell slash commands
 
-```
-/help [topic]   task-first help  (accounts · models · agent · session · config · routing)
-/help all       every slash command with what it changes
-/connection     switch account   (↑/↓ · type to filter · Enter this shell)
-/model          models for *active* connection only
-/mode           suggest, auto, or yolo for this shell (--default saves)
-/reasoning      shell-local reasoning effort
-/details        cycle agent transcript density (Ctrl-O)
-/status         connection, model, mode, scope, spend/plan, audit
-/usage          tokens, cache hit rate, cost basis, and plan usage
-/log            recent audit events
-/scope          workspace or host agent scope
-/network        workspace-agent network policy
-/settings       interactive settings editor
-/reset          fresh conversation (prior session retained)
-/sessions       browse/resume/fork durable conversations
-/plan           inspect or edit a durable agent checklist
-/agent          guided foreground/background agent launcher
-/inbox          agent work needing attention
-/ask            non-executing question, optionally structured
-/last           explain, fix, retry, or clear the last shell failure
-/undo           revert the most recent journaled AI file change
-/context        inspect model-visible local context and token estimates
-/               palette of the above, with what each one changes
-
-Hidden aliases still dispatch and tab-complete without cluttering `/help`:
-`/commands`, `/provider`, `/output`, `/auth`, `/config`, `/skills`, `/mcp`,
-`/palette`, `/resume`, `/fork`, `/task`, `/replan`, `/role`, `/index`,
-`/capabilities`, `/test`, `/demo`, `/trust`, `/untrust`.
+```text
+/ then Tab      browse commands by purpose with descriptions
+/ or /help      quick guide; /help model explains one command
+/commands       complete catalogue, including custom Markdown commands
+/connection     searchable account picker for this shell
+/model          searchable models for the active account
+/mode           ask, allow, agent, or agent-host
+/details        cycle focus / compact / detailed (also Ctrl-O)
+/status         mode, scope, grant, model, session, usage and budget
+/usage          cumulative tokens and cost for this shell
+/settings       edit saved defaults with grouped change review
+/setup          configure or resume setup
+/doctor         inspect local setup and dependencies
+/tour           guided first-session walkthrough
+/context        inspect model-visible context
+/reset          clear this conversation; retain usage and budget
+/sessions       list, clear, or resume saved conversations
+/undo           restore the last journaled file-change batch
+/skills         list local skills
+/mcp            connect configured servers and discover their tools
+/backend        explain optional specialist backends
 ```
 
-**Shift-Tab** cycles modes · **Ctrl-O** toggles details · **`?`** forces NL ·
-ask naturally (“how do I add a Codex OAuth account?”) — product answers use the
-built-in `aishe-product` skill.
+Pickers apply to this shell; an explicit Yes promotes a saved default. Settings
+applies defaults to new shells. **Shift-Tab** cycles modes on empty input,
+**Ctrl-O** cycles output detail, and **`?`** forces natural language. Additional
+CLI commands and the legacy shell surface are described in
+[docs/commands.md](docs/commands.md).
 
 ## Front-ends
 

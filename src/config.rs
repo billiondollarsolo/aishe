@@ -1044,6 +1044,11 @@ impl Config {
                         "Run `aishe setup --resume` to continue, or `aishe setup --restart` to start over.",
                     ));
                 }
+                if outcome.requires_legacy_shell {
+                    // Choosing subscription OAuth in first-run setup explicitly
+                    // opts into its managed transport for this launch.
+                    std::env::set_var("AISHE_LEGACY_OPENCODE", "1");
+                }
                 return Self::load_quiet()?.context("setup did not create a configuration");
             } else {
                 anyhow::bail!(
@@ -1259,7 +1264,7 @@ impl Config {
             {
                 let legacy = if connection.provider == "anthropic" {
                     Some(&self.providers.anthropic)
-                } else if connection.provider == "openai" || connection.provider == "xai" {
+                } else if connection.provider == "openai" {
                     Some(&self.providers.openai)
                 } else {
                     None
@@ -1407,12 +1412,30 @@ impl Config {
 
     /// Set the active provider's model name.
     pub fn set_active_model(&mut self, model: String) {
+        // Only canonical migrated Auto connections share a legacy provider
+        // block. Named accounts and other provider families own their settings.
+        let legacy_provider = match self.active_connection() {
+            Some(connection)
+                if matches!(connection.auth, ConnectionAuth::Auto)
+                    && self.active_connection_id() == connection.provider
+                    && matches!(connection.provider.as_str(), "anthropic" | "openai") =>
+            {
+                Some(connection.provider.clone())
+            }
+            Some(_) => None,
+            None => Some(if self.aishe.provider == "anthropic" {
+                "anthropic".into()
+            } else {
+                "openai".into()
+            }),
+        };
         if let Some(connection) = self.active_connection_mut() {
             connection.settings.model = model.clone();
         }
-        match self.active_provider_name() {
-            "anthropic" => self.providers.anthropic.model = model,
-            _ => self.providers.openai.model = model,
+        match legacy_provider.as_deref() {
+            Some("anthropic") => self.providers.anthropic.model = model,
+            Some("openai") => self.providers.openai.model = model,
+            _ => {}
         }
     }
 
@@ -2386,6 +2409,46 @@ mod tests {
         config.providers.openai.model = "legacy-model".into();
 
         assert_eq!(config.active_model(), "named-model");
+    }
+
+    #[test]
+    fn canonical_xai_auto_connection_keeps_its_own_provider_settings() {
+        let mut config = Config::default();
+        let mut xai = config.connections["openai"].clone();
+        xai.provider = "xai".into();
+        xai.settings.model = "grok-model".into();
+        xai.settings.base_url = "https://api.x.ai".into();
+        config.connections.insert("xai".into(), xai.clone());
+        config.providers.openai.model = "openai-model".into();
+        config.select_connection("xai").unwrap();
+
+        assert_eq!(config.active_provider_config(), &xai.settings);
+        assert_eq!(config.active_model(), "grok-model");
+        config.select_connection("openai").unwrap();
+        assert_eq!(config.active_model(), "openai-model");
+    }
+
+    #[test]
+    fn model_switches_preserve_other_accounts_and_their_legacy_settings() {
+        for (id, provider) in [("xai", "xai"), ("openai-work", "openai")] {
+            let mut config = Config::default();
+            let sibling = config.connections["openai"].clone();
+            let legacy = config.providers.openai.clone();
+            let mut account = sibling.clone();
+            account.provider = provider.into();
+            account.settings.model = "account-model".into();
+            account.settings.base_url = "https://account.example".into();
+            config.connections.insert(id.into(), account);
+            config.select_connection(id).unwrap();
+
+            config.set_active_model("selected-model".into());
+
+            assert_eq!(config.active_model(), "selected-model");
+            assert_eq!(config.providers.openai, legacy, "{id}");
+            assert_eq!(config.connections["openai"], sibling, "{id}");
+            config.select_connection("openai").unwrap();
+            assert_eq!(config.active_provider_config(), &legacy, "{id}");
+        }
     }
 
     /// A unique-per-pid temp directory for filesystem tests, removed on drop so

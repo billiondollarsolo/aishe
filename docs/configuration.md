@@ -99,9 +99,8 @@ brevity. Read `~/.config/aishe/...` as `<config>/...` and
 | `cache_ttl_secs` | integer | `300` | How long a cached response stays valid, in seconds. |
 | `redact_secrets` | bool | `true` | Scrub likely secrets from the context block sent to the model. See [Logging and privacy](logging.md). |
 
-Only the slash commands listed in the
-[command reference](commands.md#primary-slash-commands) are supported in an
-interactive shell. Use `aishe settings` for the fields it exposes and edit this
+The current shell's `/commands` lists its supported slash commands; `/` then
+Tab browses them with descriptions. Use `aishe settings` for the fields it exposes and edit this
 file for other fields without a dedicated command. A field name such as
 `sandbox`, `plan`, `cache`, `stream`, or `structured` is not itself an AIShe
 command.
@@ -109,7 +108,10 @@ command.
 ## `[ui]` section
 
 Terminal presentation is semantic rather than hard-coded to one palette. These
-settings are available in `aishe settings` under Shell, history & statusline.
+settings are available in `aishe settings` under Terminal & history. The hub
+shows current values and unsaved changes; grouped review precedes a transactional
+save. Saved defaults apply to new shells. `/model` and `/connection` change the
+current shell and separately offer to save a default.
 
 | Field | Type | Default | Meaning |
 |-------|------|---------|---------|
@@ -126,11 +128,13 @@ and JSON also force plain/static rendering. One-process overrides are
 
 The agent orchestrator is separately configured from shell behavior. Runtime
 version/hash are deliberately absent: the AIShe build's embedded compatibility
-manifest owns them.
+manifest owns them. Fresh setup selects the included native engine. The default
+lean shell uses native provider connections; the managed legacy shell is an
+explicit launch with `AISHE_LEGACY_OPENCODE=1 aishe`.
 
 | Field | Type | Default | Meaning |
 |-------|------|---------|---------|
-| `engine` | string | `opencode` | Managed agent engine. `native` is a temporary repair/legacy compatibility override. |
+| `engine` | string | `native` in fresh setup | Included native engine or managed `opencode`. Older configs retain their compatibility setting. |
 | `fallback` | string | `native` | Compatibility engine allowed only when OpenCode fails before prompt admission. |
 | `managed` | bool | `true` | Install and launch AIShe's private compatibility-pinned runtime. |
 | `idle_timeout_secs` | integer | `1800` | Stop the private per-user supervisor after this idle period (30–86400). |

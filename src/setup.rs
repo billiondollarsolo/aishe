@@ -127,6 +127,12 @@ struct Draft {
     /// questions are asked on this pass and after a `b back`.
     #[serde(default)]
     customize_behavior: bool,
+    /// Explicit subscription login needs the optional managed runtime before
+    /// setup can continue to Credential. Persist this route for safe resume.
+    #[serde(default)]
+    runtime_return: Option<Step>,
+    #[serde(default)]
+    managed_oauth: bool,
     config: Config,
 }
 
@@ -152,14 +158,17 @@ fn service_menu_entries() -> Vec<ServiceMenuEntry> {
 fn service_menu_label(entry: ServiceMenuEntry) -> String {
     match entry {
         ServiceMenuEntry::ChatGptCodexOAuth => {
-            "ChatGPT / Codex OAuth — Sign in with ChatGPT Plus/Pro (no API key)".into()
+            "ChatGPT / Codex OAuth — Subscription · managed".into()
         }
-        ServiceMenuEntry::GrokOAuth => {
-            "Grok OAuth — Sign in with SuperGrok subscription (no API key)".into()
-        }
+        ServiceMenuEntry::GrokOAuth => "Grok OAuth — Subscription · managed".into(),
         ServiceMenuEntry::Catalog(index) => {
             let service = &provider_catalog::SERVICES[index];
-            format!("{} — {}", service.label, service.help)
+            let method = match service.key {
+                "ollama" => "Local models",
+                "custom" => "Your endpoint",
+                _ => "API key",
+            };
+            format!("{} — {method}", service.label)
         }
     }
 }
@@ -233,6 +242,8 @@ pub struct Options {
 pub struct Outcome {
     pub exit_code: u8,
     pub applied: bool,
+    /// Subscription OAuth is served by the explicit managed legacy shell.
+    pub requires_legacy_shell: bool,
     pub config_path: PathBuf,
     pub backup: Option<PathBuf>,
     pub report: Option<Report>,
@@ -276,7 +287,7 @@ pub fn run(options: Options) -> Result<Outcome> {
             .context("no config exists; run `aishe setup` first")
             .map_err(|error| classified(EXIT_INPUT, error))?;
         crate::policy::constrain(&mut config).map_err(|error| classified(EXIT_POLICY, error))?;
-        verify_runtime_and_sandbox(&config, false, None, None, false)?;
+        verify_runtime_and_sandbox(&config, false, None, None, false, false)?;
         let report = capabilities::validate(&config, options.live);
         let verified = if options.live {
             report.verified()
@@ -287,9 +298,13 @@ pub fn run(options: Options) -> Result<Outcome> {
             // `--verify --json` reported runtime: null while
             // `--non-interactive --json` reported it; both describe the same
             // installation.
-            let runtime = crate::backend::RuntimeManager::new()
-                .map(|manager| manager.status())
-                .ok();
+            let runtime = if managed_backend_required(&config, false) {
+                crate::backend::RuntimeManager::new()
+                    .map(|manager| manager.status())
+                    .ok()
+            } else {
+                None
+            };
             print_setup_json(
                 false,
                 &config,
@@ -303,6 +318,7 @@ pub fn run(options: Options) -> Result<Outcome> {
         return Ok(Outcome {
             exit_code: if verified { EXIT_OK } else { EXIT_PROVIDER },
             applied: false,
+            requires_legacy_shell: false,
             config_path: Config::path(),
             backup: None,
             report: Some(report),
@@ -357,6 +373,7 @@ fn run_non_interactive(options: Options) -> Result<Outcome> {
         options.runtime_file.as_deref(),
         options.runtime_base_url.as_deref(),
         options.install_system_deps,
+        explicit_managed_runtime(&options),
     )?;
     let report = capabilities::validate(&config, options.live);
     if report.credential.state == State::Fail
@@ -373,8 +390,8 @@ fn run_non_interactive(options: Options) -> Result<Outcome> {
             "provider credential, model, or requested live capability validation failed",
         ));
     }
-    let backup =
-        save_transactional(&config, None).map_err(|error| classified(EXIT_RUNTIME, error))?;
+    let backup = save_transactional(&config, None, explicit_managed_runtime(&options))
+        .map_err(|error| classified(EXIT_RUNTIME, error))?;
     discard_draft().ok();
     if options.json {
         print_setup_json(true, &config, runtime.as_ref(), &report, EXIT_OK)?;
@@ -385,6 +402,7 @@ fn run_non_interactive(options: Options) -> Result<Outcome> {
     Ok(Outcome {
         exit_code: EXIT_OK,
         applied: true,
+        requires_legacy_shell: uses_subscription_oauth(&config),
         config_path: Config::path(),
         backup,
         report: Some(report),
@@ -395,9 +413,9 @@ fn validate_noninteractive_options(options: &Options) -> Result<()> {
     if options
         .backend
         .as_deref()
-        .is_some_and(|value| value != "opencode")
+        .is_some_and(|value| !matches!(value, "native" | "opencode"))
     {
-        anyhow::bail!("--backend must be opencode");
+        anyhow::bail!("--backend must be native or opencode");
     }
     if options.runtime_file.is_some() && options.runtime_base_url.is_some() {
         anyhow::bail!("--runtime-file and --runtime-base-url are mutually exclusive");
@@ -422,6 +440,7 @@ fn verify_runtime_and_sandbox(
     runtime_file: Option<&Path>,
     runtime_base_url: Option<&str>,
     install_system_deps: bool,
+    force_managed: bool,
 ) -> Result<Option<crate::backend::RuntimeStatus>> {
     let loaded_policy = crate::policy::load().map_err(|error| classified(EXIT_POLICY, error))?;
     if let (Some(requested), Some(managed)) = (
@@ -465,7 +484,7 @@ fn verify_runtime_and_sandbox(
         ));
     }
 
-    if config.backend.engine != "opencode" {
+    if !managed_backend_required(config, force_managed) {
         return Ok(None);
     }
     let manager =
@@ -544,16 +563,16 @@ fn run_interactive(options: Options) -> Result<Outcome> {
     if options.restart {
         discard_draft()?;
     }
-    let baseline = Config::load_quiet()?.unwrap_or_default();
+    let existing = Config::load_quiet()?;
+    let baseline = existing.clone().unwrap_or_default();
     // A setup rerun is still part of the configured terminal experience. Load
     // presentation policy before the first branded output; fresh installs use
     // the conservative defaults from `Config::default()`.
     crate::ui::configure(&baseline.ui);
-    promptui::brand();
     promptui::header(
         "AIShe setup",
-        "Configure, verify, and safely apply your AIShe environment.",
-        "Active config is not changed until the final Apply step.",
+        "Connect an account. Choose how AIShe works. Review and apply.",
+        "Configuration stays in a resumable draft until Apply. API keys never enter the draft.",
     );
 
     let mut draft = if options.resume {
@@ -574,12 +593,13 @@ fn run_interactive(options: Options) -> Result<Outcome> {
             MenuResult::Selected(0) => saved,
             MenuResult::Selected(1) => {
                 discard_draft()?;
-                fresh_draft(baseline.clone())
+                fresh_interactive_draft(baseline.clone(), existing.is_some(), &options)
             }
             _ => {
                 return Ok(Outcome {
                     exit_code: EXIT_PAUSED,
                     applied: false,
+                    requires_legacy_shell: false,
                     config_path: Config::path(),
                     backup: None,
                     report: None,
@@ -587,7 +607,7 @@ fn run_interactive(options: Options) -> Result<Outcome> {
             }
         }
     } else {
-        fresh_draft(baseline.clone())
+        fresh_interactive_draft(baseline.clone(), existing.is_some(), &options)
     };
 
     // Secret material is intentionally process-local. A resumed draft that had
@@ -616,17 +636,14 @@ fn run_interactive(options: Options) -> Result<Outcome> {
     }
 
     let mut report = None;
-    loop {
+    'setup: loop {
         match draft.step {
             Step::Discovery => {
                 // On a fresh install there is nothing to review and the menu's
                 // only real choice is "Continue setup"; say where the config
                 // will land and go to the first real question.
                 if !Config::path().exists() && !quick_verify_available(&baseline) {
-                    promptui::success(&format!(
-                        "Fresh install · configuration will be written to {} on Apply",
-                        Config::path().display()
-                    ));
+                    promptui::note("Fresh install · account, behavior, then review.");
                     advance(&mut draft)?;
                     continue;
                 }
@@ -665,10 +682,8 @@ fn run_interactive(options: Options) -> Result<Outcome> {
                 }
             }
             Step::Platform => {
-                step_header(2, "Shell and platform");
-                print_platform_state();
                 if crate::executor::which("zsh").is_some() {
-                    promptui::success("zsh is installed and the PTY front-end is available");
+                    promptui::success("Shell ready · zsh found");
                     advance(&mut draft)?;
                     continue;
                 }
@@ -707,6 +722,14 @@ fn run_interactive(options: Options) -> Result<Outcome> {
                 }
             }
             Step::Runtime => {
+                if !managed_backend_required(
+                    &draft.config,
+                    explicit_managed_runtime(&options) || draft.runtime_return.is_some(),
+                ) {
+                    promptui::success("Native agent · included with AIShe");
+                    advance(&mut draft)?;
+                    continue;
+                }
                 step_header(3, "Agent runtime");
                 let manager = crate::backend::RuntimeManager::new()?;
                 print_runtime_state(&manager)?;
@@ -726,7 +749,7 @@ fn run_interactive(options: Options) -> Result<Outcome> {
                         promptui::success(
                             "runtime hash, version, authenticated server, and trusted plugin verified",
                         );
-                        advance(&mut draft)?;
+                        advance_runtime(&mut draft)?;
                     }
                     crate::backend::RuntimeStatus::Missing { .. }
                     | crate::backend::RuntimeStatus::Invalid { .. } => {
@@ -803,16 +826,31 @@ fn run_interactive(options: Options) -> Result<Outcome> {
                                     promptui::success(&format!(
                                         "OpenCode {version} installed, checksum-verified, and started successfully"
                                     ));
-                                    advance(&mut draft)?;
+                                    advance_runtime(&mut draft)?;
                                 }
                             }
                             MenuResult::Selected(3) => {
+                                if draft.runtime_return.is_some() {
+                                    promptui::warning("Subscription OAuth requires the managed runtime. Choose an API-key account or pause setup.");
+                                    draft.runtime_return = None;
+                                    draft.step = Step::Service;
+                                    save_draft(&draft)?;
+                                    continue;
+                                }
                                 promptui::warning(
                                     "Agent turns remain unavailable until `aishe backend install` succeeds; normal zsh commands continue to work.",
                                 );
                                 advance(&mut draft)?;
                             }
-                            MenuResult::Back => draft.step = draft.step.previous(),
+                            MenuResult::Back => {
+                                draft.step = if draft.runtime_return.take().is_some() {
+                                    draft.managed_oauth = false;
+                                    Step::Service
+                                } else {
+                                    draft.step.previous()
+                                };
+                                save_draft(&draft)?;
+                            }
                             MenuResult::Cancel => return cancel(draft),
                             MenuResult::Selected(_) => unreachable!(),
                         }
@@ -820,6 +858,29 @@ fn run_interactive(options: Options) -> Result<Outcome> {
                 }
             }
             Step::Sandbox => {
+                let policy_requires = crate::policy::load()?
+                    .as_ref()
+                    .and_then(|loaded| loaded.policy.require_bubblewrap)
+                    == Some(true);
+                if !policy_requires
+                    && !managed_backend_required(&draft.config, explicit_managed_runtime(&options))
+                {
+                    if !cfg!(target_os = "linux") {
+                        draft.config.sandbox.linux_backend = "policy".into();
+                        promptui::warning(
+                            "Workspace policy checks · this platform has no kernel isolation.",
+                        );
+                    } else if matches!(
+                        crate::dependencies::bubblewrap_probe(),
+                        crate::dependencies::BubblewrapState::Usable { .. }
+                    ) {
+                        promptui::success("Workspace isolation · bubblewrap verified");
+                    } else {
+                        promptui::warning("Workspace agent unavailable here · functional bubblewrap is required. Ask and allow remain available.");
+                    }
+                    advance(&mut draft)?;
+                    continue;
+                }
                 step_header(4, "Execution sandbox");
                 if !cfg!(target_os = "linux") {
                     promptui::warning(
@@ -829,10 +890,6 @@ fn run_interactive(options: Options) -> Result<Outcome> {
                     advance(&mut draft)?;
                     continue;
                 }
-                let policy_requires = crate::policy::load()?
-                    .as_ref()
-                    .and_then(|loaded| loaded.policy.require_bubblewrap)
-                    == Some(true);
                 match crate::dependencies::bubblewrap_probe() {
                     crate::dependencies::BubblewrapState::Usable { path } => {
                         promptui::success(&format!(
@@ -917,7 +974,7 @@ fn run_interactive(options: Options) -> Result<Outcome> {
                 }
             }
             Step::Service => {
-                step_header(5, "Account and sign-in");
+                promptui::note("API keys and local models work with the native agent. Subscription logins require the managed legacy shell.");
                 let entries = service_menu_entries();
                 let labels: Vec<String> = entries.iter().copied().map(service_menu_label).collect();
                 let default = service_menu_default(&draft);
@@ -925,13 +982,18 @@ fn run_interactive(options: Options) -> Result<Outcome> {
                     "Account",
                     &labels,
                     default,
-                    false,
+                    Config::path().exists(),
                     "ChatGPT/Codex and Grok OAuth use a subscription login. Other rows use API keys, local models, or custom endpoints.",
                 )? {
                     MenuResult::Selected(index) => {
                         pending_credential = None;
                         match entries[index] {
                             ServiceMenuEntry::ChatGptCodexOAuth => {
+                                match confirm_managed_oauth(&mut draft)? {
+                                    PromptResult::Value(()) => {}
+                                    PromptResult::Back => continue,
+                                    PromptResult::Cancel => return cancel(draft),
+                                }
                                 let service = provider_catalog::find("openai")
                                     .expect("openai catalog service");
                                 apply_service(&mut draft.config, service);
@@ -939,19 +1001,25 @@ fn run_interactive(options: Options) -> Result<Outcome> {
                                 draft.prefer_oauth = true;
                                 // Official OAuth is endpoint-bound; skip the
                                 // editable URL step and go straight to login.
-                                draft.step = Step::Credential;
+                                route_oauth_credential(&mut draft);
                                 save_draft(&draft)?;
                             }
                             ServiceMenuEntry::GrokOAuth => {
+                                match confirm_managed_oauth(&mut draft)? {
+                                    PromptResult::Value(()) => {}
+                                    PromptResult::Back => continue,
+                                    PromptResult::Cancel => return cancel(draft),
+                                }
                                 let service = provider_catalog::find("xai")
                                     .expect("xai catalog service");
                                 apply_service(&mut draft.config, service);
                                 draft.service = service.key.to_string();
                                 draft.prefer_oauth = true;
-                                draft.step = Step::Credential;
+                                route_oauth_credential(&mut draft);
                                 save_draft(&draft)?;
                             }
                             ServiceMenuEntry::Catalog(service_index) => {
+                                draft.managed_oauth = false;
                                 let service = &provider_catalog::SERVICES[service_index];
                                 apply_service(&mut draft.config, service);
                                 draft.service = service.key.to_string();
@@ -960,7 +1028,11 @@ fn run_interactive(options: Options) -> Result<Outcome> {
                             }
                         }
                     }
-                    _ => return cancel(draft),
+                    MenuResult::Back => {
+                        draft.step = Step::Discovery;
+                        save_draft(&draft)?;
+                    }
+                    MenuResult::Cancel => return cancel(draft),
                 }
             }
             Step::Endpoint => {
@@ -1013,6 +1085,7 @@ fn run_interactive(options: Options) -> Result<Outcome> {
                         .is_ok_and(|resolved| resolved.secret().is_none())
                 {
                     if let Some(oauth_provider) = crate::oauth::active_provider(&draft.config)? {
+                        adopt_existing_oauth(&mut draft.config);
                         promptui::success(&format!(
                             "Using existing {oauth_provider} OAuth credential from AIShe's private runtime store"
                         ));
@@ -1083,8 +1156,18 @@ fn run_interactive(options: Options) -> Result<Outcome> {
                     "Saved keys live in a private credentials file; subscription OAuth uses AIShe's private runtime store; environment variables remain available for automation and overrides.",
                 )? {
                     MenuResult::Selected(index) if Some(index) == keep_oauth_index => {
+                        if !draft.managed_oauth && !managed_backend_required(&draft.config, explicit_managed_runtime(&options)) {
+                            match confirm_managed_oauth(&mut draft)? {
+                                PromptResult::Value(()) => route_oauth_credential(&mut draft),
+                                PromptResult::Back => continue,
+                                PromptResult::Cancel => return cancel(draft),
+                            }
+                            save_draft(&draft)?;
+                            continue;
+                        }
                         pending_credential = None;
                         draft.prefer_oauth = true;
+                        adopt_existing_oauth(&mut draft.config);
                         advance(&mut draft)?;
                     }
                     MenuResult::Selected(index) if Some(index) == existing_index => {
@@ -1100,6 +1183,15 @@ fn run_interactive(options: Options) -> Result<Outcome> {
                         advance(&mut draft)?;
                     }
                     MenuResult::Selected(index) if Some(index) == oauth_index => {
+                        if !draft.managed_oauth && !managed_backend_required(&draft.config, explicit_managed_runtime(&options)) {
+                            match confirm_managed_oauth(&mut draft)? {
+                                PromptResult::Value(()) => route_oauth_credential(&mut draft),
+                                PromptResult::Back => continue,
+                                PromptResult::Cancel => return cancel(draft),
+                            }
+                            save_draft(&draft)?;
+                            continue;
+                        }
                         let oauth_provider = oauth_provider.expect("index only exists with provider");
                         let Some(label) = promptui::text("Profile name for this login (for example work or personal)", "work", |value| {
                             crate::oauth::normalize_profile(value)?;
@@ -1184,7 +1276,6 @@ fn run_interactive(options: Options) -> Result<Outcome> {
                 }
             }
             Step::Model => {
-                step_header(6, "Model and pricing");
                 let provider_name = draft.config.active_connection_id().to_string();
                 let current = active_provider(&draft.config).model.clone();
                 let using_oauth = pending_credential.is_none()
@@ -1333,7 +1424,6 @@ fn run_interactive(options: Options) -> Result<Outcome> {
                 }
             }
             Step::Profile => {
-                step_header(7, "Behavior and scope");
                 // One question instead of six: a first-time user cannot
                 // evaluate scope, network, density, placement, contents, and
                 // audit, and Settings changes every one of them later.
@@ -1341,12 +1431,12 @@ fn run_interactive(options: Options) -> Result<Outcome> {
                     match promptui::menu(
                         "Behavior and interface",
                         &[
-                            "Use recommended defaults (balanced · workspace · network deny · focus output · status on the right · audit off)".to_string(),
+                            "Use recommended defaults".to_string(),
                             "Choose each setting myself".to_string(),
                         ],
                         0,
                         true,
-                        "Recommended defaults apply the balanced profile with workspace scope; `aishe settings` changes any of them later.",
+                        "Balanced behavior · workspace scope · network denied · focus output · compact status on the right · audit off. Change any setting later with /settings.",
                     )? {
                         MenuResult::Selected(0) => {
                             profiles::apply(&mut draft.config, Profile::Balanced);
@@ -1354,6 +1444,8 @@ fn run_interactive(options: Options) -> Result<Outcome> {
                             draft.config.backend.workspace_network = "deny".into();
                             draft.config.backend.output = "focus".into();
                             draft.config.aishe.status_line = true;
+                            draft.config.aishe.status_line_position = "right".into();
+                            draft.config.aishe.status_line_items = compact_status_items();
                             draft.config.logging.enabled = false;
                             draft.step = Step::Pricing;
                             save_draft(&draft)?;
@@ -1371,9 +1463,9 @@ fn run_interactive(options: Options) -> Result<Outcome> {
                     }
                 }
                 let choices = vec![
-                    "Suggest (conservative) — propose, you confirm".into(),
-                    "Auto (balanced) — run safe commands, confirm the rest".into(),
-                    "Yolo (autonomous) — run without asking in this shell".into(),
+                    "Ask (conservative) — propose commands for you to run".into(),
+                    "Allow (balanced) — run safe proposals; confirm the rest".into(),
+                    "Agent (autonomous) — execute within the accepted shell scope".into(),
                     "Custom — keep each setting as it is".into(),
                 ];
                 match promptui::menu(
@@ -1391,8 +1483,10 @@ fn run_interactive(options: Options) -> Result<Outcome> {
                             Profile::Custom,
                         ][index];
                         profiles::apply(&mut draft.config, profile);
-                        if configure_scope_and_network(&mut draft)? {
-                            advance(&mut draft)?;
+                        match configure_scope_and_network(&mut draft)? {
+                            PromptResult::Value(()) => advance(&mut draft)?,
+                            PromptResult::Back => {}
+                            PromptResult::Cancel => return cancel(draft),
                         }
                     }
                     MenuResult::Back => draft.step = draft.step.previous(),
@@ -1427,7 +1521,7 @@ fn run_interactive(options: Options) -> Result<Outcome> {
                 match promptui::menu(
                     &format!("No price is known for {model}"),
                     &choices,
-                    0,
+                    1,
                     true,
                     "AIShe will never invent a rate; unknown pricing disables cost budgets.",
                 )? {
@@ -1452,6 +1546,10 @@ fn run_interactive(options: Options) -> Result<Outcome> {
                 }
             }
             Step::Status => {
+                if !draft.customize_behavior {
+                    advance(&mut draft)?;
+                    continue;
+                }
                 step_header(8, "Interface");
                 let output_choices = vec![
                     "Focus — final responses; live activity stays off scrollback".into(),
@@ -1480,12 +1578,13 @@ fn run_interactive(options: Options) -> Result<Outcome> {
                     MenuResult::Cancel => return cancel(draft),
                     MenuResult::Selected(_) => unreachable!(),
                 }
-                let positions = vec![
-                    "Right prompt — native, stable shell status".into(),
-                    "Off — keep only per-call/exit summaries".into(),
-                ];
-                let position_default = usize::from(!draft.config.aishe.status_line);
-                match promptui::menu(
+                loop {
+                    let positions = vec![
+                        "Right prompt — native, stable shell status".into(),
+                        "Off — keep only per-call/exit summaries".into(),
+                    ];
+                    let position_default = usize::from(!draft.config.aishe.status_line);
+                    match promptui::menu(
                     "Live status-line placement",
                     &positions,
                     position_default,
@@ -1500,17 +1599,18 @@ fn run_interactive(options: Options) -> Result<Outcome> {
                     MenuResult::Selected(0) => {
                         draft.config.aishe.status_line = true;
                         draft.config.aishe.status_line_position = "right".into();
-                        if !choose_status_items(&mut draft)? {
-                            continue;
+                        match choose_status_items(&mut draft)? {
+                            PromptResult::Value(()) => {}
+                            PromptResult::Back => continue,
+                            PromptResult::Cancel => return cancel(draft),
                         }
                         print_status_preview(&draft.config);
                     }
-                    MenuResult::Back => {
-                        draft.step = draft.step.previous();
-                        continue;
-                    }
+                    MenuResult::Back => continue 'setup,
                     MenuResult::Cancel => return cancel(draft),
                     MenuResult::Selected(_) => unreachable!(),
+                }
+                    break;
                 }
                 let audit_required = crate::policy::load()?
                     .as_ref()
@@ -1533,7 +1633,7 @@ fn run_interactive(options: Options) -> Result<Outcome> {
                 advance(&mut draft)?;
             }
             Step::Validation => {
-                step_header(9, "End-to-end validation");
+                step_header(9, "Optional live checks");
                 if let Some(loaded) = crate::policy::load()? {
                     loaded.policy.constrain(&mut draft.config)?;
                     if let Err(error) = loaded.policy.validate_request(&draft.config) {
@@ -1544,16 +1644,28 @@ fn run_interactive(options: Options) -> Result<Outcome> {
                     }
                 }
                 let backend_check = with_pending(&pending_credential, || {
-                    validate_managed_backend(&draft.config)
+                    validate_managed_backend(&draft.config, explicit_managed_runtime(&options))
                 })?;
                 if let Err(error) = backend_check {
+                    let managed =
+                        managed_backend_required(&draft.config, explicit_managed_runtime(&options));
                     promptui::error(&format!(
-                        "Managed backend validation failed: {}",
+                        "{} validation failed: {}",
+                        if managed {
+                            "Managed backend"
+                        } else {
+                            "Provider configuration"
+                        },
                         crate::redact::redact(&error.to_string())
                     ));
                     let choices = vec![
-                        "Retry managed backend validation".into(),
-                        "Back to agent runtime".into(),
+                        "Retry validation".into(),
+                        if managed {
+                            "Back to agent runtime"
+                        } else {
+                            "Change account or credential"
+                        }
+                        .into(),
                         "Pause setup".into(),
                     ];
                     match promptui::menu(
@@ -1565,7 +1677,7 @@ fn run_interactive(options: Options) -> Result<Outcome> {
                     )? {
                         MenuResult::Selected(0) => {}
                         MenuResult::Selected(1) | MenuResult::Back => {
-                            draft.step = Step::Runtime
+                            draft.step = if managed { Step::Runtime } else { Step::Service };
                         }
                         MenuResult::Selected(2) | MenuResult::Cancel => return cancel(draft),
                         MenuResult::Selected(_) => unreachable!(),
@@ -1573,13 +1685,18 @@ fn run_interactive(options: Options) -> Result<Outcome> {
                     continue;
                 }
                 promptui::success(
-                    "runtime, authenticated loopback server, isolated config, and trusted plugin passed",
+                    if !managed_backend_required(&draft.config, explicit_managed_runtime(&options))
+                    {
+                        "Native provider configuration checked"
+                    } else {
+                        "Managed runtime, authenticated server, and trusted plugin verified"
+                    },
                 );
                 promptui::warning(
                     "Live validation sends minimal provider requests for text, structured output, tools, and streaming. It consumes tokens and may incur provider charges; declining keeps the verified local setup and marks live capabilities not run.",
                 );
                 let Some(live) =
-                    promptui::confirm("Run the disclosed live capability checks now?", true)?
+                    promptui::confirm("Run the disclosed live capability checks now?", false)?
                 else {
                     return cancel(draft);
                 };
@@ -1591,7 +1708,6 @@ fn run_interactive(options: Options) -> Result<Outcome> {
                 advance(&mut draft)?;
             }
             Step::Review => {
-                step_header(10, "Review and apply");
                 print_review(
                     &baseline,
                     &draft.config,
@@ -1607,6 +1723,8 @@ fn run_interactive(options: Options) -> Result<Outcome> {
                         "Change account or model".to_string(),
                         "Change behavior and scope".to_string(),
                         "Change interface".to_string(),
+                        "View all configuration details".to_string(),
+                        "View configuration diff".to_string(),
                         "Pause and resume later".to_string(),
                     ],
                     0,
@@ -1626,8 +1744,22 @@ fn run_interactive(options: Options) -> Result<Outcome> {
                         continue;
                     }
                     promptui::MenuResult::Selected(3) => {
+                        draft.customize_behavior = true;
                         draft.step = Step::Status;
                         save_draft(&draft)?;
+                        continue;
+                    }
+                    promptui::MenuResult::Selected(4) => {
+                        print_review_details(
+                            &baseline,
+                            &draft.config,
+                            report.as_ref(),
+                            pending_credential.as_ref(),
+                        )?;
+                        continue;
+                    }
+                    promptui::MenuResult::Selected(5) => {
+                        print_config_diff(&baseline, &draft.config)?;
                         continue;
                     }
                     _ => return cancel(draft),
@@ -1638,7 +1770,7 @@ fn run_interactive(options: Options) -> Result<Outcome> {
                     loaded.policy.validate_request(&draft.config)?;
                 }
                 let backup =
-                    save_transactional(&draft.config, pending_credential.take()).map_err(|error| {
+                    save_transactional(&draft.config, pending_credential.take(), explicit_managed_runtime(&options)).map_err(|error| {
                         classified(
                             EXIT_RUNTIME,
                             format!(
@@ -1648,53 +1780,18 @@ fn run_interactive(options: Options) -> Result<Outcome> {
                     })?;
                 discard_draft()?;
                 promptui::success("Setup complete");
-                println!();
-                // Rows go through the notice helpers so the ASCII policy and
-                // the skipped state are honoured; a check mark next to a
-                // sandbox the platform cannot provide reads as a lie.
-                promptui::success(&format!(
-                    "zsh             {}",
-                    crate::executor::which("zsh")
-                        .map(|path| path.display().to_string())
-                        .unwrap_or_else(|| "shell-only mode".into())
-                ));
-                promptui::success(&format!(
-                    "agent runtime   OpenCode {}",
-                    crate::backend::RuntimeManifest::embedded()?.version
-                ));
-                promptui::success(&format!(
-                    "account         {} · {}",
-                    draft
-                        .config
-                        .active_connection()
-                        .map(|connection| connection.label.clone())
-                        .unwrap_or_else(|| draft.config.aishe.provider.clone()),
-                    draft.config.active_model()
-                ));
-                if cfg!(target_os = "linux") && draft.config.sandbox.linux_backend == "bwrap" {
-                    promptui::success(&format!(
-                        "sandbox         bubblewrap · {}",
-                        draft.config.backend.default_scope
-                    ));
-                } else {
-                    promptui::skipped(&format!(
-                        "sandbox         policy checks · {}",
-                        draft.config.backend.default_scope
-                    ));
-                }
-                if crate::cli::history::history_paths(&draft.config).1.exists() {
-                    promptui::success("history         preserved");
-                }
-                println!();
-                println!("  config: {}", Config::path().display());
-                println!("  credentials: {}", crate::credentials::path().display());
+                promptui::key_value("Account", &account_summary(&draft.config));
+                promptui::key_value("Config", &Config::path().display().to_string());
                 if let Some(path) = &backup {
-                    println!("  backup: {}", path.display());
+                    promptui::key_value("Backup", &path.display().to_string());
                 }
                 if let Some(report) = &report {
-                    println!("  provider: {}", report.verdict_label());
+                    promptui::key_value("Validation", report.verdict_label());
                 }
-                if promptui::confirm("Run the guided first-session tour now?", true)?
+                if uses_subscription_oauth(&draft.config) {
+                    promptui::warning("This subscription login uses the managed legacy shell. Launch with: AISHE_LEGACY_OPENCODE=1 aishe");
+                }
+                if promptui::confirm("Run the guided first-session tour now?", false)?
                     .unwrap_or(false)
                 {
                     crate::tour::run(crate::tour::Options::default())?;
@@ -1704,6 +1801,7 @@ fn run_interactive(options: Options) -> Result<Outcome> {
                 return Ok(Outcome {
                     exit_code: EXIT_OK,
                     applied: true,
+                    requires_legacy_shell: uses_subscription_oauth(&draft.config),
                     config_path: Config::path(),
                     backup,
                     report,
@@ -1713,8 +1811,121 @@ fn run_interactive(options: Options) -> Result<Outcome> {
     }
 }
 
-fn step_header(number: usize, title: &str) {
-    promptui::section(&format!("Step {number} of 10 · {title}"));
+fn step_header(_number: usize, title: &str) {
+    promptui::section(title);
+}
+
+fn account_summary(config: &Config) -> String {
+    format!(
+        "{} · {}",
+        config
+            .active_connection()
+            .map(|connection| connection.label.as_str())
+            .unwrap_or(&config.aishe.provider),
+        config.active_model()
+    )
+}
+
+fn uses_subscription_oauth(config: &Config) -> bool {
+    config.active_connection().is_some_and(|connection| {
+        connection.uses_oauth()
+            || matches!(connection.auth, crate::config::ConnectionAuth::Auto)
+                && crate::connection::resolve(config).is_ok_and(|resolved| {
+                    matches!(resolved.auth, crate::connection::ResolvedAuth::OAuth { .. })
+                })
+    })
+}
+
+fn adopt_existing_oauth(config: &mut Config) {
+    let profile = config
+        .active_connection()
+        .and_then(|connection| match &connection.auth {
+            crate::config::ConnectionAuth::OAuth { profile } => Some(profile.clone()),
+            _ => None,
+        })
+        .unwrap_or_else(|| "default".into());
+    set_active_auth(config, crate::config::ConnectionAuth::OAuth { profile });
+    config.backend.engine = "opencode".into();
+}
+
+fn explicit_managed_runtime(options: &Options) -> bool {
+    options.backend.as_deref() == Some("opencode")
+        || options.install_backend
+        || options.runtime_file.is_some()
+        || options.runtime_base_url.is_some()
+}
+
+fn managed_backend_required(config: &Config, force_managed: bool) -> bool {
+    config.backend.engine == "opencode"
+        && (force_managed || !crate::lean::enabled() || uses_subscription_oauth(config))
+}
+
+fn compact_status_items() -> Vec<String> {
+    [
+        "model",
+        "mode",
+        "scope",
+        "session_tokens",
+        "session_cost",
+        "requests",
+    ]
+    .into_iter()
+    .map(str::to_string)
+    .collect()
+}
+
+fn fresh_interactive_draft(mut config: Config, existing: bool, options: &Options) -> Draft {
+    select_interactive_backend(&mut config, existing, crate::lean::enabled(), options);
+    fresh_draft(config)
+}
+
+fn select_interactive_backend(config: &mut Config, existing: bool, lean: bool, options: &Options) {
+    if !existing
+        && lean
+        && options.backend.is_none()
+        && !options.install_backend
+        && options.runtime_file.is_none()
+        && options.runtime_base_url.is_none()
+    {
+        config.backend.engine = "native".into();
+    }
+    if let Some(backend) = &options.backend {
+        config.backend.engine.clone_from(backend);
+    }
+}
+
+fn confirm_managed_oauth(draft: &mut Draft) -> Result<PromptResult<()>> {
+    if crate::lean::enabled() {
+        promptui::note("Subscription OAuth requires the optional OpenCode runtime and legacy shell. The native shell supports API keys and local models.");
+        match promptui::menu(
+            "Subscription login",
+            &["Set up managed OAuth (legacy shell)".into(), "Choose an API-key or local account".into()],
+            1,
+            true,
+            "This explicitly opts into the managed runtime. Launch it with AISHE_LEGACY_OPENCODE=1 aishe. Runtime installation and browser login occur before Apply; configuration is saved only on Apply.",
+        )? {
+            MenuResult::Selected(0) => {}
+            MenuResult::Selected(_) | MenuResult::Back => return Ok(PromptResult::Back),
+            MenuResult::Cancel => return Ok(PromptResult::Cancel),
+        }
+    }
+    draft.config.backend.engine = "opencode".into();
+    draft.managed_oauth = true;
+    Ok(PromptResult::Value(()))
+}
+
+fn route_oauth_credential(draft: &mut Draft) {
+    draft.runtime_return = Some(Step::Credential);
+    draft.step = Step::Runtime;
+}
+
+fn advance_runtime(draft: &mut Draft) -> Result<()> {
+    finish_runtime_step(draft);
+    save_draft(draft)
+}
+
+fn finish_runtime_step(draft: &mut Draft) {
+    draft.step = draft.runtime_return.take().unwrap_or(Step::Sandbox);
 }
 
 fn quick_verify_available(config: &Config) -> bool {
@@ -1725,6 +1936,9 @@ fn quick_verify_available(config: &Config) -> bool {
     {
         return false;
     }
+    if !managed_backend_required(config, false) {
+        return true;
+    }
     crate::backend::RuntimeManager::new().is_ok_and(|manager| {
         matches!(
             manager.status(),
@@ -1734,79 +1948,16 @@ fn quick_verify_available(config: &Config) -> bool {
 }
 
 fn print_existing_state(config: &Config) -> Result<()> {
-    let config_path = Config::path();
-    let schema = Config::schema_version_on_disk()?;
-    let credential_profiles = crate::credentials::Store::load()?
-        .map(|store| store.profile_names())
-        .unwrap_or_default();
-    let runtime = crate::backend::RuntimeManager::new()?.status();
-    let runtime_text = match runtime {
-        crate::backend::RuntimeStatus::Ready { version, .. } => {
-            format!("OpenCode {version} · verified on disk")
-        }
-        crate::backend::RuntimeStatus::Missing { expected_version } => {
-            format!("OpenCode {expected_version} · not installed")
-        }
-        crate::backend::RuntimeStatus::Invalid {
-            expected_version,
-            reason,
-        } => format!("OpenCode {expected_version} · invalid ({reason})"),
-    };
-    let policy = crate::policy::load()?;
-    let history = crate::config::data_root()
-        .map(|root| root.join("aishe").join("history.ext"))
-        .filter(|path| path.exists());
-    let sessions = crate::backend::opencode::session::SessionStore::from_default_root()
-        .and_then(|store| store.records(None))
-        .map(|records| records.len())
+    promptui::key_value("Current account", &account_summary(config));
+    promptui::key_value("Config", &Config::path().display().to_string());
+    let profiles = crate::credentials::Store::load()?
+        .map(|store| store.profile_names().len())
         .unwrap_or(0);
-    println!(
-        "  install: {}",
-        if config_path.exists() {
-            "upgrade / reconfiguration"
-        } else {
-            "fresh"
-        }
-    );
-    println!(
-        "  config: {}{}",
-        config_path.display(),
-        schema
-            .map(|value| format!(" · schema {value}"))
-            .unwrap_or_else(|| " · not created".into())
-    );
-    println!(
-        "  credentials: {} profile(s){}",
-        credential_profiles.len(),
-        if credential_profiles.is_empty() {
-            String::new()
-        } else {
-            format!(" ({})", credential_profiles.join(", "))
-        }
-    );
-    println!(
-        "  retained state: history {} · {} task(s) · {sessions} managed session(s)",
-        if history.is_some() {
-            "present"
-        } else {
-            "not created"
-        },
-        crate::tasks::list().len()
-    );
-    println!("  runtime: {runtime_text}");
-    println!(
-        "  organization policy: {}",
-        policy
-            .as_ref()
-            .map(|loaded| loaded.path.display().to_string())
-            .unwrap_or_else(|| "none".into())
-    );
-    println!(
-        "  active preference: {} · {} · {}",
-        config.aishe.provider,
-        config.active_model(),
-        config.aishe.mode
-    );
+    promptui::key_value("Saved credentials", &format!("{profiles} profile(s)"));
+    promptui::note("Your history, tasks, and sessions are preserved. Apply changes only configuration and any staged API key.");
+    if let Some(policy) = crate::policy::load()? {
+        promptui::key_value("Organization policy", &policy.path.display().to_string());
+    }
     Ok(())
 }
 
@@ -1924,55 +2075,56 @@ fn validate_runtime_base_url(value: &str) -> Result<()> {
     Ok(())
 }
 
-fn configure_scope_and_network(draft: &mut Draft) -> Result<bool> {
-    if draft.config.aishe.safety_profile == "autonomous"
-        && cfg!(target_os = "linux")
-        && !matches!(
-            crate::dependencies::bubblewrap_probe(),
-            crate::dependencies::BubblewrapState::Usable { .. }
-        )
-    {
-        promptui::error(
-            "Autonomous workspace mode requires functional bubblewrap on Linux. Return to the Sandbox step or choose another behavior profile.",
-        );
-        return Ok(false);
-    }
+fn configure_scope_and_network(draft: &mut Draft) -> Result<PromptResult<()>> {
     let policy = crate::policy::load()?;
-    let host_allowed = policy
-        .as_ref()
-        .and_then(|loaded| loaded.policy.allow_host_yolo)
-        != Some(false);
+    let host_allowed = draft.config.sandbox.allow_host_yolo
+        && policy
+            .as_ref()
+            .and_then(|loaded| loaded.policy.allow_host_yolo)
+            != Some(false);
     let mut scopes = vec!["Workspace — project writes only; safest default".to_string()];
     if host_allowed {
-        scopes.push("Host — full user/system access after per-shell yolo acceptance".into());
+        scopes.push("Host — full user access after an explicit agent grant".into());
     }
-    let default = usize::from(draft.config.backend.default_scope == "host" && host_allowed);
-    match promptui::menu(
+    loop {
+        let default = usize::from(draft.config.backend.default_scope == "host" && host_allowed);
+        match promptui::menu(
         "Default execution scope",
         &scopes,
         default,
         true,
-        "This is an authority boundary, not yolo acceptance. Yolo always requires a new explicit acceptance in each live shell.",
+        "Scope is accepted explicitly for each live shell. Selecting host here does not grant access yet.",
     )? {
         MenuResult::Selected(0) => draft.config.backend.default_scope = "workspace".into(),
         MenuResult::Selected(1) if host_allowed => draft.config.backend.default_scope = "host".into(),
-        MenuResult::Back | MenuResult::Cancel => return Ok(false),
+        MenuResult::Back => return Ok(PromptResult::Back),
+        MenuResult::Cancel => return Ok(PromptResult::Cancel),
         MenuResult::Selected(_) => unreachable!(),
     }
-    if draft.config.backend.default_scope == "workspace" {
-        let network_forbidden = policy
-            .as_ref()
-            .and_then(|loaded| loaded.policy.allow_network)
-            == Some(false);
-        if network_forbidden {
-            draft.config.backend.workspace_network = "deny".into();
-            promptui::warning("Network: denied · Managed by organization");
-        } else {
-            let choices = vec![
-                "Deny — no network from workspace agent commands".into(),
-                "Allow — network tools remain subject to mode approvals".into(),
-            ];
-            match promptui::menu(
+        if draft.config.backend.default_scope == "workspace" {
+            if draft.config.aishe.safety_profile == "autonomous"
+                && cfg!(target_os = "linux")
+                && !matches!(
+                    crate::dependencies::bubblewrap_probe(),
+                    crate::dependencies::BubblewrapState::Usable { .. }
+                )
+            {
+                promptui::error("Autonomous workspace mode requires functional bubblewrap. Choose another profile or an explicitly permitted host scope.");
+                continue;
+            }
+            let network_forbidden = policy
+                .as_ref()
+                .and_then(|loaded| loaded.policy.allow_network)
+                == Some(false);
+            if network_forbidden {
+                draft.config.backend.workspace_network = "deny".into();
+                promptui::warning("Network: denied · Managed by organization");
+            } else {
+                let choices = vec![
+                    "Deny — no network from workspace agent commands".into(),
+                    "Allow — network tools remain subject to mode approvals".into(),
+                ];
+                match promptui::menu(
                 "Workspace network",
                 &choices,
                 usize::from(draft.config.backend.workspace_network == "allow"),
@@ -1981,17 +2133,20 @@ fn configure_scope_and_network(draft: &mut Draft) -> Result<bool> {
             )? {
                 MenuResult::Selected(0) => draft.config.backend.workspace_network = "deny".into(),
                 MenuResult::Selected(1) => draft.config.backend.workspace_network = "allow".into(),
-                MenuResult::Back | MenuResult::Cancel => return Ok(false),
+                MenuResult::Back => continue,
+                MenuResult::Cancel => return Ok(PromptResult::Cancel),
                 MenuResult::Selected(_) => unreachable!(),
             }
+            }
         }
+        return Ok(PromptResult::Value(()));
     }
-    Ok(true)
 }
 
-fn validate_managed_backend(config: &Config) -> Result<()> {
-    if config.backend.engine != "opencode" {
-        anyhow::bail!("the v0.5 agent implementation requires backend.engine=opencode");
+fn validate_managed_backend(config: &Config, force_managed: bool) -> Result<()> {
+    if !managed_backend_required(config, force_managed) {
+        crate::providers::make(config)?;
+        return Ok(());
     }
     let manager = crate::backend::RuntimeManager::new()?;
     manager.verify()?;
@@ -2106,7 +2261,10 @@ fn apply_overrides(config: &mut Config, options: &Options) -> Result<()> {
         provider.transport = transport.clone();
     }
     let configure_key = options.key_env.is_some() || options.credential_profile.is_some();
-    let settings = active_provider(config).clone();
+    // This mutation intentionally replaces the canonical legacy view. Reading
+    // through active_provider_config while auth is still Auto can return the
+    // old compatibility block and undo the user's new key variable here.
+    let settings = active_provider_mut(config).clone();
     if !settings.requires_auth() {
         set_active_auth(config, crate::config::ConnectionAuth::None);
     } else if configure_key {
@@ -2196,6 +2354,8 @@ fn fresh_draft(config: Config) -> Draft {
         service: service.into(),
         prefer_oauth,
         customize_behavior: false,
+        runtime_return: None,
+        managed_oauth: false,
         config,
     }
 }
@@ -2207,12 +2367,12 @@ fn advance(draft: &mut Draft) -> Result<()> {
 
 fn cancel(draft: Draft) -> Result<Outcome> {
     save_draft(&draft)?;
-    println!(
-        "\n  Setup paused. Resume with `aishe setup --resume`; active config was not changed."
-    );
+    promptui::section("Setup paused");
+    promptui::note("Resume with aishe setup --resume. Your active configuration is unchanged.");
     Ok(Outcome {
         exit_code: EXIT_PAUSED,
         applied: false,
+        requires_legacy_shell: false,
         config_path: Config::path(),
         backup: None,
         report: None,
@@ -2303,7 +2463,7 @@ fn prompt_rate(label: &str) -> Result<PromptResult<f64>> {
     Ok(PromptResult::Value(value.parse()?))
 }
 
-fn choose_status_items(draft: &mut Draft) -> Result<bool> {
+fn choose_status_items(draft: &mut Draft) -> Result<PromptResult<()>> {
     let choices = vec![
         "Compact — model, mode, scope, usage".into(),
         "Detailed — identity, mode, scope, last/session tokens and costs, requests".into(),
@@ -2318,11 +2478,7 @@ fn choose_status_items(draft: &mut Draft) -> Result<bool> {
         "Fields: identity, connection, provider, endpoint, auth, selection, model, reasoning, mode, backend, scope, task, elapsed, context, last_tokens, last_cost, session_tokens, session_cost, requests, plan.",
     )? {
         MenuResult::Selected(0) => {
-            draft.config.aishe.status_line_items =
-                ["model", "mode", "scope", "session_tokens", "session_cost", "requests"]
-                .into_iter()
-                .map(str::to_string)
-                .collect();
+            draft.config.aishe.status_line_items = compact_status_items();
         }
         MenuResult::Selected(1) => {
             draft.config.aishe.status_line_items = [
@@ -2358,20 +2514,21 @@ fn choose_status_items(draft: &mut Draft) -> Result<bool> {
                 )
             })?
             else {
-                return Ok(false);
+                return Ok(PromptResult::Cancel);
             };
             if value == ":back" {
-                return Ok(false);
+                return Ok(PromptResult::Back);
             }
             draft.config.aishe.status_line_items = value
                 .split(',')
                 .map(|item| item.trim().to_string())
                 .collect();
         }
-        MenuResult::Back | MenuResult::Cancel => return Ok(false),
+        MenuResult::Back => return Ok(PromptResult::Back),
+        MenuResult::Cancel => return Ok(PromptResult::Cancel),
         MenuResult::Selected(_) => unreachable!(),
     }
-    Ok(true)
+    Ok(PromptResult::Value(()))
 }
 
 fn validate_status_items(items: &[String]) -> Result<()> {
@@ -2550,8 +2707,41 @@ pub(crate) fn validate_config(config: &Config) -> Result<()> {
     }
     let provider = active_provider(config);
     validate_url(&provider.base_url)?;
-    crate::credentials::normalize_profile(&provider.credential_profile())?;
-    validate_env_name(&provider.api_key_env)?;
+    match config
+        .active_connection()
+        .map(|connection| &connection.auth)
+    {
+        Some(crate::config::ConnectionAuth::None) => {}
+        Some(crate::config::ConnectionAuth::OAuth { profile }) => {
+            crate::oauth::normalize_profile(profile)?;
+            if crate::oauth::OAuthProvider::from_base_url(&provider.base_url).is_none() {
+                anyhow::bail!("OAuth requires the official OpenAI or xAI endpoint");
+            }
+        }
+        Some(crate::config::ConnectionAuth::ApiKey {
+            credential,
+            api_key_env,
+        }) => {
+            crate::credentials::normalize_profile(
+                credential
+                    .as_deref()
+                    .unwrap_or(&provider.credential_profile()),
+            )?;
+            if let Some(env) = api_key_env.as_deref() {
+                validate_env_name(env)?;
+            } else if !provider.api_key_env.is_empty() {
+                validate_env_name(&provider.api_key_env)?;
+            }
+        }
+        Some(crate::config::ConnectionAuth::Auto) | None => {
+            if provider.requires_auth() {
+                crate::credentials::normalize_profile(&provider.credential_profile())?;
+                if !provider.api_key_env.is_empty() {
+                    validate_env_name(&provider.api_key_env)?;
+                }
+            }
+        }
+    }
     if provider.model.trim().is_empty() {
         anyhow::bail!("model cannot be empty");
     }
@@ -2595,7 +2785,7 @@ fn print_report(report: &Report) {
             State::Pass => promptui::success(&detail),
             State::Warn => promptui::warning(&detail),
             State::Fail => promptui::error(&detail),
-            State::Skipped => println!("  · {detail}"),
+            State::Skipped => promptui::skipped(&detail),
         }
     }
 }
@@ -2606,9 +2796,154 @@ fn print_review(
     report: Option<&Report>,
     pending_credential: Option<&(String, String)>,
 ) -> Result<()> {
-    let before = toml::to_string_pretty(baseline)?;
-    let after = toml::to_string_pretty(configured)?;
     promptui::section("Review");
+    promptui::key_value("Account", &account_summary(configured));
+    promptui::key_value(
+        "Credential",
+        &credential_summary(configured, pending_credential),
+    );
+    promptui::key_value(
+        "Behavior",
+        &format!(
+            "{} · {} scope · workspace network {}",
+            crate::lean::LeanMode::parse(&configured.aishe.mode).as_str(),
+            configured.backend.default_scope,
+            configured.backend.workspace_network
+        ),
+    );
+    promptui::key_value(
+        "Interface",
+        &format!(
+            "{} output · status {} · audit {}",
+            configured.backend.output,
+            if configured.aishe.status_line {
+                "on"
+            } else {
+                "off"
+            },
+            if configured.logging.enabled {
+                "on"
+            } else {
+                "off"
+            }
+        ),
+    );
+    promptui::key_value(
+        "Controller",
+        if !managed_backend_required(configured, false) {
+            "Native · included with AIShe"
+        } else {
+            "OpenCode · managed legacy shell"
+        },
+    );
+    if uses_subscription_oauth(configured) {
+        promptui::note("Launch this subscription account with AISHE_LEGACY_OPENCODE=1 aishe.");
+    }
+    if configured.backend.default_scope == "workspace" {
+        let isolated = cfg!(target_os = "linux")
+            && matches!(
+                crate::dependencies::bubblewrap_probe(),
+                crate::dependencies::BubblewrapState::Usable { .. }
+            );
+        promptui::key_value(
+            "Isolation",
+            if !cfg!(target_os = "linux") {
+                "Policy checks only · no kernel isolation on this platform"
+            } else if isolated
+                && (!managed_backend_required(configured, false)
+                    || configured.sandbox.linux_backend == "bwrap")
+            {
+                "Bubblewrap · functional probe passed"
+            } else if !managed_backend_required(configured, false) {
+                "Workspace agent unavailable · functional bubblewrap required"
+            } else {
+                "Policy checks only · no kernel isolation"
+            },
+        );
+    }
+    promptui::key_value(
+        "Validation",
+        report.map_or("Not run", Report::verdict_label),
+    );
+    promptui::key_value("Pricing", &pricing_summary(configured));
+    if let Some(report) = report {
+        if !report.live_verified() {
+            promptui::note("Generation and tool capabilities are not fully verified. Run aishe setup --verify --live when ready.");
+        }
+    }
+    promptui::key_value("Config", &Config::path().display().to_string());
+    if Config::path().exists() && toml::to_string(baseline)? == toml::to_string(configured)? {
+        promptui::note("No configuration changes. Apply still saves any staged credential.");
+    } else {
+        promptui::note(
+            "Apply saves these choices. Details and the exact diff are available below.",
+        );
+    }
+    Ok(())
+}
+
+fn credential_summary(config: &Config, pending: Option<&(String, String)>) -> String {
+    if pending.is_some() {
+        return "API key · will save locally on Apply".into();
+    }
+    if !active_provider(config).requires_auth() {
+        return "Not required for this endpoint".into();
+    }
+    if uses_subscription_oauth(config) {
+        return "Subscription OAuth · managed runtime".into();
+    }
+    crate::credentials::resolve(active_provider(config))
+        .map(|resolved| {
+            if resolved.secret().is_some() {
+                resolved.source.label()
+            } else {
+                "Unavailable".into()
+            }
+        })
+        .unwrap_or_else(|_| "Unavailable".into())
+}
+
+fn pricing_summary(config: &Config) -> String {
+    if uses_subscription_oauth(config) {
+        return "Provider subscription · no API cost estimate".into();
+    }
+    if usage::price_for(config.active_model(), &config.pricing).is_none() {
+        return "Price unknown · cost budgets unavailable".into();
+    }
+    if config.aishe.budget_usd > 0.0 {
+        format!("Exact rates · ${:.4} session cap", config.aishe.budget_usd)
+    } else {
+        "Exact rates · no session cost cap".into()
+    }
+}
+
+fn print_config_diff(baseline: &Config, configured: &Config) -> Result<()> {
+    promptui::section("Configuration diff");
+    if !Config::path().exists() {
+        promptui::note("New configuration · no existing file to compare.");
+        return Ok(());
+    }
+    let diff = crate::undo::unified_diff(
+        &toml::to_string_pretty(baseline)?,
+        &toml::to_string_pretty(configured)?,
+    );
+    if diff.is_empty() {
+        promptui::note("No configuration changes.");
+    } else {
+        println!("{}", crate::commands::display_safe(&diff));
+    }
+    Ok(())
+}
+
+fn print_review_details(
+    baseline: &Config,
+    configured: &Config,
+    report: Option<&Report>,
+    pending_credential: Option<&(String, String)>,
+) -> Result<()> {
+    let _ = baseline;
+    promptui::section("Configuration details");
+    print_platform_state();
     println!(
         "    provider: {}",
         crate::commands::display_safe(&configured.aishe.provider)
@@ -2648,11 +2983,10 @@ fn print_review(
         "    profile: {}",
         crate::commands::display_safe(&configured.aishe.safety_profile)
     );
-    println!(
-        "    backend: {} · OpenCode {}",
-        crate::commands::display_safe(&configured.backend.engine),
-        crate::backend::RuntimeManifest::embedded()?.version
-    );
+    promptui::key_value("Backend", &configured.backend.engine);
+    if configured.backend.engine == "opencode" {
+        print_runtime_state(&crate::backend::RuntimeManager::new()?)?;
+    }
     println!(
         "    scope/network: {} · {}",
         crate::commands::display_safe(&configured.backend.default_scope),
@@ -2720,18 +3054,6 @@ fn print_review(
     if let Some(report) = report {
         println!("    validation: {}", report.verdict_label());
     }
-    // On a fresh install the "diff" is the entire file, after a summary that
-    // already said everything.
-    if !Config::path().exists() {
-        println!("\n  New configuration; nothing to compare.");
-        return Ok(());
-    }
-    let diff = crate::undo::unified_diff(&before, &after);
-    if diff.is_empty() {
-        println!("\n  No configuration changes.");
-    } else {
-        println!("\n{diff}");
-    }
     Ok(())
 }
 
@@ -2786,6 +3108,7 @@ fn save_with_pending(
 fn save_transactional(
     config: &Config,
     pending: Option<(String, String)>,
+    force_managed: bool,
 ) -> Result<Option<PathBuf>> {
     let config_path = Config::path();
     let credentials_path = crate::credentials::path();
@@ -2794,7 +3117,7 @@ fn save_transactional(
         &credentials_path,
         || save_with_pending(config, pending),
         || {
-            if config.backend.engine == "opencode" {
+            if managed_backend_required(config, force_managed) {
                 crate::backend::supervisor::ensure_running(config).map(|_| ())
             } else {
                 Ok(())
@@ -2807,6 +3130,17 @@ fn save_transactional(
     result
 }
 
+/// Settings edits use the same exact-byte rollback without starting an
+/// optional backend merely to save local preferences.
+pub(crate) fn save_settings_transactional(config: &Config) -> Result<Option<PathBuf>> {
+    transaction_with_rollback(
+        &Config::path(),
+        &crate::credentials::path(),
+        || save_applied(config),
+        || Ok(()),
+    )
+}
+
 fn transaction_with_rollback<T>(
     config_path: &Path,
     credentials_path: &Path,
@@ -2815,15 +3149,19 @@ fn transaction_with_rollback<T>(
 ) -> Result<T> {
     let prior_config = snapshot_file(config_path)?;
     let prior_credentials = snapshot_file(credentials_path)?;
-    let persisted = persist()?;
-    if let Err(error) = verify() {
-        let config_rollback = restore_file(config_path, prior_config);
-        let credential_rollback = restore_file(credentials_path, prior_credentials);
-        match (config_rollback, credential_rollback) {
-            (Ok(()), Ok(())) => return Err(error).context("persisted backend health check"),
-            (config_result, credential_result) => {
-                anyhow::bail!(
-                    "persisted backend health check failed: {error}; config rollback: {}; \
+    let applied = persist().and_then(|persisted| verify().map(|()| persisted));
+    match applied {
+        Ok(persisted) => Ok(persisted),
+        Err(error) => {
+            let config_rollback = restore_file(config_path, prior_config);
+            let credential_rollback = restore_file(credentials_path, prior_credentials);
+            match (config_rollback, credential_rollback) {
+                (Ok(()), Ok(())) => {
+                    Err(error).context("configuration apply or backend health check")
+                }
+                (config_result, credential_result) => {
+                    anyhow::bail!(
+                    "configuration apply or backend health check failed: {error}; config rollback: {}; \
                      credential rollback: {}",
                     config_result
                         .err()
@@ -2834,10 +3172,10 @@ fn transaction_with_rollback<T>(
                         .map(|error| error.to_string())
                         .unwrap_or_else(|| "ok".into())
                 );
+                }
             }
         }
     }
-    Ok(persisted)
 }
 
 fn snapshot_file(path: &Path) -> Result<Option<Vec<u8>>> {
@@ -2997,6 +3335,171 @@ mod tests {
     use super::*;
 
     #[test]
+    fn managed_oauth_route_survives_resume_and_runtime_completion() {
+        let mut draft = fresh_draft(Config::default());
+        draft.managed_oauth = true;
+        draft.prefer_oauth = true;
+        route_oauth_credential(&mut draft);
+        let saved = serde_json::to_string(&draft).unwrap();
+        let mut resumed: Draft = serde_json::from_str(&saved).unwrap();
+        assert_eq!(resumed.step, Step::Runtime);
+        finish_runtime_step(&mut resumed);
+        assert_eq!(resumed.step, Step::Credential);
+        assert!(resumed.managed_oauth);
+        assert_eq!(resumed.runtime_return, None);
+    }
+
+    #[test]
+    fn adopting_oauth_materializes_auto_and_preserves_named_profile() {
+        let mut config = Config::default();
+        adopt_existing_oauth(&mut config);
+        assert!(
+            matches!(config.active_connection().unwrap().auth, crate::config::ConnectionAuth::OAuth { ref profile } if profile == "default")
+        );
+        assert!(uses_subscription_oauth(&config));
+        set_active_auth(
+            &mut config,
+            crate::config::ConnectionAuth::OAuth {
+                profile: "personal".into(),
+            },
+        );
+        adopt_existing_oauth(&mut config);
+        assert!(
+            matches!(config.active_connection().unwrap().auth, crate::config::ConnectionAuth::OAuth { ref profile } if profile == "personal")
+        );
+    }
+
+    #[test]
+    fn fresh_interactive_backend_matches_native_default_and_explicit_choices() {
+        for (existing, lean, options, expected) in [
+            (false, true, Options::default(), "native"),
+            (false, false, Options::default(), "opencode"),
+            (true, true, Options::default(), "opencode"),
+            (
+                false,
+                true,
+                Options {
+                    runtime_file: Some("runtime.tar.gz".into()),
+                    ..Options::default()
+                },
+                "opencode",
+            ),
+            (
+                false,
+                true,
+                Options {
+                    backend: Some("opencode".into()),
+                    ..Options::default()
+                },
+                "opencode",
+            ),
+            (
+                true,
+                true,
+                Options {
+                    backend: Some("native".into()),
+                    ..Options::default()
+                },
+                "native",
+            ),
+        ] {
+            let mut config = Config::default();
+            select_interactive_backend(&mut config, existing, lean, &options);
+            assert_eq!(config.backend.engine, expected);
+        }
+    }
+
+    #[test]
+    fn noninteractive_key_override_uses_updated_connection_settings() {
+        let mut config = Config::default();
+        apply_service(&mut config, provider_catalog::find("openai").unwrap());
+        apply_overrides(
+            &mut config,
+            &Options {
+                key_env: Some("LOCAL_SETUP_KEY".into()),
+                model: Some("local-test-model".into()),
+                base_url: Some("http://127.0.0.1:9000".into()),
+                transport: Some("chat".into()),
+                ..Options::default()
+            },
+        )
+        .unwrap();
+        assert!(
+            matches!(config.active_connection().unwrap().auth, crate::config::ConnectionAuth::ApiKey { ref api_key_env, .. } if api_key_env.as_deref() == Some("LOCAL_SETUP_KEY"))
+        );
+        assert_eq!(config.active_model(), "local-test-model");
+        assert_eq!(
+            config.active_provider_config().api_key_env,
+            "LOCAL_SETUP_KEY"
+        );
+    }
+
+    #[test]
+    fn validation_checks_selected_auth_without_requiring_unused_api_fields() {
+        let mut config = Config::default();
+        let connection = config.active_connection_mut().unwrap();
+        connection.settings.credential.clear();
+        connection.settings.api_key_env.clear();
+        connection.settings.base_url = "http://127.0.0.1:9000".into();
+        connection.auth = crate::config::ConnectionAuth::None;
+        assert!(validate_config(&config).is_ok());
+        let connection = config.active_connection_mut().unwrap();
+        connection.settings.base_url = "https://api.openai.com".into();
+        connection.auth = crate::config::ConnectionAuth::OAuth {
+            profile: "work".into(),
+        };
+        assert!(validate_config(&config).is_ok());
+        let connection = config.active_connection_mut().unwrap();
+        connection.auth = crate::config::ConnectionAuth::ApiKey {
+            credential: Some("work".into()),
+            api_key_env: Some("not valid".into()),
+        };
+        assert!(validate_config(&config).is_err());
+    }
+
+    #[test]
+    fn partial_persistence_failure_restores_exact_prior_files_and_absence() {
+        for existing in [false, true] {
+            let root = std::env::temp_dir().join(format!(
+                "aishe-partial-apply-{}-{}",
+                std::process::id(),
+                rand::random::<u64>()
+            ));
+            std::fs::create_dir_all(&root).unwrap();
+            let config = root.join("config.toml");
+            let credentials = root.join("credentials.toml");
+            if existing {
+                std::fs::write(&config, b"old-config\n").unwrap();
+                std::fs::write(&credentials, b"old-credentials\n").unwrap();
+            }
+            let verified = std::cell::Cell::new(false);
+            let result: Result<()> = transaction_with_rollback(
+                &config,
+                &credentials,
+                || {
+                    crate::config::write_atomic(&config, b"partial-config\n")?;
+                    crate::config::write_atomic(&credentials, b"partial-credentials\n")?;
+                    anyhow::bail!("injected persistence failure")
+                },
+                || {
+                    verified.set(true);
+                    Ok(())
+                },
+            );
+            assert!(format!("{:#}", result.unwrap_err()).contains("injected persistence failure"));
+            assert!(!verified.get());
+            if existing {
+                assert_eq!(std::fs::read(&config).unwrap(), b"old-config\n");
+                assert_eq!(std::fs::read(&credentials).unwrap(), b"old-credentials\n");
+            } else {
+                assert!(!config.exists());
+                assert!(!credentials.exists());
+            }
+            std::fs::remove_dir_all(root).unwrap();
+        }
+    }
+
+    #[test]
     fn step_state_machine_moves_forward_and_back() {
         assert_eq!(Step::Discovery.next(), Step::Platform);
         assert_eq!(Step::Sandbox.next(), Step::Service);
@@ -3136,11 +3639,11 @@ mod tests {
         assert_eq!(entries[1], ServiceMenuEntry::GrokOAuth);
         assert_eq!(
             service_menu_label(ServiceMenuEntry::ChatGptCodexOAuth),
-            "ChatGPT / Codex OAuth — Sign in with ChatGPT Plus/Pro (no API key)"
+            "ChatGPT / Codex OAuth — Subscription · managed"
         );
         assert_eq!(
             service_menu_label(ServiceMenuEntry::GrokOAuth),
-            "Grok OAuth — Sign in with SuperGrok subscription (no API key)"
+            "Grok OAuth — Subscription · managed"
         );
         assert!(entries.iter().any(|entry| {
             matches!(entry, ServiceMenuEntry::Catalog(index)

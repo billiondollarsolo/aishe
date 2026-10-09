@@ -12,6 +12,7 @@ mod ipc;
 mod nl;
 mod pty_out;
 mod sessions;
+mod slash;
 mod stdout_redirect;
 pub use grok_oauth::{
     auth_path as grok_auth_path, available as grok_subscription_available, SUBSCRIPTION_TOKEN_ENV,

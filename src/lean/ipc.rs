@@ -122,8 +122,8 @@ impl LeanShellFiles {
         }
         if warm.commands.is_some() {
             if let Some(path) = &self.commands {
-                let _ =
-                    crate::config::write_atomic(path, warm.command_names().join("\n").as_bytes());
+                let body = super::nl::command_completion_text(warm.commands.as_ref());
+                let _ = crate::config::write_atomic(path, body.as_bytes());
             }
         }
         if let (Some(status), Some(usage)) = (&self.status, &self.usage) {

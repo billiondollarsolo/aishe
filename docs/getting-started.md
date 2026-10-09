@@ -1,6 +1,6 @@
 # Getting started
 
-> **Alpha (pre-1.0).** Behavior and config may still change; see the
+> **Alpha.** Behavior and config may still change; see the
 > [docs index](README.md) and [root README](../README.md).
 
 This page walks through your first session with **AIShe** (**AI Shell**).
@@ -21,27 +21,19 @@ own convention, and a file left in the wrong one is silently ignored. Run
 [File locations](configuration.md#file-locations). The docs write these paths in
 their Linux form for brevity.
 
-It asks for:
+The main decisions are:
 
-- existing-install discovery and organization-policy constraints,
-- the backing shell and platform capabilities,
-- installation and live verification of AIShe's exact managed OpenCode runtime,
-- on Linux, a bubblewrap functional check and an explicit offer to install the
-  package when it is missing,
-- the provider/service and safety profile,
-- for an OpenAI-compatible provider, the **service** (including explicit
-  **ChatGPT / Codex OAuth** and **Grok OAuth** shortcuts, plus OpenAI, xAI, Groq,
-  OpenRouter, Together, Ollama, or a custom endpoint) and the **API endpoint
-  (base URL)** for non-OAuth rows,
-- a saved credential profile, subscription OAuth login (labeled
-  **Codex - OAuth · work** / **Grok - OAuth · work**), or API-key paths labeled
-  **Codex - API** / **Grok - API**, hidden key entry, or environment-only workflow,
-- a current model catalog from the endpoint and a validated model selection,
-- per-million-token input/output prices when that exact model has no known price,
-- suggest/auto/yolo behavior, workspace/host scope, and workspace network policy,
-- status-line position, density, and ordered contents, and
-- end-to-end backend/provider/tool/sandbox validation plus a configuration
-  review before saving.
+- **Account and model:** API keys and local endpoints use the included native
+  engine. Subscription OAuth explicitly selects a managed legacy transport.
+- **Behavior:** accept the recommended ask mode and compact status, or customize
+  mode, scope, history, output, and logging. Allow and agent still require a
+  separate grant for each live shell.
+- **Review:** see account, behavior, readiness, and pricing before Apply.
+  Detailed diagnostics and the exact configuration diff are optional actions.
+
+Setup checks shell and workspace readiness without a runtime download on the
+native path. Unknown-model pricing can be deferred. Full generation and tool
+checks are opt-in, with their token use disclosed before consent.
 
 The endpoint prompt is what lets you point at Groq, Ollama, or any other
 OpenAI-compatible service instead of OpenAI; pick the service and the base URL
@@ -53,13 +45,14 @@ minimal generation request only when the ID was not listed. Credential,
 permission, network, and model-not-found failures stay in Setup with retry/back
 choices instead of silently accepting an unverified value.
 
-When an existing config, credential/OAuth profile, and pinned runtime are
-already available, Step 1 offers a short path directly to end-to-end validation
+When an existing config and credential are available, setup offers a short
+path directly to validation
 and the final review. Before any live checks, Setup states that the text,
 structured, tool, and streaming probes consume tokens and may incur provider
 charges; declining never turns an unrun live check into a pass.
 
-OpenCode is entirely managed by AIShe. Setup downloads the exact version pinned
+When you explicitly choose managed subscription OAuth, OpenCode is managed by
+AIShe. Setup downloads the exact version pinned
 by this AIShe build, verifies its size/checksum/version/notices, launches it with
 private HOME/XDG directories on authenticated loopback ports, and verifies the
 trusted AIShe plugin and tool restrictions. It never reuses an arbitrary
@@ -67,11 +60,12 @@ trusted AIShe plugin and tool restrictions. It never reuses an arbitrary
 independent of this runtime.
 
 On Linux, selecting isolated workspace-agent behavior requires a bubblewrap
-self-test, not just the presence of a `bwrap` executable. Setup shows the exact
-package-manager command and asks before sudo. If namespaces are unavailable in a
-container/kernel, Setup labels that condition accurately and lets you choose a
-compatible policy where organization rules allow. macOS is clearly labeled
-policy-only.
+self-test, not just the presence of a `bwrap` executable. Native setup reports
+whether isolation is available; install bubblewrap before choosing isolated
+workspace-agent work. Managed setup shows an installation plan and asks before
+sudo. If namespaces are unavailable in a container/kernel, setup explains that
+condition. Host scope remains an explicit choice where policy allows it; macOS
+workspace restrictions are clearly labeled policy-only.
 
 Setup does not change `config.toml` or `credentials.toml` until Apply. The
 agent runtime, any system package you approve, and an OAuth login are written
@@ -89,9 +83,12 @@ After setup, run:
 aishe
 ```
 
-That launches your real interactive zsh under aishe. Alternatively, install the
-native hook printed by `aishe init zsh`. You can revisit settings with `aishe
-settings`, rerun setup, or edit the non-secret config file directly. Use
+That launches a real zsh with a lightweight isolated configuration. Optional
+aliases belong in `~/.aishe/leanrc`. Subscription OAuth setup shows the explicit
+`AISHE_LEGACY_OPENCODE=1 aishe` launch command; first-run setup honors that choice
+for the shell it starts. The legacy hook remains available through `aishe init
+zsh`. Use `/` then Tab for described commands, `/settings` for saved defaults,
+or `/setup` to revisit setup. Use
 `aishe auth` for keys. Existing config, credentials, history, task records, and
 other state are preserved by binary/runtime upgrades. A fully annotated example
 config is at [examples/config.toml](../examples/config.toml).

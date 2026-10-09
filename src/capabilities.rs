@@ -389,7 +389,16 @@ fn run_live_checks(config: &Config) -> (Check, Check, Check, Check) {
     let mut isolated = config.clone();
     isolated.aishe.provider_fallback.clear();
     isolated.aishe.cache = false;
-    if isolated.backend.engine == "opencode" {
+    let managed_oauth = isolated
+        .active_connection()
+        .is_some_and(crate::config::ConnectionConfig::uses_oauth)
+        || crate::connection::resolve(&isolated).is_ok_and(|connection| {
+            matches!(
+                connection.auth,
+                crate::connection::ResolvedAuth::OAuth { .. }
+            )
+        });
+    if isolated.backend.engine == "opencode" && (!crate::lean::enabled() || managed_oauth) {
         return match run_managed_live_checks(&isolated) {
             Ok(checks) => checks,
             Err(error) => {
@@ -761,6 +770,20 @@ pub fn load(config: &Config) -> Option<Report> {
 /// connection. For OAuth connections this also asks the managed OpenCode
 /// runtime (may start it) so `/model` mirrors the subscription catalog.
 pub fn known_models(config: &Config, connection_id: &str) -> Result<Vec<String>> {
+    known_models_with_discovery(config, connection_id, true)
+}
+
+/// Models available from local configuration and cached capability evidence.
+/// Opening a lean picker must never start a runtime or contact a provider.
+pub fn cached_models(config: &Config, connection_id: &str) -> Result<Vec<String>> {
+    known_models_with_discovery(config, connection_id, false)
+}
+
+fn known_models_with_discovery(
+    config: &Config,
+    connection_id: &str,
+    discover_live: bool,
+) -> Result<Vec<String>> {
     let id = config.resolve_connection_id(connection_id)?;
     let mut selected = config.clone();
     selected.select_connection(&id)?;
@@ -783,18 +806,20 @@ pub fn known_models(config: &Config, connection_id: &str) -> Result<Vec<String>>
             })
             .map(|service| service.model.to_string()),
     );
-    let mut recent = crate::audit::read_entries(&crate::audit::default_path());
-    recent.reverse();
-    models.extend(
-        recent
-            .into_iter()
-            .filter(|entry| entry.connection_id.as_deref() == Some(id.as_str()))
-            .filter_map(|entry| entry.model)
-            .take(20),
-    );
+    if discover_live {
+        let mut recent = crate::audit::read_entries(&crate::audit::default_path());
+        recent.reverse();
+        models.extend(
+            recent
+                .into_iter()
+                .filter(|entry| entry.connection_id.as_deref() == Some(id.as_str()))
+                .filter_map(|entry| entry.model)
+                .take(20),
+        );
+    }
     // Live OpenCode catalog for subscription OAuth (Codex / Grok). Fail soft so
     // a stopped runtime still leaves the configured model pickable.
-    if connection.uses_oauth() {
+    if discover_live && connection.uses_oauth() {
         if let Ok(live) = list_models(config, &id) {
             models.extend(live);
         }

@@ -134,6 +134,7 @@ pub fn model(
     requested_connection: Option<&str>,
     save_default: bool,
 ) -> u8 {
+    let separator = crate::ui::stdout_glyphs().separator();
     let mut selected = effective.clone();
     let mut save_default = save_default;
     if value == Some("default") && requested_connection.is_none() {
@@ -149,7 +150,7 @@ pub fn model(
             return 1;
         }
         println!(
-            "connection = {} · model = {} (restored default for new shells)",
+            "connection = {} {separator} model = {} (restored default for new shells)",
             crate::commands::display_safe(durable.active_connection_id()),
             crate::commands::display_safe(durable.active_model())
         );
@@ -158,7 +159,7 @@ pub fn model(
     if value.is_none() && requested_connection.is_none() {
         if !std::io::stdin().is_terminal() || !std::io::stdout().is_terminal() {
             println!(
-                "connection: {} · model: {} · reasoning: {} ({})",
+                "connection: {} {separator} model: {} {separator} reasoning: {} ({})",
                 crate::commands::display_safe(selected.active_connection_id()),
                 crate::commands::display_safe(selected.active_model()),
                 crate::commands::display_safe(selected.active_reasoning_effort()),
@@ -174,25 +175,32 @@ pub fn model(
             return 0;
         }
         let connection_id = selected.active_connection_id().to_string();
-        let models = crate::capabilities::known_models(&selected, &connection_id)
-            .unwrap_or_else(|_| vec![selected.active_model().to_string()]);
+        let models = if crate::lean::enabled() {
+            crate::capabilities::cached_models(&selected, &connection_id)
+        } else {
+            crate::capabilities::known_models(&selected, &connection_id)
+        }
+        .unwrap_or_else(|_| vec![selected.active_model().to_string()]);
         let connection = selected
             .connections
             .get(&connection_id)
             .expect("active connection exists");
         let rows: Vec<String> = models
             .iter()
-            .map(|model| format!("{:<28} {}", model, connection.auth_label()))
+            .map(|model| {
+                if model == selected.active_model() {
+                    format!("{model} {separator} current")
+                } else {
+                    model.clone()
+                }
+            })
             .collect();
         let default = models
             .iter()
             .position(|model| model == selected.active_model())
             .unwrap_or(0);
-        let title = format!(
-            "Select a model · {} ({})",
-            crate::commands::display_safe(&connection.label),
-            crate::commands::display_safe(&connection_id)
-        );
+        let title = format!("Select a model {separator} {}", connection.label);
+        crate::promptui::note("Applies to this shell. Type /model NAME to use another model.");
         let result = match crate::promptui::filter_picker(&title, &rows, default) {
             Ok(result) => result,
             Err(error) => {
@@ -322,7 +330,7 @@ pub fn model(
         return 1;
     }
     println!(
-        "connection = {} · model = {} ({})",
+        "connection = {} {separator} model = {} ({})",
         crate::commands::display_safe(selected.active_connection_id()),
         crate::commands::display_safe(selected.active_model()),
         if shell_local {
@@ -338,17 +346,19 @@ pub fn model(
 /// already carries the brand, so repeating it as the auth column was noise, and
 /// a migrated `auto` connection now says what to do about it.
 pub fn connection_row(label: &str, auth: &str, model: &str) -> String {
+    let separator = crate::ui::stdout_glyphs().separator();
     let auth = if auth == label {
         "selected".to_string()
     } else if auth.starts_with("Auto") {
-        "legacy · aishe connection edit".to_string()
+        format!("legacy {separator} aishe connection edit")
     } else {
         auth.to_string()
     };
-    format!("{label:<28} {auth:<30} {model}")
+    format!("{label} {separator} {model} {separator} {auth}")
 }
 
 fn pick(effective: &Config, value: Option<&str>, save_default: bool) -> u8 {
+    let separator = crate::ui::stdout_glyphs().separator();
     let mut selected = effective.clone();
     let mut save_default = save_default;
     if let Some(value) = value {
@@ -369,7 +379,7 @@ fn pick(effective: &Config, value: Option<&str>, save_default: bool) -> u8 {
     } else {
         if !std::io::stdin().is_terminal() || !std::io::stdout().is_terminal() {
             println!(
-                "connection: {} · model: {} ({})",
+                "connection: {} {separator} model: {} ({})",
                 crate::commands::display_safe(selected.active_connection_id()),
                 crate::commands::display_safe(selected.active_model()),
                 if crate::connection::selection_is_shell_local() {
@@ -398,17 +408,23 @@ fn pick(effective: &Config, value: Option<&str>, save_default: bool) -> u8 {
             .iter()
             .map(|(id, _)| {
                 let connection = &selected.connections[id];
-                connection_row(
+                let row = connection_row(
                     &connection.label,
                     &connection.auth_label(),
                     &connection.settings.model,
-                )
+                );
+                if id == selected.active_connection_id() {
+                    format!("{row} {separator} current")
+                } else {
+                    row
+                }
             })
             .collect();
         let default = choices
             .iter()
             .position(|(id, _)| id == selected.active_connection_id())
             .unwrap_or(0);
+        crate::promptui::note("Applies to this shell. Saved defaults are offered after selection.");
         let result = match crate::promptui::filter_picker("Select a connection", &rows, default) {
             Ok(result) => result,
             Err(error) => {
@@ -476,7 +492,7 @@ fn pick(effective: &Config, value: Option<&str>, save_default: bool) -> u8 {
         return 1;
     }
     println!(
-        "connection = {} · model = {} ({})",
+        "connection = {} {separator} model = {} ({})",
         crate::commands::display_safe(selected.active_connection_id()),
         crate::commands::display_safe(selected.active_model()),
         if shell_local {
@@ -994,7 +1010,7 @@ mod row_tests {
         assert!(row.contains("selected"), "{row}");
         let legacy = connection_row("Anthropic", "Auto (legacy)", "claude-x");
         assert!(
-            legacy.contains("legacy · aishe connection edit"),
+            legacy.contains("legacy") && legacy.contains("aishe connection edit"),
             "{legacy}"
         );
         assert!(!legacy.contains("Auto (legacy)"), "{legacy}");
