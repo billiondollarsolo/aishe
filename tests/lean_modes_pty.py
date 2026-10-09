@@ -26,7 +26,7 @@ def fixture(label, mode="ask", scope="workspace", host_allowed=True):
     bwrap = Path(home) / "bin" / "bwrap"
     bwrap.write_text("#!/bin/sh\nexit 1\n")
     bwrap.chmod(0o755)
-    return home, env
+    return str(Path(home).resolve()), env
 
 
 def send(shell, keys, seconds=0.25):
@@ -91,9 +91,17 @@ def main():
         assert "Type allow to continue" not in shell.plain()[start:]
         start = len(shell.plain())
         send(shell, "/mode agent\r")
+        if sys.platform == "darwin":
+            # macOS workspace mode deliberately uses an explicit policy-only
+            # grant; Linux refuses the fixture's unusable bubblewrap boundary.
+            wait_new(shell, "Type agent to continue", start)
+            assert "macOS workspace mode is policy-only" in shell.plain()[start:]
+            send(shell, "\x1b")
+            wait_new(shell, "grant declined", start)
         mode(shell, "allow")
-        assert "requires functional bubblewrap" in shell.plain()[start:]
-        assert "Type agent to continue" not in shell.plain()[start:]
+        if sys.platform != "darwin":
+            assert "requires functional bubblewrap" in shell.plain()[start:]
+            assert "Type agent to continue" not in shell.plain()[start:]
     finally:
         shell.close()
         shutil.rmtree(home, ignore_errors=True)

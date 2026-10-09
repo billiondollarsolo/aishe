@@ -882,12 +882,20 @@ impl PickerInput {
 #[cfg(test)]
 impl PickerInput {
     fn from_bytes(bytes: &[u8]) -> Self {
+        #[cfg(unix)]
+        let file = {
+            // /dev/null is readable at EOF on Linux, but Darwin poll does not
+            // report it as ready. A closed stream models a detached input on
+            // both platforms and keeps the EOF cancellation assertion real.
+            let (reader, writer) =
+                std::os::unix::net::UnixStream::pair().expect("create detached input fixture");
+            drop(writer);
+            let descriptor: std::os::fd::OwnedFd = reader.into();
+            std::fs::File::from(descriptor)
+        };
         Self {
             #[cfg(unix)]
-            file: std::fs::OpenOptions::new()
-                .read(true)
-                .open("/dev/null")
-                .expect("open /dev/null"),
+            file,
             #[cfg(not(unix))]
             _stdin: std::io::stdin(),
             pending: bytes.to_vec(),

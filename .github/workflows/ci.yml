@@ -294,6 +294,14 @@ jobs:
           python3 tests/require_gate.py python3 tests/native_background_lifecycle.py target/release/aishe
           python3 tests/require_gate.py python3 tests/durable_task_resume.py target/release/aishe
 
+      - name: Record failed startup components
+        if: always() && steps.direct_shell_benchmark.outcome == 'failure'
+        timeout-minutes: 5
+        run: >-
+          python3 tests/require_gate.py python3 tests/direct_shell_profile.py target/release/aishe
+          --commands 100 --warmup 10
+          --output test-results/direct-shell-profile-${{ runner.os }}.json
+
       - name: Upload terminal qualification evidence
         if: always()
         uses: actions/upload-artifact@v6

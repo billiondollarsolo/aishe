@@ -365,6 +365,10 @@ def wait_for(
 
 def has_ready_prompt(text: str) -> bool:
     """Legacy zsh-pty uses ZP>; lean default uses mode + glyph in PROMPT."""
+    # Colored mode and glyph segments have CSI resets between their visible
+    # characters. Match the rendered prompt, preserving the full raw transport
+    # transcript for all later contract assertions and failure diagnostics.
+    text = re.sub(r"\x1b\[[0-?]*[ -/]*[@-~]", "", text)
     if "ZP>" in text:
         return True
     # Product-correct lean glyphs: ask/allow/agent with > ❯ » *

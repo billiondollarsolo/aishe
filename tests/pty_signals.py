@@ -41,8 +41,16 @@ class Pty:
         self.master, self.slave = pty.openpty()
         self.initial_termios = termios.tcgetattr(self.slave)
         self.set_size(rows, cols)
+        # Keep the controlling terminal's session leader alive after AIShe
+        # returns. Darwin revokes its tty when the leader exits, so querying
+        # attributes after a direct Popen exit yields ENOTTY rather than proof
+        # that RawGuard restored the terminal. The wrapper preserves the exact
+        # child status and waits for our restoration measurement to finish.
+        wrapper = ['"$@"; result=$?; printf "\\nAISHE_SHELL_EXIT=%s\\n" "$result"; '
+                   'IFS= read -r finish; exit "$result"']
         self.proc = subprocess.Popen(
-            argv, stdin=self.slave, stdout=self.slave, stderr=self.slave,
+            ["/bin/sh", "-c", *wrapper, "aishe-tty-owner", *argv],
+            stdin=self.slave, stdout=self.slave, stderr=self.slave,
             env=env,
             preexec_fn=lambda: (os.setsid(), fcntl.ioctl(0, termios.TIOCSCTTY, 0)),
             close_fds=True,
@@ -305,16 +313,16 @@ def main():
                   not os.path.exists(os.path.join(home, name)))
 
         sh.send("exit")
-        # Keep consuming the terminal while the relay flushes its final output.
-        # Waiting without a reader can hold the child behind a full PTY buffer.
+        check(sh, "shell exit succeeds", sh.expect("AISHE_SHELL_EXIT=0", timeout=5))
+        check(sh, "shell restores every outer terminal attribute",
+              termios.tcgetattr(sh.slave) == sh.initial_termios)
+        sh.send("")  # release the terminal owner after measuring restoration
         deadline = time.monotonic() + 5
         while sh.proc.poll() is None and time.monotonic() < deadline:
             sh.settle(0.1)
         if sh.proc.poll() is None:
             raise AssertionError("shell did not exit within 5 seconds:\n" + sh.transcript[-4000:])
-        check(sh, "shell exit succeeds", sh.proc.returncode == 0)
-        check(sh, "shell restores every outer terminal attribute",
-              termios.tcgetattr(sh.slave) == sh.initial_termios)
+        assert sh.proc.returncode == 0, "terminal owner must preserve shell exit status"
         sys.stdout.write("\nAll %d signal/terminal cases passed.\n" % len(PASSED))
     finally:
         sh.close()
