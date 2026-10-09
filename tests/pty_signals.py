@@ -305,7 +305,13 @@ def main():
                   not os.path.exists(os.path.join(home, name)))
 
         sh.send("exit")
-        sh.proc.wait(timeout=5)
+        # Keep consuming the terminal while the relay flushes its final output.
+        # Waiting without a reader can hold the child behind a full PTY buffer.
+        deadline = time.monotonic() + 5
+        while sh.proc.poll() is None and time.monotonic() < deadline:
+            sh.settle(0.1)
+        if sh.proc.poll() is None:
+            raise AssertionError("shell did not exit within 5 seconds:\n" + sh.transcript[-4000:])
         check(sh, "shell exit succeeds", sh.proc.returncode == 0)
         check(sh, "shell restores every outer terminal attribute",
               termios.tcgetattr(sh.slave) == sh.initial_termios)

@@ -41,7 +41,9 @@ class FakeRunner:
 class RepositoryFixture:
     def __init__(self):
         self.temporary = tempfile.TemporaryDirectory()
-        self.root = pathlib.Path(self.temporary.name)
+        # macOS maps /var tempfile paths through /private/var. Keep the fake
+        # runner's command keys identical to the driver's canonical paths.
+        self.root = pathlib.Path(self.temporary.name).resolve()
         (self.root / "Cargo.toml").write_text(
             '[package]\nname = "aishe"\nversion = "0.6.5"\n', encoding="utf-8"
         )

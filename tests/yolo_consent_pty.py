@@ -1,26 +1,34 @@
 #!/usr/bin/env python3
 """Declining the yolo consent prompt is a cancel, not an internal error."""
 
+from pathlib import Path
+import shutil
+
 from pty_helper import Pty, environment
 
 
 def main():
     from pty_helper import require_legacy_opencode_world
     require_legacy_opencode_world()
-    _, env = environment("yolo")
+    home, env = environment("yolo")
+    # This exercises declining consent, so select host scope explicitly rather
+    # than requiring a functioning workspace sandbox before the dialog opens.
+    # Neither reply grants authority or runs an agent command.
+    config = Path(home) / ".config" / "aishe" / "config.toml"
+    config.write_text(config.read_text() + '\ndefault_scope = "host"\n')
     shell = Pty(env)
     try:
         if not shell.ready():
             raise AssertionError("shell never became ready")
         start = len(shell.transcript)
         shell.send("\x1b[Z")  # Shift-Tab: auto -> yolo consent
-        if not shell.expect("Type yolo to continue"):
+        if not shell.expect("Type yolo-host to continue"):
             raise AssertionError("consent prompt did not appear:\n" + shell.transcript[start:])
         shell.send("n\r")
         if not shell.expect("mode stays auto"):
             raise AssertionError("decline was not acknowledged:\n" + shell.plain()[start:])
         shell.send("\x1b[Z")
-        if not shell.expect("Type yolo to continue", timeout=10):
+        if not shell.expect("Type yolo-host to continue", timeout=10):
             raise AssertionError("second consent prompt did not appear")
         shell.send("\x1b")  # Esc cancels the raw-mode read
         shell.drain(1.0)
@@ -34,6 +42,7 @@ def main():
         print("yolo consent: ok")
     finally:
         shell.close()
+        shutil.rmtree(home, ignore_errors=True)
 
 
 if __name__ == "__main__":

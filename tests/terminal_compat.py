@@ -82,7 +82,7 @@ class Fixture:
             'mode = "suggest"\n'
             'provider = "anthropic"\n'
             'front_end = "zsh-pty"\n'
-            "pty_prompt = false\n\n"
+            "pty_prompt = true\n\n"
             "[backend]\n"
             'engine = "native"\n',
             encoding="utf-8",
@@ -506,7 +506,7 @@ def remote_fixture_command(remote_binary: str, prefix: str) -> str:
         'mode = "suggest"\n'
         'provider = "anthropic"\n'
         'front_end = "zsh-pty"\n'
-        "pty_prompt = false\n\n"
+        "pty_prompt = true\n\n"
         "[backend]\n"
         'engine = "native"\n'
     )

@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Real lean mode/grant handoffs, cancellation, policy, and scope regressions."""
 from pathlib import Path
+import shlex
 import shutil
 import sys
 
@@ -51,12 +52,29 @@ def mode(shell, expected):
 
 def main():
     home, env = fixture("handoff")
+    # A visible consent cue must mean terminal input is ready. Make the
+    # stty transition slow enough to expose a cue published before it finishes.
+    real_stty = shutil.which("stty")
+    assert real_stty, "stty is required for mode grant qualification"
+    grant_ready = Path(home) / "grant-terminal-ready"
+    stty = Path(home) / "bin" / "stty"
+    stty.write_text(
+        '#!/bin/sh\nif [ "$1" = "-icanon" ]; then\n'
+        '  sleep 0.25\n'
+        f'  {shlex.quote(real_stty)} "$@"\n'
+        '  result=$?\n'
+        f'  if [ "$result" -eq 0 ]; then : > {shlex.quote(str(grant_ready))}; fi\n'
+        '  exit "$result"\nfi\n'
+        f'exec {shlex.quote(real_stty)} "$@"\n'
+    )
+    stty.chmod(0o755)
     shell = Pty(env)
     try:
         assert shell.ready()
         start = len(shell.plain())
         shell.send("/mode auto\r")
         wait_new(shell, "Type allow to continue", start)
+        assert grant_ready.exists(), "consent cue appeared before terminal input was ready"
         send(shell, "allow\r")
         mode(shell, "allow")
         send(shell, "/mode suggest\r")

@@ -680,6 +680,9 @@ _aishe_lean_read_grant() {
   # canonical mode. Read one byte immediately so Esc does not need Enter.
   tty_state="$(command stty -g <&$input_fd 2>/dev/null)" || return 1
   command stty -icanon -echo min 1 time 0 <&$input_fd 2>/dev/null || return 1
+  # Publish readiness only after stty finishes: on macOS its transition can
+  # flush a reply that arrived while the terminal was still changing modes.
+  [[ -n "${1:-}" ]] && print -n -- "$1"
   {
     while IFS= read -r -k 1 -u $input_fd key; do
       case "$key" in
@@ -736,8 +739,7 @@ _aishe_lean_take_grant() {
       if [[ "$want" == agent && "${AISHE_MCP_ENABLED:-0}" != 0 ]]; then
         print -r -- "MCP tools retain their configured server access."
       fi
-      print -n -- "Type ${want} to continue (Esc cancels): "
-      if ! _aishe_lean_read_grant || [[ "$REPLY" != "$want" ]]; then
+      if ! _aishe_lean_read_grant "Type ${want} to continue (Esc cancels): " || [[ "$REPLY" != "$want" ]]; then
         print -r -- "grant declined · mode stays ${AISHE_MODE:-ask}"
         return 1
       fi
