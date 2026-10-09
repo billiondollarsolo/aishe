@@ -30,6 +30,24 @@ const FETCH_BYTE_CAP: u64 = 4 * 1024 * 1024;
 /// Timeout for a single `fetch_url` request.
 const FETCH_TIMEOUT_SECS: u64 = 20;
 
+/// An explicit verification command. Dispatch it through the same executor,
+/// authority, confirmations, and budgets as `run_command`; its observed result
+/// is additionally stored in the task's durable evidence journal.
+pub fn run_check_tool() -> ToolDef {
+    ToolDef {
+        name: "run_check".into(),
+        description: "Run an explicit test or verification command and record its actual exit status and output as a check. Uses the same permissions and limits as run_command. A passing command is evidence for this check, not proof that every task requirement was met.".into(),
+        schema: json!({
+            "type": "object",
+            "properties": {
+                "command": {"type": "string"},
+                "reason": {"type": "string", "description": "what this check verifies"}
+            },
+            "required": ["command", "reason"]
+        }),
+    }
+}
+
 /// The built-in file tool definitions, offered to yolo when `file_tools` is on.
 pub fn file_tool_defs() -> Vec<ToolDef> {
     vec![
@@ -70,7 +88,7 @@ pub fn execute(
     confirm_writes: bool,
     preview: bool,
 ) -> (String, String) {
-    execute_with_activity(name, args, cwd, confirm_writes, preview, true)
+    execute_with_activity(name, args, cwd, confirm_writes, preview, true, true)
 }
 
 /// Execute a built-in tool without writing progress directly to the terminal.
@@ -83,7 +101,20 @@ pub fn execute_silent(
     confirm_writes: bool,
     preview: bool,
 ) -> (String, String) {
-    execute_with_activity(name, args, cwd, confirm_writes, preview, false)
+    execute_with_activity(name, args, cwd, confirm_writes, preview, false, false)
+}
+
+/// Let an agent renderer own activity while selecting whether completed edits
+/// also print their diff. Approval previews always remain visible.
+pub fn execute_rendered(
+    name: &str,
+    args: &Value,
+    cwd: &Path,
+    confirm_writes: bool,
+    preview: bool,
+    show_diff: bool,
+) -> (String, String) {
+    execute_with_activity(name, args, cwd, confirm_writes, preview, false, show_diff)
 }
 
 fn execute_with_activity(
@@ -93,14 +124,15 @@ fn execute_with_activity(
     confirm_writes: bool,
     preview: bool,
     show_activity: bool,
+    show_diff: bool,
 ) -> (String, String) {
     if show_activity {
         print_activity(name, args);
     }
     match name {
         "read_file" => read_file(args, cwd),
-        "write_file" => write_file(args, cwd, confirm_writes, preview),
-        "edit_file" => edit_file(args, cwd, confirm_writes, preview),
+        "write_file" => write_file_with_output(args, cwd, confirm_writes, preview, show_diff),
+        "edit_file" => edit_file_with_output(args, cwd, confirm_writes, preview, show_diff),
         "list_dir" => list_dir(args, cwd),
         "fetch_url" => fetch_url(args),
         other => (other.to_string(), format!("Error: unknown tool '{other}'.")),
@@ -288,7 +320,18 @@ fn read_file(args: &Value, cwd: &Path) -> (String, String) {
     }
 }
 
+#[cfg(test)]
 fn write_file(args: &Value, cwd: &Path, confirm_writes: bool, preview: bool) -> (String, String) {
+    write_file_with_output(args, cwd, confirm_writes, preview, true)
+}
+
+fn write_file_with_output(
+    args: &Value,
+    cwd: &Path,
+    confirm_writes: bool,
+    preview: bool,
+    show_diff: bool,
+) -> (String, String) {
     let path = arg(args, "path");
     let content = arg(args, "content");
     if path.is_empty() {
@@ -325,7 +368,7 @@ fn write_file(args: &Value, cwd: &Path, confirm_writes: bool, preview: bool) -> 
                     &format!("write {path}"),
                 );
             }
-            if !preview && existed {
+            if show_diff && !preview && existed {
                 print_diff(&diff); // preview already showed it
             }
             (
@@ -384,7 +427,18 @@ fn print_diff(diff: &str) {
     }
 }
 
+#[cfg(test)]
 fn edit_file(args: &Value, cwd: &Path, confirm_writes: bool, preview: bool) -> (String, String) {
+    edit_file_with_output(args, cwd, confirm_writes, preview, true)
+}
+
+fn edit_file_with_output(
+    args: &Value,
+    cwd: &Path,
+    confirm_writes: bool,
+    preview: bool,
+    show_diff: bool,
+) -> (String, String) {
     let path = arg(args, "path");
     let find = arg(args, "find");
     let replace = arg(args, "replace");
@@ -437,7 +491,7 @@ fn edit_file(args: &Value, cwd: &Path, confirm_writes: bool, preview: bool) -> (
                 "edit_file",
                 &format!("edit {path}"),
             );
-            if !preview {
+            if show_diff && !preview {
                 print_diff(&diff); // preview already showed it
             }
             (

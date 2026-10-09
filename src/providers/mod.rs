@@ -6,6 +6,7 @@
 //! small and the request/response shapes fully under our control.
 
 use std::time::Duration;
+use std::time::Instant;
 
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
@@ -20,6 +21,74 @@ pub(crate) type HttpResponse = ureq::http::Response<ureq::Body>;
 /// defaults to 10 MiB for convenience readers; naming the bound here makes the
 /// transport contract stable across dependency upgrades.
 pub(crate) const MAX_PROVIDER_BODY_BYTES: u64 = 10 * 1024 * 1024;
+
+thread_local! {
+    static NATIVE_DEADLINE: std::cell::Cell<Option<Instant>> = const { std::cell::Cell::new(None) };
+}
+
+/// A turn deadline follows every provider retry and fallback on this thread.
+/// It overrides the otherwise intentionally open-ended SSE global timeout.
+pub(crate) struct HttpDeadlineGuard {
+    previous: Option<Instant>,
+    _same_thread: std::marker::PhantomData<std::rc::Rc<()>>,
+}
+
+impl HttpDeadlineGuard {
+    pub fn new(remaining: Option<Duration>) -> Result<Self, ProviderError> {
+        let deadline = remaining
+            .map(|remaining| {
+                Instant::now().checked_add(remaining).ok_or_else(|| {
+                    ProviderError::Http("native task deadline cannot be represented".into())
+                })
+            })
+            .transpose()?;
+        let previous = NATIVE_DEADLINE.with(|slot| {
+            let previous = slot.get();
+            let effective = match (previous, deadline) {
+                (Some(previous), Some(deadline)) => Some(previous.min(deadline)),
+                (previous, deadline) => previous.or(deadline),
+            };
+            slot.set(effective);
+            previous
+        });
+        Ok(Self {
+            previous,
+            _same_thread: std::marker::PhantomData,
+        })
+    }
+}
+
+impl Drop for HttpDeadlineGuard {
+    fn drop(&mut self) {
+        NATIVE_DEADLINE.with(|slot| slot.set(self.previous));
+    }
+}
+
+pub(crate) fn request_timeout(
+    default: Option<Duration>,
+) -> Result<Option<Duration>, ProviderError> {
+    NATIVE_DEADLINE.with(|slot| {
+        let Some(deadline) = slot.get() else {
+            return Ok(default);
+        };
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return Err(ProviderError::Http(
+                "native task wall-clock budget is exhausted".into(),
+            ));
+        }
+        Ok(Some(
+            default.map_or(remaining, |default| default.min(remaining)),
+        ))
+    })
+}
+
+pub(crate) fn wait_for_retry(wait: Duration) -> Result<(), ProviderError> {
+    let wait = request_timeout(Some(wait))?.unwrap_or(wait);
+    std::thread::sleep(wait);
+    request_timeout(None)?;
+    Ok(())
+}
 
 /// Match ureq 2's status contract: only 4xx/5xx were errors. Redirects are
 /// normally followed, but a terminal 3xx without `Location` remains a response
@@ -58,6 +127,17 @@ pub(crate) fn external_http_agent(
         )
         .build()
         .into()
+}
+
+/// One reusable transport pool per native provider. Streaming requests override
+/// these non-streaming timeouts on the request while sharing the same pool.
+pub(crate) fn provider_http_agent() -> ureq::Agent {
+    external_http_agent(
+        Duration::from_secs(HTTP_TIMEOUT_SECS),
+        Some(Duration::from_secs(HTTP_TIMEOUT_SECS)),
+        None,
+        None,
+    )
 }
 
 pub mod anthropic;
@@ -524,6 +604,7 @@ pub(crate) fn usage_from_value(v: &Value) -> (u64, u64) {
 /// (429/5xx/connection errors) with backoff. Returns the streaming response for
 /// [`read_sse`] to consume.
 pub(crate) fn stream_post(
+    agent: &ureq::Agent,
     url: &str,
     headers: &[(&str, &str)],
     body: &Value,
@@ -533,18 +614,19 @@ pub(crate) fn stream_post(
         // Fast-fail the TCP connect so an unreachable endpoint doesn't sit on the
         // read timeout, but keep the per-read timeout (not a whole-call deadline)
         // so legitimate slow streams aren't cut.
-        let agent = external_http_agent(
-            Duration::from_secs(5),
-            None,
-            Some(Duration::from_secs(HTTP_TIMEOUT_SECS)),
-            Some(Duration::from_secs(HTTP_TIMEOUT_SECS)),
-        );
-        let mut req = agent.post(url);
+        let mut req = agent
+            .post(url)
+            .config()
+            .timeout_connect(Some(Duration::from_secs(5)))
+            .timeout_global(request_timeout(None)?)
+            .timeout_recv_response(Some(Duration::from_secs(HTTP_TIMEOUT_SECS)))
+            .timeout_recv_body(Some(Duration::from_secs(HTTP_TIMEOUT_SECS)))
+            .build();
         for (k, v) in headers {
             req = req.header(*k, *v);
         }
         crate::lean::mark_nl_wire_ready();
-        match req.send_json(body.clone()) {
+        match req.send_json(body) {
             Ok(resp) if status_is_accepted(resp.status()) => return Ok(resp),
             Ok(resp) => {
                 let status = resp.status().as_u16();
@@ -556,8 +638,11 @@ pub(crate) fn stream_post(
                 }
                 if is_retryable_status(status) && attempt < MAX_RETRIES {
                     let wait = backoff(attempt + 1, retry_after_secs(&resp));
+                    // Do not wait for an error body: a streaming response has
+                    // no global deadline and could trickle bytes indefinitely.
+                    drop(resp);
                     attempt += 1;
-                    std::thread::sleep(wait);
+                    wait_for_retry(wait)?;
                     continue;
                 }
                 return Err(ProviderError::Api {
@@ -568,7 +653,7 @@ pub(crate) fn stream_post(
             Err(e) => {
                 if attempt < MAX_RETRIES {
                     attempt += 1;
-                    std::thread::sleep(backoff(attempt, None));
+                    wait_for_retry(backoff(attempt, None))?;
                     continue;
                 }
                 return Err(ProviderError::Http(e.to_string()));
@@ -586,8 +671,7 @@ const MAX_SSE_LINE_BYTES: u64 = 1024 * 1024;
 /// Read an SSE stream line by line, invoking `on_data` with the payload of each
 /// `data:` line (skipping blanks and the `[DONE]` sentinel).
 pub(crate) fn read_sse(resp: HttpResponse, on_data: impl FnMut(&str)) -> Result<(), ProviderError> {
-    read_sse_lines(resp.into_body().into_reader(), on_data);
-    Ok(())
+    read_sse_lines(resp.into_body().into_reader(), on_data)
 }
 
 /// The reader half of [`read_sse`], split out so it can be exercised against a
@@ -600,7 +684,10 @@ pub(crate) fn read_sse(resp: HttpResponse, on_data: impl FnMut(&str)) -> Result<
 /// else { break }` could not tell apart from end-of-stream: the model's answer
 /// was silently cut off mid-sentence with `Ok(())` returned. A decode error is no
 /// longer possible here; only a genuine IO error or EOF ends the loop.
-fn read_sse_lines<R: std::io::Read>(reader: R, mut on_data: impl FnMut(&str)) {
+fn read_sse_lines<R: std::io::Read>(
+    reader: R,
+    mut on_data: impl FnMut(&str),
+) -> Result<(), ProviderError> {
     use std::io::{BufRead, Read};
     let mut buf = std::io::BufReader::new(reader);
     let mut raw = Vec::new();
@@ -611,18 +698,24 @@ fn read_sse_lines<R: std::io::Read>(reader: R, mut on_data: impl FnMut(&str)) {
             .take(MAX_SSE_LINE_BYTES)
             .read_until(b'\n', &mut raw)
         {
-            Ok(0) => return, // EOF: SSE has no guaranteed terminator, this is normal
+            Ok(0) => return Ok(()), // SSE has no guaranteed terminator; a clean EOF is valid.
             Ok(_) => {}
-            // A real IO error mid-stream (truncation/connection reset) ends the
-            // stream gracefully: any text delivered so far stands, rather than
-            // failing the whole turn.
-            Err(_) => return,
+            // Partial prose is useful output, but it cannot prove that the
+            // provider completed. Preserve the transport failure for the turn.
+            Err(error) => return Err(ProviderError::Http(error.to_string())),
         }
         let line = String::from_utf8_lossy(&raw);
         // The trailing newline (and any CR) is removed by the payload `trim()`.
         if let Some(data) = line.strip_prefix("data:") {
             let data = data.trim();
-            if data.is_empty() || data == "[DONE]" {
+            if data == "[DONE]" {
+                // Finish reading the framed HTTP body so ureq can return the
+                // socket to its pool. Dropping at the model sentinel closes an
+                // otherwise reusable connection; native deadlines still bound
+                // a server which continues sending bytes after completion.
+                continue;
+            }
+            if data.is_empty() {
                 continue;
             }
             on_data(data);
@@ -966,14 +1059,175 @@ mod tests {
     }
 
     #[test]
+    fn provider_agent_retains_nonstreaming_deadline() {
+        let agent = provider_http_agent();
+        let timeouts = agent.config().timeouts();
+        assert_eq!(timeouts.connect, Some(Duration::from_secs(60)));
+        assert_eq!(timeouts.global, Some(Duration::from_secs(60)));
+        assert_eq!(timeouts.recv_response, None);
+        assert_eq!(timeouts.recv_body, None);
+    }
+
+    #[test]
+    fn streaming_overrides_agent_deadline_and_response_body_timeouts() {
+        use std::io::{BufRead, Read, Write};
+        use std::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}/stream", listener.local_addr().unwrap());
+        let server = std::thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            let mut reader = std::io::BufReader::new(stream);
+            let mut length = 0;
+            loop {
+                let mut line = String::new();
+                assert!(reader.read_line(&mut line).unwrap() > 0);
+                if line == "\r\n" {
+                    break;
+                }
+                if let Some(value) = line.to_ascii_lowercase().strip_prefix("content-length:") {
+                    length = value.trim().parse().unwrap();
+                }
+            }
+            let mut body = vec![0; length];
+            reader.read_exact(&mut body).unwrap();
+            let mut stream = reader.into_inner();
+            // Both header and body waits exceed the injected agent defaults.
+            std::thread::sleep(Duration::from_millis(120));
+            stream
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 25\r\nConnection: close\r\n\r\ndata: first\n\n")
+                .unwrap();
+            std::thread::sleep(Duration::from_millis(120));
+            stream.write_all(b"data: last\n\n").unwrap();
+        });
+        let short = Some(Duration::from_millis(30));
+        let agent = external_http_agent(Duration::from_secs(5), short, short, short);
+        let response = stream_post(&agent, &url, &[], &serde_json::json!({})).unwrap();
+        let mut events = Vec::new();
+        read_sse(response, |event| events.push(event.to_string())).unwrap();
+        assert_eq!(events, ["first", "last"]);
+        assert_eq!(agent.config().timeouts().global, short);
+        server.join().unwrap();
+    }
+
+    #[test]
     fn sse_survives_invalid_utf8_mid_stream() {
         // A stray byte between two frames. The old `.lines()` loop treated the
         // decode error as end-of-stream and returned Ok(()), so the answer was
         // truncated mid-sentence with nothing surfaced to the caller.
         let bytes: Vec<u8> = b"data: one\n\xFF\ndata: two\ndata: [DONE]\n".to_vec();
         let mut got = Vec::new();
-        read_sse_lines(std::io::Cursor::new(bytes), |d| got.push(d.to_string()));
+        read_sse_lines(std::io::Cursor::new(bytes), |d| got.push(d.to_string())).unwrap();
         assert_eq!(got, vec!["one".to_string(), "two".to_string()]);
+    }
+
+    #[test]
+    fn sse_transport_failure_after_text_is_not_a_successful_completion() {
+        struct BrokenStream(std::io::Cursor<Vec<u8>>);
+        impl std::io::Read for BrokenStream {
+            fn read(&mut self, bytes: &mut [u8]) -> std::io::Result<usize> {
+                let count = self.0.read(bytes)?;
+                if count == 0 {
+                    Err(std::io::Error::new(
+                        std::io::ErrorKind::ConnectionReset,
+                        "fixture stream reset",
+                    ))
+                } else {
+                    Ok(count)
+                }
+            }
+        }
+        let mut text = Vec::new();
+        let result = read_sse_lines(
+            BrokenStream(std::io::Cursor::new(b"data: partial answer\n\n".to_vec())),
+            |data| text.push(data.to_string()),
+        );
+        assert_eq!(text, ["partial answer"]);
+        assert!(
+            matches!(result, Err(ProviderError::Http(message)) if message.contains("stream reset"))
+        );
+        let result = read_sse_lines(
+            BrokenStream(std::io::Cursor::new(b"data: [DONE]\n\n".to_vec())),
+            |_| panic!("sentinel must not become text"),
+        );
+        assert!(
+            result.is_err(),
+            "a model sentinel must not hide a broken HTTP body while it is drained for reuse"
+        );
+    }
+
+    #[test]
+    fn nested_native_deadlines_restore_prior_state_and_bound_retry_wait() {
+        assert_eq!(request_timeout(None).unwrap(), None);
+        let outer = HttpDeadlineGuard::new(Some(Duration::from_secs(2))).unwrap();
+        let original = request_timeout(None).unwrap().unwrap();
+        {
+            let _inner = HttpDeadlineGuard::new(Some(Duration::from_millis(25))).unwrap();
+            assert!(request_timeout(None).unwrap().unwrap() <= Duration::from_millis(25));
+            let started = Instant::now();
+            assert!(wait_for_retry(Duration::from_secs(10)).is_err());
+            assert!(started.elapsed() < Duration::from_secs(1));
+        }
+        let restored = request_timeout(None).unwrap().unwrap();
+        assert!(restored > Duration::from_secs(1));
+        assert!(restored <= original);
+        drop(outer);
+        assert_eq!(request_timeout(None).unwrap(), None);
+    }
+
+    #[test]
+    fn native_global_deadline_stops_a_trickling_stream_before_per_read_timeout() {
+        use std::io::{BufRead, Read, Write};
+        use std::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}/stream", listener.local_addr().unwrap());
+        let server = std::thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(2)))
+                .unwrap();
+            let mut reader = std::io::BufReader::new(stream);
+            let mut length = 0;
+            loop {
+                let mut line = String::new();
+                assert!(reader.read_line(&mut line).unwrap() > 0);
+                if line == "\r\n" {
+                    break;
+                }
+                if let Some(value) = line.to_ascii_lowercase().strip_prefix("content-length:") {
+                    length = value.trim().parse().unwrap();
+                }
+            }
+            let mut body = vec![0; length];
+            reader.read_exact(&mut body).unwrap();
+            let mut stream = reader.into_inner();
+            stream
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 10000\r\nConnection: close\r\n\r\n")
+                .unwrap();
+            for _ in 0..40 {
+                if stream.write_all(b"data: tick\n\n").is_err() {
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(15));
+            }
+        });
+        let _deadline = HttpDeadlineGuard::new(Some(Duration::from_millis(80))).unwrap();
+        let started = Instant::now();
+        let response =
+            stream_post(&provider_http_agent(), &url, &[], &serde_json::json!({})).unwrap();
+        let mut events = Vec::new();
+        let result = read_sse(response, |event| events.push(event.to_string()));
+        assert!(
+            result.is_err(),
+            "an expired stream must report failure rather than partial success"
+        );
+        assert!(!events.is_empty());
+        assert!(started.elapsed() < Duration::from_secs(1));
+        server.join().unwrap();
     }
 
     #[test]
@@ -982,7 +1236,7 @@ mod tests {
         // closes the connection right after the final token).
         let bytes: Vec<u8> = b"data: a\r\n\r\ndata: b".to_vec();
         let mut got = Vec::new();
-        read_sse_lines(std::io::Cursor::new(bytes), |d| got.push(d.to_string()));
+        read_sse_lines(std::io::Cursor::new(bytes), |d| got.push(d.to_string())).unwrap();
         assert_eq!(got, vec!["a".to_string(), "b".to_string()]);
     }
 
@@ -998,7 +1252,8 @@ mod tests {
         read_sse_lines(std::io::Cursor::new(bytes), |data| {
             assert!(data.len() < MAX_SSE_LINE_BYTES as usize);
             got.push(data.to_string());
-        });
+        })
+        .unwrap();
         assert_eq!(got.last().map(String::as_str), Some("recovered"));
         assert!(got.len() <= 2, "oversized tail became extra SSE frames");
     }

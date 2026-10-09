@@ -6,4 +6,9 @@
 # are pre-filled for review. Press Alt-Enter (or $AISHE_NL_KEY) to force a line
 # to be treated as natural language, and Shift-Tab (or $AISHE_MODE_KEY) to cycle
 # the mode for the session.
+# A native AIShe PTY will install its own hook after the user's configuration.
+# Existing `eval "$(aishe init zsh)"` lines remain harmless there, without
+# returning early from the rest of the user's .zshrc.
+if [[ "${AISHE_LEAN:-0}" != 1 || -z "${AISHE_LEAN_REQ:-}" ]]; then
 # __AISHE_TEMPLATE_ZSH_HOOK_FINAL__
+fi

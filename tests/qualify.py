@@ -17,6 +17,7 @@ import json
 import os
 import pathlib
 import platform
+import re
 import shlex
 import shutil
 import subprocess
@@ -30,10 +31,13 @@ from harness_identity import cargo_version, parse_binary_identity, require_curre
 
 
 SCHEMA_VERSION = 1
-PROFILE_REVISION = "2026-07-31.5"
+PROFILE_REVISION = "2026-10-09.2"
 THREAT_MODEL_VERSION = "2026-07-31.1"
 THREAT_MODEL_REVIEWED = "2026-07-31"
 BINARY = "{release_binary}"
+NATIVE_CLEAN_ENV = (("AISHE_LEAN", "1"), ("AISHE_LEGACY_OPENCODE", "0"), ("AISHE_ZSH_PROFILE", "clean"))
+NATIVE_PERSONAL_ENV = (("AISHE_LEAN", "1"), ("AISHE_LEGACY_OPENCODE", "0"), ("AISHE_ZSH_PROFILE", "personal"))
+LEGACY_ENV = (("AISHE_LEAN", "0"), ("AISHE_LEGACY_OPENCODE", "1"), ("AISHE_ZSH_PROFILE", "clean"))
 
 
 @dataclasses.dataclass(frozen=True)
@@ -48,6 +52,7 @@ class Gate:
     platforms: frozenset[str] | None = None
     credential_env: str | None = None
     required_tools: tuple[str, ...] = ()
+    execution_env: tuple[tuple[str, str], ...] = NATIVE_CLEAN_ENV
 
 
 @dataclasses.dataclass(frozen=True)
@@ -178,6 +183,7 @@ def python_gate(
     platforms: frozenset[str] | None = None,
     credential_env: str | None = None,
     required: bool = True,
+    execution_env: tuple[tuple[str, str], ...] = NATIVE_CLEAN_ENV,
 ) -> Gate:
     return Gate(
         gate_id,
@@ -189,6 +195,7 @@ def python_gate(
         platforms=platforms,
         credential_env=credential_env,
         required_tools=("python3", *required_tools),
+        execution_env=execution_env,
     )
 
 
@@ -213,14 +220,59 @@ DOCS_CONTRACT = python_gate(
     timeout=120,
 )
 PTY_SMOKE = python_gate(
-    "pty-smoke", "Interactive zsh PTY smoke", "tests/pty_smoke.py", BINARY, required_tools=("zsh",)
+    "pty-smoke", "Native interactive display and handoff smoke", "tests/lean_ui_pty.py", BINARY, required_tools=("zsh",)
 )
 PTY_SCENARIOS = python_gate(
     "pty-scenarios",
-    "Routing, sigil, auto-mode, and history scenarios",
-    "tests/pty_scenarios.py",
+    "Native slash discovery, completion, and local routing",
+    "tests/lean_slash_pty.py",
     BINARY,
     required_tools=("zsh",),
+)
+NATIVE_TASK_CANCEL = python_gate(
+    "native-cancel-pty", "Native provider and command cancellation", "tests/lean_cancel_pty.py", BINARY,
+    required_tools=("zsh",), timeout=180,
+)
+NATIVE_MODE_GRANTS = python_gate(
+    "native-mode-grants-pty", "Native shell mode and scoped grants", "tests/lean_modes_pty.py", BINARY,
+    required_tools=("zsh",), timeout=180,
+)
+NATIVE_PICKERS = python_gate(
+    "native-picker-pty", "Native connection/model selection and shell isolation", "tests/lean_picker_pty.py", BINARY,
+    required_tools=("zsh",), timeout=180,
+)
+NATIVE_SETTINGS = python_gate(
+    "native-settings-pty", "Reviewed settings transactions and draft isolation", "tests/settings_pty.py", BINARY,
+    required_tools=("zsh",), timeout=300,
+)
+NATIVE_PROMPTS = python_gate(
+    "native-prompts-pty", "Shared prompt controls and exact terminal restoration", "tests/prompt_primitives_pty.py", BINARY,
+    required_tools=("zsh", "rustc"), timeout=180,
+)
+NATIVE_PROFILE = python_gate(
+    "native-personal-profile-pty", "Native personal startup files, widgets, prompts, and completion cache",
+    "tests/native_zsh_profile_pty.py", BINARY,
+    required_tools=("zsh",), timeout=300, execution_env=NATIVE_PERSONAL_ENV,
+)
+NATIVE_SHELL_STATE = python_gate(
+    "native-live-shell-state-pty", "Native agents use live shell exports and fail closed on invalid state",
+    "tests/live_shell_state_pty.py", BINARY, required_tools=("zsh",), timeout=180,
+)
+NATIVE_BACKGROUND_LIFECYCLE = python_gate(
+    "native-background-lifecycle", "Detached native cancellation, truthful outcomes, checkpoint resume, and rework",
+    "tests/native_background_lifecycle.py", BINARY, timeout=180,
+)
+NATIVE_BACKGROUND_UI = python_gate(
+    "native-background-ui", "Quiet task indicators, browser, controls, and terminal restoration",
+    "tests/background_tasks_pty.py", BINARY, required_tools=("zsh", "git"), timeout=300,
+)
+NATIVE_TASK_INTERACTIONS = python_gate(
+    "native-task-interactions", "Durable background questions, approvals, steering, evidence, and metadata",
+    "tests/native_task_interactions.py", BINARY, timeout=300,
+)
+NATIVE_TASK_INTERACTIONS_UI = python_gate(
+    "native-task-interactions-ui", "Needs you, live follow-ups, checks, and history with terminal restoration",
+    "tests/task_interactions_pty.py", BINARY, required_tools=("zsh", "git"), timeout=300,
 )
 BASH_HOOK_CURRENT = python_gate(
     "bash-hook-current",
@@ -318,6 +370,8 @@ QUICK_GATES = (
     LIVE_CONTRACT,
     PTY_SMOKE,
     PTY_SCENARIOS,
+    NATIVE_TASK_CANCEL,
+    NATIVE_MODE_GRANTS,
     BASH_HOOK_CURRENT,
 )
 
@@ -394,9 +448,29 @@ LOCAL_FULL_GATES = (
     LIVE_CONTRACT,
     PTY_SMOKE,
     PTY_SCENARIOS,
+    NATIVE_TASK_CANCEL,
+    NATIVE_MODE_GRANTS,
+    NATIVE_PICKERS,
+    NATIVE_SETTINGS,
+    NATIVE_PROMPTS,
+    NATIVE_PROFILE,
+    NATIVE_SHELL_STATE,
+    NATIVE_BACKGROUND_LIFECYCLE,
+    NATIVE_BACKGROUND_UI,
+    NATIVE_TASK_INTERACTIONS,
+    NATIVE_TASK_INTERACTIONS_UI,
+    python_gate(
+        "legacy-pty-smoke", "Explicit legacy zsh smoke", "tests/pty_smoke.py", BINARY,
+        required_tools=("zsh",), execution_env=LEGACY_ENV,
+    ),
+    python_gate(
+        "legacy-pty-scenarios", "Explicit legacy routing and history", "tests/pty_scenarios.py", BINARY,
+        required_tools=("zsh",), execution_env=LEGACY_ENV,
+    ),
     BASH_HOOK_CURRENT,
     python_gate(
-        "statusline-pty", "Statusline placement and live metrics", "tests/statusline_pty.py", BINARY, required_tools=("zsh",)
+        "statusline-pty", "Statusline placement and live metrics", "tests/statusline_pty.py", BINARY, required_tools=("zsh",),
+        execution_env=LEGACY_ENV,
     ),
     python_gate(
         "model-picker-pty",
@@ -404,6 +478,7 @@ LOCAL_FULL_GATES = (
         "tests/model_picker_pty.py",
         BINARY,
         required_tools=("zsh",),
+        execution_env=LEGACY_ENV,
     ),
     python_gate(
         "setup-pty", "Interactive setup state machine", "tests/setup_pty.py", BINARY, required_tools=("zsh",)
@@ -421,6 +496,7 @@ LOCAL_FULL_GATES = (
         "tests/yolo_consent_pty.py",
         BINARY,
         required_tools=("zsh",),
+        execution_env=LEGACY_ENV,
     ),
     python_gate(
         "palette-pty",
@@ -428,6 +504,7 @@ LOCAL_FULL_GATES = (
         "tests/palette_pty.py",
         BINARY,
         required_tools=("zsh",),
+        execution_env=LEGACY_ENV,
     ),
     python_gate(
         "mode-handoff-pty",
@@ -435,6 +512,7 @@ LOCAL_FULL_GATES = (
         "tests/mode_handoff_pty.py",
         BINARY,
         required_tools=("zsh",),
+        execution_env=LEGACY_ENV,
     ),
     python_gate(
         "bare-words-pty",
@@ -442,6 +520,7 @@ LOCAL_FULL_GATES = (
         "tests/bare_words_pty.py",
         BINARY,
         required_tools=("zsh",),
+        execution_env=LEGACY_ENV,
     ),
     python_gate(
         "theme-prompt-pty",
@@ -449,6 +528,7 @@ LOCAL_FULL_GATES = (
         "tests/theme_prompt_pty.py",
         BINARY,
         required_tools=("zsh",),
+        execution_env=LEGACY_ENV,
     ),
     python_gate(
         "keys-pty",
@@ -456,12 +536,14 @@ LOCAL_FULL_GATES = (
         "tests/keys_pty.py",
         BINARY,
         required_tools=("zsh",),
+        execution_env=LEGACY_ENV,
     ),
     python_gate(
         "usage-report",
         "Usage report reads the content-free ledger",
         "tests/usage_report_pty.py",
         BINARY,
+        execution_env=LEGACY_ENV,
     ),
     python_gate(
         "slash-highlight-pty",
@@ -469,6 +551,7 @@ LOCAL_FULL_GATES = (
         "tests/slash_highlight_pty.py",
         BINARY,
         required_tools=("zsh",),
+        execution_env=LEGACY_ENV,
     ),
     python_gate(
         "picker-arrows-pty",
@@ -483,6 +566,7 @@ LOCAL_FULL_GATES = (
         "tests/statusline_width_pty.py",
         BINARY,
         required_tools=("zsh",),
+        execution_env=LEGACY_ENV,
     ),
     python_gate(
         "docs-cli-block",
@@ -496,6 +580,7 @@ LOCAL_FULL_GATES = (
         "tests/opencode_runtime_contract.py",
         BINARY,
         timeout=900,
+        execution_env=LEGACY_ENV,
     ),
     python_gate(
         "connection-isolation",
@@ -503,6 +588,7 @@ LOCAL_FULL_GATES = (
         "tests/opencode_connection_isolation.py",
         BINARY,
         timeout=900,
+        execution_env=LEGACY_ENV,
     ),
     python_gate(
         "host-scope",
@@ -510,6 +596,7 @@ LOCAL_FULL_GATES = (
         "tests/opencode_host_scope.py",
         BINARY,
         timeout=900,
+        execution_env=LEGACY_ENV,
     ),
     python_gate(
         "opencode-soak",
@@ -525,6 +612,7 @@ LOCAL_FULL_GATES = (
         "--reconnect-every",
         "10",
         timeout=1800,
+        execution_env=LEGACY_ENV,
     ),
     python_gate(
         "opencode-concurrency",
@@ -534,6 +622,7 @@ LOCAL_FULL_GATES = (
         "--sessions",
         "8",
         timeout=900,
+        execution_env=LEGACY_ENV,
     ),
     python_gate(
         "durable-task-resume",
@@ -543,13 +632,31 @@ LOCAL_FULL_GATES = (
         timeout=900,
     ),
     python_gate(
-        "pty-fuzz", "Generated PTY and adversarial response fuzz", "tests/pty_fuzz.py", BINARY, required_tools=("zsh",)
+        "pty-fuzz", "Generated PTY and adversarial response fuzz", "tests/pty_fuzz.py", BINARY, required_tools=("zsh",),
+        execution_env=LEGACY_ENV,
     ),
     python_gate(
-        "zsh-features", "zsh feature matrix", "tests/zsh_features.py", BINARY, required_tools=("zsh",), timeout=900
+        "zsh-features", "zsh feature matrix", "tests/zsh_features.py", BINARY, "--profile", "clean", required_tools=("zsh",), timeout=180
     ),
     python_gate(
-        "pty-signals", "PTY signals and resize behavior", "tests/pty_signals.py", BINARY, required_tools=("zsh",)
+        "pty-signals", "PTY signals and resize behavior", "tests/pty_signals.py", BINARY, "--profile", "clean", required_tools=("zsh",), timeout=180
+    ),
+    python_gate(
+        "zsh-features-personal", "Native personal zsh feature matrix", "tests/zsh_features.py", BINARY,
+        "--profile", "personal", required_tools=("zsh",), timeout=180, execution_env=NATIVE_PERSONAL_ENV,
+    ),
+    python_gate(
+        "pty-signals-personal", "Native personal jobs, signals, paste, editors, and terminal restoration",
+        "tests/pty_signals.py", BINARY, "--profile", "personal",
+        required_tools=("zsh",), timeout=180, execution_env=NATIVE_PERSONAL_ENV,
+    ),
+    python_gate(
+        "zsh-features-legacy", "Explicit legacy zsh feature matrix", "tests/zsh_features.py", BINARY,
+        "--profile", "legacy", required_tools=("zsh",), timeout=180, execution_env=LEGACY_ENV,
+    ),
+    python_gate(
+        "pty-signals-legacy", "Explicit legacy jobs and terminal restoration", "tests/pty_signals.py", BINARY,
+        "--profile", "legacy", required_tools=("zsh",), timeout=180, execution_env=LEGACY_ENV,
     ),
     python_gate(
         "admin-validation",
@@ -566,6 +673,7 @@ LOCAL_FULL_GATES = (
         timeout=1800,
         credential_env="AISHE_REALTEST_KEY",
         required=False,
+        execution_env=LEGACY_ENV,
     ),
     python_gate(
         "real-model-fuzz",
@@ -575,6 +683,7 @@ LOCAL_FULL_GATES = (
         timeout=1800,
         credential_env="AISHE_REALTEST_KEY",
         required=False,
+        execution_env=LEGACY_ENV,
     ),
 )
 
@@ -825,10 +934,18 @@ def _gate_record(gate: Gate, binary: pathlib.Path) -> dict[str, object]:
         "status": "skip",
         "required": gate.required,
         "external_harness": gate.external_harness,
+        "execution_env": dict(gate.execution_env),
         "duration_ms": 0,
         "returncode": None,
         "skip_reason": None,
     }
+
+
+def reported_skip(output: str) -> str | None:
+    """A harness's zero exit is not proof that its required gate ran."""
+    plain = re.sub(r"\x1b\[[0-9;?]*[ -/]*[@-~]", "", output)
+    match = re.search(r"(?im)^\s*SKIP(?:\s|[:(])[^\n]*", plain)
+    return match.group().strip() if match else None
 
 
 def _write_report(output: pathlib.Path, report: dict[str, object]) -> None:
@@ -893,11 +1010,12 @@ def run_qualification(
     with tempfile.TemporaryDirectory(prefix="aishe-qualification-runtime-") as runtime_dir:
         run_env.setdefault("AISHE_RUNTIME_DIR", runtime_dir)
         for gate in profile.gates:
+            gate_env = {**run_env, **dict(gate.execution_env)}
             record = _gate_record(gate, binary)
             reason = _skip_reason(
                 gate,
                 platform_name=system,
-                env=run_env,
+                env=gate_env,
                 tool_finder=find_tool,
             )
             if reason:
@@ -937,7 +1055,7 @@ def run_qualification(
                     completed = command_runner.run(
                         command,
                         cwd=root,
-                        env=run_env,
+                        env=gate_env,
                         timeout=gate.timeout_seconds,
                     )
                     if completed.returncode == 0:
@@ -956,13 +1074,18 @@ def run_qualification(
                 completed = command_runner.run(
                     command,
                     cwd=root,
-                    env=run_env,
+                    env=gate_env,
                     timeout=gate.timeout_seconds,
                 )
             record["duration_ms"] = round((time.monotonic_ns() - gate_started) / 1_000_000, 3)
             record["returncode"] = completed.returncode
             record["skip_reason"] = None
-            if completed.returncode == 0:
+            skipped = reported_skip(completed.stdout + "\n" + completed.stderr)
+            if completed.returncode == 0 and skipped:
+                record["status"] = "skip"
+                record["skip_reason"] = "harness did not qualify the gate: " + skipped
+                announce(f"SKIP {gate.id}: {skipped}")
+            elif completed.returncode == 0:
                 record["status"] = "pass"
                 if gate.id == RELEASE_BUILD.id:
                     release_built = True

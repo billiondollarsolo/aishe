@@ -3,11 +3,14 @@
 //! supports arrow keys and simple letter shortcuts, and restores terminal mode
 //! on every exit path.
 
-use std::io::{BufRead, IsTerminal, Read, Write};
+#[cfg(test)]
+use std::io::BufRead;
+use std::io::{IsTerminal, Read, Write};
 #[cfg(unix)]
 use std::os::unix::io::AsRawFd;
 
 use anyhow::{Context, Result};
+use unicode_segmentation::UnicodeSegmentation;
 
 #[cfg(test)]
 use crate::ui::CapabilityInputs;
@@ -58,7 +61,7 @@ pub enum PickerResult {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum PickerKey {
+pub(crate) enum PickerKey {
     Up,
     Down,
     Home,
@@ -68,6 +71,7 @@ enum PickerKey {
     Enter,
     Backspace,
     Cancel,
+    Interrupt,
     Character(char),
     Other,
 }
@@ -76,6 +80,7 @@ const PICKER_MAX_VISIBLE_ROWS: usize = 20;
 const PICKER_FRAME_OVERHEAD_ROWS: usize = 4;
 const PICKER_HELP: &str = "type to search · ↑/↓ move · Enter select · Esc close";
 const PICKER_HELP_ASCII: &str = "type to search | Up/Down move | Enter select | Esc close";
+const MENU_MAX_VISIBLE_ROWS: usize = 12;
 
 /// One footer for every prompt. Menus, pickers, text prompts, and the hidden
 /// secret prompt used four different vocabularies, and the menu footer ignored
@@ -87,7 +92,11 @@ pub fn prompt_footer(capabilities: &TerminalCapabilities, back: bool) -> String 
     } else {
         ("↑/↓", " · ")
     };
-    let mut parts = vec![format!("{up} or number"), "Enter accept".to_string()];
+    let mut parts = vec![
+        format!("{up} move"),
+        "Enter select".to_string(),
+        "number jump".to_string(),
+    ];
     if back {
         parts.push("b back".into());
     }
@@ -115,18 +124,15 @@ pub fn filter_picker(title: &str, options: &[String], default: usize) -> Result<
             "interactive picker requires a terminal; pass the model or connection name directly"
         );
     }
-    // Title/help print in cooked mode so their newlines behave normally.
-    println!(
-        "\n  {}",
-        paint(&crate::commands::display_safe(title), ACCENT)
-    );
+    // The title stays in scrollback; the bounded interaction below is replaced
+    // in place and leaves only the accepted choice when it finishes.
+    section(title);
     let capabilities = TerminalCapabilities::detect_stdout();
     let help = if capabilities.glyphs().focus() == ">" {
         PICKER_HELP_ASCII
     } else {
         PICKER_HELP
     };
-    println!("  {}", capabilities.paint(MUTED, help));
     if capabilities.motion == Motion::Static {
         return static_filter_picker(options, default);
     }
@@ -143,11 +149,33 @@ pub fn filter_picker(title: &str, options: &[String], default: usize) -> Result<
         if selected >= matches.len() {
             selected = 0;
         }
-        let visible_rows = picker_visible_rows();
-        let lines = picker_frame_lines(options, &matches, &filter, selected, visible_rows);
+        let size = terminal_size();
+        let budget = size.1.saturating_sub(1).max(1);
+        let footer = if budget > 2 {
+            frame_footer(help, size, capabilities.glyphs())
+        } else {
+            Vec::new()
+        };
+        let summary = budget > footer.len() + 2;
+        let query = budget > 1;
+        let visible_rows = budget
+            .saturating_sub(usize::from(query) + usize::from(summary) + footer.len())
+            .clamp(1, PICKER_MAX_VISIBLE_ROWS);
+        let mut lines = picker_frame_lines(options, &matches, &filter, selected, visible_rows);
+        if !summary && !matches.is_empty() {
+            lines.remove(1);
+        }
+        if !query {
+            lines.remove(0);
+        }
+        lines.extend(footer);
+        lines.truncate(budget);
         draw_raw_frame(&lines, &mut drawn_rows, &capabilities);
         std::io::stdout().flush().ok();
-        match keys.read_key().context("reading picker input")? {
+        let Some(key) = keys.read_ui_key(size).context("reading picker input")? else {
+            continue;
+        };
+        match key {
             key @ (PickerKey::Up
             | PickerKey::Down
             | PickerKey::Home
@@ -157,8 +185,13 @@ pub fn filter_picker(title: &str, options: &[String], default: usize) -> Result<
                 selected = move_picker_selection(selected, matches.len(), key, visible_rows);
             }
             PickerKey::Enter if !matches.is_empty() => {
+                let receipt = crate::ui::render::picker_row(
+                    &crate::commands::display_safe(&options[matches[selected]]),
+                    true,
+                    usize::MAX,
+                );
+                draw_raw_frame(&[receipt], &mut drawn_rows, &capabilities);
                 drop(guard);
-                println!();
                 return Ok(PickerResult::Use(matches[selected]));
             }
             PickerKey::Backspace => {
@@ -172,8 +205,8 @@ pub fn filter_picker(title: &str, options: &[String], default: usize) -> Result<
                 }
             }
             PickerKey::Cancel => {
+                draw_raw_frame(&[], &mut drawn_rows, &capabilities);
                 drop(guard);
-                println!();
                 return Ok(PickerResult::Cancel);
             }
             _ => {}
@@ -187,28 +220,54 @@ fn static_menu(
     allow_back: bool,
     help: &str,
 ) -> Result<MenuResult> {
-    let terminal_columns = columns();
-    for (index, option) in options.iter().enumerate() {
-        print_option(index, option, terminal_columns);
-    }
-    println!(
-        "  Enter accepts {} | number selects{} | ? help | :cancel",
-        default.min(options.len() - 1) + 1,
-        if allow_back { " | b back" } else { "" }
-    );
+    let default = default.min(options.len() - 1);
+    let page_size = picker_visible_rows().min(MENU_MAX_VISIBLE_ROWS);
+    let page_count = options.len().div_ceil(page_size);
+    let mut page = default / page_size;
     loop {
+        let start = page * page_size;
+        let end = (start + page_size).min(options.len());
+        let accepted = if (start..end).contains(&default) {
+            default
+        } else {
+            start
+        };
+        note(&format!(
+            "page {}/{} | showing {}-{} of {}",
+            page + 1,
+            page_count,
+            start + 1,
+            end,
+            options.len()
+        ));
+        for (index, option) in options.iter().enumerate().take(end).skip(start) {
+            print_option(index, option, columns());
+        }
+        note(&format!(
+            "Enter selects {} | number selects{} | ? help{} | :cancel",
+            accepted + 1,
+            if allow_back { " | b back" } else { "" },
+            if page_count > 1 { " | :next/:prev" } else { "" }
+        ));
         print!("  > ");
         std::io::stdout().flush().ok();
-        let mut input = String::new();
-        if std::io::stdin().read_line(&mut input)? == 0 {
+        let Some(input) = read_terminal_line(true)? else {
             return Ok(MenuResult::Cancel);
-        }
+        };
         let input = input.trim();
         if input.is_empty() {
-            return Ok(MenuResult::Selected(default.min(options.len() - 1)));
+            return Ok(MenuResult::Selected(accepted));
         }
         if input == "?" {
-            print_help_static(help, terminal_columns);
+            note(help);
+            continue;
+        }
+        if input == ":next" {
+            page = (page + 1).min(page_count - 1);
+            continue;
+        }
+        if input == ":prev" {
+            page = page.saturating_sub(1);
             continue;
         }
         if allow_back && input.eq_ignore_ascii_case("b") {
@@ -218,7 +277,7 @@ fn static_menu(
             return Ok(MenuResult::Cancel);
         }
         if let Ok(number) = input.parse::<usize>() {
-            if (1..=options.len()).contains(&number) {
+            if (start + 1..=end).contains(&number) {
                 return Ok(MenuResult::Selected(number - 1));
             }
         }
@@ -226,87 +285,122 @@ fn static_menu(
     }
 }
 
-fn print_help_static(help: &str, terminal_columns: usize) {
-    let safe = crate::commands::display_safe(help);
-    let available = terminal_columns.saturating_sub(2).max(1);
-    for line in wrap_text(&safe, available) {
-        println!("  {}", paint(&line, MUTED));
-    }
-}
-
 fn static_filter_picker(options: &[String], default: usize) -> Result<PickerResult> {
-    let stdin = std::io::stdin();
     let stdout = std::io::stdout();
-    static_filter_picker_io(options, default, &mut stdin.lock(), &mut stdout.lock())
+    static_filter_picker_run(
+        options,
+        default,
+        || read_terminal_line(true),
+        &mut stdout.lock(),
+    )
 }
 
 /// Stdio implementation kept separate from TTY admission so the complete
 /// static interaction can be exercised deterministically without raw mode.
 /// This is also the screen-reader/uncertain-terminal contract: durable rows,
 /// line input, safe EOF/cancel, and no cursor restoration sequences.
+#[cfg(test)]
 fn static_filter_picker_io(
     options: &[String],
     default: usize,
     input: &mut impl BufRead,
     output: &mut impl Write,
 ) -> Result<PickerResult> {
+    static_filter_picker_run(
+        options,
+        default,
+        || {
+            let mut line = String::new();
+            if input.read_line(&mut line)? == 0 {
+                Ok(None)
+            } else {
+                Ok(Some(line))
+            }
+        },
+        output,
+    )
+}
+
+fn static_filter_picker_run(
+    options: &[String],
+    default: usize,
+    mut read_line: impl FnMut() -> Result<Option<String>>,
+    output: &mut impl Write,
+) -> Result<PickerResult> {
     let mut filter = String::new();
     let mut page = 0_usize;
+    let width = columns();
     loop {
         let matches = picker_matches(options, &filter);
         let page_count = matches.len().max(1).div_ceil(PICKER_MAX_VISIBLE_ROWS);
         page = page.min(page_count.saturating_sub(1));
         let start = page * PICKER_MAX_VISIBLE_ROWS;
         let end = (start + PICKER_MAX_VISIBLE_ROWS).min(matches.len());
-        writeln!(
+        write_static_wrapped(
             output,
-            "  filter: {}",
-            crate::commands::display_safe(&filter)
+            &format!("filter: {}", crate::commands::display_safe(&filter)),
+            width,
         )?;
+        let original_default = default.min(options.len() - 1);
+        let selected = matches
+            .iter()
+            .position(|index| *index == original_default)
+            .filter(|position| (start..end).contains(position))
+            .unwrap_or(start);
         if matches.is_empty() {
             writeln!(output, "  0 matches")?;
         } else {
-            writeln!(
+            write_static_wrapped(
                 output,
-                "  {} match{} | page {}/{} | showing {}-{}",
-                matches.len(),
-                if matches.len() == 1 { "" } else { "es" },
-                page + 1,
-                page_count,
-                start + 1,
-                end
+                &format!(
+                    "{} match{} | page {}/{} | showing {}-{}",
+                    matches.len(),
+                    if matches.len() == 1 { "" } else { "es" },
+                    page + 1,
+                    page_count,
+                    start + 1,
+                    end
+                ),
+                width,
             )?;
             for (visible, index) in matches[start..end].iter().enumerate() {
-                writeln!(
+                write_static_wrapped(
                     output,
-                    "    {}) {}",
-                    visible + 1,
-                    crate::commands::display_safe(&options[*index])
+                    &format!(
+                        "{}{}) {}",
+                        if start + visible == selected {
+                            "> "
+                        } else {
+                            "  "
+                        },
+                        visible + 1,
+                        crate::commands::display_safe(&options[*index])
+                    ),
+                    width,
                 )?;
             }
         }
-        writeln!(
+        let enter = if matches.is_empty() {
+            "no selection".to_string()
+        } else {
+            format!("Enter selects {}", selected - start + 1)
+        };
+        write_static_wrapped(
             output,
-            "  Enter uses current default/first | number selects | text filters | :next | :prev | :cancel"
+            &format!("{enter} | number selects | text filters | :next/:prev | :cancel"),
+            width,
         )?;
         write!(output, "  > ")?;
         output.flush()?;
-        let mut line = String::new();
-        if input.read_line(&mut line)? == 0 {
+        let Some(line) = read_line()? else {
             return Ok(PickerResult::Cancel);
-        }
+        };
         let response = line.trim();
         match response {
             ":cancel" | ":back" => return Ok(PickerResult::Cancel),
-            ":next" if page + 1 < page_count => page += 1,
-            ":prev" if page > 0 => page -= 1,
+            ":next" => page = (page + 1).min(page_count - 1),
+            ":prev" => page = page.saturating_sub(1),
             "" if !matches.is_empty() => {
-                let original_default = default.min(options.len() - 1);
-                let selected = matches
-                    .iter()
-                    .position(|index| *index == original_default)
-                    .filter(|position| (start..end).contains(position))
-                    .unwrap_or(start.min(matches.len() - 1));
                 return Ok(PickerResult::Use(matches[selected]));
             }
             value => {
@@ -322,6 +416,14 @@ fn static_filter_picker_io(
             }
         }
     }
+}
+
+fn write_static_wrapped(output: &mut impl Write, value: &str, width: usize) -> std::io::Result<()> {
+    let indent = if width > 2 { "  " } else { "" };
+    for line in wrap_text(value, width.saturating_sub(indent.len()).max(1)) {
+        writeln!(output, "{indent}{line}")?;
+    }
+    Ok(())
 }
 
 fn picker_matches(options: &[String], filter: &str) -> Vec<usize> {
@@ -481,8 +583,14 @@ pub fn performance_picker_frame(
 /// `drawn_rows` is the number of content lines written on the previous frame.
 /// After each frame the cursor sits on the blank line immediately below the
 /// last content row, so the next redraw moves up exactly `drawn_rows` lines.
-fn draw_raw_frame(lines: &[String], drawn_rows: &mut usize, capabilities: &TerminalCapabilities) {
-    let width = columns().max(1);
+pub(crate) fn draw_raw_frame(
+    lines: &[String],
+    drawn_rows: &mut usize,
+    capabilities: &TerminalCapabilities,
+) {
+    // Reserve the last column. Autowrap there creates an extra physical row
+    // that would make the next in-place redraw move to the wrong line.
+    let width = columns().saturating_sub(1).max(1);
     if *drawn_rows > 0 {
         // Cursor is on the blank line under the previous frame.
         print!("\r\x1b[{}A", *drawn_rows);
@@ -499,7 +607,7 @@ fn draw_raw_frame(lines: &[String], drawn_rows: &mut usize, capabilities: &Termi
     *drawn_rows = lines.len();
 }
 
-fn style_picker_line(line: &str, index: usize, capabilities: &TerminalCapabilities) -> String {
+fn style_picker_line(line: &str, _index: usize, capabilities: &TerminalCapabilities) -> String {
     if let Some(query) = line.strip_prefix("  search: ") {
         return format!(
             "  {} {}",
@@ -507,10 +615,13 @@ fn style_picker_line(line: &str, index: usize, capabilities: &TerminalCapabiliti
             capabilities.paint(StyleToken::ProposedCommand, query)
         );
     }
-    if index == 1 {
+    if (line.contains(" of ") && line.split_whitespace().count() == 3)
+        || line.starts_with("  keys: ")
+        || line.starts_with("  help: ")
+    {
         return capabilities.paint(MUTED, line);
     }
-    if line.starts_with("  > ") {
+    if line.starts_with("  > ") || line.starts_with("  › ") {
         return capabilities.paint(FOCUS, line);
     }
     if let Some((command, summary)) = line.split_once(" — ") {
@@ -531,7 +642,7 @@ fn style_picker_line(line: &str, index: usize, capabilities: &TerminalCapabiliti
 /// into the user-space buffer; a subsequent `poll(STDIN)` then sees no kernel
 /// data and times out as bare Esc → cancel. That is why ↑ looked like cancel
 /// in `/model` and `/connection` over SSH and local PTYs.
-struct PickerInput {
+pub(crate) struct PickerInput {
     #[cfg(unix)]
     file: std::fs::File,
     #[cfg(not(unix))]
@@ -542,7 +653,7 @@ struct PickerInput {
 }
 
 impl PickerInput {
-    fn open() -> Result<Self> {
+    pub(crate) fn open() -> Result<Self> {
         #[cfg(unix)]
         {
             // The inherited fd is essential under the zsh-PTY front-end:
@@ -604,6 +715,9 @@ impl PickerInput {
     }
 
     fn poll_ready(&self, timeout_ms: i32) -> bool {
+        if !self.pending.is_empty() {
+            return true;
+        }
         #[cfg(unix)]
         {
             let mut pollfd = libc::pollfd {
@@ -613,7 +727,7 @@ impl PickerInput {
             };
             // SAFETY: one initialized pollfd for the duration of the call.
             let available = unsafe { libc::poll(&mut pollfd, 1, timeout_ms) };
-            available > 0 && pollfd.revents & libc::POLLIN != 0
+            available > 0 && pollfd.revents & (libc::POLLIN | libc::POLLHUP | libc::POLLERR) != 0
         }
         #[cfg(not(unix))]
         {
@@ -626,7 +740,7 @@ impl PickerInput {
         let first = self.read_byte()?;
         Ok(match first {
             b'\r' | b'\n' => PickerKey::Enter,
-            3 => PickerKey::Cancel,
+            3 | 4 => PickerKey::Cancel,
             14 => PickerKey::Down,
             16 => PickerKey::Up,
             8 | 127 => PickerKey::Backspace,
@@ -655,10 +769,58 @@ impl PickerInput {
         })
     }
 
+    /// Resize-aware input without installing a process-global signal handler.
+    /// A short poll lets the small inline frame update even before another key
+    /// is pressed. Detached input is a normal cancellation path.
+    fn read_ui_key(&mut self, previous_size: (usize, usize)) -> std::io::Result<Option<PickerKey>> {
+        loop {
+            if self.poll_ready(100) {
+                return match self.read_key() {
+                    Ok(key) => Ok(Some(key)),
+                    Err(error) if error.kind() == std::io::ErrorKind::UnexpectedEof => {
+                        Ok(Some(PickerKey::Cancel))
+                    }
+                    Err(error) => Err(error),
+                };
+            }
+            if terminal_size() != previous_size {
+                return Ok(None);
+            }
+        }
+    }
+
+    /// Bounded wait for a live inline view. No process-global event reader or
+    /// signal handler is needed, and EOF remains an ordinary close action.
+    pub(crate) fn read_live_key(&mut self, timeout_ms: i32) -> std::io::Result<Option<PickerKey>> {
+        if !self.poll_ready(timeout_ms) {
+            return Ok(None);
+        }
+        match self.read_byte() {
+            Ok(3 | 4) => return Ok(Some(PickerKey::Interrupt)),
+            Ok(27) => return self.read_escape_sequence_with_timeout(40).map(Some),
+            Ok(byte) => self.pending.insert(0, byte),
+            Err(error) if error.kind() == std::io::ErrorKind::UnexpectedEof => {
+                return Ok(Some(PickerKey::Interrupt));
+            }
+            Err(error) => return Err(error),
+        }
+        match self.read_key() {
+            Ok(key) => Ok(Some(key)),
+            Err(error) if error.kind() == std::io::ErrorKind::UnexpectedEof => {
+                Ok(Some(PickerKey::Cancel))
+            }
+            Err(error) => Err(error),
+        }
+    }
+
     /// Parse navigation keys encoded as ESC + CSI or SS3 sequences.
     fn read_escape_sequence(&mut self) -> std::io::Result<PickerKey> {
+        self.read_escape_sequence_with_timeout(300)
+    }
+
+    fn read_escape_sequence_with_timeout(&mut self, timeout_ms: i32) -> std::io::Result<PickerKey> {
         // Prefer bytes already available; only then wait (SSH lag).
-        let Some(second) = self.poll_byte(300)? else {
+        let Some(second) = self.poll_byte(timeout_ms)? else {
             return Ok(PickerKey::Cancel);
         };
         match second {
@@ -677,6 +839,13 @@ impl PickerInput {
             }
             // CSI: ESC [ … final
             b'[' => {}
+            _ if timeout_ms < 300 => {
+                // A second Escape should back out another level, rather than
+                // being swallowed as an unsupported Alt key. Likewise keep a
+                // following printable key for the view reached by Escape.
+                self.pending.insert(0, second);
+                return Ok(PickerKey::Cancel);
+            }
             _ => return Ok(PickerKey::Other),
         }
 
@@ -713,12 +882,20 @@ impl PickerInput {
 #[cfg(test)]
 impl PickerInput {
     fn from_bytes(bytes: &[u8]) -> Self {
+        #[cfg(unix)]
+        let file = {
+            // /dev/null is readable at EOF on Linux, but Darwin poll does not
+            // report it as ready. A closed stream models a detached input on
+            // both platforms and keeps the EOF cancellation assertion real.
+            let (reader, writer) =
+                std::os::unix::net::UnixStream::pair().expect("create detached input fixture");
+            drop(writer);
+            let descriptor: std::os::fd::OwnedFd = reader.into();
+            std::fs::File::from(descriptor)
+        };
         Self {
             #[cfg(unix)]
-            file: std::fs::OpenOptions::new()
-                .read(true)
-                .open("/dev/null")
-                .expect("open /dev/null"),
+            file,
             #[cfg(not(unix))]
             _stdin: std::io::stdin(),
             pending: bytes.to_vec(),
@@ -726,10 +903,10 @@ impl PickerInput {
     }
 }
 
-struct RawGuard;
+pub(crate) struct RawGuard;
 
 impl RawGuard {
-    fn enter() -> Result<Self> {
+    pub(crate) fn enter() -> Result<Self> {
         crossterm::terminal::enable_raw_mode().context("enabling terminal raw mode")?;
         Ok(Self)
     }
@@ -758,11 +935,39 @@ fn paint(text: &str, style: StyleToken) -> String {
 }
 
 fn columns() -> usize {
+    terminal_size().0
+}
+
+pub(crate) fn terminal_size() -> (usize, usize) {
     crossterm::terminal::size()
         .ok()
-        .map(|(columns, _)| usize::from(columns))
-        .filter(|columns| *columns > 0)
-        .unwrap_or(80)
+        // A newly allocated PTY can report a successful zero-size ioctl until
+        // its owner supplies dimensions. Use the same fallback as an absent
+        // terminal rather than rendering every character on a separate line.
+        .filter(|(width, height)| *width > 0 && *height > 0)
+        .map(|(width, height)| (usize::from(width), usize::from(height)))
+        .unwrap_or((80, 24))
+}
+
+fn frame_footer(help: &str, size: (usize, usize), glyphs: crate::ui::Glyphs) -> Vec<String> {
+    let width = size.0.saturating_sub(3).max(1);
+    let full = crate::ui::wrap_cells(&format!("keys: {help}"), width)
+        .into_iter()
+        .map(|line| crate::ui::truncate_cells_with(&line, width, glyphs))
+        .collect::<Vec<_>>();
+    let lines = if full.len() + 3 <= size.1 {
+        full
+    } else {
+        vec![crate::ui::truncate_cells_with(
+            "keys: Enter select | Esc cancel",
+            width,
+            glyphs,
+        )]
+    };
+    if size.1 < 3 {
+        return Vec::new();
+    }
+    lines.into_iter().map(|line| format!("  {line}")).collect()
 }
 
 fn display_width(value: &str) -> usize {
@@ -775,11 +980,20 @@ fn truncate_to_width(value: &str, width: usize) -> String {
 
 fn wrap_text(value: &str, width: usize) -> Vec<String> {
     crate::ui::wrap_cells(value, width)
+        .into_iter()
+        .map(|line| truncate_to_width(&line, width))
+        .collect()
 }
 
 fn print_wrapped(indent: &str, value: &str, style: Option<StyleToken>) {
     let safe = crate::commands::display_safe(value);
-    let available = columns().saturating_sub(display_width(indent)).max(1);
+    let width = columns();
+    let indent = if display_width(indent) < width {
+        indent
+    } else {
+        ""
+    };
+    let available = width.saturating_sub(display_width(indent)).max(1);
     for line in wrap_text(&safe, available) {
         let line = style.map_or(line.clone(), |token| paint(&line, token));
         println!("{indent}{line}");
@@ -790,20 +1004,71 @@ fn print_wrapped(indent: &str, value: &str, style: Option<StyleToken>) {
 /// experiences. Styling is deliberately ANSI-only and opt-out via NO_COLOR so
 /// it remains readable over SSH and in basic terminals.
 pub fn header(title: &str, description: &str, note: &str) {
+    section(title);
+    if !description.is_empty() {
+        print_wrapped("  ", description, None);
+    }
+    if !note.is_empty() {
+        self::note(note);
+    }
+}
+
+/// A quiet paragraph for state, context, and brief instructions.
+pub fn note(message: &str) {
+    print_wrapped("  ", message, Some(MUTED));
+}
+
+/// Width-aware label/value rows for setup and settings summaries. Labels and
+/// values are escaped independently, so file names and remote model IDs cannot
+/// introduce terminal control sequences or alter the layout.
+pub fn key_value(label: &str, value: &str) {
     let capabilities = TerminalCapabilities::detect_stdout();
-    let safe_title = crate::commands::display_safe(title);
-    println!("\n  {}", paint(&safe_title, ACCENT));
-    let rule = if capabilities.glyphs().focus() == ">" {
-        "-"
+    let width = columns();
+    for line in key_value_lines(label, value, width) {
+        let (indent, content) = line
+            .strip_prefix("  ")
+            .map_or(("", line.as_str()), |value| ("  ", value));
+        if let Some((label, value)) = content.split_once("  ") {
+            println!(
+                "{indent}{}  {}",
+                capabilities.paint(MUTED, label),
+                capabilities.paint(StyleToken::ProposedCommand, value)
+            );
+        } else {
+            println!("{}", capabilities.paint(StyleToken::ProposedCommand, &line));
+        }
+    }
+}
+
+fn key_value_lines(label: &str, value: &str, width: usize) -> Vec<String> {
+    let safe_label = crate::commands::display_safe(label);
+    let safe_value = crate::commands::display_safe(value);
+    let indent = if width >= 4 { "  " } else { "" };
+    let label_width = 14;
+    let available = width.saturating_sub(indent.len() + label_width + 2);
+    if available >= 12 {
+        let mut label = crate::ui::truncate_cells(&safe_label, label_width);
+        label.push_str(&" ".repeat(label_width.saturating_sub(display_width(&label))));
+        let lines = wrap_text(&safe_value, available);
+        lines
+            .iter()
+            .enumerate()
+            .map(|(index, line)| {
+                let label = if index == 0 {
+                    label.clone()
+                } else {
+                    " ".repeat(label_width)
+                };
+                format!("{indent}{label}  {line}")
+            })
+            .collect()
     } else {
-        "─"
-    };
-    println!(
-        "  {}",
-        paint(&rule.repeat(display_width(&safe_title)), ACCENT)
-    );
-    print_wrapped("  ", description, None);
-    print_wrapped("  ", note, Some(MUTED));
+        let available = width.saturating_sub(indent.len()).max(1);
+        wrap_text(&format!("{safe_label}: {safe_value}"), available)
+            .into_iter()
+            .map(|line| format!("{indent}{line}"))
+            .collect()
+    }
 }
 
 pub fn brand() {
@@ -817,10 +1082,8 @@ pub fn brand() {
 }
 
 pub fn section(title: &str) {
-    println!(
-        "\n  {}",
-        paint(&crate::commands::display_safe(title), ACCENT)
-    );
+    println!();
+    print_wrapped("  ", title, Some(ACCENT));
 }
 
 pub fn success(message: &str) {
@@ -862,19 +1125,11 @@ pub fn menu(
     if !std::io::stdin().is_terminal() || !std::io::stdout().is_terminal() {
         anyhow::bail!("interactive menu requires a terminal");
     }
-    println!(
-        "\n  {}",
-        paint(&crate::commands::display_safe(title), ACCENT)
-    );
-    if TerminalCapabilities::detect_stdout().motion == Motion::Static {
+    section(title);
+    let capabilities = TerminalCapabilities::detect_stdout();
+    if capabilities.motion == Motion::Static {
         return static_menu(options, default, allow_back, help);
     }
-    let terminal_columns = columns();
-    for (index, option) in options.iter().enumerate() {
-        print_option(index, option, terminal_columns);
-    }
-    let instructions = prompt_footer(&TerminalCapabilities::detect_stdout(), allow_back);
-    print_wrapped("  ", &instructions, Some(MUTED));
     let selected = default.min(options.len() - 1);
     // Read keys through the picker's unbuffered stdin reader. Under the
     // zsh-PTY front-end /dev/tty is the *outer* proxy terminal, so a
@@ -882,18 +1137,9 @@ pub fn menu(
     // `aishe tour` died after painting their first screen.
     let mut keys = PickerInput::open().context("opening menu input")?;
     let guard = RawGuard::enter()?;
-    print_selection(selected, &options[selected], terminal_columns);
-    let result = menu_select(
-        &mut keys,
-        options,
-        selected,
-        allow_back,
-        help,
-        terminal_columns,
-    );
+    let result = menu_select(&mut keys, options, selected, allow_back, help, columns());
     // Leave raw mode before the cooked newline; unwinding also drops the guard.
     drop(guard);
-    println!();
     result
 }
 
@@ -903,29 +1149,53 @@ fn menu_select(
     mut selected: usize,
     allow_back: bool,
     help: &str,
-    terminal_columns: usize,
+    _terminal_columns: usize,
 ) -> Result<MenuResult> {
     let mut number_buffer = String::new();
+    let capabilities = TerminalCapabilities::detect_stdout();
+    let mut drawn_rows = 0;
+    let mut show_help = false;
     loop {
-        let key = match keys.read_key() {
-            Ok(key) => key,
-            Err(error) if error.kind() == std::io::ErrorKind::UnexpectedEof => {
-                return Ok(MenuResult::Cancel)
-            }
-            Err(error) => return Err(error).context("reading menu input"),
+        let size = terminal_size();
+        let lines = menu_frame_lines(
+            options,
+            selected,
+            allow_back,
+            if show_help { help } else { "" },
+            &capabilities,
+            size,
+        );
+        draw_raw_frame(&lines, &mut drawn_rows, &capabilities);
+        std::io::stdout().flush().ok();
+        let Some(key) = keys.read_ui_key(size).context("reading menu input")? else {
+            continue;
         };
         match key {
             PickerKey::Up | PickerKey::Character('k') => {
                 number_buffer.clear();
                 selected = selected.checked_sub(1).unwrap_or(options.len() - 1);
-                print_selection(selected, &options[selected], terminal_columns);
             }
             PickerKey::Down | PickerKey::Character('j') => {
                 number_buffer.clear();
                 selected = (selected + 1) % options.len();
-                print_selection(selected, &options[selected], terminal_columns);
             }
-            PickerKey::Enter => return Ok(MenuResult::Selected(selected)),
+            PickerKey::Home | PickerKey::End | PickerKey::PageUp | PickerKey::PageDown => {
+                number_buffer.clear();
+                selected =
+                    move_picker_selection(selected, options.len(), key, MENU_MAX_VISIBLE_ROWS);
+            }
+            PickerKey::Enter => {
+                let mut receipt =
+                    selected_menu_lines(&options[selected], selected, &capabilities, size.0);
+                limit_selected_lines(
+                    &mut receipt,
+                    size.1.saturating_sub(1).max(1),
+                    size.0,
+                    &capabilities,
+                );
+                draw_raw_frame(&receipt, &mut drawn_rows, &capabilities);
+                return Ok(MenuResult::Selected(selected));
+            }
             PickerKey::Character(c) if c.is_ascii_digit() => {
                 number_buffer.push(c);
                 if !(1..=options.len()).any(|number| number.to_string().starts_with(&number_buffer))
@@ -936,17 +1206,190 @@ fn menu_select(
                 let index = number_buffer.parse::<usize>().unwrap_or(0);
                 if index >= 1 && index <= options.len() {
                     selected = index - 1;
-                    print_selection(selected, &options[selected], terminal_columns);
                 }
             }
-            PickerKey::Character('b' | 'B') if allow_back => return Ok(MenuResult::Back),
+            PickerKey::Character('b' | 'B') if allow_back => {
+                draw_raw_frame(&[], &mut drawn_rows, &capabilities);
+                return Ok(MenuResult::Back);
+            }
             PickerKey::Character('?') => {
                 number_buffer.clear();
-                print_help(help, terminal_columns);
-                print_selection(selected, &options[selected], terminal_columns);
+                show_help = !show_help;
             }
-            PickerKey::Cancel | PickerKey::Character('q' | 'Q') => return Ok(MenuResult::Cancel),
+            PickerKey::Cancel | PickerKey::Character('q' | 'Q') => {
+                draw_raw_frame(&[], &mut drawn_rows, &capabilities);
+                return Ok(MenuResult::Cancel);
+            }
             _ => {}
+        }
+    }
+}
+
+fn menu_frame_lines(
+    options: &[String],
+    selected: usize,
+    allow_back: bool,
+    help: &str,
+    capabilities: &TerminalCapabilities,
+    size: (usize, usize),
+) -> Vec<String> {
+    let budget = size.1.saturating_sub(1).max(1);
+    let mut selected_lines =
+        selected_menu_lines(&options[selected], selected, capabilities, size.0);
+    let mut footer = frame_footer(
+        &prompt_footer(capabilities, allow_back),
+        size,
+        capabilities.glyphs(),
+    );
+    // Give the complete active value priority over the longer key legend.
+    // Each wrapped line is an actual terminal row, so the option viewport must
+    // account for it before deciding how many neighboring options fit.
+    if selected_lines.len() + footer.len() > budget && !footer.is_empty() {
+        footer = frame_footer(
+            "Enter select | Esc cancel",
+            (size.0, 3),
+            capabilities.glyphs(),
+        );
+    }
+    let summary_rows = usize::from(budget >= footer.len() + selected_lines.len() + 2);
+    limit_selected_lines(
+        &mut selected_lines,
+        budget.saturating_sub(footer.len() + summary_rows).max(1),
+        size.0,
+        capabilities,
+    );
+    let help_width = size.0.saturating_sub(3).max(1);
+    let help_lines = if help.is_empty() {
+        Vec::new()
+    } else {
+        let mut lines = wrap_text(
+            &format!("help: {}", crate::commands::display_safe(help)),
+            help_width,
+        );
+        let available = budget.saturating_sub(footer.len() + summary_rows + selected_lines.len());
+        if lines.len() > available {
+            lines.truncate(available);
+            if let Some(last) = lines.last_mut() {
+                *last = crate::ui::truncate_cells_with(
+                    &format!("{last}{}", capabilities.glyphs().ellipsis()),
+                    help_width,
+                    capabilities.glyphs(),
+                );
+            }
+        }
+        lines
+            .into_iter()
+            .map(|line| format!("  {line}"))
+            .collect::<Vec<_>>()
+    };
+    let visible = budget
+        .saturating_sub(footer.len() + summary_rows + help_lines.len())
+        .saturating_sub(selected_lines.len().saturating_sub(1))
+        .clamp(1, MENU_MAX_VISIBLE_ROWS);
+    let (start, end) = picker_viewport(options.len(), selected, visible);
+    let mut lines = Vec::new();
+    if summary_rows > 0 {
+        lines.push(format!("  {} of {}", selected + 1, options.len()));
+    }
+    for (index, option) in options.iter().enumerate().take(end).skip(start) {
+        if index == selected {
+            lines.extend(selected_lines.iter().cloned());
+        } else {
+            lines.push(crate::ui::truncate_cells_with(
+                &format!(
+                    "    {}) {}",
+                    index + 1,
+                    crate::commands::display_safe(option)
+                ),
+                size.0.saturating_sub(1).max(1),
+                capabilities.glyphs(),
+            ));
+        }
+    }
+    lines.extend(help_lines);
+    lines.extend(footer);
+    lines.truncate(budget);
+    lines
+        .into_iter()
+        .map(|line| {
+            crate::ui::truncate_cells_with(
+                &line,
+                size.0.saturating_sub(1).max(1),
+                capabilities.glyphs(),
+            )
+        })
+        .collect()
+}
+
+/// The active option is one wrapped row group, never a second preview. Its
+/// continuation lines align with the label rather than the focus/number mark.
+fn selected_menu_lines(
+    option: &str,
+    index: usize,
+    capabilities: &TerminalCapabilities,
+    columns: usize,
+) -> Vec<String> {
+    let width = columns.saturating_sub(1).max(1);
+    let full_prefix = format!("  {} {}) ", capabilities.glyphs().focus(), index + 1);
+    let prefix = if display_width(&full_prefix) < width {
+        full_prefix
+    } else if width > 2 {
+        format!("{} ", capabilities.glyphs().focus())
+    } else {
+        return vec![capabilities.glyphs().focus().to_string()];
+    };
+    let indent = " ".repeat(display_width(&prefix));
+    let available = width.saturating_sub(display_width(&prefix)).max(1);
+    crate::ui::wrap_cells(&crate::commands::display_safe(option), available)
+        .into_iter()
+        .map(|line| crate::ui::truncate_cells_with(&line, available, capabilities.glyphs()))
+        .enumerate()
+        .map(|(line, value)| format!("{}{value}", if line == 0 { &prefix } else { &indent }))
+        .collect()
+}
+
+fn limit_selected_lines(
+    lines: &mut Vec<String>,
+    rows: usize,
+    columns: usize,
+    capabilities: &TerminalCapabilities,
+) {
+    if lines.len() > rows {
+        lines.truncate(rows);
+        if let Some(last) = lines.last_mut() {
+            let width = columns.saturating_sub(1).max(1);
+            if rows == 1 {
+                // An ASCII ellipsis can consume the entire tiny row. Keep the
+                // focus/number prefix and spend only the label's cells on it.
+                let focus = capabilities.glyphs().focus();
+                let prefix_bytes = if last.starts_with(&format!("  {focus} ")) {
+                    last.find(") ")
+                        .map(|index| index + 2)
+                        .unwrap_or(focus.len())
+                } else if last.starts_with(&format!("{focus} ")) {
+                    focus.len() + 1
+                } else {
+                    focus.len()
+                };
+                let (prefix, value) = last.split_at(prefix_bytes);
+                let available = width.saturating_sub(display_width(prefix));
+                let tail = if available < display_width(capabilities.glyphs().ellipsis()) {
+                    ".".repeat(available)
+                } else {
+                    crate::ui::truncate_cells_with(
+                        &format!("{value}{}", capabilities.glyphs().ellipsis()),
+                        available,
+                        capabilities.glyphs(),
+                    )
+                };
+                *last = format!("{prefix}{tail}");
+            } else {
+                *last = crate::ui::truncate_cells_with(
+                    &format!("{last}{}", capabilities.glyphs().ellipsis()),
+                    width,
+                    capabilities.glyphs(),
+                );
+            }
         }
     }
 }
@@ -966,27 +1409,6 @@ fn print_option(index: usize, option: &str, terminal_columns: usize) {
     }
 }
 
-fn print_selection(index: usize, label: &str, terminal_columns: usize) {
-    // Single bottom focus row: rewrite the current line in place with CR, never
-    // emit bare LF under raw mode (that would staircase subsequent output).
-    let safe = crate::commands::display_safe(label);
-    let available = terminal_columns.saturating_sub(2).max(1);
-    let capabilities = TerminalCapabilities::detect_stdout();
-    let content = crate::ui::render::focus_row(index, &safe, &capabilities, available);
-    print!("\r\x1b[2K  {}", paint(&content, FOCUS));
-    std::io::stdout().flush().ok();
-}
-
-fn print_help(help: &str, terminal_columns: usize) {
-    // Help is printed under raw mode; use CRLF so wrapped lines stay left-aligned.
-    let safe = crate::commands::display_safe(help);
-    let available = terminal_columns.saturating_sub(2).max(1);
-    print!("\r\x1b[2K");
-    for line in wrap_text(&safe, available) {
-        print!("  {}\r\n", paint(&line, MUTED));
-    }
-}
-
 pub fn text(
     label: &str,
     default: &str,
@@ -995,10 +1417,9 @@ pub fn text(
     loop {
         print_text_prompt(label, default);
         std::io::stdout().flush().ok();
-        let mut line = String::new();
-        if std::io::stdin().read_line(&mut line)? == 0 {
+        let Some(line) = read_text_line()? else {
             return Ok(None);
-        }
+        };
         let value = line.trim();
         if value.eq_ignore_ascii_case(":cancel") {
             return Ok(None);
@@ -1009,54 +1430,99 @@ pub fn text(
         let value = if value.is_empty() { default } else { value };
         match validate(value) {
             Ok(()) => return Ok(Some(value.to_string())),
-            Err(error) => println!(
-                "  {}",
-                paint(
-                    &format!("! {}", crate::commands::display_safe(&error.to_string())),
-                    WARNING
-                )
-            ),
+            Err(error) => print_wrapped("  ", &format!("! {error}"), Some(WARNING)),
         }
     }
 }
 
 fn print_text_prompt(label: &str, default: &str) {
-    let safe_label = crate::commands::display_safe(label);
-    let safe_default = crate::commands::display_safe(default);
-    let compact_width = 2
-        + display_width(&safe_label)
-        + display_width(&safe_default)
-        + display_width(" [] (or :back/:cancel): ");
-    if compact_width <= columns() {
-        print!(
-            "  {} [{}] {} ",
-            paint(&safe_label, ACCENT),
-            paint(&safe_default, MUTED),
-            paint("(or :back/:cancel):", MUTED)
-        );
-    } else {
-        println!("  {}", paint(&safe_label, ACCENT));
-        let default_prefix = "    default: ";
-        let available = columns()
-            .saturating_sub(display_width(default_prefix))
-            .max(1);
-        let lines = wrap_text(&safe_default, available);
-        println!(
-            "{}{}",
-            paint(default_prefix, MUTED),
-            paint(&lines[0], MUTED)
-        );
-        let continuation = " ".repeat(display_width(default_prefix));
-        for line in lines.iter().skip(1) {
-            println!("{}{}", paint(&continuation, MUTED), paint(line, MUTED));
-        }
-        println!(
-            "  {}",
-            paint("Enter keeps the default · :back · :cancel", MUTED)
-        );
-        let focus = TerminalCapabilities::detect_stdout().glyphs().focus();
-        print!("  {} ", paint(focus, ACCENT));
+    print_wrapped("  ", label, Some(ACCENT));
+    if !default.is_empty() {
+        key_value("default", default);
     }
+    let interactive = std::io::stdin().is_terminal() && std::io::stdout().is_terminal();
+    let accept = if default.is_empty() {
+        "Enter submits"
+    } else {
+        "Enter keeps default"
+    };
+    note(&format!(
+        "{accept} | :back | :cancel{}",
+        if interactive { " | Esc cancels" } else { "" }
+    ));
+}
+
+fn read_text_line() -> Result<Option<String>> {
+    if !std::io::stdin().is_terminal() || !std::io::stdout().is_terminal() {
+        print!("  > ");
+        std::io::stdout().flush().ok();
+        let mut line = String::new();
+        return if std::io::stdin().read_line(&mut line)? == 0 {
+            Ok(None)
+        } else {
+            Ok(Some(line))
+        };
+    }
+    if TerminalCapabilities::detect_stdout().motion == Motion::Static {
+        print!("  > ");
+        std::io::stdout().flush().ok();
+        return read_terminal_line(true);
+    }
+    let mut keys = PickerInput::open().context("opening text input")?;
+    let guard = RawGuard::enter()?;
+    let capabilities = TerminalCapabilities::detect_stdout();
+    let mut line = String::new();
+    let result = loop {
+        let size = terminal_size();
+        let prefix = if size.0 > 5 {
+            format!("  {} ", capabilities.glyphs().focus())
+        } else {
+            String::new()
+        };
+        let available = size.0.saturating_sub(display_width(&prefix) + 1).max(1);
+        let visible = input_tail(&line, available);
+        print!("\r\x1b[2K{prefix}{visible}");
+        std::io::stdout().flush().ok();
+        let key = match keys.read_ui_key(size) {
+            Ok(Some(key)) => key,
+            Ok(None) => continue,
+            Err(error) => break Err(error).context("reading text input"),
+        };
+        match key {
+            PickerKey::Enter => break Ok(Some(line)),
+            PickerKey::Cancel => break Ok(None),
+            PickerKey::Backspace => pop_grapheme(&mut line),
+            PickerKey::Character('\u{15}') => line.clear(),
+            PickerKey::Character(character)
+                if !character.is_control() && line.len() + character.len_utf8() <= 4096 =>
+            {
+                line.push(character)
+            }
+            _ => {}
+        }
+    };
+    drop(guard);
+    println!();
+    result
+}
+
+fn pop_grapheme(line: &mut String) {
+    if let Some((index, _)) = line.grapheme_indices(true).next_back() {
+        line.truncate(index);
+    }
+}
+
+fn input_tail(line: &str, available: usize) -> &str {
+    let mut width = 0;
+    let mut start = line.len();
+    for (index, grapheme) in line.grapheme_indices(true).rev() {
+        width += display_width(grapheme);
+        if width > available {
+            break;
+        }
+        start = index;
+    }
+    &line[start..]
 }
 
 /// Read a secret from an interactive terminal without echoing its characters.
@@ -1066,10 +1532,14 @@ pub fn secret(label: &str, max_bytes: usize) -> Result<Option<String>> {
     if !std::io::stdin().is_terminal() || !std::io::stdout().is_terminal() {
         anyhow::bail!("hidden secret input requires a terminal");
     }
+    print_wrapped("  ", label, Some(ACCENT));
+    note("hidden | Enter submits | Esc cancels");
     print!(
-        "  {} {} ",
-        paint(&crate::commands::display_safe(label), ACCENT),
-        paint("(hidden; Esc cancels):", MUTED)
+        "  {} ",
+        paint(
+            TerminalCapabilities::detect_stdout().glyphs().focus(),
+            ACCENT
+        )
     );
     std::io::stdout().flush().ok();
     let mut keys = PickerInput::open().context("opening secret input")?;
@@ -1091,7 +1561,7 @@ fn read_secret(keys: &mut PickerInput, max_bytes: usize) -> Result<Option<String
         match key {
             PickerKey::Enter => return Ok(Some(value)),
             PickerKey::Backspace => {
-                value.pop();
+                pop_grapheme(&mut value);
             }
             PickerKey::Cancel | PickerKey::Character('\u{4}') => return Ok(None),
             PickerKey::Character(character)
@@ -1107,13 +1577,10 @@ fn read_secret(keys: &mut PickerInput, max_bytes: usize) -> Result<Option<String
 pub fn confirm(label: &str, default: bool) -> Result<Option<bool>> {
     let suffix = crate::ui::render::approval_suffix(default);
     loop {
-        print!(
-            "  {} {} ",
-            paint(&crate::commands::display_safe(label), ACCENT),
-            paint(&format!("{suffix}:"), MUTED)
-        );
+        print_wrapped("  ", label, Some(ACCENT));
+        note(&format!("{suffix} | cancel"));
         std::io::stdout().flush().ok();
-        let Some(line) = read_terminal_line(true)? else {
+        let Some(line) = read_text_line()? else {
             return Ok(None);
         };
         match parse_confirmation(&line, default) {
@@ -1138,7 +1605,7 @@ fn parse_confirmation(line: &str, default: bool) -> ConfirmationResponse {
         "" => ConfirmationResponse::Answer(default),
         "y" | "yes" => ConfirmationResponse::Answer(true),
         "n" | "no" => ConfirmationResponse::Answer(false),
-        "q" | "cancel" => ConfirmationResponse::Cancel,
+        "q" | "cancel" | ":cancel" => ConfirmationResponse::Cancel,
         _ => ConfirmationResponse::Invalid,
     }
 }
@@ -1181,14 +1648,17 @@ fn read_terminal_confirmation_line(keys: &mut PickerInput, echo: bool) -> Result
             PickerKey::Enter => return Ok(Some(line)),
             PickerKey::Cancel | PickerKey::Character('\u{4}') => return Ok(None),
             PickerKey::Backspace if !line.is_empty() => {
-                line.pop();
+                let before = display_width(&line);
+                pop_grapheme(&mut line);
                 if echo {
-                    print!("\x08 \x08");
+                    for _ in 0..before.saturating_sub(display_width(&line)) {
+                        print!("\x08 \x08");
+                    }
                     std::io::stdout().flush().ok();
                 }
             }
             PickerKey::Character(character)
-                if !character.is_control() && line.len() + character.len_utf8() <= 16 =>
+                if !character.is_control() && line.len() + character.len_utf8() <= 4096 =>
             {
                 line.push(character);
                 if echo {
@@ -1226,7 +1696,7 @@ mod tests {
         });
         assert_eq!(
             prompt_footer(&unicode, true),
-            "↑/↓ or number · Enter accept · b back · ? help · Esc cancel"
+            "↑/↓ move · Enter select · number jump · b back · ? help · Esc cancel"
         );
         let ascii = TerminalCapabilities::resolve(&CapabilityInputs {
             is_tty: true,
@@ -1235,7 +1705,7 @@ mod tests {
         });
         assert_eq!(
             prompt_footer(&ascii, false),
-            "Up/Down or number | Enter accept | ? help | Esc cancel"
+            "Up/Down move | Enter select | number jump | ? help | Esc cancel"
         );
     }
 
@@ -1346,8 +1816,11 @@ mod tests {
     #[test]
     fn truncation_keeps_the_focus_row_on_one_terminal_line() {
         assert_eq!(truncate_to_width("short", 10), "short");
-        assert_eq!(truncate_to_width("a long selection", 8), "a long …");
-        assert_eq!(truncate_to_width("anything", 1), "…");
+        for width in [1, 8] {
+            let value = truncate_to_width("a long selection", width);
+            assert!(display_width(&value) <= width);
+            assert!(!value.contains('\n'));
+        }
     }
 
     #[test]
@@ -1483,6 +1956,206 @@ mod tests {
     }
 
     #[test]
+    fn static_picker_page_boundaries_keep_the_search_and_original_identity() {
+        let options = numbered_options(45);
+        let (first, transcript) = run_static_picker(&options, 4, ":prev\n\n");
+        assert_eq!(first, PickerResult::Use(4));
+        assert!(transcript.contains("> 5) option-0004"));
+        assert!(transcript.contains("Enter selects 5"));
+        assert!(!transcript.contains("filter: :prev"));
+        let (last, transcript) = run_static_picker(&options, 44, ":next\n:next\n:next\n\n");
+        assert_eq!(last, PickerResult::Use(44));
+        assert!(transcript.contains("page 3/3 | showing 41-45"));
+        assert!(!transcript.contains("filter: :next"));
+    }
+
+    #[test]
+    fn menu_viewport_keeps_selection_visible_and_fits_terminal_height() {
+        let options = numbered_options(100);
+        let capabilities = TerminalCapabilities::resolve(&CapabilityInputs {
+            is_tty: true,
+            locale: Some("C".into()),
+            ..CapabilityInputs::default()
+        });
+        for size in [(20, 5), (40, 12), (80, 24), (200, 80), (1, 1)] {
+            let lines = menu_frame_lines(
+                &options,
+                99,
+                true,
+                "Help for this step wraps into bounded rows.",
+                &capabilities,
+                size,
+            );
+            assert!(lines.len() <= size.1.saturating_sub(1).max(1));
+            assert!(
+                lines.iter().any(|line| line.contains('>')),
+                "{size:?}: {lines:?}"
+            );
+            if size.0 >= 20 {
+                assert!(
+                    lines.iter().any(|line| line.contains("> 100)")),
+                    "{size:?}: {lines:?}"
+                );
+            }
+            assert!(
+                lines
+                    .iter()
+                    .all(|line| display_width(line) <= size.0.saturating_sub(1).max(1)),
+                "{size:?}: {lines:?}"
+            );
+            assert!(
+                lines.iter().filter(|line| line.contains("option-")).count()
+                    <= MENU_MAX_VISIBLE_ROWS
+            );
+        }
+        let help = "This explanation fills more than three narrow rows and keeps the final decision guidance readable before the user selects an action. Last advice.";
+        let lines = menu_frame_lines(&options, 99, true, help, &capabilities, (40, 24));
+        assert!(
+            lines.iter().any(|line| line.contains("Last advice.")),
+            "{lines:?}"
+        );
+    }
+
+    #[test]
+    fn narrow_menu_wraps_the_selected_model_in_place_without_losing_its_value() {
+        let capabilities = TerminalCapabilities::resolve(&CapabilityInputs {
+            is_tty: true,
+            locale: Some("en_US.UTF-8".into()),
+            ..CapabilityInputs::default()
+        });
+        let selected =
+            "Connection & model: Anthropic / claude-sonnet-4-20250514 / 東京 🧑‍💻 e\u{301}";
+        let mut options = numbered_options(40);
+        options[17] = selected.into();
+        let prefix = format!("  {} 18) ", capabilities.glyphs().focus());
+        let indent = " ".repeat(display_width(&prefix));
+        for columns in [20, 32, 40] {
+            let lines = menu_frame_lines(&options, 17, true, "", &capabilities, (columns, 24));
+            let first = lines
+                .iter()
+                .position(|line| line.starts_with(&prefix))
+                .expect("selected row");
+            let mut rendered = lines[first].strip_prefix(&prefix).unwrap().to_string();
+            for line in lines
+                .iter()
+                .skip(first + 1)
+                .take_while(|line| line.starts_with(&indent))
+            {
+                rendered.push_str(line.strip_prefix(&indent).unwrap());
+            }
+            let compact = |value: &str| {
+                value
+                    .chars()
+                    .filter(|character| !character.is_whitespace())
+                    .collect::<String>()
+            };
+            assert_eq!(
+                compact(&rendered),
+                compact(selected),
+                "{columns}: {lines:?}"
+            );
+            assert_eq!(
+                lines
+                    .iter()
+                    .filter(|line| line.starts_with(&prefix))
+                    .count(),
+                1
+            );
+            assert!(lines.len() <= 23);
+            assert!(
+                lines.iter().all(|line| display_width(line) < columns),
+                "{columns}: {lines:?}"
+            );
+        }
+        for size in [(20, 3), (32, 5), (40, 8), (2, 2), (1, 1)] {
+            let lines = menu_frame_lines(
+                &options,
+                17,
+                true,
+                "Help also shares the physical row budget.",
+                &capabilities,
+                size,
+            );
+            assert!(lines.len() <= size.1.saturating_sub(1).max(1));
+            assert!(lines
+                .iter()
+                .all(|line| display_width(line) <= size.0.saturating_sub(1).max(1)));
+            assert!(
+                lines
+                    .iter()
+                    .any(|line| line.contains(capabilities.glyphs().focus())),
+                "{size:?}: {lines:?}"
+            );
+        }
+        let ascii = TerminalCapabilities::resolve(&CapabilityInputs {
+            is_tty: true,
+            locale: Some("C".into()),
+            ..CapabilityInputs::default()
+        });
+        for capabilities in [&ascii, &capabilities] {
+            for size in [(4, 2), (4, 24)] {
+                let lines = menu_frame_lines(&options, 17, true, "", capabilities, size);
+                assert!(
+                    lines
+                        .iter()
+                        .any(|line| line.contains(capabilities.glyphs().focus())),
+                    "{size:?}: {lines:?}"
+                );
+                assert!(
+                    lines.iter().all(|line| display_width(line) <= 3),
+                    "{size:?}: {lines:?}"
+                );
+            }
+            for size in [(4, 2), (4, 24)] {
+                let lines =
+                    menu_frame_lines(&["東京 wide".to_string()], 0, false, "", capabilities, size);
+                assert!(
+                    lines
+                        .iter()
+                        .any(|line| line.contains(capabilities.glyphs().focus())),
+                    "{size:?}: {lines:?}"
+                );
+                assert!(
+                    lines.iter().all(|line| display_width(line) <= 3),
+                    "{size:?}: {lines:?}"
+                );
+                if capabilities.glyphs().focus() == ">" {
+                    assert!(!lines.iter().any(|line| line.contains('…')));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn summary_rows_escape_controls_and_wrap_by_cell_width() {
+        for width in [1, 2, 20, 40, 80] {
+            let lines = key_value_lines(
+                "model\x1b[31m",
+                "wide 界 model\r\nvalue with a long identifier",
+                width,
+            );
+            assert!(
+                lines.iter().all(|line| display_width(line) <= width),
+                "{width}: {lines:?}"
+            );
+            assert!(lines.iter().all(|line| !line.contains('\x1b')
+                && !line.contains('\r')
+                && !line.contains('\n')));
+        }
+    }
+
+    #[test]
+    fn input_editing_deletes_graphemes_and_preserves_the_complete_value() {
+        let mut value = "endpoint-界e\u{301}".to_string();
+        pop_grapheme(&mut value);
+        assert_eq!(value, "endpoint-界");
+        assert_eq!(input_tail(&value, 3), "-界");
+        assert_eq!(input_tail(&value, 1), "");
+        let mut eof = PickerInput::from_bytes(b"\x04");
+        assert_eq!(eof.read_key().unwrap(), PickerKey::Cancel);
+    }
+
+    #[test]
     fn picker_viewport_keeps_selection_visible_at_required_match_counts() {
         for count in [0, 1, 20, 21, 100, 1_000] {
             let options = numbered_options(count);
@@ -1607,5 +2280,33 @@ mod tests {
             PickerKey::Cancel
         );
         assert!(PickerInput::from_bytes(b"").read_key().is_err());
+    }
+
+    #[test]
+    fn live_views_distinguish_interrupt_from_back_and_refresh() {
+        for (bytes, expected) in [
+            (&b"\x03"[..], PickerKey::Interrupt),
+            (&b"\x04"[..], PickerKey::Interrupt),
+            (&b"\x1b"[..], PickerKey::Cancel),
+            (&b"\x12"[..], PickerKey::Character('\x12')),
+            (&b"\x1b[B"[..], PickerKey::Down),
+        ] {
+            assert_eq!(
+                PickerInput::from_bytes(bytes).read_live_key(0).unwrap(),
+                Some(expected)
+            );
+        }
+        assert_eq!(
+            PickerInput::from_bytes(b"").read_live_key(0).unwrap(),
+            Some(PickerKey::Interrupt),
+            "detached input must close the drawer"
+        );
+    }
+
+    #[test]
+    fn live_view_escape_back_then_close_keeps_both_keys() {
+        let mut input = PickerInput::from_bytes(b"\x1b\x1b");
+        assert_eq!(input.read_live_key(0).unwrap(), Some(PickerKey::Cancel));
+        assert_eq!(input.read_live_key(0).unwrap(), Some(PickerKey::Cancel));
     }
 }

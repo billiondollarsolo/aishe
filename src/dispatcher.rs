@@ -1471,7 +1471,12 @@ mod tests {
         assert!(TRAILING_QUESTION_HEADS
             .iter()
             .all(|head| !head.is_empty() && trailing.insert(*head)));
-        assert!(!QUESTION_SHELL_EVIDENCE.is_empty());
+        let mut shell_evidence = HashSet::new();
+        assert!(QUESTION_SHELL_EVIDENCE.iter().all(|character| {
+            !character.is_whitespace()
+                && !character.is_alphanumeric()
+                && shell_evidence.insert(*character)
+        }));
     }
 
     #[test]

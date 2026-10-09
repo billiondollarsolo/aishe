@@ -885,10 +885,14 @@ mod tests {
         std::fs::create_dir_all(base.join(".git")).unwrap();
         // From a nested dir, the root is the ancestor holding `.git`.
         assert_eq!(find_project_root(&sub).as_deref(), Some(base.as_path()));
-        // Outside any repo → None.
+        // A sibling with no project marker inherits only the temp directory's
+        // ancestors. Managed workspaces can place a .git marker in /tmp itself.
         let orphan = std::env::temp_dir().join(format!("aishe-root-none-{}", std::process::id()));
         std::fs::create_dir_all(&orphan).unwrap();
-        assert!(find_project_root(&orphan).is_none());
+        assert_eq!(
+            find_project_root(&orphan),
+            find_project_root(&std::env::temp_dir())
+        );
         std::fs::remove_dir_all(&base).ok();
         std::fs::remove_dir_all(&orphan).ok();
     }

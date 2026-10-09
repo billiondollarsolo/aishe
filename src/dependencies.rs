@@ -66,6 +66,11 @@ fn functional_probe(binary: &Path) -> Result<()> {
                   test -r /etc/passwd";
     let output = Command::new(binary)
         .args([
+            // Own the new network namespace through an explicit user
+            // namespace. Container-root alone may lack CAP_NET_ADMIN and
+            // cannot initialize loopback in a host-owned network namespace.
+            // This is strict: unsupported UID mappings must fail admission.
+            "--unshare-user",
             "--ro-bind",
             "/",
             "/",
@@ -103,11 +108,11 @@ fn functional_probe(binary: &Path) -> Result<()> {
         {
             Ok(())
         }
-        Ok(output) => anyhow::bail!(
+        Ok(output) => Err(anyhow::anyhow!(
             "bubblewrap functional test failed ({}): {}",
             output.status,
             crate::commands::display_safe(String::from_utf8_lossy(&output.stderr).trim())
-        ),
+        )),
         Err(error) => Err(error).context("starting bubblewrap functional test"),
     };
     let _ = std::fs::remove_file(&denied);

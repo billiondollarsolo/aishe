@@ -88,8 +88,10 @@ aishe index --rebuild
 
 The index uses `git ls-files`, content hashes, bounded local chunks, and lexical
 ranking. It sends nothing to a provider by itself. The store is private,
-incremental, capped at 10,000 files/64 MiB, and keyed to the canonical worktree
-root.
+incremental, capped at 10,000 text files/64 MiB, and keyed to the canonical worktree
+root. Binary assets and deleted tracked files are skipped during refresh. Search
+keeps only the requested best matches in memory, with the same lexical ranking
+and deterministic ordering.
 
 ## Long work in the background
 

@@ -6,15 +6,18 @@ selection, durable-default selection, cancellation, rollback on error, plain
 text output, and independence between concurrent AIShe shells.
 """
 
+import fcntl
 import os
 import pty
 import re
 import select
 import shutil
 import signal
+import struct
 import subprocess
 import sys
 import tempfile
+import termios
 import time
 
 from harness_identity import require_current_binary
@@ -87,13 +90,14 @@ def environment():
 class Shell:
     def __init__(self, env):
         self.master, slave = pty.openpty()
+        fcntl.ioctl(self.master, termios.TIOCSWINSZ, struct.pack("HHHH", 24, 80, 0, 0))
         self.proc = subprocess.Popen(
             [BINARY, "zsh"],
             stdin=slave,
             stdout=slave,
             stderr=slave,
             env=env,
-            preexec_fn=os.setsid,
+            preexec_fn=lambda: (os.setsid(), fcntl.ioctl(0, termios.TIOCSCTTY, 0)),
             close_fds=True,
         )
         os.close(slave)
@@ -131,7 +135,7 @@ class Shell:
         os.write(self.master, value)
 
     def ready(self):
-        self.line("print -r -- MODEL_PICKER_READY")
+        self.line("print -r -- MODEL_''PICKER_READY")
         self.expect("MODEL_PICKER_READY")
 
     def identity(self, marker):
@@ -164,7 +168,7 @@ def select_connection(shell, filter_text, save=False):
         # Promotion is one explicit interaction after selection; printable
         # picker keys are always available to the filter.
         shell.expect("the default connection for new shells?", timeout=3)
-        shell.expect("[y/N]:", timeout=3)
+        shell.expect("[y/N]", timeout=3)
         shell.raw(b"y\r")
     else:
         # Enter is shell-local; when the choice differs from config, Aishe asks
@@ -172,7 +176,7 @@ def select_connection(shell, filter_text, save=False):
         try:
             # Confirm defaults to No ([y/N]); accept with n or bare Enter.
             shell.expect("the default connection for new shells?", timeout=3)
-            shell.expect("[y/N]:", timeout=3)
+            shell.expect("[y/N]", timeout=3)
             shell.raw(b"n\r")
         except AssertionError:
             # Same as current default: no follow-up confirm.
@@ -188,12 +192,12 @@ def select_model(shell, filter_text="", save=False):
     shell.raw(b"\r")
     if save:
         shell.expect("the default for new shells on this connection?", timeout=3)
-        shell.expect("[y/N]:", timeout=3)
+        shell.expect("[y/N]", timeout=3)
         shell.raw(b"y\r")
     else:
         try:
             shell.expect("the default for new shells on this connection?", timeout=3)
-            shell.expect("[y/N]:", timeout=3)
+            shell.expect("[y/N]", timeout=3)
             shell.raw(b"n\r")
         except AssertionError:
             pass

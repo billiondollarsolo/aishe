@@ -1,6 +1,6 @@
 # Getting started
 
-> **Alpha (pre-1.0).** Behavior and config may still change; see the
+> **Alpha.** Behavior and config may still change; see the
 > [docs index](README.md) and [root README](../README.md).
 
 This page walks through your first session with **AIShe** (**AI Shell**).
@@ -21,27 +21,19 @@ own convention, and a file left in the wrong one is silently ignored. Run
 [File locations](configuration.md#file-locations). The docs write these paths in
 their Linux form for brevity.
 
-It asks for:
+The main decisions are:
 
-- existing-install discovery and organization-policy constraints,
-- the backing shell and platform capabilities,
-- installation and live verification of AIShe's exact managed OpenCode runtime,
-- on Linux, a bubblewrap functional check and an explicit offer to install the
-  package when it is missing,
-- the provider/service and safety profile,
-- for an OpenAI-compatible provider, the **service** (including explicit
-  **ChatGPT / Codex OAuth** and **Grok OAuth** shortcuts, plus OpenAI, xAI, Groq,
-  OpenRouter, Together, Ollama, or a custom endpoint) and the **API endpoint
-  (base URL)** for non-OAuth rows,
-- a saved credential profile, subscription OAuth login (labeled
-  **Codex - OAuth · work** / **Grok - OAuth · work**), or API-key paths labeled
-  **Codex - API** / **Grok - API**, hidden key entry, or environment-only workflow,
-- a current model catalog from the endpoint and a validated model selection,
-- per-million-token input/output prices when that exact model has no known price,
-- suggest/auto/yolo behavior, workspace/host scope, and workspace network policy,
-- status-line position, density, and ordered contents, and
-- end-to-end backend/provider/tool/sandbox validation plus a configuration
-  review before saving.
+- **Account and model:** API keys and local endpoints use the included native
+  engine. Subscription OAuth explicitly selects a managed legacy transport.
+- **Behavior:** accept the recommended ask mode and compact status, or customize
+  mode, scope, history, output, and logging. Allow and agent still require a
+  separate grant for each live shell.
+- **Review:** see account, behavior, readiness, and pricing before Apply.
+  Detailed diagnostics and the exact configuration diff are optional actions.
+
+Setup checks shell and workspace readiness without a runtime download on the
+native path. Unknown-model pricing can be deferred. Full generation and tool
+checks are opt-in, with their token use disclosed before consent.
 
 The endpoint prompt is what lets you point at Groq, Ollama, or any other
 OpenAI-compatible service instead of OpenAI; pick the service and the base URL
@@ -53,13 +45,14 @@ minimal generation request only when the ID was not listed. Credential,
 permission, network, and model-not-found failures stay in Setup with retry/back
 choices instead of silently accepting an unverified value.
 
-When an existing config, credential/OAuth profile, and pinned runtime are
-already available, Step 1 offers a short path directly to end-to-end validation
+When an existing config and credential are available, setup offers a short
+path directly to validation
 and the final review. Before any live checks, Setup states that the text,
 structured, tool, and streaming probes consume tokens and may incur provider
 charges; declining never turns an unrun live check into a pass.
 
-OpenCode is entirely managed by AIShe. Setup downloads the exact version pinned
+When you explicitly choose managed subscription OAuth, OpenCode is managed by
+AIShe. Setup downloads the exact version pinned
 by this AIShe build, verifies its size/checksum/version/notices, launches it with
 private HOME/XDG directories on authenticated loopback ports, and verifies the
 trusted AIShe plugin and tool restrictions. It never reuses an arbitrary
@@ -67,11 +60,12 @@ trusted AIShe plugin and tool restrictions. It never reuses an arbitrary
 independent of this runtime.
 
 On Linux, selecting isolated workspace-agent behavior requires a bubblewrap
-self-test, not just the presence of a `bwrap` executable. Setup shows the exact
-package-manager command and asks before sudo. If namespaces are unavailable in a
-container/kernel, Setup labels that condition accurately and lets you choose a
-compatible policy where organization rules allow. macOS is clearly labeled
-policy-only.
+self-test, not just the presence of a `bwrap` executable. Native setup reports
+whether isolation is available; install bubblewrap before choosing isolated
+workspace-agent work. Managed setup shows an installation plan and asks before
+sudo. If namespaces are unavailable in a container/kernel, setup explains that
+condition. Host scope remains an explicit choice where policy allows it; macOS
+workspace restrictions are clearly labeled policy-only.
 
 Setup does not change `config.toml` or `credentials.toml` until Apply. The
 agent runtime, any system package you approve, and an OAuth login are written
@@ -89,9 +83,26 @@ After setup, run:
 aishe
 ```
 
-That launches your real interactive zsh under aishe. Alternatively, install the
-native hook printed by `aishe init zsh`. You can revisit settings with `aishe
-settings`, rerun setup, or edit the non-secret config file directly. Use
+That launches a real zsh with a lightweight isolated configuration. Optional
+exports, aliases, and completion paths belong in `~/.aishe/leanrc`; late widget
+and binding changes belong in `~/.aishe/leanrc.post`. To use your own zsh
+configuration and plugins with the same native agent, launch:
+
+```sh
+AISHE_ZSH_PROFILE=personal aishe
+```
+
+The personal profile loads your `.zshenv`/`.zshrc`, preserves your prompt and
+history policy, and chains existing Enter/Tab widgets. Use
+`AISHE_PERSONAL_INDICATOR=1` to append mode/scope to its right prompt, or display
+`AISHE_MODE_INDICATOR` in your theme. `AISHE_PTY_PROMPT=force` opts into AIShe's
+full prompt. See [Front-ends](front-ends.md) for startup order and shortcuts.
+
+Subscription OAuth setup shows the explicit
+`AISHE_LEGACY_OPENCODE=1 aishe` launch command; first-run setup honors that choice
+for the shell it starts. The legacy hook remains available through `aishe init
+zsh`. Use `/` then Tab for described commands, `/settings` for saved defaults,
+or `/setup` to revisit setup. Use
 `aishe auth` for keys. Existing config, credentials, history, task records, and
 other state are preserved by binary/runtime upgrades. A fully annotated example
 config is at [examples/config.toml](../examples/config.toml).
@@ -131,6 +142,15 @@ Pipes, globs, redirection, subshells, control structures, and interactive
 programs like `vim`, `ssh`, and `top` all work, because aishe hands shell lines
 to your real shell.
 
+Agent commands also use current exported `PATH`, virtual environment variables,
+and ordinary exports/unsets from this shell. For example, activating a project
+virtual environment before an agent request selects that environment's tools.
+This does not widen the accepted workspace: a virtual environment outside it
+can remain inaccessible under isolation. Aliases and functions stay in zsh;
+the agent uses a fresh command shell without personal startup code. Credential
+and startup-control variables are filtered, and the live snapshot is not saved
+in task or audit records.
+
 ## 3. Ask in plain English
 
 Type a request that is not a command, and the LLM proposes one:
@@ -150,10 +170,17 @@ runs it. Nothing is ever executed without a keystroke of yours.
 
 ## 4. Try the other modes
 
-```sh
-aishe mode auto     # run safe commands immediately, ask about the rest
-aishe mode yolo     # let the model run a multi-step task on its own
+Inside the native shell:
+
+```text
+/mode allow        # grant safe suggestions for this shell
+/mode agent        # grant autonomous work inside this workspace
+/mode agent-host   # explicitly grant host-wide work where policy allows
 ```
+
+Shift-Tab cycles modes on an empty line. With text entered it keeps reverse
+completion. Legacy `suggest`, `auto`, and `yolo` names remain accepted aliases;
+`aishe mode` changes defaults for new shells rather than granting a live shell.
 
 In `auto`, the safety gate has three outcomes: a command it finds safe runs
 straight away, one it flags as dangerous stops and makes you type the full word
@@ -161,21 +188,86 @@ straight away, one it flags as dangerous stops and makes you type the full word
 panel and a plain `[y/N]`. Nothing unverified ever runs on its own. See
 [Safety gate](safety.md#three-outcomes).
 
-The managed agent adds a separate execution **scope**. `workspace` confines
-agent effects to the selected project (with bubblewrap on supported Linux
-systems); `host` grants host-wide agent authority. Entering yolo asks once for
-the scope in each new shell. After acceptance, yolo runs without per-action
-approval prompts; a new shell asks again because acceptance is never persisted.
-Use `aishe scope workspace|host` and `aishe network allow|deny` to change the
-next turn's selection.
+The native agent has a separate execution **scope**. `workspace` binds commands
+and built-in file tools to the accepted project, with functional bubblewrap
+required on Linux; `host` grants host-wide authority. A workspace grant stays
+bound to the canonical directory shown at acceptance. Moving outside that tree
+requires another grant. After acceptance, agent actions within scope run without
+per-action prompts; explicit file previews retain their configured approval.
+New shells ask again. Protected host environments require fresh typed
+confirmation and reject unattended host execution. See the
+[scope boundaries](lean-hotpath.md#default-ui-and-session-state), including MCP
+and macOS limits.
 
 Or set the mode for a single session at launch:
 
 ```sh
-aishe --mode yolo
+aishe --mode agent
 ```
 
 See [Modes](modes.md) for the full behavior of each.
+
+### Run an explicit task
+
+For a scriptable autonomous request, use the task command rather than relying
+on a saved agent mode:
+
+```sh
+aishe agent --scope workspace 'inspect and fix the failing tests'
+aishe agent --background --scope workspace 'update the project documentation'
+aishe task list
+aishe task browse
+aishe task resume TASK_ID
+aishe resume NATIVE_TASK_ID
+```
+
+Foreground, CLI, and background tasks share the native execution engine.
+Background work runs in an isolated git worktree by default. Resume continues
+the saved transcript and scope, connection/model, workspace root, and spent
+allowances; a possibly started tool is not blindly executed again. Current
+organization policy still applies. Live environment values are not stored in
+the checkpoint.
+
+Completion returns exit `0`; cancellation, exhausted budgets, iteration caps,
+failure, and declined approval have separate nonzero exits. A completed task
+means the model supplied its final answer, so review the change, recorded
+checks, and unresolved items before applying it. Background tasks can also pause
+for a question or specific action approval. Exact exit codes and budget and
+cancellation boundaries are in
+[Native agent execution](configuration.md#native-agent-execution).
+
+### Keep track of background work
+
+Continue using the shell while a background task runs. The clean prompt shows
+a quiet badge for running work and unseen results or problems; it disappears
+when there is nothing to show. Press **Ctrl-X b** to open the task browser and
+return to your current command with its cursor intact. A personal shortcut
+already bound to that key stays yours; `/tasks` also opens the browser.
+**Needs you** marks a paused question or action approval. Open `/inbox` to answer
+those requests across all projects; leaving an approval for later is the default.
+
+Type to search, use arrows and **Enter** for details, **Ctrl-R** to refresh, and
+**Tab** to include other projects. **Ctrl-V** switches between Current work,
+Needs you, and Archived history. In details, **Enter** or **u** responds to a
+request, **f** sends a follow-up, **e** opens recorded checks, **l** opens
+activity, **p** shows read-only changes, **?** opens searchable Task actions,
+and **Esc** goes back. **Ctrl-C** closes the browser from any page. Inspect the
+result, checks, unresolved items, and limits before deciding to resume, stop,
+rework, apply, or discard.
+Those actions ask for confirmation. Looking at a result does not apply it.
+Follow-ups show **queued** until saved in the worker's transcript, then
+**received**. Press **q** in details, or choose queued follow-ups in Task actions,
+to edit or remove a message before delivery. Send a new follow-up once delivery
+begins. Existing commands can finish before the worker reads your message.
+
+Opening a finished result marks that exact result reviewed across shells. Give
+it a useful name, pin work you return to, or archive finished work from **?**.
+Archive keeps the result and workspace; Archived history brings it back. A new
+attempt or result becomes visible again. For a scriptable response or follow-up,
+see [background task controls](commands.md#background-task-controls).
+
+Personal themes can use `AISHE_BACKGROUND_INDICATOR`; setting
+`AISHE_PERSONAL_INDICATOR=1` opts into AIShe's right-prompt suffix.
 
 ## 5. Force a route when needed
 
@@ -189,7 +281,8 @@ the #1 source of “why didn’t the AI hear me?” confusion.
 |----------|----------------|
 | `install kubectl please` | **Shell.** `install` is `/usr/bin/install` (copy files). Often fails with `No such file or directory`. |
 | `? install kubectl please` | **AI.** The `?` is stripped; the agent gets the English request. |
-| `!rm -rf build` | **Shell**, safety gate skipped (dangerous by design). |
+| `! rm -rf build` | **Shell**, safety gate skipped (dangerous by design). |
+| `!!`, `!$`, `!word` | Native zsh history expansion, not AIShe's force-shell prefix. |
 | `?` alone after a failed command | Ask the model to diagnose the last failure. |
 
 `# …` remains a deprecated compatibility spelling for force-NL and is stripped

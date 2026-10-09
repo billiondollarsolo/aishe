@@ -8,6 +8,8 @@ import contextlib
 import io
 import pathlib
 import tempfile
+import subprocess
+import sys
 import unittest
 
 import qualify
@@ -17,8 +19,9 @@ VERSION_OUTPUT = "aishe 0.6.5 (4a2c7e4, 2026-07-31)\n"
 
 
 class FakeRunner:
-    def __init__(self, failures=()):
+    def __init__(self, failures=(), outputs=None):
         self.failures = {tuple(command) for command in failures}
+        self.outputs = outputs or {}
         self.commands = []
         self.environments = []
 
@@ -28,6 +31,9 @@ class FakeRunner:
         self.environments.append(dict(env))
         if command in self.failures:
             return qualify.CommandResult(9, "", "synthetic failure")
+        if command in self.outputs:
+            stdout, stderr = self.outputs[command]
+            return qualify.CommandResult(0, stdout, stderr)
         stdout = VERSION_OUTPUT if command[-1:] == ("--version",) else ""
         return qualify.CommandResult(0, stdout, "")
 
@@ -35,7 +41,9 @@ class FakeRunner:
 class RepositoryFixture:
     def __init__(self):
         self.temporary = tempfile.TemporaryDirectory()
-        self.root = pathlib.Path(self.temporary.name)
+        # macOS maps /var tempfile paths through /private/var. Keep the fake
+        # runner's command keys identical to the driver's canonical paths.
+        self.root = pathlib.Path(self.temporary.name).resolve()
         (self.root / "Cargo.toml").write_text(
             '[package]\nname = "aishe"\nversion = "0.6.5"\n', encoding="utf-8"
         )
@@ -86,7 +94,7 @@ class QualificationTests(unittest.TestCase):
             self.output,
             root=self.repository.root,
             runner=runner,
-            env={"SHELL": "/bin/zsh", "PATH": "/usr/bin:/bin"},
+            env=kwargs.pop("env", {"SHELL": "/bin/zsh", "PATH": "/usr/bin:/bin"}),
             platform_name=kwargs.pop("platform_name", "Linux"),
             identity_verifier=kwargs.pop("identity_verifier", accept_identity),
             tool_finder=kwargs.pop("tool_finder", lambda tool: f"/fake/bin/{tool}"),
@@ -188,7 +196,71 @@ class QualificationTests(unittest.TestCase):
         self.assertEqual(records["pty-smoke"]["status"], "skip")
         self.assertTrue(records["pty-smoke"]["required"])
         self.assertEqual(report["summary"]["outcome"], "incomplete")
-        self.assertEqual(report["summary"]["required_skips"], 3)
+        expected = sum("zsh" in gate.required_tools for gate in qualify.PROFILES["quick"].gates)
+        self.assertEqual(report["summary"]["required_skips"], expected)
+
+    def test_zero_exit_legacy_skip_is_incomplete_instead_of_a_pass(self):
+        for stdout, stderr in (
+            ("SKIP (LEGACY-gated): run with AISHE_LEGACY_OPENCODE=1\n", ""),
+            ("", "\x1b[33mSKIP: no controlling terminal\x1b[0m\n"),
+        ):
+            runner = FakeRunner(outputs={qualify.PTY_SMOKE.command: (stdout, stderr)})
+            # Resolve the binary placeholder just as the driver does.
+            command = tuple(qualify._resolved_command(
+                qualify.PTY_SMOKE, self.repository.root / "target/release/aishe"
+            ))
+            runner.outputs = {command: (stdout, stderr)}
+            report = self.run_profile(qualify.PROFILES["quick"], runner)
+            record = next(row for row in report["gates"] if row["id"] == "pty-smoke")
+            self.assertEqual(record["returncode"], 0)
+            self.assertEqual(record["status"], "skip")
+            self.assertTrue(record["required"])
+            self.assertIn("harness did not qualify", record["skip_reason"])
+            self.assertEqual(report["summary"]["outcome"], "incomplete")
+
+    def test_optional_reported_skip_is_visible_without_blocking_qualification(self):
+        gate = qualify.Gate("optional", "fixture", ("fixture",), required=False)
+        profile = qualify.Profile("fixture", "fixture", (gate,))
+        report = self.run_profile(profile, FakeRunner(outputs={gate.command: ("SKIP: absent fixture\n", "")}))
+        self.assertEqual(report["summary"]["outcome"], "passed_with_skips")
+        self.assertEqual(report["gates"][0]["status"], "skip")
+
+    def test_execution_environment_is_explicit_and_does_not_leak_between_gates(self):
+        gates = tuple(
+            qualify.Gate(name, name, (name,), execution_env=execution_env)
+            for name, execution_env in (
+                ("native", qualify.NATIVE_CLEAN_ENV),
+                ("personal", qualify.NATIVE_PERSONAL_ENV),
+                ("legacy", qualify.LEGACY_ENV),
+                ("native-again", qualify.NATIVE_CLEAN_ENV),
+            )
+        )
+        runner = FakeRunner()
+        report = self.run_profile(
+            qualify.Profile("fixture", "fixture", gates), runner,
+            env={"PATH": "/usr/bin:/bin", "AISHE_LEAN": "0", "AISHE_LEGACY_OPENCODE": "1",
+                 "AISHE_ZSH_PROFILE": "invalid", "PRIVATE_FIXTURE_SECRET": "do-not-record"},
+        )
+        for gate, environment, record in zip(gates, runner.environments, report["gates"]):
+            self.assertTrue(all(environment[key] == value for key, value in gate.execution_env))
+            self.assertEqual(record["execution_env"], dict(gate.execution_env))
+        self.assertNotIn("do-not-record", self.output.read_text())
+
+    def test_profiles_cover_native_modes_and_explicit_legacy_gates(self):
+        quick = qualify.PROFILES["quick"].gates
+        self.assertTrue(all(gate.execution_env == qualify.NATIVE_CLEAN_ENV for gate in quick))
+        self.assertFalse(any("backend" in gate.command and "install" in gate.command for gate in quick))
+        for profile in qualify.PROFILES.values():
+            if profile.name == "quick":
+                continue
+            gates = {gate.id: gate for gate in profile.gates}
+            for gate_id in ("native-picker-pty", "native-mode-grants-pty", "native-cancel-pty",
+                            "native-settings-pty", "native-prompts-pty"):
+                self.assertEqual(gates[gate_id].execution_env, qualify.NATIVE_CLEAN_ENV)
+            self.assertEqual(gates["pty-signals-personal"].execution_env, qualify.NATIVE_PERSONAL_ENV)
+            self.assertEqual(gates["zsh-features-personal"].execution_env, qualify.NATIVE_PERSONAL_ENV)
+            for gate_id in ("legacy-pty-smoke", "legacy-pty-scenarios", "theme-prompt-pty", "keys-pty", "pty-fuzz"):
+                self.assertEqual(gates[gate_id].execution_env, qualify.LEGACY_ENV)
 
     def test_profile_registry_keeps_external_harnesses_after_identity(self):
         repository = pathlib.Path(__file__).resolve().parent.parent
@@ -292,6 +364,23 @@ class ArgumentTests(unittest.TestCase):
         self.assertEqual(args.profile, "local-full")
         self.assertEqual(args.output, pathlib.Path("qualification.json"))
         self.assertTrue(args.keep_going)
+
+
+class RequiredCiGateTests(unittest.TestCase):
+    def test_guard_rejects_zero_exit_skips_and_preserves_actual_failures(self):
+        guard = pathlib.Path(__file__).with_name("require_gate.py")
+        cases = (
+            ("print('SKIP (LEGACY-gated): missing explicit route')", 1),
+            ("import sys; print('SKIP: no PTY', file=sys.stderr)", 1),
+            ("print('PASS: the word SKIP in an explanation is harmless')", 0),
+            ("raise SystemExit(7)", 7),
+        )
+        for script, code in cases:
+            completed = subprocess.run(
+                [sys.executable, str(guard), sys.executable, "-c", script],
+                capture_output=True, text=True, timeout=10,
+            )
+            self.assertEqual(completed.returncode, code, completed.stdout + completed.stderr)
 
 
 if __name__ == "__main__":

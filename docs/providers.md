@@ -367,6 +367,13 @@ aishe honors the system trust store, so it works behind corporate or
 TLS-inspecting proxies whose CA is not in the bundled root set. Token usage is
 metered per session; see [Token usage and cost](usage-and-cost.md).
 
+The native compatibility backend keeps a shared HTTP connection pool for each
+provider, reusing connections across completions, tool turns, streaming calls,
+and OpenAI-compatible embeddings. Transient HTTP errors are dropped before
+backoff so a slow error body cannot delay retries. Non-streaming requests
+retain a 60-second deadline; streaming calls retain a 5-second connect
+timeout and 60-second response/body waits without a whole-stream deadline.
+
 ## Behind a proxy or with a custom endpoint
 
 Point `base_url` at your gateway. Standard `HTTPS_PROXY` and related environment

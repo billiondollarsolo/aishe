@@ -7,6 +7,72 @@
 aishe's interactive shell is your real zsh; aishe adds a small set of
 subcommands, a few inspection commands, and input prefixes that control routing.
 
+The default lean shell has a concise, grouped catalogue: `/` then Tab browses
+commands with descriptions, `/help` gives a quick guide, `/help model` explains
+one command, and `/commands` includes local custom Markdown commands. Use
+`/settings` for saved defaults, `/setup` to configure or resume setup, and
+`/model` or `/connection` for searchable choices in this shell. A separate
+explicit Yes promotes a selection to a saved default. Setup recommends the
+included native engine; subscription OAuth explicitly uses the managed legacy
+shell. The generated slash-command reference below describes the broader
+legacy hook and CLI surface; the current shell's `/commands` is authoritative.
+
+`/tasks` opens the native background task browser. **Ctrl-X b** opens it while
+keeping the editable command and cursor; `aishe task browse [TASK_ID] [--all]`
+opens it from the CLI. Navigation, attention counts, and review behavior are
+described in [background work](front-ends.md#background-work).
+`/inbox` or `aishe inbox` opens **Needs you** for background questions and
+specific action approvals across all projects.
+
+## Background task controls
+
+Use the browser for decisions in context, or the following commands for a
+scriptable workflow. `aishe task show TASK_ID --json` exposes the durable
+request IDs and follow-up revisions used by these controls.
+
+```sh
+aishe task browse --needs-you --all
+aishe task answer TASK_ID REQUEST_ID 'Use the existing API'
+aishe task approve TASK_ID REQUEST_ID
+aishe task deny TASK_ID REQUEST_ID 'Keep the existing public behavior'
+
+aishe task followup TASK_ID 'Focus on the startup delay first'
+aishe task edit-followup TASK_ID REVISION 'Measure startup before editing'
+aishe task remove-followup TASK_ID REVISION
+
+aishe task rename TASK_ID 'Startup performance'
+aishe task pin TASK_ID
+aishe task unpin TASK_ID
+aishe task reviewed TASK_ID
+aishe task archive TASK_ID
+aishe task browse --archived --all
+aishe task unarchive TASK_ID
+```
+
+Answer, approve, and deny persist your response before continuing the saved
+task. Approval is one-shot for the exact proposed action; it does not change
+scope, network access, or policy. The interactive approval menu defaults to
+**Leave for later**.
+
+Follow-ups are **queued** until the worker durably receives them at a safe
+boundary. Edit and remove work only while the message is queued and delivery
+has not begun. A running command can finish before steering is received; use
+cancel to stop execution. For completed work, use `aishe task rework` instead.
+If a message arrives during final completion, the task shows attention and
+retains it queued; `aishe task resume` delivers it through the saved transcript.
+
+Renaming does not change the objective. Pinning affects browser order. Archive
+hides finished work while keeping its result and workspace; running or waiting
+tasks cannot be archived. Opening finished details, or `task reviewed`, marks
+that exact result reviewed across shells. A subsequent result becomes unseen
+again. `--needs-you` and `--archived` select separate views and cannot be combined.
+
+Task details include the native journal's recorded-check summary and unresolved
+items. Press **e** for actual commands, exit statuses, durations, and bounded
+output; a plan's free-form evidence is not a recorded execution. Conservative
+freshness and the distinction between completion and verification are explained
+in [Native agent execution](configuration.md#native-agent-execution).
+
 ## Subcommands
 
 <!-- BEGIN GENERATED CLI SURFACE -->
@@ -16,7 +82,7 @@ aishe settings         Edit the current configuration through an interactive sec
 aishe auth ...         Manage provider API keys and OAuth subscriptions in AIShe's private stores
 aishe tour             Run the resumable guided first-session tour
 aishe init             Print a shell integration snippet: `eval "$(aishe init zsh)"`
-aishe zsh              Launch your real interactive zsh (with all native plugins) under aishe
+aishe zsh              Launch the lean interactive zsh shell (legacy: AISHE_LEGACY_OPENCODE=1)
 aishe doctor           Check your environment: shell, config, front-end, provider, API key
 aishe backend ...      Manage AIShe's private, compatibility-pinned agent runtime
 aishe update ...       Check, apply, or roll back the AIShe binary itself

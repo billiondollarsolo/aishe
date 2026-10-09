@@ -46,7 +46,9 @@ fn temp_root(label: &str) -> std::path::PathBuf {
         NEXT.fetch_add(1, Ordering::Relaxed)
     ));
     std::fs::create_dir_all(&dir).unwrap();
-    dir
+    // Darwin's temporary directory can be spelled /var while process cwd and
+    // task admission correctly resolve it to /private/var. Compare real paths.
+    dir.canonicalize().unwrap()
 }
 
 #[test]
@@ -764,6 +766,16 @@ fn ask_insert_uses_private_shell_handoff_and_never_executes() {
 #[test]
 fn background_task_isolates_reviews_applies_and_discards() {
     let home = temp_config_home();
+    let config_path = home.join("aishe/config.toml");
+    let config = std::fs::read_to_string(&config_path).unwrap().replace(
+        "engine = \"native\"",
+        "engine = \"native\"\ndefault_scope = \"host\"",
+    );
+    std::fs::write(
+        &config_path,
+        format!("{config}\n[sandbox]\nallow_host_yolo = true\n"),
+    )
+    .unwrap();
     let data = temp_root("background-data");
     let repo = temp_root("background-repo");
     let git = |args: &[&str]| {
@@ -824,7 +836,31 @@ fn background_task_isolates_reviews_applies_and_discards() {
         }
         std::thread::sleep(std::time::Duration::from_millis(50));
     }
-    assert!(state.contains("\"state\": \"completed\""), "{state}");
+    let activity = std::fs::read(
+        data.join("aishe/background-tasks")
+            .join(&id)
+            .join("activity.log"),
+    )
+    .unwrap_or_default();
+    let tail = &activity[activity.len().saturating_sub(8_000)..];
+    assert!(
+        state.contains("\"state\": \"completed\""),
+        "{state}\nworker activity:\n{}",
+        aishe::commands::display_safe(&aishe::redact::redact(&String::from_utf8_lossy(tail)))
+    );
+    let stored: serde_json::Value = serde_json::from_str(&state).unwrap();
+    assert_eq!(stored["scope"], "host");
+    assert!(stored["worktree"].is_string());
+    let native_id = stored["native_task_id"]
+        .as_str()
+        .expect("native checkpoint");
+    let checkpoint: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(data.join("aishe/tasks").join(format!("{native_id}.json"))).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(checkpoint["execution_scope"], "host");
+    assert_eq!(checkpoint["workspace_root"], stored["run_cwd"]);
+    assert_eq!(checkpoint["execution"]["tool_calls"], 1);
     assert_eq!(
         std::fs::read_to_string(repo.join("tracked.txt")).unwrap(),
         "original\n"
@@ -2410,7 +2446,7 @@ Authorization = "Bearer fake-private-header"
         ])
         .output()
         .unwrap();
-    assert!(output.status.success(), "{:?}", output);
+    assert!(output.status.success(), "{output:?}");
     let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     let ids: Vec<&str> = report["checks"]
         .as_array()
@@ -2558,21 +2594,34 @@ fn noninteractive_tour_is_isolated_resumable_and_proves_undo() {
 #[test]
 fn durable_task_cli_lifecycle_is_private_and_redacted() {
     let dir = temp_config_home();
+    let config_path = dir.join("aishe/config.toml");
+    let config = std::fs::read_to_string(&config_path).unwrap();
+    std::fs::write(
+        &config_path,
+        format!("{config}\n[sandbox]\nallow_host_yolo = true\n"),
+    )
+    .unwrap();
     let data = dir.join("data");
     let fake_secret = "sk-proj-fake-task-secret-abcdefghijklmnopqrstuvwxyz";
     let run = |args: &[&str]| {
         let mut command = Command::cargo_bin("aishe").unwrap();
         command
+            .current_dir(&dir)
             .env("AISHE_CONFIG_DIR", &dir)
             .env("AISHE_DATA_DIR", &data)
             .env("AISHE_FAKE_LLM", "task complete")
             .args(args);
         command
     };
-    run(&["--yolo-line", &format!("summarize {fake_secret}")])
-        .assert()
-        .success()
-        .stdout(contains("task complete"));
+    run(&[
+        "agent",
+        "--scope",
+        "host",
+        &format!("summarize {fake_secret}"),
+    ])
+    .assert()
+    .success()
+    .stdout(contains("task complete"));
     let listing = run(&["sessions", "--json"]).output().unwrap();
     assert!(listing.status.success());
     let records: serde_json::Value = serde_json::from_slice(&listing.stdout).unwrap();
@@ -2580,6 +2629,9 @@ fn durable_task_cli_lifecycle_is_private_and_redacted() {
     let record = &records["legacy"].as_array().unwrap()[0];
     let id = record["id"].as_str().unwrap();
     assert_eq!(record["status"], "completed");
+    assert_eq!(record["native_state"], "completed");
+    assert_eq!(record["execution_scope"], "host");
+    assert_eq!(record["workspace_root"], dir.to_string_lossy().as_ref());
     let task_path = data.join("aishe").join("tasks").join(format!("{id}.json"));
     let task_text = std::fs::read_to_string(&task_path).unwrap();
     assert!(!task_text.contains(fake_secret));
@@ -2633,7 +2685,7 @@ auth_required = false
     };
     // `provider test` was a duplicate spelling of `aishe test`.
     let output = run(&["test", "--json"]).output().unwrap();
-    assert!(output.status.success(), "{:?}", output);
+    assert!(output.status.success(), "{output:?}");
     let document: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     let report = &document["provider"];
     assert_eq!(report["schema_version"], 2);

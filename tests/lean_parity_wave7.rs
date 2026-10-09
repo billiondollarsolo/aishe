@@ -1,7 +1,7 @@
 //! Wave 7: noninteractive lean agent smoke (closes lean-extra-validation SKIP).
 //!
 //! Exercises the in-process agent/tool path with FakeProvider + preloaded
-//! `AISHE_ACCEPTANCE_FILE` so CI never needs a TTY grant dance or OpenCode.
+//! an explicit host grant so CI never needs workspace namespaces or OpenCode.
 
 use std::io::Write;
 use std::path::PathBuf;
@@ -46,6 +46,7 @@ provider = "anthropic"
 [backend]
 engine = "opencode"
 output = "focus"
+default_scope = "host"
 
 [providers.anthropic]
 base_url = "https://api.anthropic.com"
@@ -76,11 +77,11 @@ fn acceptance_file_preloads_agent_grant() {
     let _guard = GRANT_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let root = temp_root("grant");
     let accept = root.join("accept");
-    std::fs::write(&accept, "agent\n").unwrap();
+    std::fs::write(&accept, "agent-host\n").unwrap();
     std::env::set_var("AISHE_ACCEPTANCE_FILE", &accept);
     assert!(
-        grant_accepted(LeanMode::Agent, false),
-        "AISHE_ACCEPTANCE_FILE with `agent` must satisfy workspace agent grant"
+        grant_accepted(LeanMode::Agent, true),
+        "AISHE_ACCEPTANCE_FILE with `agent-host` must satisfy host agent grant"
     );
     std::env::remove_var("AISHE_ACCEPTANCE_FILE");
 }
@@ -92,7 +93,7 @@ fn lean_run_nl_agent_smoke_with_fake_tool_and_acceptance() {
     let root = temp_root("run-nl-agent");
     let accept = root.join("accept");
     let opencode_spy = root.join("opencode");
-    std::fs::write(&accept, "agent\n").unwrap();
+    std::fs::write(&accept, "agent-host\n").unwrap();
     std::env::set_var("AISHE_ACCEPTANCE_FILE", &accept);
     std::env::set_var("AISHE_SPY_OPENCODE", &opencode_spy);
     std::env::set_var("AISHE_FAKE_TOOL", "true");
@@ -105,9 +106,8 @@ fn lean_run_nl_agent_smoke_with_fake_tool_and_acceptance() {
     let mut config = Config::default();
     config.aishe.yolo_confirm = "never".into();
     config.aishe.yolo_confirm_dangerous = false;
-    config.backend.default_scope = "workspace".into();
-    // Keep sandbox off OS wrap so CI does not require bwrap for this unit path.
-    config.sandbox.linux_backend = "off".into();
+    config.backend.default_scope = "host".into();
+    config.sandbox.allow_host_yolo = true;
 
     lean::run_nl(
         "please run the true command",
@@ -145,10 +145,7 @@ fn lean_run_nl_agent_smoke_with_fake_tool_and_acceptance() {
 fn lean_fifo_agent_nl_smoke_no_opencode() {
     let _guard = GRANT_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let root = temp_root("fifo-agent");
-    let accept = root.join("accept");
     let opencode_spy = root.join("opencode");
-    std::fs::write(&accept, "agent\n").unwrap();
-    std::env::set_var("AISHE_ACCEPTANCE_FILE", &accept);
     std::env::set_var("AISHE_SPY_OPENCODE", &opencode_spy);
     std::env::set_var("AISHE_FAKE_TOOL", "true");
     std::env::set_var("AISHE_FAKE_LLM", "fifo-agent-done");
@@ -162,7 +159,7 @@ fn lean_fifo_agent_nl_smoke_no_opencode() {
     let mut config = Config::default();
     config.aishe.yolo_confirm = "never".into();
     config.aishe.yolo_confirm_dangerous = false;
-    config.sandbox.linux_backend = "off".into();
+    config.sandbox.allow_host_yolo = true;
 
     let mut provider: Option<Arc<dyn aishe::providers::Provider>> =
         Some(Arc::new(FakeProvider::new("fifo-agent-done".into())));
@@ -173,6 +170,18 @@ fn lean_fifo_agent_nl_smoke_no_opencode() {
     let pty = PtyOut::capture();
     let cwd = std::env::current_dir().unwrap();
     let cwd_s = cwd.to_string_lossy();
+
+    let accepted = handle_ipc_line(
+        &mut config,
+        &mut provider,
+        &mut executor,
+        &mut session,
+        &mut store,
+        &mut warm,
+        &pty,
+        &format!("MODE_ACCEPT\tagent-host\t{cwd_s}"),
+    );
+    assert_eq!(accepted, "MODE_OK\tagent\thost\t");
 
     let reply = handle_ipc_line(
         &mut config,
@@ -200,7 +209,6 @@ fn lean_fifo_agent_nl_smoke_no_opencode() {
         executor.history
     );
 
-    std::env::remove_var("AISHE_ACCEPTANCE_FILE");
     std::env::remove_var("AISHE_SPY_OPENCODE");
     std::env::remove_var("AISHE_FAKE_TOOL");
     std::env::remove_var("AISHE_FAKE_LLM");
@@ -212,14 +220,22 @@ fn dash_c_mode_agent_fake_tool_skips_opencode() {
     let root = temp_root("dash-c-agent");
     let provider_spy = root.join("provider");
     let opencode_spy = root.join("opencode");
+    let acceptance = root.join("acceptance");
+    let marker = root.join("ran-agent-tool");
+    std::fs::write(&acceptance, "agent-host\n").unwrap();
     bin()
         .env("AISHE_SPY_PROVIDER_MAKE", &provider_spy)
         .env("AISHE_SPY_OPENCODE", &opencode_spy)
         .env("AISHE_FAKE_LLM", "dash-c-agent-done")
-        .env("AISHE_FAKE_TOOL", "true")
+        .env("AISHE_ACCEPTANCE_FILE", &acceptance)
+        .env("AISHE_FAKE_TOOL", format!("touch {}", marker.display()))
         .args(["--mode", "agent", "-c", "? please run true"])
         .assert()
         .success();
+    assert!(
+        marker.exists(),
+        "--mode agent must actually execute its tool after the grant"
+    );
     assert!(
         provider_spy.exists(),
         "agent NL must construct in-process provider"

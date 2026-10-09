@@ -1,13 +1,13 @@
-//! Shared sink for parent → PTY master writes (lean control plane).
+//! Shared user-visible terminal output sink (lean control plane).
 //!
 //! FIFO carries control only (`OK` / `STREAM_END` / `FILL_B64` / `CONFIRM_B64` / `RAN` / `ERROR`).
-//! Multi-line answers and agent transcripts are written here so the interactive
-//! child TTY sees them without flattening through a one-line FIFO reply.
+//! Multi-line answers and agent transcripts go to the original terminal output,
+//! never the child PTY's master writer (which would submit them as shell input).
 
 use std::io::{self, Write};
 use std::sync::{Arc, Mutex};
 
-/// Cloneable handle shared by the stdin→PTY pump and the lean IPC thread.
+/// Cloneable display handle shared by the PTY output relay and lean IPC thread.
 #[derive(Clone, Default)]
 pub struct PtyOut {
     inner: Arc<Mutex<Inner>>,
@@ -18,7 +18,7 @@ enum Inner {
     /// Discard (unit tests that only care about FIFO control, or pre-attach).
     #[default]
     Null,
-    /// Live PTY master writer (or any sink).
+    /// Original terminal output descriptor (or any output sink).
     Writer(Box<dyn Write + Send>),
     /// In-memory capture for tests.
     Capture(Vec<u8>),
@@ -55,7 +55,7 @@ impl PtyOut {
         )
     }
 
-    /// Raw byte write (stdin pump). No newline translation.
+    /// Raw output bytes (PTY relay). No newline translation.
     pub fn write_all(&self, buf: &[u8]) -> io::Result<()> {
         let mut guard = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         match &mut *guard {
@@ -71,7 +71,7 @@ impl PtyOut {
         }
     }
 
-    /// User-visible text. Translates `\n` → `\r\n` for raw-mode PTY masters.
+    /// User-visible text. Translates `\n` → `\r\n` for raw-mode terminals.
     pub fn write_user_text(&self, text: &str) {
         if text.is_empty() {
             return;

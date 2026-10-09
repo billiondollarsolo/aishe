@@ -19,7 +19,7 @@ use std::collections::BTreeMap;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::mpsc::{self, Receiver};
-use std::sync::Mutex;
+use std::sync::{Mutex, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -162,11 +162,14 @@ impl StdioTransport {
     /// Send a request and wait (up to [`RPC_TIMEOUT`]) for the response with the
     /// matching id, ignoring notifications and unrelated messages in between.
     fn request(&mut self, method: &str, params: Value) -> Result<Value, String> {
+        let timeout = crate::providers::request_timeout(Some(RPC_TIMEOUT))
+            .map_err(|error| error.to_string())?
+            .unwrap_or(RPC_TIMEOUT);
+        let deadline = Instant::now() + timeout;
         let id = self.next_id;
         self.next_id += 1;
         self.send(&json!({"jsonrpc": "2.0", "id": id, "method": method, "params": params}))?;
 
-        let deadline = Instant::now() + RPC_TIMEOUT;
         loop {
             let remaining = deadline
                 .checked_duration_since(Instant::now())
@@ -185,6 +188,7 @@ impl StdioTransport {
 
     /// Send a notification (no id, no response expected).
     fn notify(&mut self, method: &str, params: Value) -> Result<(), String> {
+        crate::providers::request_timeout(None).map_err(|error| error.to_string())?;
         self.send(&json!({"jsonrpc": "2.0", "method": method, "params": params}))
     }
 }
@@ -233,10 +237,16 @@ impl HttpTransport {
 
     /// Build a POST request with the standard MCP headers plus any configured
     /// extras and the session id (when known).
-    fn post(&self) -> ureq::RequestBuilder<ureq::typestate::WithBody> {
+    fn post(&self) -> Result<ureq::RequestBuilder<ureq::typestate::WithBody>, String> {
         let mut req = self
             .agent
             .post(&self.url)
+            .config()
+            .timeout_global(
+                crate::providers::request_timeout(Some(RPC_TIMEOUT))
+                    .map_err(|error| error.to_string())?,
+            )
+            .build()
             .header("Content-Type", "application/json")
             .header("Accept", "application/json, text/event-stream");
         for (k, v) in &self.headers {
@@ -245,7 +255,7 @@ impl HttpTransport {
         if let Some(sid) = &self.session_id {
             req = req.header("Mcp-Session-Id", sid);
         }
-        req
+        Ok(req)
     }
 
     fn request(&mut self, method: &str, params: Value) -> Result<Value, String> {
@@ -253,7 +263,7 @@ impl HttpTransport {
         self.next_id += 1;
         let body = json!({"jsonrpc": "2.0", "id": id, "method": method, "params": params});
         let resp = self
-            .post()
+            .post()?
             .send_json(body)
             .map_err(|e| format!("{method}: {e}"))?;
         if !resp.status().is_success() {
@@ -299,7 +309,7 @@ impl HttpTransport {
         // The shared ureq agent deliberately leaves HTTP status handling to us
         // so a bounded error body can be included in the diagnostic.
         let response = self
-            .post()
+            .post()?
             .send_json(body)
             .map_err(|e| format!("{method}: {e}"))?;
         if response.status().is_success() {
@@ -801,9 +811,44 @@ pub struct McpRegistry {
     defs: Vec<ToolDef>,
     routes: BTreeMap<String, Route>,
     prompts: BTreeMap<String, PromptRoute>,
+    pending: Option<BTreeMap<String, McpServerConfig>>,
+    connected: OnceLock<Box<McpRegistry>>,
 }
 
 impl McpRegistry {
+    /// Keep configuration inert until a caller actually requests tools or
+    /// prompts. Native agents can persist admission and their task checkpoint
+    /// before this first discovery starts a process or contacts a server.
+    pub fn deferred(configs: &BTreeMap<String, McpServerConfig>) -> Self {
+        let pending: BTreeMap<_, _> = configs
+            .iter()
+            .filter(|(_, config)| config.enabled)
+            .map(|(name, config)| (name.clone(), config.clone()))
+            .collect();
+        if pending.is_empty() {
+            return Self::default();
+        }
+        Self {
+            pending: Some(pending),
+            ..Self::default()
+        }
+    }
+
+    /// This inspection never initializes configured servers.
+    pub fn is_deferred(&self) -> bool {
+        self.pending.is_some() && self.connected.get().is_none()
+    }
+
+    fn resolved(&self) -> &Self {
+        match &self.pending {
+            Some(configs) => self
+                .connected
+                .get_or_init(|| Box::new(Self::connect(configs)))
+                .as_ref(),
+            None => self,
+        }
+    }
+
     /// Connect to every enabled configured server. Failures are reported and the
     /// server skipped; a missing/empty config yields an empty registry that spawns
     /// nothing.
@@ -907,22 +952,24 @@ impl McpRegistry {
 
     /// True if no MCP tools are available.
     pub fn is_empty(&self) -> bool {
-        self.defs.is_empty()
+        self.resolved().defs.is_empty()
     }
 
     /// True if nothing at all is available (no tools and no prompts).
     pub fn is_fully_empty(&self) -> bool {
-        self.defs.is_empty() && self.prompts.is_empty()
+        let registry = self.resolved();
+        registry.defs.is_empty() && registry.prompts.is_empty()
     }
 
     /// Tool definitions to offer the model (already namespaced and sanitized).
     pub fn tool_defs(&self) -> Vec<ToolDef> {
-        self.defs.clone()
+        self.resolved().defs.clone()
     }
 
     /// A short `tool · description` listing for `aishe mcp` / docs.
     pub fn list(&self) -> Vec<(String, String)> {
-        self.defs
+        self.resolved()
+            .defs
             .iter()
             .map(|d| (d.name.clone(), d.description.clone()))
             .collect()
@@ -930,7 +977,8 @@ impl McpRegistry {
 
     /// The exposed prompt commands (`server:prompt`) and their descriptions.
     pub fn list_prompts(&self) -> Vec<(String, String)> {
-        self.prompts
+        self.resolved()
+            .prompts
             .iter()
             .map(|(name, r)| (name.clone(), r.description.clone()))
             .collect()
@@ -938,21 +986,22 @@ impl McpRegistry {
 
     /// True if `name` is an exposed MCP prompt command (`server:prompt`).
     pub fn is_prompt(&self, name: &str) -> bool {
-        self.prompts.contains_key(name)
+        self.resolved().prompts.contains_key(name)
     }
 
     /// Fetch an MCP prompt by its `server:prompt` name, mapping the positional
     /// `args` to the prompt's declared argument names. Returns the rendered prompt
     /// text to run as a request, or an error string. `None` if unknown.
     pub fn prompt_text(&self, name: &str, args: &[&str]) -> Option<Result<String, String>> {
-        let route = self.prompts.get(name)?;
+        let registry = self.resolved();
+        let route = registry.prompts.get(name)?;
         let mut named = serde_json::Map::new();
         for (i, key) in route.arg_names.iter().enumerate() {
             if let Some(v) = args.get(i) {
                 named.insert(key.clone(), Value::String((*v).to_string()));
             }
         }
-        let server = self.servers.get(&route.server)?;
+        let server = registry.servers.get(&route.server)?;
         let mut guard = match server.lock() {
             Ok(g) => g,
             Err(_) => return Some(Err("MCP server lock poisoned.".into())),
@@ -962,7 +1011,8 @@ impl McpRegistry {
 
     /// Call a namespaced MCP tool. Returns `(audit label, content for the model)`.
     pub fn call(&self, exposed: &str, args: &Value) -> (String, String) {
-        let Some(route) = self.routes.get(exposed) else {
+        let registry = self.resolved();
+        let Some(route) = registry.routes.get(exposed) else {
             return (
                 exposed.to_string(),
                 format!("Error: unknown MCP tool '{exposed}'."),
@@ -973,7 +1023,7 @@ impl McpRegistry {
             RouteKind::ListResources => format!("{}:list_resources", route.server),
             RouteKind::ReadResource => format!("{}:read_resource", route.server),
         };
-        let Some(m) = self.servers.get(&route.server) else {
+        let Some(m) = registry.servers.get(&route.server) else {
             return (label, format!("Error: no MCP server '{}'.", route.server));
         };
         let mut server = match m.lock() {
@@ -1007,6 +1057,154 @@ pub fn is_mcp_tool(name: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn deferred_http_discovery_is_inert_and_connects_once_across_threads() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
+        let requests = Arc::new(AtomicUsize::new(0));
+        let counted = requests.clone();
+        let mut server = mockito::Server::new();
+        let rpc = server.mock("POST", "/")
+            .with_header("content-type", "application/json")
+            .with_body_from_request(move |request| {
+                counted.fetch_add(1, Ordering::SeqCst);
+                let body: Value = serde_json::from_slice(request.body().unwrap()).unwrap();
+                let result = match body["method"].as_str().unwrap() {
+                    "initialize" => json!({"capabilities":{}}),
+                    "tools/list" => json!({"tools":[{"name":"echo","description":"echo a value","inputSchema":{"type":"object"}}]}),
+                    "tools/call" => json!({"content":[{"type":"text","text":"connected once"}]}),
+                    "notifications/initialized" => json!({}),
+                    method => panic!("unexpected discovery request: {method}"),
+                };
+                serde_json::to_vec(&json!({"jsonrpc":"2.0", "id":body.get("id"), "result":result})).unwrap()
+            })
+            .expect(4)
+            .create();
+        let config = McpServerConfig {
+            command: None,
+            args: Vec::new(),
+            env: BTreeMap::new(),
+            url: Some(server.url()),
+            headers: BTreeMap::new(),
+            enabled: true,
+        };
+        let registry = McpRegistry::deferred(&BTreeMap::from([("local".into(), config)]));
+        assert!(registry.is_deferred());
+        assert_eq!(requests.load(Ordering::SeqCst), 0);
+        std::thread::scope(|scope| {
+            for _ in 0..8 {
+                scope.spawn(|| {
+                    assert_eq!(
+                        registry.list(),
+                        vec![("mcp__local__echo".into(), "echo a value".into())]
+                    );
+                });
+            }
+        });
+        assert!(!registry.is_deferred());
+        assert_eq!(requests.load(Ordering::SeqCst), 3);
+        assert_eq!(registry.tool_defs().len(), 1);
+        assert!(!registry.is_empty());
+        assert!(!registry.is_fully_empty());
+        assert!(registry.list_prompts().is_empty());
+        assert!(!registry.is_prompt("missing"));
+        assert!(registry.prompt_text("missing", &[]).is_none());
+        let (label, output) = registry.call("mcp__local__echo", &json!({}));
+        assert_eq!(label, "local:echo");
+        assert_eq!(output, "connected once");
+        assert_eq!(requests.load(Ordering::SeqCst), 4);
+        rpc.assert();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn deferred_stdio_discovery_does_not_spawn_until_requested_or_retry_failure() {
+        let marker = std::env::temp_dir().join(format!(
+            "aishe-mcp-deferred-{}-{}",
+            std::process::id(),
+            rand::random::<u64>()
+        ));
+        let config = McpServerConfig {
+            command: Some("sh".into()),
+            args: vec![
+                "-c".into(),
+                "printf x >> \"$1\"".into(),
+                "aishe-deferred-test".into(),
+                marker.to_string_lossy().into_owned(),
+            ],
+            env: BTreeMap::new(),
+            url: None,
+            headers: BTreeMap::new(),
+            enabled: true,
+        };
+        let registry = McpRegistry::deferred(&BTreeMap::from([("local".into(), config)]));
+        assert!(registry.is_deferred());
+        assert!(
+            !marker.exists(),
+            "constructing a deferred registry started the process"
+        );
+        assert!(registry.list().is_empty());
+        assert!(!registry.is_deferred());
+        assert_eq!(std::fs::read(&marker).unwrap(), b"x");
+        assert!(registry.tool_defs().is_empty());
+        assert!(registry.list_prompts().is_empty());
+        assert_eq!(
+            std::fs::read(&marker).unwrap(),
+            b"x",
+            "failed discovery was repeated"
+        );
+        std::fs::remove_file(marker).unwrap();
+    }
+
+    #[test]
+    fn disabled_deferred_servers_stay_empty_without_initialization() {
+        let config = McpServerConfig {
+            command: Some("must-not-start".into()),
+            args: Vec::new(),
+            env: BTreeMap::new(),
+            url: None,
+            headers: BTreeMap::new(),
+            enabled: false,
+        };
+        let registry = McpRegistry::deferred(&BTreeMap::from([("disabled".into(), config)]));
+        assert!(!registry.is_deferred());
+        assert!(registry.is_fully_empty());
+    }
+
+    #[test]
+    fn deferred_http_discovery_uses_the_native_task_deadline() {
+        let mut server = mockito::Server::new();
+        let request = server
+            .mock("POST", "/")
+            .with_header("content-type", "application/json")
+            .with_chunked_body(|writer| {
+                std::thread::sleep(Duration::from_millis(200));
+                let _ = writer
+                    .write_all(b"{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"capabilities\":{}}}");
+                Ok(())
+            })
+            .create();
+        let config = McpServerConfig {
+            command: None,
+            args: Vec::new(),
+            env: BTreeMap::new(),
+            url: Some(server.url()),
+            headers: BTreeMap::new(),
+            enabled: true,
+        };
+        let registry = McpRegistry::deferred(&BTreeMap::from([("slow".into(), config)]));
+        let _guard =
+            crate::providers::HttpDeadlineGuard::new(Some(Duration::from_millis(40))).unwrap();
+        let start = Instant::now();
+        assert!(registry.is_empty());
+        assert!(
+            start.elapsed() < Duration::from_millis(180),
+            "discovery ignored task deadline"
+        );
+        assert!(!registry.is_deferred());
+        request.assert();
+    }
 
     #[test]
     fn jsonrpc_drain_survives_invalid_utf8() {

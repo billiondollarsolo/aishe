@@ -1,9 +1,10 @@
 //! PTY front-end.
 //!
 //! **Lean (default):** launch `zsh -f -i` (with RCS re-enabled only for an
-//! isolated ZDOTDIR) so the child never sources the user's `~/.zshrc` or plugin
-//! stack. A tiny hook classifies `?` / `!` / PATH-known / NL and sends NL to
-//! the parent over a FIFO. Restore the historical "your zsh + OpenCode" path
+//! isolated ZDOTDIR). `AISHE_ZSH_PROFILE=personal` loads the user's zsh settings
+//! with the same native runtime; the default clean profile stays isolated.
+//! A tiny hook classifies `?` / `!` / PATH-known / NL and sends NL to
+//! the parent over a FIFO. Restore the historical OpenCode path
 //! with `AISHE_LEGACY_OPENCODE=1`.
 //!
 //! **Legacy:** launch the user's *real* interactive zsh (`zsh -i`) inside a
@@ -11,6 +12,7 @@
 //! aishe AI hook injected.
 
 use std::io::{Read, Write};
+use std::os::fd::FromRawFd;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
@@ -68,10 +70,12 @@ fn run_zsh_inner(config: &Config, history_log: &std::path::Path, shell_id: Strin
         anyhow!("zsh not found on $PATH — the interactive front-end requires zsh (install it, or use `aishe -c …` / the bash hook)")
     })?;
 
-    // Isolated ZDOTDIR. Lean writes only the tiny hook (no user rc). Legacy
-    // sources the real `.zshrc` then appends the historical hook.
+    // Customization is independent of the provider/runtime selection. Reject a
+    // typo before creating a shell rather than silently loading another profile.
     let lean = crate::lean::enabled();
-    let zdotdir = make_zdotdir(lean).context("preparing zsh integration dir")?;
+    let profile =
+        crate::lean::ZshProfile::parse(std::env::var("AISHE_ZSH_PROFILE").ok().as_deref())?;
+    let zdotdir = make_zdotdir(lean, profile).context("preparing zsh integration dir")?;
     let _zdotdir_guard = ZdotdirGuard(zdotdir.clone());
     let real_zdotdir = std::env::var("ZDOTDIR").unwrap_or_else(|_| {
         dirs::home_dir()
@@ -89,25 +93,26 @@ fn run_zsh_inner(config: &Config, history_log: &std::path::Path, shell_id: Strin
         })
         .map_err(|e| anyhow!("openpty failed: {e}"))?;
 
-    // Take the master writer before spawn so lean IPC can print into the same
-    // TTY the user sees (answers / agent transcript). FIFO stays control-only.
-    let writer = pair
+    // The PTY master writer is INPUT to zsh. Keep it exclusively in the
+    // keystroke pump; model text must never be sent here.
+    let input_writer = pair
         .master
         .take_writer()
         .map_err(|e| anyhow!("pty writer: {e}"))?;
-    let pty_out = crate::lean::PtyOut::from_writer(writer);
-    let _ipc = if lean {
-        Some(
-            crate::lean::spawn_ipc(config.clone(), pty_out.clone())
-                .context("starting lean NL ipc")?,
-        )
-    } else {
-        None
-    };
+    // Duplicate the real display fd before agent stdout redirection. Sharing
+    // this sink with the PTY relay serializes output and avoids redirect loops.
+    let display_fd = unsafe { libc::dup(libc::STDOUT_FILENO) };
+    if display_fd < 0 {
+        return Err(std::io::Error::last_os_error()).context("duplicating terminal output");
+    }
+    // SAFETY: dup returned a fresh owned descriptor, closed by File on drop.
+    let display = unsafe { std::fs::File::from_raw_fd(display_fd) };
+    let pty_out = crate::lean::PtyOut::from_writer(Box::new(display));
+    let mut lean_files = crate::lean::LeanShellFiles::default();
 
     let mut cmd = CommandBuilder::new(&zsh);
     if lean {
-        for arg in crate::lean::zsh_argv() {
+        for arg in crate::lean::zsh_argv_for_profile(profile) {
             cmd.arg(*arg);
         }
     } else {
@@ -115,7 +120,8 @@ fn run_zsh_inner(config: &Config, history_log: &std::path::Path, shell_id: Strin
     }
     cmd.env("ZDOTDIR", &zdotdir);
     cmd.env("AISHE_OUR_ZDOTDIR", &zdotdir);
-    if !lean {
+    cmd.env("AISHE_ZSH_PROFILE", profile.as_str());
+    if !lean || profile == crate::lean::ZshProfile::Personal {
         cmd.env("AISHE_REAL_ZDOTDIR", &real_zdotdir);
     }
     cmd.env("AISHE_SHELL_ID", &shell_id);
@@ -124,21 +130,41 @@ fn run_zsh_inner(config: &Config, history_log: &std::path::Path, shell_id: Strin
         if lean {
             crate::lean::session_mode(config)
         } else {
-            config.aishe.mode.clone()
+            match crate::lean::LeanMode::parse(&config.aishe.mode) {
+                crate::lean::LeanMode::Ask => "suggest",
+                crate::lean::LeanMode::Allow => "auto",
+                crate::lean::LeanMode::Agent => "yolo",
+            }
+            .into()
         },
     );
     let mut _cmds_guard: Option<FileGuard> = None;
     if lean {
         cmd.env("AISHE_LEAN", "1");
         cmd.env("AISHE_BACKEND", "native");
-        if let Some(ipc) = _ipc.as_ref() {
-            cmd.env("AISHE_LEAN_REQ", ipc.req_path.display().to_string());
-            cmd.env("AISHE_LEAN_REP", ipc.rep_path.display().to_string());
-        }
         let cmds_file = std::env::temp_dir().join(format!("aishe-lean-cmds-{shell_id}"));
         let _ = std::fs::File::create(&cmds_file);
         cmd.env("AISHE_LEAN_CMDS_FILE", cmds_file.display().to_string());
+        lean_files.commands = Some(cmds_file.clone());
         _cmds_guard = Some(FileGuard(cmds_file));
+        let state_dir = zdotdir.join("execution-state");
+        create_private_directory(&state_dir)?;
+        let state_file = std::fs::canonicalize(&state_dir)?.join("state");
+        cmd.env("AISHE_EXECUTION_STATE_FILE", &state_file);
+        lean_files.execution_state = Some(state_file);
+        let mut denied_names: Vec<_> = crate::executor::sensitive_environment_names(config)
+            .into_iter()
+            .collect();
+        if let Ok(extra) = std::env::var("AISHE_EXECUTION_STATE_DENY") {
+            denied_names.extend(extra.lines().map(str::to_string));
+        }
+        denied_names.sort();
+        denied_names.dedup();
+        cmd.env("AISHE_EXECUTION_STATE_DENY", denied_names.join("\n"));
+        if profile == crate::lean::ZshProfile::Clean {
+            let cache = completion_cache_dir().unwrap_or_else(|_| zdotdir.join("completion"));
+            cmd.env("AISHE_COMPLETION_CACHE", cache);
+        }
     }
     // The prompt paints from the same palette as the Rust renderers, and goes
     // colorless under NO_COLOR/TERM=dumb/ui.theme = "none" like everything else.
@@ -159,13 +185,28 @@ fn run_zsh_inner(config: &Config, history_log: &std::path::Path, shell_id: Strin
         cmd.env("AISHE_BACKEND", &config.backend.engine);
     }
     cmd.env("AISHE_AGENT_OUTPUT", &config.backend.output);
+    cmd.env(
+        "AISHE_MCP_ENABLED",
+        config
+            .mcp_servers
+            .values()
+            .filter(|server| server.enabled)
+            .count()
+            .to_string(),
+    );
+    cmd.env(
+        "AISHE_AGENT_PREVIEW",
+        if config.aishe.yolo_preview { "1" } else { "0" },
+    );
     let output_file = std::env::temp_dir().join(format!("aishe-output-{shell_id}"));
     std::fs::remove_file(&output_file).ok();
     cmd.env("AISHE_OUTPUT_FILE", &output_file);
+    lean_files.output = Some(output_file.clone());
     let _output_guard = FileGuard(output_file);
     let scope_file = std::env::temp_dir().join(format!("aishe-scope-{shell_id}"));
     let _scope_guard = if std::fs::write(&scope_file, &config.backend.default_scope).is_ok() {
         cmd.env("AISHE_SCOPE_FILE", &scope_file);
+        lean_files.scope = Some(scope_file.clone());
         Some(FileGuard(scope_file))
     } else {
         None
@@ -174,6 +215,10 @@ fn run_zsh_inner(config: &Config, history_log: &std::path::Path, shell_id: Strin
     std::fs::remove_file(&acceptance_file).ok();
     cmd.env("AISHE_ACCEPTANCE_FILE", &acceptance_file);
     let _acceptance_guard = FileGuard(acceptance_file);
+    let pending_file = std::env::temp_dir().join(format!("aishe-pending-{shell_id}"));
+    std::fs::remove_file(&pending_file).ok();
+    cmd.env("AISHE_PENDING_FILE", &pending_file);
+    let _pending_guard = FileGuard(pending_file);
     let display_model = crate::commands::display_safe(config.active_model());
     cmd.env("AISHE_MODEL", &display_model);
     cmd.env(
@@ -197,6 +242,7 @@ fn run_zsh_inner(config: &Config, history_log: &std::path::Path, shell_id: Strin
     let model_file = std::env::temp_dir().join(format!("aishe-model-{}", std::process::id()));
     let _model_guard = if std::fs::write(&model_file, &display_model).is_ok() {
         cmd.env("AISHE_MODEL_FILE", &model_file);
+        lean_files.model = Some(model_file.clone());
         Some(FileGuard(model_file))
     } else {
         None
@@ -227,6 +273,7 @@ fn run_zsh_inner(config: &Config, history_log: &std::path::Path, shell_id: Strin
     .is_ok()
     {
         cmd.env("AISHE_SELECTION_FILE", &selection_file);
+        lean_files.selection = Some(selection_file.clone());
         Some(FileGuard(selection_file))
     } else {
         None
@@ -247,6 +294,7 @@ fn run_zsh_inner(config: &Config, history_log: &std::path::Path, shell_id: Strin
     let usage_file = std::env::temp_dir().join(format!("aishe-usage-{}", std::process::id()));
     std::fs::remove_file(&usage_file).ok();
     cmd.env("AISHE_USAGE_FILE", &usage_file);
+    lean_files.usage = Some(usage_file.clone());
     let _usage_guard = FileGuard(usage_file.clone());
     // A separately rendered status file lets the next prompt show last-call and
     // session totals without spawning a helper process from every `precmd`.
@@ -261,6 +309,18 @@ fn run_zsh_inner(config: &Config, history_log: &std::path::Path, shell_id: Strin
         config.active_connection_id(),
     );
     cmd.env("AISHE_STATUS_FILE", &status_file);
+    lean_files.status = Some(status_file.clone());
+    if lean {
+        let background_status = zdotdir.join("background-status");
+        let background_events = zdotdir.join("background-events");
+        let background_seen = zdotdir.join("background-seen");
+        cmd.env("AISHE_BACKGROUND_FILE", &background_status);
+        cmd.env("AISHE_BACKGROUND_EVENTS", &background_events);
+        cmd.env("AISHE_BACKGROUND_SEEN_FILE", &background_seen);
+        lean_files.background_status = Some(background_status);
+        lean_files.background_events = Some(background_events);
+        lean_files.background_seen = Some(background_seen);
+    }
     cmd.env(
         "AISHE_STATUS_POSITION",
         if config.aishe.status_line {
@@ -321,6 +381,17 @@ fn run_zsh_inner(config: &Config, history_log: &std::path::Path, shell_id: Strin
         cmd.cwd(cwd);
     }
 
+    // Explicit paths belong to this shell, not the parent's inherited env.
+    let _ipc = if lean {
+        let ipc = crate::lean::spawn_ipc_with_files(config.clone(), pty_out.clone(), lean_files)
+            .context("starting lean NL ipc")?;
+        cmd.env("AISHE_LEAN_REQ", &ipc.req_path);
+        cmd.env("AISHE_LEAN_REP", &ipc.rep_path);
+        Some(ipc)
+    } else {
+        None
+    };
+
     let mut child = pair
         .slave
         .spawn_command(cmd)
@@ -363,17 +434,40 @@ fn run_zsh_inner(config: &Config, history_log: &std::path::Path, shell_id: Strin
     // stdin -> pty
     {
         let done = Arc::clone(&done);
-        let pty_stdin = pty_out.clone();
+        let activity = _ipc
+            .as_ref()
+            .map(|ipc| (Arc::clone(&ipc.busy), Arc::clone(&ipc.cancelled)));
+        let display = pty_out.clone();
         std::thread::spawn(move || {
+            let mut pty_stdin = input_writer;
             let mut stdin = std::io::stdin();
             let mut buf = [0u8; 4096];
             while !done.load(Ordering::Relaxed) {
                 match stdin.read(&mut buf) {
                     Ok(0) => break,
                     Ok(n) => {
-                        if pty_stdin.write_all(&buf[..n]).is_err() {
+                        let mut input = &buf[..n];
+                        let mut filtered = Vec::new();
+                        if input.contains(&3) {
+                            if let Some((busy, cancelled)) = &activity {
+                                for &byte in input {
+                                    if byte == 3 && busy.load(Ordering::SeqCst) {
+                                        if !cancelled.swap(true, Ordering::SeqCst) {
+                                            crate::agent::controller::INTERRUPTED
+                                                .store(true, Ordering::SeqCst);
+                                            display.write_user_line("\naishe: cancelling; waiting for current operation");
+                                        }
+                                    } else {
+                                        filtered.push(byte);
+                                    }
+                                }
+                                input = &filtered;
+                            }
+                        }
+                        if pty_stdin.write_all(input).is_err() {
                             break;
                         }
+                        let _ = pty_stdin.flush();
                     }
                     Err(_) => break,
                 }
@@ -419,7 +513,6 @@ fn run_zsh_inner(config: &Config, history_log: &std::path::Path, shell_id: Strin
     }
 
     // pty -> stdout (main thread; ends at EOF when zsh exits).
-    let mut stdout = std::io::stdout();
     let mut buf = [0u8; 4096];
     loop {
         if TERMINATED.load(Ordering::SeqCst) {
@@ -428,10 +521,9 @@ fn run_zsh_inner(config: &Config, history_log: &std::path::Path, shell_id: Strin
         match reader.read(&mut buf) {
             Ok(0) => break,
             Ok(n) => {
-                if stdout.write_all(&buf[..n]).is_err() {
+                if pty_out.write_all(&buf[..n]).is_err() {
                     break;
                 }
-                let _ = stdout.flush();
             }
             // A signal (EINTR) or a real read error both land here; in either case
             // we stop and let the Drops run. Re-check the flag is implicit: we break.
@@ -497,17 +589,59 @@ impl Drop for FileGuard {
 }
 
 /// Create a temp ZDOTDIR containing `.zshenv` and `.zshrc`.
-fn make_zdotdir(lean: bool) -> Result<std::path::PathBuf> {
-    let dir = std::env::temp_dir().join(format!("aishe-zdotdir-{}", std::process::id()));
-    std::fs::create_dir_all(&dir)?;
+fn make_zdotdir(lean: bool, profile: crate::lean::ZshProfile) -> Result<std::path::PathBuf> {
+    let dir = std::env::temp_dir().join(format!(
+        "aishe-zdotdir-{}-{}",
+        std::process::id(),
+        random_shell_id()
+    ));
+    create_private_directory(&dir)?;
     if lean {
-        std::fs::write(dir.join(".zshenv"), crate::lean::wrapper_zshenv())?;
-        std::fs::write(dir.join(".zshrc"), crate::lean::wrapper_zshrc())?;
+        std::fs::write(
+            dir.join(".zshenv"),
+            crate::lean::wrapper_zshenv_for_profile(profile),
+        )?;
+        std::fs::write(
+            dir.join(".zshrc"),
+            crate::lean::wrapper_zshrc_for_profile(profile),
+        )?;
     } else {
         std::fs::write(dir.join(".zshenv"), integration::WRAPPER_ZSHENV)?;
         std::fs::write(dir.join(".zshrc"), integration::wrapper_zshrc())?;
     }
     Ok(dir)
+}
+
+/// Completion state survives clean shell launches without loading any user rc.
+/// Refuse a shared or symlinked cache; the caller can use its temporary directory.
+fn completion_cache_dir() -> Result<std::path::PathBuf> {
+    let base = std::env::var_os("XDG_CACHE_HOME")
+        .map(std::path::PathBuf::from)
+        .filter(|path| path.is_absolute())
+        .or_else(|| dirs::home_dir().map(|home| home.join(".cache")))
+        .context("no private completion cache location")?;
+    let parent = base.join("aishe");
+    std::fs::create_dir_all(&parent)?;
+    let dir = parent.join("zsh");
+    create_private_directory(&dir)?;
+    Ok(dir)
+}
+
+fn create_private_directory(dir: &std::path::Path) -> Result<()> {
+    use std::os::unix::fs::{DirBuilderExt, MetadataExt, PermissionsExt};
+    match std::fs::DirBuilder::new().mode(0o700).create(dir) {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+        Err(error) => return Err(error.into()),
+    }
+    let metadata = std::fs::symlink_metadata(dir)?;
+    if !metadata.is_dir()
+        || metadata.uid() != unsafe { libc::geteuid() }
+        || metadata.permissions().mode() & 0o777 != 0o700
+    {
+        anyhow::bail!("shell state directory is not private");
+    }
+    Ok(())
 }
 
 /// Restores cooked-mode terminal on drop.
@@ -525,5 +659,30 @@ struct ZdotdirGuard(std::path::PathBuf);
 impl Drop for ZdotdirGuard {
     fn drop(&mut self) {
         let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::os::unix::fs::{symlink, PermissionsExt};
+
+    #[test]
+    fn shell_state_directories_are_private_and_reject_shared_or_linked_paths() {
+        let root = std::env::temp_dir().join(format!("aishe-private-dir-{}", random_shell_id()));
+        create_private_directory(&root).unwrap();
+        let _cleanup = ZdotdirGuard(root.clone());
+        assert_eq!(
+            std::fs::metadata(&root).unwrap().permissions().mode() & 0o777,
+            0o700
+        );
+        create_private_directory(&root).unwrap();
+        let shared = root.join("shared");
+        std::fs::create_dir(&shared).unwrap();
+        std::fs::set_permissions(&shared, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(create_private_directory(&shared).is_err());
+        let linked = root.join("linked");
+        symlink(&root, &linked).unwrap();
+        assert!(create_private_directory(&linked).is_err());
     }
 }

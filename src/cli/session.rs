@@ -7,7 +7,7 @@ use crate::config::Config;
 use crate::executor::Executor;
 use crate::session::Session;
 use crate::skills::SkillRegistry;
-use crate::{context, modes, providers};
+use crate::{context, providers};
 
 /// Parsed durable-session action transferred from the binary's Clap surface.
 #[derive(Clone, Debug)]
@@ -82,7 +82,7 @@ pub fn list(json_output: bool) -> u8 {
     if records.is_empty() {
         return 0;
     }
-    println!("legacy durable task sessions (oldest first, retained):");
+    println!("native task sessions (oldest first, retained):");
     for record in records {
         println!(
             "  {}  {:?}  {} / {}  {}",
@@ -128,7 +128,7 @@ pub fn browse(config: &Config, json_output: bool) -> Result<u8> {
         .collect::<Vec<_>>();
     labels.extend(legacy.iter().map(|record| {
         format!(
-            "legacy · {} · {:?} · {}",
+            "native · {} · {:?} · {}",
             record.id,
             record.status,
             record.name.as_deref().unwrap_or(&record.objective)
@@ -164,7 +164,7 @@ pub fn browse(config: &Config, json_output: bool) -> Result<u8> {
     let record = &legacy[index - managed.len()];
     let choices = vec!["Resume task".into(), "Show details".into(), "Leave".into()];
     let crate::promptui::PickerResult::Use(choice) =
-        crate::promptui::filter_picker("Legacy session", &choices, 0)?
+        crate::promptui::filter_picker("Native task", &choices, 0)?
     else {
         return Ok(0);
     };
@@ -356,10 +356,20 @@ pub fn resume(
     id: Option<&str>,
     replacement_cwd: Option<&std::path::Path>,
 ) -> Result<u8> {
+    resume_with_overrides(config, id, replacement_cwd, None, None)
+}
+
+pub fn resume_with_overrides(
+    config: &Config,
+    id: Option<&str>,
+    replacement_cwd: Option<&std::path::Path>,
+    connection: Option<&str>,
+    model: Option<&str>,
+) -> Result<u8> {
     if let Some(id) = id.filter(|id| id.starts_with("ses_")) {
         return resume_managed(config, id, replacement_cwd);
     }
-    let record = match id {
+    let mut record = match id {
         Some(id) => crate::tasks::load(id)?,
         None => crate::tasks::most_recent_resumable()
             .context("no interrupted, failed, or active task is available to resume")?,
@@ -401,6 +411,15 @@ pub fn resume(
             record.id
         );
     };
+    if cwd != record.cwd {
+        // Replacing a missing workspace is an explicit user action above.
+        record.cwd = cwd.clone();
+        record.workspace_root = Some(cwd.canonicalize()?);
+    }
+    let mut restored = crate::tasks::restore_config(&record, config)?;
+    crate::cli::connection::apply_flag(&mut restored, connection, model)?;
+    crate::policy::constrain(&mut restored)?;
+    let config = &restored;
     let provider = providers::make(config).map_err(|error| {
         anyhow::anyhow!("cannot resume without an LLM provider: {error}; run `aishe doctor --live`")
     })?;
@@ -410,18 +429,35 @@ pub fn resume(
     context::init(executor.shell());
     crate::cli::history::init_audit(config);
     let skills = SkillRegistry::load();
-    let mcp = crate::mcp::McpRegistry::connect(&config.mcp_servers);
-    modes::yolo::resume(
-        record,
+    crate::cli::runtime::install_sigint_handler();
+    INTERRUPTED.store(false, std::sync::atomic::Ordering::SeqCst);
+    let root = record
+        .workspace_root
+        .as_deref()
+        .unwrap_or(&record.cwd)
+        .to_path_buf();
+    let admission = crate::cli::runtime::admit_native_agent(
+        &mut executor,
+        config,
+        crate::cli::runtime::NativeAuthorization::ExplicitRequest,
+        Some(&root),
+    )?
+    .context("native resume admission was declined")?;
+    let mcp = crate::mcp::McpRegistry::deferred(&config.mcp_servers);
+    let mut session = Session::new(false);
+    let outcome = crate::cli::runtime::run_admitted_native_agent(
+        &record.objective.clone(),
         provider.as_ref(),
         &mut executor,
         config,
-        &INTERRUPTED,
         &skills,
         &mcp,
+        &mut session,
+        &admission,
+        Some(record),
     )?;
     crate::cli::status::record_session_usage(Some(provider.as_ref()), config);
-    Ok(0)
+    Ok(crate::cli::runtime::native_exit_code(&outcome))
 }
 
 fn resume_managed(

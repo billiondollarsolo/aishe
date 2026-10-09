@@ -23,6 +23,107 @@ use crate::ui::SemanticStylize;
 const EXIT_AUTO_DANGEROUS: u8 = 20;
 const EXIT_COMMAND_UNAVAILABLE: u8 = 2;
 
+/// An explicit task command authorizes this invocation. Configuration-selected
+/// autonomy still requires the accepted grant for the live shell.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum NativeAuthorization {
+    ShellGrant,
+    ExplicitRequest,
+}
+
+pub struct NativeAdmission {
+    workspace: std::path::PathBuf,
+    scope: crate::agent::ExecutionScope,
+    network: crate::agent::NetworkPolicy,
+}
+
+/// CLI task exits include the reason, even when admission stopped the loop
+/// before it could render a provider or tool event.
+pub fn native_exit_code(outcome: &crate::agent::native::NativeTurnOutcome) -> u8 {
+    if let Some(detail) = &outcome.detail {
+        eprintln!(
+            "aishe: {}",
+            crate::commands::display_safe(&crate::redact::redact(detail))
+        );
+    }
+    outcome.exit_code()
+}
+
+/// Admit before connecting MCP or issuing a provider request. The returned
+/// token belongs to this prepared executor and cannot be constructed by callers.
+pub fn admit_native_agent(
+    executor: &mut Executor,
+    config: &Config,
+    authorization: NativeAuthorization,
+    workspace: Option<&std::path::Path>,
+) -> Result<Option<NativeAdmission>> {
+    if authorization == NativeAuthorization::ShellGrant {
+        match crate::lean::ensure_session_grant(config, crate::lean::LeanMode::Agent)? {
+            crate::lean::LeanGrant::Declined => return Ok(None),
+            crate::lean::LeanGrant::Accepted => {}
+        }
+        crate::lean::prepare_agent_executor(executor, config, crate::lean::LeanMode::Agent)?;
+    } else {
+        let workspace = workspace.unwrap_or_else(|| executor.cwd()).to_path_buf();
+        crate::agent::native::prepare_executor(executor, config, &workspace)?;
+    }
+    let (scope, workspace, network) = executor
+        .lean_scope()
+        .context("native agent admission did not establish execution scope")?;
+    Ok(Some(NativeAdmission {
+        workspace: workspace.clone(),
+        scope: *scope,
+        network: *network,
+    }))
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn run_admitted_native_agent(
+    input: &str,
+    provider: &dyn Provider,
+    executor: &mut Executor,
+    config: &Config,
+    skills: &SkillRegistry,
+    mcp: &crate::mcp::McpRegistry,
+    session: &mut Session,
+    admission: &NativeAdmission,
+    checkpoint: Option<crate::tasks::Record>,
+) -> Result<crate::agent::native::NativeTurnOutcome> {
+    let (scope, workspace, network) = executor
+        .lean_scope()
+        .context("native admission was lost before execution")?;
+    if *scope != admission.scope
+        || *network != admission.network
+        || workspace != &admission.workspace
+    {
+        anyhow::bail!("native execution scope changed after admission");
+    }
+    // Deferred registries initialize inside the loop, after its first durable
+    // checkpoint. Network-denied turns never resolve their configured servers.
+    if let Some(record) = checkpoint {
+        modes::yolo::resume(
+            record,
+            provider,
+            executor,
+            config,
+            &INTERRUPTED,
+            skills,
+            mcp,
+        )
+    } else {
+        modes::yolo::run(
+            input,
+            provider,
+            executor,
+            config,
+            &INTERRUPTED,
+            skills,
+            mcp,
+            session,
+        )
+    }
+}
+
 extern "C" fn handle_sigint(_sig: libc::c_int) {
     INTERRUPTED.store(true, Ordering::SeqCst);
 }
@@ -305,10 +406,7 @@ pub fn ensure_yolo_acceptance(config: &Config) -> Result<YoloAcceptance> {
         return Ok(YoloAcceptance::Accepted);
     }
     if !std::io::stdin().is_terminal() || !std::io::stdout().is_terminal() {
-        anyhow::bail!(
-            "yolo {:?} requires one interactive acceptance in each AIShe shell",
-            scope
-        );
+        anyhow::bail!("yolo {scope:?} requires one interactive acceptance in each AIShe shell");
     }
 
     let workspace = std::env::current_dir()
@@ -914,25 +1012,32 @@ pub fn yolo_line(
         print_llm_unavailable(config);
         return Ok(1);
     };
+    INTERRUPTED.store(false, Ordering::SeqCst);
+    let Some(admission) =
+        admit_native_agent(executor, config, NativeAuthorization::ShellGrant, None)?
+    else {
+        return Ok(2);
+    };
     let mem = crate::cli::session::hook_session_path(config);
     let mut session = match &mem {
         Some(path) => Session::load_persisted(path),
         None => Session::new(false),
     };
-    modes::yolo::run(
+    let outcome = run_admitted_native_agent(
         &line,
         p,
         executor,
         config,
-        &INTERRUPTED,
         skills,
         mcp,
         &mut session,
+        &admission,
+        None,
     )?;
     if let Some(path) = &mem {
         session.save_persisted(path);
     }
-    Ok(0)
+    Ok(native_exit_code(&outcome))
 }
 
 /// Shell-hook helper for `auto` mode: get a suggestion and either stage it for
@@ -1219,10 +1324,7 @@ pub fn ask_command(
     let query = crate::attachments::expand(query, executor.cwd(), config)?.prompt;
     let schema = schema_path.map(read_answer_schema).transpose()?;
     let schema_instruction = schema.as_ref().map_or_else(String::new, |value| {
-        format!(
-            " Return only JSON matching this schema, without markdown fences: {}",
-            value
-        )
+        format!(" Return only JSON matching this schema, without markdown fences: {value}")
     });
     let prompt = format!(
         "Answer the request directly. Do not run commands or request tools. Be concise and factual.{schema_instruction}\n\n{query}"
@@ -1614,16 +1716,28 @@ pub fn one_shot(
                 Some(p) => {
                     // Product name "agent"; legacy alias "yolo". Lean never starts OpenCode here.
                     if matches!(config.aishe.mode.as_str(), "yolo" | "agent") {
-                        modes::yolo::run(
+                        INTERRUPTED.store(false, Ordering::SeqCst);
+                        let Some(admission) = admit_native_agent(
+                            executor,
+                            config,
+                            NativeAuthorization::ShellGrant,
+                            None,
+                        )?
+                        else {
+                            return Ok(2);
+                        };
+                        let outcome = run_admitted_native_agent(
                             &nl,
                             p.as_ref(),
                             executor,
                             config,
-                            &INTERRUPTED,
                             skills,
                             mcp,
                             &mut session,
+                            &admission,
+                            None,
                         )?;
+                        return Ok(native_exit_code(&outcome));
                     } else {
                         // -c + NL in suggest/auto mode: print suggested command, don't run.
                         modes::suggest::run(
@@ -1678,7 +1792,7 @@ fn try_custom_command(
     let name = parsed.name;
     let args = parsed.args;
     // MCP prompts (`/<server>:<prompt> args`): fetch the prompt and run it.
-    if mcp.is_prompt(name) {
+    if name.contains(':') && mcp.is_prompt(name) {
         match mcp.prompt_text(name, &args) {
             Some(Ok(text)) if !text.trim().is_empty() => {
                 let mode = config.aishe.mode.as_str();
@@ -1837,7 +1951,16 @@ fn run_nl(
         return Ok(());
     };
     match mode {
-        "yolo" => modes::yolo::run(&nl, p, executor, config, &INTERRUPTED, skills, mcp, session)?,
+        "yolo" | "agent" => {
+            INTERRUPTED.store(false, Ordering::SeqCst);
+            if let Some(admission) =
+                admit_native_agent(executor, config, NativeAuthorization::ShellGrant, None)?
+            {
+                run_admitted_native_agent(
+                    &nl, p, executor, config, skills, mcp, session, &admission, None,
+                )?;
+            }
+        }
         "auto" => modes::suggest::run(&nl, p, executor, config, false, true, session)?,
         _ => modes::suggest::run(&nl, p, executor, config, false, false, session)?,
     }

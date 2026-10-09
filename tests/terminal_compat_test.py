@@ -19,6 +19,12 @@ SPEC.loader.exec_module(terminal_compat)
 
 
 class TerminalCompatibilityTests(unittest.TestCase):
+    def test_ready_prompt_accepts_actual_colored_mode_and_glyph_segments(self) -> None:
+        for glyph in (">", "❯", "»", ">>", "*"):
+            prompt = f"\x1b[38;5;220mask\x1b[0m \x1b[1m{glyph}\x1b[0m "
+            self.assertTrue(terminal_compat.has_ready_prompt(prompt))
+        self.assertFalse(terminal_compat.has_ready_prompt("waiting for a mode"))
+
     def test_status_vocabulary_is_machine_stable(self) -> None:
         for status in ("pass", "fail", "limitation", "unsupported"):
             result = terminal_compat.CapabilityResult("sample", status, "detail")

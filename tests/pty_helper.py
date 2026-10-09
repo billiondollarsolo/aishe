@@ -124,7 +124,9 @@ class Pty:
 
 def environment(label, zshrc="unset HISTFILE\n", mode="auto", extra=None, config_extra=""):
     """A private HOME with a usable config and `aishe` on PATH."""
-    home = tempfile.mkdtemp(prefix="aishe-%s-" % label)
+    # Process cwd and task admission canonicalize Darwin's /var -> /private/var
+    # temp alias. Persist fixture records with that same real directory spelling.
+    home = os.path.realpath(tempfile.mkdtemp(prefix="aishe-%s-" % label))
     config_dir = os.path.join(home, ".config", "aishe")
     os.makedirs(config_dir)
     with open(os.path.join(config_dir, "config.toml"), "w", encoding="utf-8") as file:

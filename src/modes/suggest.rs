@@ -233,8 +233,6 @@ struct AnswerStreamer {
     full: String,
     /// Whether the persistent assistant-authorship boundary was emitted.
     answer_started: bool,
-    /// Lean PTY path: skip stdout authorship chrome (parent owns the TTY).
-    plain: bool,
 }
 
 impl AnswerStreamer {
@@ -244,14 +242,6 @@ impl AnswerStreamer {
             pending: String::new(),
             full: String::new(),
             answer_started: false,
-            plain: false,
-        }
-    }
-
-    fn new_plain() -> Self {
-        Self {
-            plain: true,
-            ..Self::new()
         }
     }
 
@@ -259,12 +249,8 @@ impl AnswerStreamer {
         if self.answer_started {
             return;
         }
-        if self.plain {
-            let _ = writeln!(out);
-        } else {
-            let capabilities = TerminalCapabilities::detect_stdout();
-            let _ = writeln!(out, "\n{}", capabilities.assistant_answer_header());
-        }
+        let capabilities = TerminalCapabilities::detect_stdout();
+        let _ = writeln!(out, "\n{}", capabilities.assistant_answer_header());
         self.answer_started = true;
     }
 
@@ -477,7 +463,7 @@ pub fn request_streamed<W: std::io::Write>(
     let mode = config.aishe.mode.as_str();
     crate::audit::ai_request(mode, model, input);
     let before = provider.meter().snapshot();
-    let mut streamer = AnswerStreamer::new_plain();
+    let mut streamer = AnswerStreamer::new();
     let result =
         provider.complete_stream(&system, &messages, &ResponseFormat::Text, &mut |delta| {
             streamer.push(delta, out);

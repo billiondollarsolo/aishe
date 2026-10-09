@@ -254,6 +254,11 @@ pub(super) fn render_slash_dispatch(shell: HookShell) -> String {
 _aishe_apply_session_mode() {
   local _aishe_mode="$1"
   case "$_aishe_mode" in
+    ask) _aishe_mode=suggest ;;
+    allow) _aishe_mode=auto ;;
+    agent) _aishe_mode=yolo ;;
+  esac
+  case "$_aishe_mode" in
     suggest|auto) ;;
     yolo)
       if ! command aishe --accept-yolo__AISHE_INTERACTIVE_REDIRECT__; then

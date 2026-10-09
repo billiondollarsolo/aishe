@@ -412,6 +412,30 @@ fn run() -> Result<u8> {
         .ok()
         .and_then(|cwd| config.apply_project_overlay(&cwd));
     aishe::connection::apply_shell_selection(&mut config)?;
+    if aishe::lean::enabled() && args.mode.is_none() {
+        if let Ok(mode) = std::env::var("AISHE_MODE") {
+            if !mode.is_empty() {
+                config.aishe.mode = aishe::lean::LeanMode::parse(&mode).as_str().into();
+            }
+        }
+    }
+    if aishe::lean::enabled()
+        && std::env::var_os("AISHE_SHELL_ID").is_some_and(|value| !value.is_empty())
+    {
+        if let Ok(scope) = std::env::var("AISHE_SCOPE") {
+            if matches!(scope.as_str(), "workspace" | "host") {
+                config.backend.default_scope = scope;
+            }
+        }
+    }
+    // A detached worker uses its private saved connection and authority, even
+    // when the user's defaults or named profiles changed since task creation.
+    if let Some(id) = args.background_task.as_deref() {
+        config = aishe::background::worker_config(id, &config)?;
+        let native = config.backend.engine == "native";
+        std::env::set_var("AISHE_LEAN", if native { "1" } else { "0" });
+        std::env::set_var("AISHE_LEGACY_OPENCODE", if native { "0" } else { "1" });
+    }
     // CLI flags win over the config file (which wins over compiled defaults).
     config.apply_overrides(
         args.mode.as_deref(),
@@ -432,9 +456,9 @@ fn run() -> Result<u8> {
     };
     let background_role = args
         .background_task
-        .as_ref()
-        .and_then(|_| std::env::var("AISHE_TASK_ROLE").ok())
-        .filter(|role| aishe::roles::NAMES.contains(&role.as_str()));
+        .as_deref()
+        .map(aishe::background::worker_role)
+        .transpose()?;
     let request_role = if args.edit_line.is_some()
         || args.suggest_line.is_some()
         || args.auto_line.is_some()
@@ -497,13 +521,22 @@ fn run() -> Result<u8> {
             } else {
                 cap
             };
+            let inherited = aishe::agent::native::NativeLimits::from_environment()?.cost_usd;
+            let selected = (config.aishe.budget_usd > 0.0).then_some(config.aishe.budget_usd);
+            let task_cap = match (inherited, selected) {
+                (Some(existing), Some(selected)) => existing.min(selected),
+                (existing, selected) => existing.or(selected).unwrap_or(0.0),
+            };
+            std::env::set_var("AISHE_TASK_MAX_COST_USD", task_cap.to_string());
         }
     }
-    // Administrator policy is the final, read-only constraint layer. It can
-    // reduce authority or reject a provider/model, never inject credentials.
-    aishe::policy::constrain(&mut config)?;
     let background_request = if let Some(id) = args.background_task.as_deref() {
         let (objective, budget) = aishe::background::request(id)?;
+        std::env::set_current_dir(aishe::background::worker_cwd(id)?)
+            .context("entering the saved background task directory")?;
+        // Ignore inherited authority/budget controls; the owned task record is
+        // the source of truth for every worker attempt.
+        config = aishe::background::worker_config(id, &config)?;
         config.aishe.max_yolo_iterations = config
             .aishe
             .max_yolo_iterations
@@ -515,16 +548,42 @@ fn run() -> Result<u8> {
                 budget.max_cost_usd
             };
         }
-        aishe::background::arm_deadline(budget.max_minutes);
-        if let Ok(scope) = std::env::var("AISHE_TASK_SCOPE") {
-            if matches!(scope.as_str(), "workspace" | "host") {
-                config.backend.default_scope = scope;
-            }
+        for (name, value) in [
+            (
+                "AISHE_TASK_MAX_TOOL_CALLS",
+                budget.max_tool_calls.to_string(),
+            ),
+            (
+                "AISHE_TASK_MAX_NETWORK_CALLS",
+                budget.max_network_calls.to_string(),
+            ),
+            (
+                "AISHE_TASK_MAX_PROVIDER_TURNS",
+                budget.max_provider_turns.to_string(),
+            ),
+            ("AISHE_TASK_MAX_MINUTES", budget.max_minutes.to_string()),
+            ("AISHE_TASK_MAX_COST_USD", budget.max_cost_usd.to_string()),
+            ("AISHE_BACKGROUND_TASK_ID", id.to_string()),
+        ] {
+            std::env::set_var(name, value);
         }
-        Some((id.to_string(), objective))
+        let checkpoint = aishe::background::resume_checkpoint(id)?;
+        if let Some(record) = &checkpoint {
+            config = aishe::tasks::restore_config(record, &config)?;
+        }
+        // Native commands use cooperative deadlines; a process-wide SIGALRM
+        // would bypass cleanup of the separate tool process group.
+        if !aishe::lean::enabled() && config.backend.engine == "opencode" {
+            aishe::background::arm_deadline_seconds(aishe::background::remaining_deadline_seconds(
+                id,
+            )?);
+        }
+        Some((id.to_string(), objective, checkpoint))
     } else {
         None
     };
+    // Organization policy is applied after every saved-task/CLI override.
+    aishe::policy::constrain(&mut config)?;
     aishe::ui::configure(&config.ui);
     if args.accept_yolo {
         aishe::cli::history::init_audit(&config);
@@ -825,7 +884,13 @@ fn run() -> Result<u8> {
         }
         Some(Cmd::Reset) => return aishe::cli::session::reset(&config),
         Some(Cmd::Resume { id, cwd }) => {
-            return aishe::cli::session::resume(&config, id.as_deref(), cwd.as_deref())
+            return aishe::cli::session::resume_with_overrides(
+                &config,
+                id.as_deref(),
+                cwd.as_deref(),
+                args.connection.as_deref().or(args.provider.as_deref()),
+                args.model.as_deref(),
+            )
         }
         Some(Cmd::Context {
             explain,
@@ -930,7 +995,16 @@ fn run() -> Result<u8> {
     executor.set_history_log(aishe::cli::history::history_paths(&config).1);
 
     let cache = CommandCache::new();
-    cache.build(executor.shell());
+    if (background_request.is_some() || matches!(args.cmd, Some(Cmd::Agent(_))))
+        && (aishe::lean::enabled() || config.backend.engine == "native")
+    {
+        // Explicit native work needs no interactive alias/startup probe. Such
+        // probes can run user rc code and reclaim a shared terminal before
+        // admission; local PATH/builtin discovery is sufficient here.
+        cache.discover_local();
+    } else {
+        cache.build(executor.shell());
+    }
 
     // Hidden hook invocations get one conservative local typo cue per command
     // head and live shell. Intercept before constructing anything capable of a
@@ -964,9 +1038,64 @@ fn run() -> Result<u8> {
     // skills are actually relevant — `aishe skills`, `aishe doctor`, and the
     // yolo loop that can invoke them.
     // MCP servers (extra yolo tools). Empty/instant unless `[mcp_servers]` is set.
-    let mcp = aishe::mcp::McpRegistry::connect(&config.mcp_servers);
+    let mcp = if aishe::lean::enabled() || config.backend.engine == "native" {
+        // Native agent admission happens before MCP startup. Explicit `mcp`
+        // commands have their own connection path above.
+        aishe::mcp::McpRegistry::deferred(&config.mcp_servers)
+    } else {
+        aishe::mcp::McpRegistry::connect(&config.mcp_servers)
+    };
 
-    if let Some((id, objective)) = background_request {
+    if let Some((id, objective, checkpoint)) = background_request {
+        if aishe::lean::enabled() || config.backend.engine == "native" {
+            let result = (|| {
+                aishe::agent::controller::INTERRUPTED
+                    .store(false, std::sync::atomic::Ordering::SeqCst);
+                if let Some(record) = &checkpoint {
+                    if !record.cwd.is_absolute() || !record.cwd.is_dir() {
+                        anyhow::bail!("the saved native task directory is unavailable");
+                    }
+                    executor.redirect_cwd(record.cwd.clone());
+                }
+                let root = checkpoint
+                    .as_ref()
+                    .map(|record| record.workspace_root.as_deref().unwrap_or(&record.cwd));
+                let admission = aishe::cli::runtime::admit_native_agent(
+                    &mut executor,
+                    &config,
+                    aishe::cli::runtime::NativeAuthorization::ExplicitRequest,
+                    root,
+                )?
+                .context("explicit native task admission was declined")?;
+                let p = provider
+                    .as_deref()
+                    .context("cannot run native task without an LLM provider")?;
+                let mut session = aishe::session::Session::new(false);
+                aishe::cli::runtime::run_admitted_native_agent(
+                    &objective,
+                    p,
+                    &mut executor,
+                    &config,
+                    &skills,
+                    &mcp,
+                    &mut session,
+                    &admission,
+                    checkpoint,
+                )
+            })();
+            match result {
+                Ok(outcome) => {
+                    let exit_code = aishe::background::finish_native(&id, &outcome)?;
+                    aishe::cli::runtime::native_exit_code(&outcome);
+                    return Ok(exit_code);
+                }
+                Err(error) => {
+                    let result = Err(error);
+                    aishe::background::finish(&id, &result);
+                    return result;
+                }
+            }
+        }
         let result = aishe::cli::runtime::one_shot(
             &format!("? {objective}"),
             &mut executor,
@@ -985,16 +1114,48 @@ fn run() -> Result<u8> {
         let request = agent_request
             .as_ref()
             .context("agent request was not resolved")?;
-        let result = aishe::cli::runtime::one_shot(
-            &format!("? {}", request.objective),
-            &mut executor,
-            &mut provider,
-            &config,
-            &cache,
-            &commands,
-            &skills,
-            &mcp,
-        );
+        let result = if aishe::lean::enabled() || config.backend.engine == "native" {
+            (|| {
+                aishe::agent::controller::INTERRUPTED
+                    .store(false, std::sync::atomic::Ordering::SeqCst);
+                let admission = aishe::cli::runtime::admit_native_agent(
+                    &mut executor,
+                    &config,
+                    aishe::cli::runtime::NativeAuthorization::ExplicitRequest,
+                    None,
+                )?
+                .context("explicit native task admission was declined")?;
+                let p = provider
+                    .as_deref()
+                    .context("cannot run native task without an LLM provider")?;
+                let objective =
+                    aishe::attachments::expand(&request.objective, executor.cwd(), &config)?.prompt;
+                let mut session = aishe::session::Session::new(false);
+                let outcome = aishe::cli::runtime::run_admitted_native_agent(
+                    &objective,
+                    p,
+                    &mut executor,
+                    &config,
+                    &skills,
+                    &mcp,
+                    &mut session,
+                    &admission,
+                    None,
+                )?;
+                Ok(aishe::cli::runtime::native_exit_code(&outcome))
+            })()
+        } else {
+            aishe::cli::runtime::one_shot(
+                &format!("? {}", request.objective),
+                &mut executor,
+                &mut provider,
+                &config,
+                &cache,
+                &commands,
+                &skills,
+                &mcp,
+            )
+        };
         aishe::cli::status::record_session_usage(provider.as_deref(), &config);
         return result;
     }
@@ -1109,7 +1270,7 @@ fn run() -> Result<u8> {
 
     // Non-interactive single-shot mode (-c).
     if let Some(input) = args.command {
-        return aishe::cli::runtime::one_shot(
+        let result = aishe::cli::runtime::one_shot(
             &input,
             &mut executor,
             &mut provider,
@@ -1119,6 +1280,8 @@ fn run() -> Result<u8> {
             &skills,
             &mcp,
         );
+        aishe::cli::status::record_session_usage(provider.as_deref(), &config);
+        return result;
     }
 
     // Pipe/script mode: run each line of piped stdin like a `-c` invocation.
@@ -1135,7 +1298,7 @@ fn run() -> Result<u8> {
                     if trimmed.is_empty() {
                         continue;
                     }
-                    last = aishe::cli::runtime::one_shot(
+                    let result = aishe::cli::runtime::one_shot(
                         trimmed,
                         &mut executor,
                         &mut provider,
@@ -1144,11 +1307,19 @@ fn run() -> Result<u8> {
                         &commands,
                         &skills,
                         &mcp,
-                    )?;
+                    );
+                    match result {
+                        Ok(code) => last = code,
+                        Err(error) => {
+                            aishe::cli::status::record_session_usage(provider.as_deref(), &config);
+                            return Err(error);
+                        }
+                    }
                 }
                 Err(_) => break,
             }
         }
+        aishe::cli::status::record_session_usage(provider.as_deref(), &config);
         return Ok(last);
     }
 

@@ -31,10 +31,10 @@ budget is never represented as pass.
 | Rust correctness | format; strict all-target/all-feature Clippy; all-target locked tests; no-default-feature tests where maintained |
 | Dependency policy | `cargo deny` advisories/bans/licenses/sources; every exception still owned and before its review deadline; no unexpected duplicate transport/terminal stack |
 | JSON/persistence compatibility | v0.5/v0.6/v1 API fixtures; error schema; route corpus; config migrations with backup/rollback; task/session records remain readable |
-| Routing/shell UX | route corpus; zsh highlight/submit parity; direct shell latency/lazy-loading; Bash declared tier; forced-route non-stickiness |
-| Terminal UX | Linux and macOS bounded PTY suites; picker/layout/static/ASCII/NO_COLOR; signals, resize, setup, statusline, staging, and answer boundaries |
+| Routing/shell UX | route corpus; zsh highlight/submit parity; native clean and personal profiles; preserved prompts/widgets and live agent environment; direct shell latency/lazy-loading; Bash declared tier; forced-route non-stickiness |
+| Terminal UX | Linux and macOS bounded native PTY suites without OpenCode; explicit legacy suites; picker/layout/static/ASCII/NO_COLOR; signals, resize, setup, statusline, staging, and answer boundaries |
 | Safety/security | versioned threat model; Linux functional bubblewrap evidence; workspace/host authority tests; policy and secret-isolation tests; deterministic parser/boundary fuzz seeds |
-| Runtime/backend | pinned manifest/plugin digests; install, authenticated verify, repair, rollback; event/tool contract; concurrency, interruption/resume, reconnect, and bounded soak |
+| Runtime/backend | native typed outcomes, pre-effect checkpoints, cumulative limits, cancellation and resume/rework; separately pinned managed manifest/plugin digests; install, authenticated verify, repair, rollback; event/tool contract; concurrency, reconnect, and bounded soak |
 | Install/upgrade | transactional install fault tests; supported package/install paths; upgrade preserves every user-state category by default; uninstall category preservation tests |
 | Performance | versioned direct-shell, route, picker, rendering, RSS, binary-size, cold/warm backend report; enforced stable-host thresholds and explicit informational metrics |
 | Live providers | paid live classification/fuzz/soak report, or a named owner, reason, risk assessment, and expiry for deferral |
@@ -43,6 +43,9 @@ budget is never represented as pass.
 release decision. Platform-specific required gates must pass on their maintained
 platform. A paid-live or long-soak skip requires an explicit written disposition
 in the release record; a deterministic supported-platform skip is a hold.
+Required scripts that print `SKIP` cannot pass through a successful process exit.
+The qualification driver records incomplete evidence and CI's required-gate
+wrapper fails the check. Every shell gate declares its execution profile.
 
 ## Decision states
 

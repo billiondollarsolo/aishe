@@ -121,25 +121,23 @@ pub fn candidates(history: &[(u64, String)]) -> Vec<String> {
     use std::collections::HashSet;
     let mut seen: HashSet<&str> = HashSet::new();
     let mut out: Vec<String> = Vec::new();
-    for (_, cmd) in history {
+    // Walk newest first so the first occurrence wins without scanning/removing
+    // an earlier copy. Stop once the retained window is full: older history
+    // cannot change its contents or recency order.
+    for (_, cmd) in history.iter().rev() {
         let trimmed = cmd.trim();
         if trimmed.is_empty() || is_history_mgmt(trimmed) || is_trivial(trimmed) {
             continue;
         }
-        // Keep the most recent occurrence: record in order, dedup later from the
-        // back. Simpler: track seen and skip; but we want the *latest* position to
-        // win for recency. Re-insert by removing an earlier copy.
-        if seen.contains(trimmed) {
-            if let Some(pos) = out.iter().position(|c| c == trimmed) {
-                out.remove(pos);
+        if seen.insert(trimmed) {
+            out.push(trimmed.to_string());
+            if out.len() == STORE_CAP {
+                break;
             }
-        } else {
-            seen.insert(trimmed);
         }
-        out.push(trimmed.to_string());
     }
-    let start = out.len().saturating_sub(STORE_CAP);
-    out.split_off(start)
+    out.reverse();
+    out
 }
 
 /// True for aishe's own history-index/search invocations, which we never index.
@@ -269,6 +267,27 @@ mod tests {
                 "ls -la /var/log".to_string(),
                 "docker compose up".to_string(),
             ]
+        );
+    }
+
+    #[test]
+    fn candidates_cap_unique_recent_commands_after_filtering() {
+        let mut hist: Vec<_> = (0..STORE_CAP + 10)
+            .map(|i| (i as u64, format!("echo command-{i}")))
+            .collect();
+        hist.extend([
+            (10_000, "  echo command-0  ".into()),
+            (10_001, "clear".into()),
+            (10_002, "aishe history index".into()),
+            (10_003, "echo command-0".into()),
+        ]);
+        let candidates = candidates(&hist);
+        assert_eq!(candidates.len(), STORE_CAP);
+        assert_eq!(candidates.first().unwrap(), "echo command-11");
+        assert_eq!(candidates.last().unwrap(), "echo command-0");
+        assert_eq!(
+            candidates.iter().filter(|c| *c == "echo command-0").count(),
+            1
         );
     }
 }

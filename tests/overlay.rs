@@ -126,9 +126,11 @@ fn yolo_dry_run_session_previews_applies_and_is_undoable() {
             .assert()
             .success()
     };
-    // A non-interactive (-c) yolo session runs in the staging copy, previews the
-    // changes, and auto-applies them (journaled).
-    run(&["-c", "update the data file"]).stdout(contains("dry-run").and(contains("applied")));
+    // Explicit task invocation authorizes this bounded workspace request.
+    // Configuration-selected autonomy in `-c` still requires a live shell
+    // grant. The task runs in staging, previews, and auto-applies (journaled).
+    run(&["agent", "--scope", "workspace", "update the data file"])
+        .stdout(contains("dry-run").and(contains("applied")));
     assert_eq!(
         std::fs::read_to_string(work.join("data.txt")).unwrap(),
         "v2\n"

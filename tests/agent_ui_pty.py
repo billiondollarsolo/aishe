@@ -67,11 +67,9 @@ def read_until(fd, transcript, needle, timeout):
 
 
 def main():
-    from pty_helper import require_legacy_opencode_world
-    require_legacy_opencode_world()
     fixture = fixture_path()
     master, slave = pty.openpty()
-    set_size(slave, 24, 40)
+    set_size(slave, 40, 120)
     env = os.environ.copy()
     env.update(
         {
@@ -102,7 +100,7 @@ def main():
     try:
         if not read_until(master, transcript, "question-0", 8):
             raise AssertionError("first long question did not render")
-        set_size(master, 40, 120)
+        set_size(master, 24, 40)
         os.killpg(os.getpgid(process.pid), signal.SIGWINCH)
         if not read_until(master, transcript, "question-1", 8):
             raise AssertionError("second question did not render after resize/reconnect")
@@ -121,6 +119,10 @@ def main():
         for marker in ("planner", "task-acceptance", "phase: recovering"):
             if marker not in rendered:
                 raise AssertionError(f"missing {marker!r}:\n{rendered}")
+        second_panel = rendered.split("question-1", 1)[1]
+        if any(len(line.rstrip("\r")) > 40 for line in second_panel.splitlines()
+               if line.startswith("  |") or line.startswith("  +")):
+            raise AssertionError("question panel kept the old width after shrinking")
         if len(rendered) >= 18_000:
             raise AssertionError("long question transcript exceeded its bounded budget")
         print("PASS: long/multiple questions, no-color, reconnect, resize, no duplicates")

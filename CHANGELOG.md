@@ -5,6 +5,21 @@ All notable changes to **aishe** are documented here. The format loosely follows
 
 ## [Unreleased]
 
+### Changed
+- Native provider requests reuse HTTP connections across completions, streams,
+  embeddings, and retries instead of constructing a new transport per request.
+- Lean local commands (`/help`, `/commands`, `/skills`, `/status`, and custom
+  commands) load only the registries they need. MCP discovery waits for `/mcp`
+  or an agent turn; managed tool workers connect only the requested MCP server.
+- Repository search retains and copies only the requested highest-ranked
+  chunks. Semantic-history candidate selection scans newest-first, preserving
+  recency and deduplication while avoiding repeated removal of older copies.
+
+### Fixed
+- Refreshing a repository index tolerates deleted tracked files and discovers
+  eligible text after skipped binary assets instead of truncating discovery at
+  the first 10,001 tracked paths. Text-file and byte limits remain enforced.
+
 ## [1.0.0] - 2026-09-09
 
 AISHE **1.0.0** lean daily-driver release on `feat/lean-csh-hotpath` (tag `v1.0.0`).
