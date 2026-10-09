@@ -432,6 +432,9 @@ fn run() -> Result<u8> {
     // when the user's defaults or named profiles changed since task creation.
     if let Some(id) = args.background_task.as_deref() {
         config = aishe::background::worker_config(id, &config)?;
+        let native = config.backend.engine == "native";
+        std::env::set_var("AISHE_LEAN", if native { "1" } else { "0" });
+        std::env::set_var("AISHE_LEGACY_OPENCODE", if native { "0" } else { "1" });
     }
     // CLI flags win over the config file (which wins over compiled defaults).
     config.apply_overrides(

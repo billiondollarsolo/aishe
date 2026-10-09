@@ -1606,6 +1606,7 @@ pub(crate) fn agent_environment_allowed(name: &str, denied_environment: &HashSet
         // its namespace, so live shell state must not inject it into agents.
         || upper.starts_with("LD_")
         || upper.starts_with("DYLD_")
+        || upper.starts_with("BASH_FUNC_")
         || matches!(upper.as_str(), "ENV" | "BASH_ENV" | "SHELLOPTS" | "BASHOPTS" | "ZDOTDIR")
     {
         return false;
@@ -1992,6 +1993,46 @@ mod tests {
         assert_eq!(code, 0, "{output}");
         assert_eq!(output.trim(), "agent-safe");
         assert!(!marker.exists(), "agent replayed user zsh startup code");
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn restricted_bash_does_not_import_environment_functions() {
+        let Some(bash) = which("bash") else {
+            return;
+        };
+        let root = std::env::temp_dir().join(format!(
+            "aishe-no-agent-function-{:016x}",
+            rand::random::<u64>()
+        ));
+        std::fs::create_dir(&root).unwrap();
+        let marker = root.join("imported-function-ran");
+        let variable = "BASH_FUNC_injected_aishe_hook%%";
+        let parent_value = std::env::var_os(variable);
+        let function = format!("() {{ printf injected > {}; }}", single_quote(&marker));
+        // First prove this Bash supports the implicit import mechanism.
+        let status = Command::new(&bash)
+            .args(["-c", "injected_aishe_hook"])
+            .env_clear()
+            .env(variable, &function)
+            .status()
+            .unwrap();
+        assert!(status.success());
+        assert!(marker.exists());
+        std::fs::remove_file(&marker).unwrap();
+        let mut executor = Executor::new_agent(&root, &HashSet::new()).unwrap();
+        executor.shell = bash;
+        executor.replace_agent_environment(
+            HashMap::from([(variable.into(), function)]),
+            &HashSet::new(),
+        );
+        let (code, _) = executor.run_captured("injected_aishe_hook", Duration::from_secs(2), false);
+        assert_eq!(code, 127);
+        assert!(
+            !marker.exists(),
+            "restricted Bash imported an environment function"
+        );
+        assert_eq!(std::env::var_os(variable), parent_value);
         std::fs::remove_dir_all(root).unwrap();
     }
 

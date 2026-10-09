@@ -71,7 +71,7 @@ class Fixture:
         self.tool_groups = {}
         self.write_config()
 
-    def write_config(self, provider="openai", model="original-background-model", endpoint="http://127.0.0.1:9/v1"):
+    def write_config(self, provider="openai", model="original-background-model", endpoint="http://127.0.0.1:9/v1", engine="native"):
         self.config.write_text(
             'version = 2\n[aishe]\nmode = "yolo"\n'
             f'provider = "{provider}"\n'
@@ -81,7 +81,7 @@ class Fixture:
             'api_key_env = "NATIVE_BACKGROUND_FIXTURE_KEY"\n'
             f'model = "{model}"\n'
             + ('transport = "responses"\n' if provider == "openai" else '')
-            + '\n[backend]\nengine = "native"\ndefault_scope = "host"\nworkspace_network = "allow"\n'
+            + f'\n[backend]\nengine = "{engine}"\ndefault_scope = "host"\nworkspace_network = "allow"\n'
             + '\n[sandbox]\nallow_host_yolo = true\n',
             encoding="utf-8",
         )
@@ -167,6 +167,7 @@ def cancellation_and_resume():
         group = int(group_file.read_text())
         fixture.tool_groups[group] = process_identity(group)
         before = fixture.checkpoint(running)
+        assert running["engine"] == "native", running
         assert before["execution"]["tool_calls"] == 1, before
         assert before["execution"]["provider_turns"] >= 1, before
         assert before["usage"]["input"] >= 20, before
@@ -180,13 +181,17 @@ def cancellation_and_resume():
         assert not late.exists(), "cancelled tool process group survived the worker"
         assert marker.read_text() == "once\n", "initial tool unexpectedly repeated"
 
-        # A different current default must not silently change a continuation.
-        fixture.write_config(provider="anthropic", model="new-default-model")
+        # A different current default and legacy launch environment must not
+        # move an admitted native continuation to a managed runtime.
+        fixture.write_config(provider="anthropic", model="new-default-model", engine="opencode")
+        fixture.env.update({"AISHE_LEAN": "0", "AISHE_LEGACY_OPENCODE": "1"})
         fixture.env.pop("AISHE_FAKE_TOOL")
         fixture.env["AISHE_FAKE_LLM"] = "resume fixture complete"
         fixture.cli("task", "resume", task_id)
         finished = fixture.finish(task_id)
         assert finished["state"] == "completed" and finished["exit_code"] == 0, finished
+        assert finished["engine"] == "native", finished
+        assert not (fixture.root / "runtime").exists(), "native continuation created a managed runtime"
         after = fixture.checkpoint(finished)
         assert finished["native_task_id"] == running["native_task_id"], "resume replaced the native checkpoint"
         assert after["model"] == before["model"] == "original-background-model", after
@@ -201,7 +206,7 @@ def cancellation_and_resume():
             assert after["usage"][field] > before["usage"][field], (field, before, after)
         assert marker.read_text() == "once\n", "resume replayed a possibly-started tool"
         assert not late.exists(), "resume restarted the original objective's tool"
-        print("  ok   cancellation kills child groups and resume keeps identity, profile, transcript, and counters")
+        print("  ok   cancellation kills child groups and resume keeps native engine, identity, profile, transcript, and counters")
     finally:
         fixture.close()
 

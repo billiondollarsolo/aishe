@@ -202,6 +202,8 @@ pending tool is skipped rather than silently repeated.
 
 Background records link to the actual native checkpoint. `aishe task resume ID`
 continues that checkpoint; it does not restart the objective with a new budget.
+The worker keeps its saved engine even when the current shell selects another
+runtime. A linked native checkpoint always continues through the native engine.
 Previously spent allowances remain spent, and later limits can only tighten
 saved caps. Older records without a native checkpoint require an explicitly
 started new task. Protected host targets require fresh typed confirmation and

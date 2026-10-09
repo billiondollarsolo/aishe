@@ -78,6 +78,8 @@ pub struct Record {
     pub state: State,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub native_task_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub engine: Option<String>,
     #[serde(default)]
     pub connection_id: String,
     #[serde(default)]
@@ -284,6 +286,7 @@ fn start(config: &Config, objective: &str, no_isolation: bool, budget: Budget) -
         updated_at_ms: now,
         state: State::Starting,
         native_task_id: None,
+        engine: Some(actual_engine(config, crate::lean::enabled()).into()),
         connection_id: config.active_connection_id().into(),
         provider: config.active_provider_name().into(),
         model: config.active_model().into(),
@@ -345,6 +348,7 @@ fn start(config: &Config, objective: &str, no_isolation: bool, budget: Budget) -
             record.budget.max_network_calls.to_string(),
         );
     set_budget_environment(&mut child, &record.budget);
+    set_worker_engine_environment(&mut child, &record, config)?;
     #[cfg(unix)]
     {
         use std::os::unix::process::CommandExt;
@@ -489,6 +493,7 @@ pub fn worker_config(id: &str, current: &Config) -> Result<Config> {
     config.backend.default_scope.clone_from(&record.scope);
     config.backend.workspace_network.clone_from(&record.network);
     config.aishe.mode = "yolo".into();
+    config.backend.engine = selected_engine(&record, current, crate::lean::enabled())?.into();
     Ok(config)
 }
 
@@ -1064,6 +1069,7 @@ fn resume(config: &Config, id: &str) -> Result<u8> {
         .env("AISHE_TASK_ROLE", &record.role)
         .env("AISHE_TASK_SCOPE", &record.scope);
     set_budget_environment(&mut child, &record.budget);
+    set_worker_engine_environment(&mut child, &record, &config)?;
     #[cfg(unix)]
     {
         use std::os::unix::process::CommandExt;
@@ -1736,6 +1742,40 @@ fn set_budget_environment(child: &mut Command, budget: &Budget) {
         );
 }
 
+fn actual_engine(config: &Config, lean_enabled: bool) -> &'static str {
+    if lean_enabled || config.backend.engine == "native" {
+        "native"
+    } else {
+        "opencode"
+    }
+}
+
+fn selected_engine(record: &Record, current: &Config, lean_enabled: bool) -> Result<&'static str> {
+    // A linked checkpoint belongs to the native runtime, including records
+    // created before engine choice became an explicit durable field.
+    if record.native_task_id.is_some() {
+        return Ok("native");
+    }
+    match record.engine.as_deref() {
+        Some("native") => Ok("native"),
+        Some("opencode") => Ok("opencode"),
+        Some(_) => anyhow::bail!("background task {} has an invalid saved engine", record.id),
+        None => Ok(actual_engine(current, lean_enabled)),
+    }
+}
+
+fn set_worker_engine_environment(
+    child: &mut Command,
+    record: &Record,
+    current: &Config,
+) -> Result<()> {
+    let native = selected_engine(record, current, crate::lean::enabled())? == "native";
+    child
+        .env("AISHE_LEAN", if native { "1" } else { "0" })
+        .env("AISHE_LEGACY_OPENCODE", if native { "0" } else { "1" });
+    Ok(())
+}
+
 fn validate_host_admission(config: &Config, scope: &str, source: &Path) -> Result<()> {
     match crate::agent::ExecutionScope::parse(scope) {
         Some(crate::agent::ExecutionScope::Host) => {
@@ -2117,6 +2157,86 @@ mod tests {
         assert_eq!(record.elapsed_ms, 0);
         assert!(record.attempt_started_at_ms.is_none());
         assert_eq!(record.steering_revision, 0);
+        assert!(record.engine.is_none());
+    }
+
+    #[test]
+    fn native_checkpoint_keeps_its_engine_after_defaults_and_hatches_change() {
+        let mut record = fixture_record();
+        record.native_task_id = Some("native-checkpoint".into());
+        let mut current = Config::default();
+        current.backend.engine = "opencode".into();
+        assert_eq!(selected_engine(&record, &current, false).unwrap(), "native");
+        record.engine = Some("opencode".into());
+        assert_eq!(selected_engine(&record, &current, false).unwrap(), "native");
+        let mut child = Command::new("ignored");
+        child
+            .env("AISHE_LEAN", "0")
+            .env("AISHE_LEGACY_OPENCODE", "1");
+        set_worker_engine_environment(&mut child, &record, &current).unwrap();
+        let env: std::collections::BTreeMap<_, _> = child.get_envs().collect();
+        assert_eq!(
+            env.get(std::ffi::OsStr::new("AISHE_LEAN"))
+                .copied()
+                .flatten(),
+            Some(std::ffi::OsStr::new("1"))
+        );
+        assert_eq!(
+            env.get(std::ffi::OsStr::new("AISHE_LEGACY_OPENCODE"))
+                .copied()
+                .flatten(),
+            Some(std::ffi::OsStr::new("0"))
+        );
+    }
+
+    #[test]
+    fn fresh_workers_preserve_the_runtime_selected_at_task_start() {
+        let mut current = Config::default();
+        current.backend.engine = "opencode".into();
+        assert_eq!(actual_engine(&current, true), "native");
+        assert_eq!(actual_engine(&current, false), "opencode");
+        current.backend.engine = "native".into();
+        assert_eq!(actual_engine(&current, false), "native");
+        let mut record = fixture_record();
+        record.engine = Some("opencode".into());
+        assert_eq!(
+            selected_engine(&record, &current, true).unwrap(),
+            "opencode"
+        );
+        let mut child = Command::new("ignored");
+        child
+            .env("AISHE_LEAN", "1")
+            .env("AISHE_LEGACY_OPENCODE", "0");
+        set_worker_engine_environment(&mut child, &record, &current).unwrap();
+        let env: std::collections::BTreeMap<_, _> = child.get_envs().collect();
+        assert_eq!(
+            env.get(std::ffi::OsStr::new("AISHE_LEAN"))
+                .copied()
+                .flatten(),
+            Some(std::ffi::OsStr::new("0"))
+        );
+        assert_eq!(
+            env.get(std::ffi::OsStr::new("AISHE_LEGACY_OPENCODE"))
+                .copied()
+                .flatten(),
+            Some(std::ffi::OsStr::new("1"))
+        );
+    }
+
+    #[test]
+    fn older_worker_engine_fallback_stays_valid_and_invalid_saved_values_fail_closed() {
+        let mut record = fixture_record();
+        let mut current = Config::default();
+        current.backend.engine = "opencode".into();
+        assert_eq!(
+            selected_engine(&record, &current, false).unwrap(),
+            "opencode"
+        );
+        assert_eq!(selected_engine(&record, &current, true).unwrap(), "native");
+        current.backend.engine = "native".into();
+        assert_eq!(selected_engine(&record, &current, false).unwrap(), "native");
+        record.engine = Some("other-runtime".into());
+        assert!(selected_engine(&record, &current, true).is_err());
     }
 
     #[test]
