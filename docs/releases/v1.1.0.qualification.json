@@ -3,7 +3,7 @@
   "version": "1.1.0",
   "decision": "hold",
   "release_owner": "billiondollarsolo",
-  "production_source_sha256": "84117dddd32eaf99d48afc48611d0d639b29c20d826351dee2821ed084a0ddee",
+  "production_source_sha256": "75da75ba9caacaca5a0ba936eeec434937d323e98802bb5de2e20cb6bb1db4c8",
   "qualification_profile_revision": "2026-10-10.1",
   "prepared_at": "2026-10-10",
   "published": false,
@@ -11,7 +11,7 @@
     "state": "not_run",
     "source_commit": null,
     "ci_run_id": null,
-    "reason": "P4 guarded native-loader source requires fresh clean local qualification, actual native TLS evidence and exact-main maintained CI. Original P3 macOS startup failed; AD-24 corrected visual evidence passed on P3. All original negative evidence remains retained."
+    "reason": "P4 original macOS native/legacy linking and strict Clippy failed before startup or TLS proof; its local native qualification was intentionally withdrawn. P5 narrow outliner-policy and copied() corrections require fresh clean local qualification, actual native TLS evidence and exact-main maintained CI. Original negative history and P3 corrected AD-24 visual evidence remain retained."
   },
   "dispositions": {
     "live_providers": {
@@ -294,6 +294,117 @@
         "framework_control_minus_minimal_mean_child_cpu_ms": 1.86,
         "aishe_has_chained_fixups": false,
         "scope": "Whole linked-image/runtime process controls, not individual loader phases or a replacement for the original startup SLO."
+      }
+    },
+    {
+      "branch_commit": "d43fd68ba926b6693c3c3b7b8b7db66a781c40e1",
+      "tested_commit": "d43fd68ba926b6693c3c3b7b8b7db66a781c40e1",
+      "source_tree": "8ac47579c0c64ec9ccceee61918ad8ce7a7a40e1",
+      "production_source_sha256": "84117dddd32eaf99d48afc48611d0d639b29c20d826351dee2821ed084a0ddee",
+      "ci_run_id": 38031753665,
+      "ci_url": "https://github.com/billiondollarsolo/aishe/actions/runs/38031753665",
+      "ci_event": "push",
+      "state": "fail",
+      "linux_added_p95_ms": 1.267,
+      "macos_added_p95_ms": null,
+      "reason": "Eight of eleven original maintained jobs passed. macOS native and legacy release linking failed: _OUTLINED_FUNCTION_11558 does not save/restore LR and cannot delay-initialize _kCFAllocatorDefault. The separate macOS test job failed strict Clippy map_identity. No macOS product, startup or native TLS evidence exists for P4. Root withdrew partial local native qualification after seven completed commands. Local core and original Linux startup passes do not replace these failures; corrected source needs fresh qualification.",
+      "hosted_evidence": {
+        "state": "fail",
+        "required_jobs_passed": 8,
+        "required_jobs_total": 11,
+        "run_attempt": 1,
+        "summary_file": "hosted-performance-summary.json",
+        "summary_sha256": "3d49d35c78d4b498081ac2e95e63a60cbd53f087548a7be8910ab8228da95350",
+        "completed_job_logs": {
+          "manifest_file": "completed-job-log-manifest.json",
+          "manifest_sha256": "f4fa748ccdcd14fbc7081d9e1d694270202f0256738f2e182a9023c5a66fae82",
+          "all_11_full_completed_logs_preserved": true
+        },
+        "compilation_failures": [
+          {
+            "platform": "macOS",
+            "job": "Native shell (macos-latest)",
+            "stage": "release link",
+            "error": "'_OUTLINED_FUNCTION_11558' does not save/restore LR, so cannot delay-init symbol '_kCFAllocatorDefault'",
+            "also_failed": "Explicit legacy shell (macos-latest)"
+          },
+          {
+            "platform": "macOS",
+            "job": "test (macos-latest)",
+            "stage": "Clippy",
+            "file": "src/platform_tls.rs",
+            "line": 76,
+            "error": "clippy::map_identity rejects .as_ref().map(|()| ()) under -D warnings"
+          }
+        ],
+        "original_uploaded_artifacts": {
+          "Linux": {
+            "artifact_id": 11663165809,
+            "url": "https://github.com/billiondollarsolo/aishe/actions/runs/38031753665/artifacts/11663165809",
+            "archive_sha256": "e808a01967bf2280da0b049637fa13c8f3da6e71872403ff17ada11ce504d1c8",
+            "release_identity_manifest_present": true,
+            "binary_identity": {
+              "version": "1.1.0",
+              "commit": "d43fd68",
+              "date": "2026-10-10"
+            },
+            "binary_sha256": "33572c452eea916a3cbd0327bf2d8e189357c51d3e12333cfdc32a3f6e0e268f",
+            "benchmark_file": "direct-shell-benchmark-20261010T064329Z.json",
+            "benchmark_sha256": "95aeddeb9281c6baa7e01bd5a5de30c150087c16fc85c8304bb84722b2acd5ca"
+          }
+        },
+        "strict_sample": {
+          "commands": 100,
+          "warmup": 10,
+          "backend_started": false,
+          "allowed_added_p95_ms": 10.0
+        },
+        "linux_original_raw_zsh_p95_ms": 1.484,
+        "linux_original_aishe_p95_ms": 2.751,
+        "macos_release_identity_manifest": null,
+        "macos_startup_measurement": null,
+        "macos_native_tls_activation": null,
+        "macos_startup_diagnostic": null,
+        "scope": "Original attempt 1 completed run and retained uploaded Linux artifact; no rerun and no macOS evidence inferred."
+      },
+      "local_qualification": {
+        "state": "withdrawn",
+        "source_commit": "d43fd68ba926b6693c3c3b7b8b7db66a781c40e1",
+        "core": {
+          "state": "pass",
+          "commands": 11,
+          "rust_tests": 1127,
+          "rust_targets": 38,
+          "manifest_file": "core-validation.json",
+          "manifest_sha256": "3ff31a40836545c211fe78368a3be5e6d672db972a912449a9d3cd8d99ed7a2e"
+        },
+        "native": {
+          "state": "withdrawn",
+          "success": false,
+          "qualification_state": "withdrawn_after_hosted_compile_failure",
+          "completed_commands": 7,
+          "planned_commands": 37,
+          "manifest_file": "native-validation.json",
+          "manifest_sha256": "f8c5ede065c66a228abb2202a75a34cabe9776b531afb334c92de3230fc9b2a0",
+          "binary_sha256": "fd17eedc8dc8fd36eebcec4da195306cb08ace367a5321613e271eb26310cf3e",
+          "interrupted_command": {
+            "name": "settings",
+            "state": "interrupted",
+            "passed": false,
+            "log_file": "native-settings.log",
+            "log_sha256": "c6be3f2fc8fca5e969ddc22a232fe0f5b19fd788e8ed379d6cbd22ae731a7c5c"
+          },
+          "original_linux_startup": {
+            "state": "pass",
+            "report_file": "strict-startup.json",
+            "report_sha256": "f4aa9b332dfd750bfca96b188acd683e73afb36bdc179d7be769786217e00f0b",
+            "added_p95_ms": 2.243,
+            "commands": 100,
+            "warmup": 10,
+            "backend_started": false
+          }
+        },
+        "scope": "Completed local core and intentionally withdrawn partial native collection; no full native or overall release pass."
       }
     }
   ]

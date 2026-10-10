@@ -3,6 +3,48 @@
 #[path = "../build_support/apple_link.rs"]
 mod apple_link;
 
+#[test]
+fn outliner_policy_requires_unambiguous_inherited_disable_flag() {
+    for encoded in [
+        "-C\u{1f}llvm-args=-enable-machine-outliner=never",
+        "-Cllvm-args=-enable-machine-outliner=never",
+        "--codegen=llvm-args=--enable-machine-outliner=never",
+        "-C\u{1f}llvm-args=-other-option=1 -enable-machine-outliner=never",
+    ] {
+        assert!(apple_link::machine_outliner_disabled(encoded), "{encoded}");
+    }
+    for encoded in [
+        "", "-D\u{1f}warnings", "-C\u{1f}llvm-args=-enable-machine-outliner=always",
+        "-C\u{1f}llvm-args=-enable-machine-outliner=never -enable-machine-outliner=always",
+        "-C\u{1f}llvm-args=-enable-machine-outliner=always -enable-machine-outliner=never",
+        "-C\u{1f}llvm-args=-enable-machine-outliner=never\u{1f}-C\u{1f}llvm-args=-enable-machine-outliner",
+        "-C\u{1f}llvm-args=-enable-machine-outliner=never\u{1f}-C\u{1f}llvm-args=-enable-machine-outliner=default",
+        "-C\u{1f}llvm-args=-enable-machine-outliner=never\u{1f}-Cllvm-args=-enable-machine-outliner=always",
+        "-C\u{1f}llvm-args=-enable-machine-outliner=never\u{1f}-C\u{1f}llvm-args=-enable-machine-outliner-mode=unknown",
+    ] {
+        assert!(!apple_link::machine_outliner_disabled(encoded), "{encoded}");
+    }
+}
+
+#[test]
+fn capability_probe_uses_optimized_release_profile_and_debug_level() {
+    assert_eq!(
+        apple_link::profile_codegen_args("release", "z"),
+        [
+            "-C",
+            "opt-level=z",
+            "-C",
+            "lto=fat",
+            "-C",
+            "codegen-units=1"
+        ]
+    );
+    assert_eq!(
+        apple_link::profile_codegen_args("debug", "0"),
+        ["-C", "opt-level=0"]
+    );
+}
+
 fn put(bytes: &mut [u8], offset: usize, value: u32) {
     bytes[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
 }

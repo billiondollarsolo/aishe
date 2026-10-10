@@ -29,7 +29,7 @@ def production_source_digest(root: pathlib.Path) -> str:
     paths = subprocess.check_output([
         "git", "ls-files", "--cached", "--others", "--exclude-standard", "-z", "--",
         "src", "assets", "tests", "build_support", "Cargo.toml", "Cargo.lock", "build.rs", "install.sh",
-        ".github/workflows/ci.yml",
+        ".github/workflows/ci.yml", ".cargo/config.toml",
     ], cwd=root).decode().split("\0")
     result = hashlib.sha256()
     for name in sorted(set(filter(None, paths))):

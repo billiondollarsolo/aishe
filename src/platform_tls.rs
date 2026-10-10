@@ -74,8 +74,8 @@ mod macos {
                 Ok(())
             })
             .as_ref()
-            .map(|()| ())
             .map_err(|message| std::io::Error::other(message.clone()))
+            .copied()
     }
 }
 

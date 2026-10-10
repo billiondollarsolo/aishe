@@ -17,12 +17,16 @@ const ARM64: u32 = 0x0100_000c;
 const PROBE_SOURCE: &str = r#"
 use std::ffi::c_void;
 #[link(name = "CoreFoundation", kind = "framework")]
-extern "C" { fn CFGetTypeID(value: *const c_void) -> usize; }
+extern "C" {
+    fn CFGetTypeID(value: *const c_void) -> usize;
+    static kCFAllocatorDefault: *const c_void;
+}
 #[link(name = "Security", kind = "framework")]
 extern "C" { fn SecPolicyCreateSSL(server: u8, name: *const c_void) -> *const c_void; }
 fn main() {
     // This executable is inspected, never run.
     unsafe { std::hint::black_box(CFGetTypeID(std::ptr::null()));
+             std::hint::black_box(kCFAllocatorDefault);
              std::hint::black_box(SecPolicyCreateSSL(0, std::ptr::null())); }
 }
 "#;
@@ -30,16 +34,22 @@ fn main() {
 pub fn configure() {
     println!("cargo:rustc-check-cfg=cfg(aishe_delayed_frameworks)");
     println!("cargo:rerun-if-changed=build_support/apple_link.rs");
+    println!("cargo:rerun-if-changed=.cargo/config.toml");
     for name in [
         "RUSTC",
         "RUSTC_LINKER",
         "CARGO_ENCODED_RUSTFLAGS",
         "SDKROOT",
         "MACOSX_DEPLOYMENT_TARGET",
+        "OPT_LEVEL",
+        "PROFILE",
     ] {
         println!("cargo:rerun-if-env-changed={name}");
     }
     let target = env::var("TARGET").unwrap_or_default();
+    let encoded_flags = env::var("CARGO_ENCODED_RUSTFLAGS").unwrap_or_default();
+    let outliner_disabled = machine_outliner_disabled(&encoded_flags);
+    let opt_level = env::var("OPT_LEVEL").unwrap_or_else(|_| "0".to_string());
     let out = env::var_os("OUT_DIR");
     let mut flags = Vec::new();
     let mut baseline_min = None;
@@ -55,7 +65,12 @@ pub fn configure() {
             if let Some(base) = probe(out, &target, "default", &[]) {
                 baseline_min = Some(base.min_os);
                 delayed_status = "unsupported";
-                if let Some(candidate) = probe(out, &target, "delayed", &DELAY_FLAGS) {
+                if base.cpu_type == ARM64 && !outliner_disabled {
+                    // Cargo environment/target overrides may omit repository
+                    // flags. An optimized small probe cannot rule out outlining
+                    // across every dependency in the final LTO image.
+                    delayed_status = "outliner-policy-missing";
+                } else if let Some(candidate) = probe(out, &target, "delayed", &DELAY_FLAGS) {
                     if candidate.same_deployment(&base) && candidate.delayed_frameworks() {
                         delayed = true;
                         delayed_status = "verified";
@@ -109,7 +124,7 @@ pub fn configure() {
         .filter(|commit| commit.len() == 40 && commit.bytes().all(|byte| byte.is_ascii_hexdigit()))
         .unwrap_or_else(|| "unknown".to_string());
     let record = format!(
-        "{{\"schema_version\":1,\"source_commit\":\"{source_commit}\",\"target\":\"{target}\",\"baseline_min_os\":{min_json},\"delayed_frameworks\":{delayed},\"chained_fixups\":{chained},\"flags\":[{flags_json}],\"delayed_status\":\"{delayed_status}\",\"chained_status\":\"{chained_status}\"}}"
+        "{{\"schema_version\":1,\"source_commit\":\"{source_commit}\",\"target\":\"{target}\",\"baseline_min_os\":{min_json},\"probe_opt_level\":\"{opt_level}\",\"machine_outliner_disabled\":{outliner_disabled},\"delayed_frameworks\":{delayed},\"chained_fixups\":{chained},\"flags\":[{flags_json}],\"delayed_status\":\"{delayed_status}\",\"chained_status\":\"{chained_status}\"}}"
     );
     println!("cargo:rustc-env=AISHE_STARTUP_LINK_DIAGNOSTIC={record}");
     if let Some(out) = out {
@@ -130,6 +145,11 @@ fn probe(out: &Path, target: &str, name: &str, flags: &[&str]) -> Option<MachO> 
         target,
     ]);
     command.arg(&source).arg("-o").arg(&binary);
+    let opt_level = env::var("OPT_LEVEL").unwrap_or_else(|_| "0".to_string());
+    command.args(profile_codegen_args(
+        &env::var("PROFILE").unwrap_or_default(),
+        &opt_level,
+    ));
     if let Some(linker) = env::var_os("RUSTC_LINKER") {
         command
             .arg("-C")
@@ -145,6 +165,45 @@ fn probe(out: &Path, target: &str, name: &str, flags: &[&str]) -> Option<MachO> 
         return None;
     }
     parse_macho(&fs::read(binary).ok()?)
+}
+
+pub fn profile_codegen_args(profile: &str, opt_level: &str) -> Vec<String> {
+    let mut args = vec!["-C".to_string(), format!("opt-level={opt_level}")];
+    if profile == "release" {
+        // Match this repository's optimized release profile. User rustflags
+        // follow these defaults, just as they do in Cargo's rustc invocation.
+        args.extend(["-C", "lto=fat", "-C", "codegen-units=1"].map(str::to_string));
+    }
+    args
+}
+
+pub fn machine_outliner_disabled(encoded: &str) -> bool {
+    let mut disabled = false;
+    let mut codegen_next = false;
+    for argument in encoded.split('\u{1f}') {
+        let option = if codegen_next {
+            Some(argument)
+        } else {
+            argument
+                .strip_prefix("-C")
+                .or_else(|| argument.strip_prefix("--codegen="))
+        };
+        codegen_next = argument == "-C" || argument == "--codegen";
+        let Some(value) = option.and_then(|option| option.strip_prefix("llvm-args=")) else {
+            continue;
+        };
+        for llvm_argument in value.split_whitespace() {
+            let option = llvm_argument.trim_start_matches('-');
+            if option == "enable-machine-outliner=never" {
+                disabled = true;
+            } else if option.starts_with("enable-machine-outliner") {
+                // Contradictory or implicit-enable occurrences fail closed,
+                // regardless of LLVM's ordering rules for repeated options.
+                return false;
+            }
+        }
+    }
+    disabled
 }
 
 #[derive(Debug, PartialEq, Eq)]

@@ -1,0 +1,7 @@
+# Delayed framework data references need call-capable AArch64 functions. LLVM's
+# size outliner can create leaf helpers that Apple's linker cannot rewrite for
+# delayed initialization. Keep opt-z, LTO and unwinding; disable only that pass.
+# Source builds must retain this file. If Cargo flags override it, build.rs keeps
+# ordinary eager framework linking rather than assuming the pass is disabled.
+[target.'cfg(all(target_os = "macos", target_arch = "aarch64"))']
+rustflags = ["-C", "llvm-args=-enable-machine-outliner=never"]

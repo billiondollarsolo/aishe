@@ -637,3 +637,50 @@ both unchanged original startup gates remain required. Attribution diagnostics
 stay separate from startup qualification. All prior negative history remains;
 the plan is Active with all 38 A–F items unchecked, R1–R4 open, decision Hold,
 unpublished and external qualification groups not_run.
+
+### P4 retained compile failure and P5 correction pending
+
+Main `d43fd68ba926b6693c3c3b7b8b7db66a781c40e1`, tree
+`8ac47579c0c64ec9ccceee61918ad8ce7a7a40e1`, passed all eleven local core
+commands, with 1,127 Rust tests across 38 targets. Its original local Linux
+startup result was 2.243 ms added p95, with 100 measured commands, ten warmups
+and no backend start. Root withdrew local native qualification after seven
+completed commands and interrupted Settings once the hosted compile failures
+were known. The retained manifest has `success: false`; those partial results
+do not establish a full native or release pass.
+
+Original exact-main [CI 38031753665](https://github.com/billiondollarsolo/aishe/actions/runs/38031753665)
+completed with eight of eleven jobs passing. Original Linux startup passed at
+1.267 ms added p95; its [uploaded artifact](https://github.com/billiondollarsolo/aishe/actions/runs/38031753665/artifacts/11663165809)
+retains the matching binary and release identity. The
+[qualification history](../releases/v1.1.0.qualification.json) records that
+original ZIP and all eleven completed job-log hashes. macOS native and legacy
+release linking failed before startup or TLS checks.
+The linker reported that `_OUTLINED_FUNCTION_11558` does not save/restore LR
+and cannot delay-initialize `_kCFAllocatorDefault`. The separate macOS test
+job failed strict Clippy at `platform_tls.rs` on `map_identity`. Local Linux
+Clippy did not exercise that guarded macOS implementation. No actual P4
+macOS release binary, original startup measurement or native TLS pass exists.
+Retain the original failure logs; an unchanged retry does not qualify P4.
+
+P5 is a narrow correction candidate. Disable LLVM's machine outliner for the
+macOS arm64 target so a size-outlined leaf cannot acquire a delayed-framework
+stub that requires LR preservation. Framework-delay admission must also check
+that the no-outlining compiler option is effective, including when environment
+Rust flags override repository configuration; otherwise keep the eager path.
+Replace the identity mapping with `copied()` without weakening strict Clippy.
+The repository `.cargo/config.toml` scopes this LLVM option to macOS arm64;
+source archives must retain it and the production digest must include it.
+The capability probe uses the selected optimization level, release fat LTO and
+one code-generation unit before inherited user flags, and includes the failing
+CoreFoundation allocator data import. Its compiled record states the effective
+outliner policy; conflicting or unknown modes cannot admit framework delay.
+This addresses the observed code-generation/link incompatibility and lint,
+not a measured speed gain. Preserve native trust, the default transport,
+unwinding, deployment floors, conditional link capabilities and the separate
+original startup gates. P5 needs fresh committed-source local checks and
+exact-main native/link/TLS evidence before any pass or performance claim.
+
+The plan remains Active with all 38 A–F items unchecked, R1–R4 open, decision
+Hold, unpublished and external qualification groups not_run. All P4 partial
+local results and original hosted failures remain immutable history.

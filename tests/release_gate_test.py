@@ -91,6 +91,19 @@ class ReleaseGateTests(unittest.TestCase):
             helper.write_text("fn configure() { fallback(); }\n")
             self.assertNotEqual(production_source_digest(root), added)
 
+    def test_source_digest_includes_new_and_changed_codegen_configuration(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            subprocess.run(["git", "init", "-q", str(root)], check=True)
+            before = production_source_digest(root)
+            (root / ".cargo").mkdir()
+            config = root / ".cargo/config.toml"
+            config.write_text('[target.aarch64-apple-darwin]\nrustflags = []\n')
+            added = production_source_digest(root)
+            self.assertNotEqual(added, before)
+            config.write_text('[target.aarch64-apple-darwin]\nrustflags = ["-C", "llvm-args=-enable-machine-outliner=never"]\n')
+            self.assertNotEqual(production_source_digest(root), added)
+
     def test_record_accepts_owned_current_dispositions(self):
         self.assertEqual(disposition_problems(ready_record(), "1.1.0", TODAY, "a" * 64), [])
 

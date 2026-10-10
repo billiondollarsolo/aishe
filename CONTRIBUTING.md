@@ -52,6 +52,18 @@ python3 tests/real_fuzz.py  target/release/aishe 2  # robustness + prompt-inject
 ```
 These make real API calls (cost + rate limits) — keep the scale modest.
 
+### macOS source build configuration
+
+Keep `.cargo/config.toml` and `build_support/` in source archives. The macOS
+AArch64 configuration disables LLVM's machine outliner because its small leaf
+helpers can prevent Apple's linker from adding delayed framework initialization.
+The release still uses `opt-level = "z"`, full LTO and unwinding. If user Rust
+flags replace that configuration, the build keeps eager framework linking;
+chained fixups remain independently capability checked. Probes use the selected
+optimization level and inspect emitted deployment and dependency commands.
+The final native binary still requires the unchanged startup and TLS checks;
+probe success does not establish performance or execution on older macOS.
+
 ## Conventions
 - **Formatting/lints:** `cargo fmt`; clippy must be clean under `-D warnings`.
 - **MSRV:** don't use APIs newer than Rust 1.88 (CI's 1.88 job will catch it).
