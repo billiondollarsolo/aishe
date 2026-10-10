@@ -60,7 +60,7 @@ fn run() -> Result<u8> {
 
     // Conventional input belongs to one shell process, before configuration or
     // providers; validate mixed shell/admin flags at the same early boundary.
-    if let Some(code) = run_script_input(&args)? {
+    if let Some(code) = aishe::cli::shell_input::run(args.shell_input())? {
         return Ok(code);
     }
     if let Some(Cmd::Activate {
@@ -466,10 +466,12 @@ fn run() -> Result<u8> {
         args.model.as_deref(),
     )?;
     let agent_request = match &args.cmd {
-        Some(Cmd::Agent(options)) => match resolve_agent(options, &config)? {
-            Some(request) => Some(request),
-            None => return Ok(0),
-        },
+        Some(Cmd::Agent(options)) => {
+            match aishe::cli::agent_launch::resolve(options.launch_options(), &config)? {
+                Some(request) => Some(request),
+                None => return Ok(0),
+            }
+        }
         _ => None,
     };
     let background_role = args
@@ -1375,20 +1377,6 @@ fn run() -> Result<u8> {
     Ok(0)
 }
 
-#[derive(Clone, Debug)]
-struct ResolvedAgent {
-    objective: String,
-    background: bool,
-    role: String,
-    connection: Option<String>,
-    model: Option<String>,
-    scope: String,
-    no_isolation: bool,
-    max_minutes: u32,
-    max_turns: u32,
-    max_cost: Option<f64>,
-}
-
 fn run_fast_shell_command(command: &str, forced: bool) -> Result<u8> {
     if forced {
         aishe::cli::runtime::print_forced_shell_cue();
@@ -1396,269 +1384,4 @@ fn run_fast_shell_command(command: &str, forced: bool) -> Result<u8> {
     let (history, profile) = aishe::cli::history::fast_shell_context()?;
     let preferred = (profile == "bash").then_some("bash");
     Ok(aishe::executor::run_shell_once_with_shell(command, Some(&history), preferred)? as u8)
-}
-
-fn run_script_input(args: &Args) -> Result<Option<u8>> {
-    let shell_options = args.interactive || args.login || args.stdin_script || args.agent_lines;
-    if args.cmd.is_some() {
-        if shell_options || !args.shell_arguments.is_empty() {
-            return Err(aishe::user_error::UserFacing::cli(
-                "shell_options_with_subcommand",
-                "Shell launch options cannot be combined with an AIShe subcommand.",
-                "Use `aishe -i`, `aishe -l`, or the subcommand separately.",
-            ));
-        }
-        return Ok(None);
-    }
-    let hook = args.hook_cli.is_some()
-        || args.suggest_line.is_some()
-        || args.yolo_line.is_some()
-        || args.auto_line.is_some()
-        || args.fix_line.is_some()
-        || args.edit_line.is_some()
-        || args.background_task.is_some()
-        || args.background_workflow.is_some()
-        || args.record_failure.is_some()
-        || args.accept_yolo;
-    if hook {
-        if shell_options || !args.shell_arguments.is_empty() {
-            return Err(aishe::user_error::UserFacing::cli(
-                "shell_options_with_hook",
-                "Shell launch options cannot be combined with an AIShe hook invocation.",
-                "Run the shell command and AIShe hook separately.",
-            ));
-        }
-        return Ok(None);
-    }
-    if args.agent_lines {
-        if !args.shell_arguments.is_empty() {
-            return Err(aishe::user_error::UserFacing::cli(
-                "agent_lines_arguments",
-                "The --agent-lines protocol does not accept a script filename or arguments.",
-                "Pipe AIShe input lines to `aishe --agent-lines`.",
-            ));
-        }
-        return Ok(None);
-    }
-    if args.interactive {
-        if !args.shell_arguments.is_empty() {
-            return Err(aishe::user_error::UserFacing::cli(
-                "interactive_script",
-                "An interactive AIShe session does not accept a script filename.",
-                "Use `aishe -i` for a session or `aishe SCRIPT` for a script.",
-            ));
-        }
-        return Ok(None);
-    }
-    let script_command = args.command.is_some() && (args.login || !args.shell_arguments.is_empty());
-    let script_file =
-        args.command.is_none() && !args.stdin_script && !args.shell_arguments.is_empty();
-    let script_stdin = args.command.is_none()
-        && !script_file
-        && (args.stdin_script || !std::io::stdin().is_terminal());
-    if !script_command && !script_file && !script_stdin {
-        return Ok(None);
-    }
-    if args.mode.is_some()
-        || args.provider.is_some()
-        || args.model.is_some()
-        || args.connection.is_some()
-    {
-        return Err(aishe::user_error::UserFacing::cli(
-            "ai_options_with_script",
-            "AI selection flags do not apply to conventional shell scripts.",
-            "Use `aishe -c LINE` or `aishe --agent-lines` for agent routing.",
-        ));
-    }
-    // A saved Bash adoption choice also controls the script interpreter. A bad
-    // AI configuration must not take away otherwise ordinary script execution.
-    let profile = std::env::var("AISHE_ZSH_PROFILE")
-        .ok()
-        .filter(|profile| matches!(profile.as_str(), "clean" | "personal" | "bash"))
-        .or_else(|| {
-            Config::load_quiet()
-                .ok()
-                .flatten()
-                .map(|config| config.aishe.shell_profile)
-        });
-    let shell = if profile.as_deref() == Some("bash") {
-        aishe::executor::which("bash").context("the saved Bash profile requires Bash on PATH")?
-    } else {
-        aishe::executor::which("zsh")
-            .or_else(|| aishe::executor::which("bash"))
-            .context("shell scripts require zsh or Bash on PATH")?
-    };
-    let mut command = std::process::Command::new(shell);
-    if args.login {
-        command.arg("-l");
-    }
-    if script_command {
-        let line = args.command.as_deref().expect("script command is present");
-        if !args.login && dispatcher::fast_shell_line(line).is_none() {
-            return Err(aishe::user_error::UserFacing::cli(
-                "agent_positional_arguments",
-                "Positional shell arguments require an unambiguous shell command.",
-                "Use `aishe -lc SCRIPT NAME ARG...` for conventional shell execution.",
-            ));
-        }
-        let line = if args.login {
-            line.to_owned()
-        } else {
-            dispatcher::fast_shell_line(line).expect("shell route was checked")
-        };
-        command.arg("-c").arg(line).args(&args.shell_arguments);
-    } else if script_file {
-        let file = std::path::Path::new(&args.shell_arguments[0]);
-        if !file.is_file() {
-            return Err(aishe::user_error::UserFacing::cli(
-                "script_not_found",
-                format!("Shell script does not exist: {}", file.display()),
-                "Use `aishe --help` for commands, or provide an existing script filename.",
-            ));
-        }
-        command.arg("--").args(&args.shell_arguments);
-    } else {
-        command.arg("-s").arg("--").args(&args.shell_arguments);
-    }
-    let status = command.status().context("cannot launch the script shell")?;
-    use std::os::unix::process::ExitStatusExt;
-    Ok(Some(
-        status
-            .code()
-            .unwrap_or_else(|| 128 + status.signal().unwrap_or(1)) as u8,
-    ))
-}
-
-fn resolve_agent(options: &AgentArgs, config: &Config) -> Result<Option<ResolvedAgent>> {
-    let guided = options.objective.is_empty();
-    let objective = if guided {
-        if !std::io::stdin().is_terminal() || !std::io::stdout().is_terminal() {
-            anyhow::bail!("agent objective is required outside an interactive terminal");
-        }
-        aishe::promptui::header(
-            "launch an AIShe agent",
-            "Choose the work, authority, model role, and execution style in one place.",
-            "Workspace scope and isolated background worktrees are the safe defaults.",
-        );
-        let Some(value) = aishe::promptui::text(
-            "Objective",
-            "inspect this repository and recommend the next improvement",
-            |value| {
-                if value.trim().is_empty() || value.len() > 64 * 1024 {
-                    anyhow::bail!("objective must contain 1..=65536 bytes")
-                }
-                Ok(())
-            },
-        )?
-        else {
-            return Ok(None);
-        };
-        if value == ":back" {
-            return Ok(None);
-        }
-        value
-    } else {
-        options.objective.join(" ")
-    };
-    let background = if guided {
-        let choices = vec![
-            "Foreground · stream progress in this terminal".into(),
-            "Background · isolated git worktree and inbox".into(),
-        ];
-        let aishe::promptui::PickerResult::Use(index) =
-            aishe::promptui::filter_picker("Execution", &choices, usize::from(options.background))?
-        else {
-            return Ok(None);
-        };
-        index == 1
-    } else {
-        options.background
-    };
-    let role = if guided && options.role.is_none() {
-        let choices = aishe::roles::NAMES
-            .iter()
-            .map(|role| format!("{role} · workload-specific connection/model/reasoning"))
-            .collect::<Vec<_>>();
-        let default = aishe::roles::NAMES
-            .iter()
-            .position(|role| *role == "build")
-            .unwrap_or(0);
-        let aishe::promptui::PickerResult::Use(index) =
-            aishe::promptui::filter_picker("Model role", &choices, default)?
-        else {
-            return Ok(None);
-        };
-        aishe::roles::NAMES[index].to_string()
-    } else {
-        options.role.clone().unwrap_or_else(|| "build".into())
-    };
-    let scope = if guided && options.scope.is_none() {
-        let choices = vec![
-            "workspace · project-bound authority".into(),
-            "host · explicit whole-machine authority".into(),
-        ];
-        let default = usize::from(config.backend.default_scope == "host");
-        let aishe::promptui::PickerResult::Use(index) =
-            aishe::promptui::filter_picker("Authority", &choices, default)?
-        else {
-            return Ok(None);
-        };
-        if index == 1 {
-            "host".into()
-        } else {
-            "workspace".into()
-        }
-    } else {
-        options
-            .scope
-            .clone()
-            .unwrap_or_else(|| config.backend.default_scope.clone())
-    };
-    if options
-        .max_cost
-        .is_some_and(|value| !value.is_finite() || value < 0.0)
-    {
-        anyhow::bail!("--max-cost must be a finite non-negative number");
-    }
-    let mut objective = objective.trim().to_string();
-    for path in &options.file {
-        objective.push(' ');
-        objective.push_str(&attachment_reference("file", path)?);
-    }
-    for path in &options.dir {
-        objective.push(' ');
-        objective.push_str(&attachment_reference("dir", path)?);
-    }
-    if options.diff {
-        objective.push_str(" @diff");
-    }
-    if options.clipboard {
-        objective.push_str(" @clipboard");
-    }
-    Ok(Some(ResolvedAgent {
-        objective,
-        background,
-        role,
-        connection: options.connection.clone(),
-        model: options.model.clone(),
-        scope,
-        no_isolation: options.no_isolation,
-        max_minutes: options.max_minutes,
-        max_turns: options.max_turns,
-        max_cost: options.max_cost,
-    }))
-}
-
-fn attachment_reference(kind: &str, path: &std::path::Path) -> Result<String> {
-    let value = path.to_str().context("attachment path is not UTF-8")?;
-    if value.is_empty() || value.chars().any(char::is_control) {
-        anyhow::bail!("attachment path is empty or contains control characters");
-    }
-    if !value.contains('"') {
-        Ok(format!("@{kind}:\"{value}\""))
-    } else if !value.contains('\'') {
-        Ok(format!("@{kind}:'{value}'"))
-    } else {
-        anyhow::bail!("attachment paths containing both quote styles are not supported")
-    }
 }

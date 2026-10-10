@@ -47,6 +47,7 @@ impl Fixture {
             "AISHE_TASK_MAX_MINUTES",
             "AISHE_TASK_MAX_COST_USD",
             "AISHE_BACKGROUND_TASK_ID",
+            "AISHE_DISABLE_TASKS",
         ] {
             fixture.save(name);
             std::env::remove_var(name);
@@ -187,6 +188,64 @@ fn run(
         &mut Session::new(false),
     )
     .unwrap()
+}
+
+#[test]
+fn private_task_root_makes_native_turns_durable_without_default_harness_writes() {
+    let _lock = ENV.lock().unwrap();
+    let fixture = Fixture::new();
+    let config = fixture.config();
+    let default_root = fixture.root.join("data/aishe/tasks");
+    let private_root = fixture.root.join("tasks");
+
+    // Harness safety applies to the implicit data directory, even when it is
+    // isolated by the test environment. An empty override has the same meaning.
+    for override_value in [None, Some("")] {
+        match override_value {
+            Some(value) => std::env::set_var("AISHE_TASKS_DIR", value),
+            None => std::env::remove_var("AISHE_TASKS_DIR"),
+        }
+        let outcome = run(
+            &fixture,
+            &Script::new(vec![final_answer()]),
+            &config,
+            &AtomicBool::new(false),
+        );
+        assert_eq!(outcome.state, NativeTurnState::Completed);
+        assert!(aishe::tasks::load(&outcome.task_id).is_err());
+        assert!(!default_root.exists());
+        assert!(!private_root.exists());
+    }
+
+    std::env::set_var("AISHE_TASKS_DIR", &private_root);
+    let provider = Script::new(vec![final_answer()]);
+    let outcome = run(&fixture, &provider, &config, &AtomicBool::new(false));
+    assert_eq!(outcome.state, NativeTurnState::Completed);
+    let saved = aishe::tasks::load(&outcome.task_id).unwrap();
+    assert_eq!(saved.native_state.as_deref(), Some("completed"));
+    assert_eq!(saved.objective, "Complete this task");
+    assert_eq!(saved.connection_id, config.active_connection_id());
+    assert_eq!(saved.usage.requests, 1);
+    assert_eq!(saved.usage.reported_requests, Some(1));
+    assert_eq!(saved.execution.provider_turns, 1);
+    assert!(private_root
+        .join(format!("{}.json", outcome.task_id))
+        .is_file());
+    assert_eq!(aishe::tasks::list().len(), 1);
+    assert!(!default_root.exists());
+
+    // The explicit disable remains stronger than a configured private root.
+    std::env::set_var("AISHE_DISABLE_TASKS", "1");
+    let outcome = run(
+        &fixture,
+        &Script::new(vec![final_answer()]),
+        &config,
+        &AtomicBool::new(false),
+    );
+    assert_eq!(outcome.state, NativeTurnState::Completed);
+    assert!(aishe::tasks::load(&outcome.task_id).is_err());
+    assert_eq!(aishe::tasks::list().len(), 1);
+    assert!(!default_root.exists());
 }
 
 #[test]
@@ -433,8 +492,7 @@ fn resuming_a_spent_configured_iteration_ceiling_cannot_contact_provider_or_repe
     let mut config = fixture.config();
     config.aishe.max_yolo_iterations = 1;
     let original = Script::new(vec![completion(vec![write("original", "original-effect")])]);
-    // Foreground auto-persistence is intentionally disabled for integration
-    // harness binaries. Resume a seeded record to exercise the durable path.
+    // Resume a seeded checkpoint to exercise the durable continuation path.
     let seed = aishe::tasks::Active::start(&config, &fixture.root, "Complete this task");
     let outcome = yolo::resume(
         seed.record().clone(),

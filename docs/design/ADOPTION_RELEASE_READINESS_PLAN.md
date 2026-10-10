@@ -260,7 +260,7 @@ The checkbox status will be reconciled with actual candidate evidence.
 | Discovery, slash picker and prompt fields | `src/lean/assets/hook.zsh`, `src/lean/slash.rs`, `src/usagelog.rs`, `src/cli/hints.rs` | `tests/native_discovery_pty.py`, picker/mode/prompt PTYs, real narrow-screen captures |
 | Task presentation and interaction truth | `src/cli/taskui.rs`, `src/background/presentation.rs`, `src/background/interactions.rs`, `src/tasks.rs` | Background/interactions/workflow PTYs, saved-revision review and recorded-check regressions |
 | Usage and budget provenance | `src/usage.rs`, `src/usagelog.rs`, `src/audit.rs`, `src/lean/nl.rs`, `src/agent/native.rs`, provider transports | Rust budget/coverage/error tests, `tests/native_runtime.rs`, HTTP-backed prompt/task usage scenarios, managed-runtime contracts |
-| Scripts and activation | `src/cli/args.rs`, `src/activation.rs`, command dispatch and executor | `tests/shell_adoption.py`, `tests/direct_shell_startup_test.py`, CLI and signal contracts |
+| Scripts and activation | `src/cli/args.rs`, `src/cli/shell_input.rs`, `src/cli/agent_launch.rs`, `src/activation.rs`, command dispatch and executor | `tests/shell_adoption.py`, `tests/direct_shell_startup_test.py`, CLI and signal contracts |
 | Installer and publication boundary | `install.sh`, release workflow, `tests/release_gate.py`, `tests/release_evidence.py` | Transaction/fault fixtures; source-bound CI, artifact identity, dispositions and gate regression tests |
 | Startup hot path | executor one-shot route and `src/histlog.rs` | Original `tests/direct_shell_benchmark.py` on both platforms, launcher contracts, history permission/concurrency checks |
 
@@ -331,3 +331,13 @@ expectations, a managed usage-log reader that did not understand v3 coverage,
 and a native-session fixture invoking the background-task inspector. Correct
 those contracts and qualify the complete next candidate; startup success alone
 does not approve release publication.
+
+The full local integration pass also retains the existing orchestration guard:
+shell-program admission and guided agent launch belong in CLI domain modules,
+keeping `main.rs` below its unchanged 1,500-line limit. Explicit private task
+directories must enable real checkpoint persistence in integration harnesses;
+an absent directory override or explicit disabling must not write to a user's
+default task directory. Activation owns a versioned public JSON contract.
+Current-format usage fixtures prove verified subtotals, and legacy fixtures
+separately prove unavailable coverage. UI qualification reads plain-text
+offsets and explicitly scrolls beyond authority fields to reach long results.

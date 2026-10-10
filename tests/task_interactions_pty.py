@@ -178,7 +178,11 @@ def action_approval_is_specific_and_defaults_to_no():
         wait_until(shell, marker.exists, "specific approved action")
         finished = fixture.finish(task_id)
         assert finished["state"] == "completed" and marker.read_text() == "once\n", finished
+        shown(shell, "finished |", timeout=8)
+        capture(shell, "Approved task authority and recorded usage before its result")
+        shell.send("\x1b[F")
         shown(shell, "APPROVAL_UI_RESULT_PROOF", timeout=8)
+        capture(shell, "Approved task result reached with End")
         shell.send("\x03")
         wait_until(shell, lambda: shell.proc.poll() is not None, "approval browser exits")
         fixture.loopback.assert_ok()
@@ -389,7 +393,7 @@ def native_prompt_and_session_usage_preserve_provider_coverage():
             rows = [row.split("\t") for row in tally.read_text().splitlines()]
             assert all(row[0] == "v3" for row in rows), rows
             assert [row[6:] for row in rows] == [["1", "0", "0", "0", "0", "0"], ["0", "0", "0", "1", "0", "0"], ["0", "20", "30", "1", "20", "30"]], rows
-            start = len(shell.transcript)
+            start = len(shell.plain())
             shell.send("/usage\r")
             shown(shell, "20 in · 30 out (partial) · 3 reqs · ~$0.0001 (partial; 1 unknown)", start, 8)
             document = json.loads(fixture.cli("usage", "--json").stdout)
@@ -421,19 +425,19 @@ def native_session_budget_blocks_missing_or_legacy_usage_before_more_http():
             tally = Path((fixture.home / "budget-usage-path").read_text().strip())
             if legacy:
                 tally.write_text("v2\t0\t0\t1\toriginal-background-model\topenai\n")
-                start = len(shell.transcript)
+                start = len(shell.plain())
                 shell.send("/usage\r")
                 shown(shell, "tokens n/a", start)
             else:
                 shell.send("? produce one unreported usage response\r")
                 wait_until(shell, lambda: tally.exists() and len(tally.read_text().splitlines()) == 1,
                            "unreported usage checkpoint", 12)
-            start = len(shell.transcript)
+            start = len(shell.plain())
             shell.send("? this request must not reach the provider\r")
             shown(shell, "recorded usage coverage is unknown", start, 8)
             shell.drain(.2)
             assert len(fixture.loopback.calls) == (0 if legacy else 1), fixture.loopback.calls
-            start = len(shell.transcript)
+            start = len(shell.plain())
             shell.send("/status\r")
             shown(shell, "incomplete usage blocks further AI work", start, 8)
             capture(shell, "Native budget rejects unknown " + ("legacy" if legacy else "provider") + " usage")

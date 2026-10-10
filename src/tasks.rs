@@ -990,16 +990,21 @@ fn persistence_enabled() -> bool {
     ) {
         return false;
     }
+    // An explicit task root is an isolated persistence destination, including
+    // for integration harnesses that must avoid the default user directory.
+    if std::env::var_os("AISHE_TASKS_DIR").is_some_and(|value| !value.is_empty()) {
+        return true;
+    }
     #[cfg(test)]
     {
-        std::env::var_os("AISHE_TASKS_DIR").is_some()
+        false
     }
     #[cfg(not(test))]
     {
         // Rust integration tests run a harness from target/*/deps. They exercise
         // task checkpoint logic but must never write into the developer's real
-        // data directory. End-to-end CLI tests execute the actual `aishe`
-        // binary and isolate AISHE_DATA_DIR, so persistence remains covered.
+        // data directory without an explicit isolated task root. End-to-end
+        // CLI tests execute the actual `aishe` binary and isolate AISHE_DATA_DIR.
         let under_test_harness = std::env::current_exe()
             .ok()
             .and_then(|path| path.parent().map(Path::to_path_buf))

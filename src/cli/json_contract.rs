@@ -29,6 +29,7 @@ pub struct Surface {
 /// inventory row because one Clap `--json` declaration owns that contract.
 pub const PUBLIC_SURFACES: &[Surface] = &[
     surface("setup --json", Format::Json),
+    surface("activate --json", Format::Json),
     surface("settings --json", Format::Json),
     surface("doctor --json", Format::Json),
     surface("models --json", Format::Json),

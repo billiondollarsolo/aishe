@@ -246,6 +246,27 @@ pub(crate) struct AgentArgs {
     pub(crate) max_cost: Option<f64>,
 }
 
+impl AgentArgs {
+    pub(crate) fn launch_options(&self) -> aishe::cli::agent_launch::Options<'_> {
+        aishe::cli::agent_launch::Options {
+            objective: &self.objective,
+            background: self.background,
+            role: self.role.as_deref(),
+            connection: self.connection.as_deref(),
+            model: self.model.as_deref(),
+            scope: self.scope.as_deref(),
+            file: &self.file,
+            dir: &self.dir,
+            diff: self.diff,
+            clipboard: self.clipboard,
+            no_isolation: self.no_isolation,
+            max_minutes: self.max_minutes,
+            max_turns: self.max_turns,
+            max_cost: self.max_cost,
+        }
+    }
+}
+
 #[derive(Subcommand, Debug)]
 pub(crate) enum Cmd {
     /// Internal managed backend supervisor.
@@ -1748,6 +1769,32 @@ pub(crate) fn price_action(command: &PriceCmd) -> aishe::cli::settings::PriceAct
 }
 
 impl Args {
+    pub(crate) fn shell_input(&self) -> aishe::cli::shell_input::Options<'_> {
+        aishe::cli::shell_input::Options {
+            subcommand: self.cmd.is_some(),
+            hook: self.hook_cli.is_some()
+                || self.suggest_line.is_some()
+                || self.yolo_line.is_some()
+                || self.auto_line.is_some()
+                || self.fix_line.is_some()
+                || self.edit_line.is_some()
+                || self.background_task.is_some()
+                || self.background_workflow.is_some()
+                || self.record_failure.is_some()
+                || self.accept_yolo,
+            interactive: self.interactive,
+            login: self.login,
+            stdin_script: self.stdin_script,
+            agent_lines: self.agent_lines,
+            ai_selection: self.mode.is_some()
+                || self.provider.is_some()
+                || self.model.is_some()
+                || self.connection.is_some(),
+            command: self.command.as_deref(),
+            shell_arguments: &self.shell_arguments,
+        }
+    }
+
     /// Whether the selected command promises JSON/JSONL stream ownership.
     /// Resolve this before any config migration can print a human notice.
     pub(crate) fn machine_output(&self) -> bool {

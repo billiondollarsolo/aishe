@@ -1771,7 +1771,12 @@ fn primary_commands_and_live_status_are_discoverable() {
     let data = home.join("data");
     let usage = home.join("usage.tsv");
     let status = home.join("status.tsv");
-    std::fs::write(&usage, "1000\t250\t2\tclaude-x\n").unwrap();
+    // Current tallies establish both reported usage and its billing model.
+    std::fs::write(
+        &usage,
+        "v3\t1000\t250\t2\tclaude-sonnet\tanthropic\t0\t1000\t250\t2\t1000\t250\n",
+    )
+    .unwrap();
     std::fs::write(
         &status,
         "task\ttask abc123\nelapsed\tlast 4.2s\ncontext\tcontext 1,000 tok\n",
@@ -1818,7 +1823,26 @@ fn primary_commands_and_live_status_are_discoverable() {
                 .and(contains(r#""enabled": false"#))
                 .and(contains("audit.jsonl"))
                 .and(contains("aishe session: 1,000 in · 250 out · 2 reqs"))
+                .and(contains("cost n/a").not())
                 .and(contains("task abc123")),
+        );
+
+    // Older tallies retain request counts, but cannot establish zero usage or
+    // a price estimate even when their recorded model has a configured price.
+    std::fs::write(&usage, "v2\t1000\t250\t2\tclaude-sonnet\tanthropic\n").unwrap();
+    Command::cargo_bin("aishe")
+        .unwrap()
+        .env("AISHE_CONFIG_DIR", &home)
+        .env("AISHE_DATA_DIR", &data)
+        .env("AISHE_USAGE_FILE", &usage)
+        .env("AISHE_STATUS_FILE", &status)
+        .args(["status", "--json"])
+        .assert()
+        .success()
+        .stdout(
+            contains("aishe session: tokens n/a · 2 reqs · cost n/a")
+                .and(contains("task abc123"))
+                .and(contains("~$").not()),
         );
 
     std::fs::remove_dir_all(home).ok();
@@ -2276,7 +2300,60 @@ fn log_and_usage_read_the_audit_log() {
         .stdout(contains("apt-get install nginx").and(contains("gpt-4o")));
     std::fs::remove_dir_all(slash_home).ok();
 
-    // `aishe usage` totals tokens and estimates cost (gpt-4o known price).
+    // Legacy audit counters lack coverage, even for a model with a known price.
+    Command::cargo_bin("aishe")
+        .unwrap()
+        .env("AISHE_CONFIG_DIR", dir.join("config"))
+        .env("AISHE_DATA_DIR", dir.join("data"))
+        .env("AISHE_LOG_FILE", &log)
+        .arg("usage")
+        .assert()
+        .success()
+        .stdout(
+            contains("tokens n/a")
+                .and(contains("cost n/a"))
+                .and(contains("~$").not())
+                .and(contains("TOTAL")),
+        );
+
+    let legacy_usage = Command::cargo_bin("aishe")
+        .unwrap()
+        .env("AISHE_CONFIG_DIR", dir.join("config"))
+        .env("AISHE_DATA_DIR", dir.join("data"))
+        .env("AISHE_LOG_FILE", &log)
+        .args(["usage", "--json"])
+        .output()
+        .unwrap();
+    assert!(legacy_usage.status.success());
+    let legacy_usage: serde_json::Value = serde_json::from_slice(&legacy_usage.stdout).unwrap();
+    assert_eq!(legacy_usage["total"]["tokens_in"], 1050);
+    assert_eq!(legacy_usage["total"]["requests"], 2);
+    assert_eq!(legacy_usage["total"]["unreported_requests"], 2);
+    assert_eq!(legacy_usage["total"]["cost_coverage"], "unknown");
+    assert!(legacy_usage["total"]["cost_usd"].is_null());
+
+    // Current audit events explicitly preserve provider usage and attribution.
+    // The same historical counters can then establish an estimated subtotal.
+    let current_log = std::fs::read_to_string(&log)
+        .unwrap()
+        .lines()
+        .map(|line| {
+            let mut event: serde_json::Value = serde_json::from_str(line).unwrap();
+            if event["kind"] == "ai_response" {
+                event["schema_version"] = serde_json::json!(1);
+                event["requests"] = serde_json::json!(1);
+                event["unreported_requests"] = serde_json::json!(0);
+                event["reported_tokens_in"] = event["tokens_in"].clone();
+                event["reported_tokens_out"] = event["tokens_out"].clone();
+                event["attributed_requests"] = serde_json::json!(1);
+                event["attributed_tokens_in"] = event["tokens_in"].clone();
+                event["attributed_tokens_out"] = event["tokens_out"].clone();
+            }
+            event.to_string()
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    std::fs::write(&log, format!("{current_log}\n")).unwrap();
     Command::cargo_bin("aishe")
         .unwrap()
         .env("AISHE_CONFIG_DIR", dir.join("config"))
@@ -2287,7 +2364,9 @@ fn log_and_usage_read_the_audit_log() {
         .success()
         .stdout(
             contains("1,050 in")
-                .and(contains("~$"))
+                .and(contains("210 out"))
+                .and(contains("~$0.0047"))
+                .and(contains("cost n/a").not())
                 .and(contains("TOTAL")),
         );
 
