@@ -1638,8 +1638,8 @@ fn dash_c_propagates_exit_codes() {
 }
 
 #[test]
-fn piped_stdin_runs_each_line() {
-    // Non-tty stdin with no `-c`: each line runs like a one-shot command.
+fn piped_stdin_runs_one_conventional_script() {
+    // Compound syntax and variables must remain in a single real shell.
     let home = temp_config_home();
     Command::cargo_bin("aishe")
         .unwrap()
@@ -1647,11 +1647,26 @@ fn piped_stdin_runs_each_line() {
         .env("XDG_DATA_HOME", home.join("data"))
         .env("AISHE_CONFIG_DIR", &home)
         .env("AISHE_DATA_DIR", home.join("data"))
-        .write_stdin("!echo piped-a\n!echo piped-b\n")
+        .write_stdin("value=piped-a\nif true; then\necho \"$value\"\nfi\necho piped-b\n")
         .assert()
         .success()
         .stdout(contains("piped-a"))
         .stdout(contains("piped-b"));
+}
+
+#[test]
+fn explicit_agent_lines_preserves_the_per_line_protocol() {
+    let home = temp_config_home();
+    Command::cargo_bin("aishe")
+        .unwrap()
+        .env("AISHE_CONFIG_DIR", &home)
+        .env("AISHE_DATA_DIR", home.join("data"))
+        .arg("--agent-lines")
+        .write_stdin("!echo agent-line-a\n!echo agent-line-b\n")
+        .assert()
+        .success()
+        .stdout(contains("agent-line-a"))
+        .stdout(contains("agent-line-b"));
 }
 
 #[test]
@@ -2350,7 +2365,7 @@ fn runbook_generates_script_and_markdown() {
 }
 
 #[test]
-fn missing_config_in_non_tty_mode_is_actionable_and_does_not_write_defaults() {
+fn missing_config_keeps_shell_usable_and_ai_setup_actionable() {
     let dir = temp_root("missing-config");
     Command::cargo_bin("aishe")
         .unwrap()
@@ -2359,8 +2374,19 @@ fn missing_config_in_non_tty_mode_is_actionable_and_does_not_write_defaults() {
         .arg("-c")
         .arg("!true")
         .assert()
-        .failure()
-        .stderr(contains("aishe setup --non-interactive"));
+        .success();
+    assert!(!dir.join("aishe").join("config.toml").exists());
+    Command::cargo_bin("aishe")
+        .unwrap()
+        .env("AISHE_CONFIG_DIR", &dir)
+        .env("AISHE_DATA_DIR", dir.join("data"))
+        .env_remove("ANTHROPIC_API_KEY")
+        .env_remove("AISHE_FAKE_LLM")
+        .args(["-c", "? Explain the current project"])
+        .assert()
+        .code(1)
+        .stderr(contains("auth.unavailable"))
+        .stderr(contains("/setup"));
     assert!(!dir.join("aishe").join("config.toml").exists());
     std::fs::remove_dir_all(dir).ok();
 }

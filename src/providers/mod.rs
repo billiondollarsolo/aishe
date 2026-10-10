@@ -261,7 +261,7 @@ pub fn user_error(error: &ProviderError) -> crate::user_error::UserError {
             ErrorNamespace::Auth,
             "missing_credential",
             "The provider credential is missing.",
-            "Set the named API-key environment variable, then run `aishe doctor --live`.",
+            "Run `/setup` in AIShe or `aishe setup` to connect AI; ordinary shell commands remain available.",
             false,
         ),
         ErrorKind::InvalidCredential => (
@@ -598,6 +598,16 @@ pub(crate) fn usage_from_value(v: &Value) -> (u64, u64) {
         get(&["input_tokens", "prompt_tokens"]),
         get(&["output_tokens", "completion_tokens"]),
     )
+}
+
+pub(crate) fn usage_is_reported(v: &Value) -> bool {
+    let input = v
+        .pointer("/usage/input_tokens")
+        .or_else(|| v.pointer("/usage/prompt_tokens"));
+    let output = v
+        .pointer("/usage/output_tokens")
+        .or_else(|| v.pointer("/usage/completion_tokens"));
+    input.and_then(Value::as_u64).is_some() && output.and_then(Value::as_u64).is_some()
 }
 
 /// POST a request for a Server-Sent Events stream, retrying transient failures
@@ -1301,5 +1311,12 @@ mod tests {
         );
         // Missing usage -> zeros.
         assert_eq!(usage_from_value(&serde_json::json!({})), (0, 0));
+        assert!(!usage_is_reported(&serde_json::json!({})));
+        assert!(!usage_is_reported(
+            &serde_json::json!({"usage": {"input_tokens": 5}})
+        ));
+        assert!(usage_is_reported(
+            &serde_json::json!({"usage": {"input_tokens": 0, "output_tokens": 0}})
+        ));
     }
 }

@@ -1,19 +1,41 @@
 # Getting started
 
-> **Alpha.** Behavior and config may still change; see the
-> [docs index](README.md) and [root README](../README.md).
+> These instructions describe the v1.1.0 candidate. The installer downloads the
+> latest published release; see its version with `aishe --version`.
 
 This page walks through your first session with **AIShe** (**AI Shell**).
 
-## 1. Run guided setup
-
-Setup is interactive and resumable, and it signs you in as part of the flow:
+## 1. Open your shell
 
 ```sh
-aishe setup
+curl -fsSL https://raw.githubusercontent.com/billiondollarsolo/aishe/main/install.sh | sh -s -- --launch
+# Later, or when AIShe is already installed:
+aishe
 ```
 
-It writes its configuration to a per-platform directory: `~/.config/aishe/` on
+Ordinary shell commands work immediately without credentials or a runtime
+service. A fresh install keeps your zsh configuration, prompt, plugins, and
+history. Exit returns to the shell that launched AIShe.
+
+Use `/setup` or `aishe setup` to connect an AI account. **Connect later** saves
+only the shell settings you review; it does not check a provider or download a
+runtime. Asking the agent before connecting gives an actionable setup cue.
+Setup is interactive and resumable. Choose a shell experience first:
+
+| Choice | What starts |
+| --- | --- |
+| Keep my zsh | Your `.zshenv`/`.zshrc`, theme, plugins, history, and native agent |
+| Clean AIShe | Isolated native zsh with AIShe's complete prompt |
+| Bash integration | Your `.bashrc`, prompt and Readline, with the reduced Bash hook |
+
+`/settings` saves this choice for new shells. Optional `aishe activate zsh` or
+`aishe activate bash` previews a reversible startup block; `--apply` writes it
+with a backup, and `--remove` restores the surrounding startup file. The login
+shell stays unchanged. Existing configurations without a
+shell-profile setting keep their previous clean profile. `AISHE_ZSH_PROFILE`
+remains an explicit one-process override for zsh.
+
+AIShe writes its configuration to a per-platform directory: `~/.config/aishe/` on
 Linux but `~/Library/Application Support/aishe/` on macOS — aishe follows each platform's
 own convention, and a file left in the wrong one is silently ignored. Run
 `aishe doctor` to see the path actually in use, or set `AISHE_CONFIG_DIR` (and
@@ -23,8 +45,9 @@ their Linux form for brevity.
 
 The main decisions are:
 
-- **Account and model:** API keys and local endpoints use the included native
-  engine. Subscription OAuth explicitly selects a managed legacy transport.
+- **Account and model:** connect later, or use API keys and local endpoints with
+  the included native engine. Subscription OAuth explicitly selects a managed
+  legacy transport.
 - **Behavior:** accept the recommended ask mode and compact status, or customize
   mode, scope, history, output, and logging. Allow and agent still require a
   separate grant for each live shell.
@@ -83,20 +106,16 @@ After setup, run:
 aishe
 ```
 
-That launches a real zsh with a lightweight isolated configuration. Optional
-exports, aliases, and completion paths belong in `~/.aishe/leanrc`; late widget
-and binding changes belong in `~/.aishe/leanrc.post`. To use your own zsh
-configuration and plugins with the same native agent, launch:
+That opens the experience saved in setup or settings. The personal profile
+loads your `.zshenv`/`.zshrc`, keeps your prompt and history policy, and chains
+existing Enter/Tab widgets. Its quiet right-prompt suffix shows mode and work.
+Themes can display `AISHE_MODE_INDICATOR` and `AISHE_BACKGROUND_INDICATOR`.
+`AISHE_PTY_PROMPT=force` explicitly opts into AIShe's full prompt.
 
-```sh
-AISHE_ZSH_PROFILE=personal aishe
-```
-
-The personal profile loads your `.zshenv`/`.zshrc`, preserves your prompt and
-history policy, and chains existing Enter/Tab widgets. Use
-`AISHE_PERSONAL_INDICATOR=1` to append mode/scope to its right prompt, or display
-`AISHE_MODE_INDICATOR` in your theme. `AISHE_PTY_PROMPT=force` opts into AIShe's
-full prompt. See [Front-ends](front-ends.md) for startup order and shortcuts.
+With Clean AIShe, optional exports, aliases and completion paths belong in
+`~/.aishe/leanrc`; late widget and binding changes belong in
+`~/.aishe/leanrc.post`. See [Front-ends](front-ends.md) for startup order and
+shortcuts. Bash offers the [documented reduced tier](bash-compatibility.md).
 
 Subscription OAuth setup shows the explicit
 `AISHE_LEGACY_OPENCODE=1 aishe` launch command; first-run setup honors that choice
@@ -161,8 +180,7 @@ Type a request that is not a command, and the LLM proposes one:
   [Enter] run now  [e] edit first  [n/Esc] cancel
 ```
 
-Press Enter to run it, `e` to edit it first, or `n` to cancel. This is suggest
-mode, the default.
+Press Enter to run it, `e` to edit it first, or `n` to cancel. This is ask mode, the default.
 
 In the interactive `aishe` shell the proposal is staged on your command line
 instead: the first Enter puts it there so you can edit it, and the second Enter
@@ -182,7 +200,7 @@ Shift-Tab cycles modes on an empty line. With text entered it keeps reverse
 completion. Legacy `suggest`, `auto`, and `yolo` names remain accepted aliases;
 `aishe mode` changes defaults for new shells rather than granting a live shell.
 
-In `auto`, the safety gate has three outcomes: a command it finds safe runs
+In `allow`, the safety gate has three outcomes: a command it finds safe runs
 straight away, one it flags as dangerous stops and makes you type the full word
 `yes`, and one it *could not resolve* stops with a yellow "could not verify"
 panel and a plain `[y/N]`. Nothing unverified ever runs on its own. See
@@ -261,7 +279,8 @@ Follow-ups show **queued** until saved in the worker's transcript, then
 to edit or remove a message before delivery. Send a new follow-up once delivery
 begins. Existing commands can finish before the worker reads your message.
 
-Opening a finished result marks that exact result reviewed across shells. Give
+Opening a finished result marks that exact result seen across shells. Mark it
+reviewed explicitly after checking its changes and evidence. Give
 it a useful name, pin work you return to, or archive finished work from **?**.
 Archive keeps the result and workspace; Archived history brings it back. A new
 attempt or result becomes visible again. For a scriptable response or follow-up,
@@ -316,8 +335,8 @@ in the zsh front end to print `agent` or `shell/local` for the current buffer,
 or run `aishe route -- '<line>'` anywhere to get the route, stable reason, and
 opposite override without submitting the input.
 
-There is no separate “NL mode” badge on the status line. Mode glyphs are still
-suggest `❯` / auto `»` / yolo `*`. Force-NL only changes **that one line**.
+There is no separate “NL mode” badge on the status line. Mode glyphs are
+ask `❯` / allow `»` / agent `*`. Force-NL only changes **that one line**.
 
 ### Option / Alt + Return (optional)
 

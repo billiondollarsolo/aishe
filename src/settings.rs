@@ -33,7 +33,7 @@ pub struct Provenance {
 
 pub fn provenance() -> Result<(Config, Provenance)> {
     let user_exists = Config::path().exists();
-    let mut config = Config::load_quiet()?.unwrap_or_default();
+    let mut config = Config::load_quiet()?.unwrap_or_else(Config::shell_defaults);
     let base_source = if user_exists {
         format!("user:{}", Config::path().display())
     } else {
@@ -109,6 +109,11 @@ pub fn provenance() -> Result<(Config, Provenance)> {
             &source,
         ),
         field("aishe.mode", json!(config.aishe.mode), &source),
+        field(
+            "aishe.shell_profile",
+            json!(config.aishe.shell_profile),
+            &source,
+        ),
         field(
             "aishe.share_history",
             json!(config.aishe.share_history),
@@ -250,7 +255,7 @@ pub fn run() -> Result<bool> {
             "settings needs an interactive terminal; use `aishe settings --json` to inspect"
         );
     }
-    let baseline = Config::load_quiet()?.context("no config exists; run `aishe setup` first")?;
+    let baseline = Config::load_quiet()?.unwrap_or_else(Config::shell_defaults);
     crate::ui::configure(&baseline.ui);
     let managed_policy = crate::policy::load()?;
     let mut draft = baseline.clone();
@@ -900,6 +905,10 @@ fn shell_section(config: &mut Config) -> Result<()> {
                 config.aishe.hook_timeout_secs
             ),
             "Restore terminal defaults".into(),
+            format!(
+                "Shell experience: {}",
+                crate::setup::shell_profile_label(&config.aishe.shell_profile)
+            ),
             "Back".into(),
         ];
         match promptui::menu("Terminal & history", &choices, 0, true,
@@ -911,7 +920,8 @@ fn shell_section(config: &mut Config) -> Result<()> {
             MenuResult::Selected(4) => hints_section(config)?,
             MenuResult::Selected(5) => choose_hook_timeout(config)?,
             MenuResult::Selected(6) => reset_shell_section(config),
-            MenuResult::Selected(7) | MenuResult::Back | MenuResult::Cancel => return Ok(()),
+            MenuResult::Selected(7) => { crate::setup::choose_shell_profile(config)?; },
+            MenuResult::Selected(8) | MenuResult::Back | MenuResult::Cancel => return Ok(()),
             MenuResult::Selected(_) => {}
         }
         crate::ui::configure(&config.ui);
@@ -1147,7 +1157,12 @@ fn choose_status_items(config: &mut Config) -> Result<()> {
         "The lean prompt always includes model and connection. Extra fields appear when data exists and space permits; custom fields also serve legacy shells.")? {
         MenuResult::Selected(index @ 0..=2) => config.aishe.status_line_items = presets[index].iter().map(|value| (*value).into()).collect(),
         MenuResult::Selected(3) => {
-            promptui::note(&format!("Available fields: {}", STATUS_FIELDS.join(", ")));
+            if crate::lean::enabled() {
+                promptui::note("Native fields: model, connection, task, elapsed, last_tokens, last_cost, session_tokens, session_cost, requests. Mode and scope stay on the left; task counts appear automatically.");
+                promptui::note("Other custom fields belong to the compatibility shell and do not appear in the native prompt.");
+            } else {
+                promptui::note(&format!("Available fields: {}", STATUS_FIELDS.join(", ")));
+            }
             if let Some(value) = promptui::text("Comma-separated fields", &config.aishe.status_line_items.join(","), |value| parse_status_items(value).map(|_| ()))? {
                 if value != ":back" { config.aishe.status_line_items = parse_status_items(&value)?; }
             }
@@ -1160,12 +1175,37 @@ fn choose_status_items(config: &mut Config) -> Result<()> {
 
 fn print_status_preview(config: &Config) {
     promptui::section("Prompt preview (illustrative)");
+    if config.aishe.shell_profile == "bash" {
+        promptui::key_value("Prompt", "Your Bash prompt and Readline are retained");
+        promptui::note("Bash uses the lighter shell integration. Native right-side task and usage indicators require a zsh shell experience.");
+        return;
+    }
+    if config.aishe.shell_profile == "personal" {
+        promptui::key_value("Left", "Your zsh prompt is retained");
+        promptui::key_value(
+            "Right",
+            &format!(
+                "Your right prompt · {} · <background work>",
+                mode_label(config)
+            ),
+        );
+        promptui::note("Mode and background indicators are added beside your existing right prompt. Model and usage fields belong to the Clean AIShe prompt.");
+        return;
+    }
     if !config.aishe.pty_prompt {
         promptui::note(
             "Your own shell prompt is retained. AIShe's mode indicator requires the AIShe prompt.",
         );
     } else {
-        promptui::key_value("Left", &format!("~/project  {}  >", mode_label(config)));
+        let grant = if mode_label(config) == "ask" {
+            ""
+        } else {
+            " [grant needed]"
+        };
+        promptui::key_value(
+            "Left",
+            &format!("project {}{} >", mode_label(config), grant),
+        );
     }
     if !config.aishe.status_line {
         promptui::key_value("Right", "off");
@@ -1179,7 +1219,7 @@ fn print_status_preview(config: &Config) {
         if let Some(example) = match item.as_str() {
             "task" => Some("task <name>"),
             "elapsed" => Some("last <time>"),
-            "context" => Some("context <tokens>"),
+            "context" if !crate::lean::enabled() => Some("context <tokens>"),
             "last_tokens" => Some("last <in>/<out> tok"),
             "last_cost" => Some("last $<cost>"),
             "session_tokens" => Some("session <in>/<out> tok"),

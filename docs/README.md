@@ -1,8 +1,8 @@
 # AIShe documentation
 
-> **Alpha (pre-1.0).** AIShe is under active development. Commands, config
-> schema, and UX may change between releases. Prefer workspace scope and Linux
-> isolation for untrusted autonomous work; see [Safety](safety.md).
+> AIShe is under active development. Prefer workspace scope and Linux
+> isolation for untrusted autonomous work; see [Safety](safety.md). Release
+> availability and qualification are recorded separately from the current source.
 
 Welcome to the **AIShe** (**AI Shell**) user guide. The CLI is `aishe`. AIShe is a
 natural-language-aware shell: it behaves like zsh for real commands, and routes
@@ -25,7 +25,7 @@ live in the [root README](../README.md).
 - [Route overrides](route-prefixes.md) — canonical `?`, one-line shell `!`, and the deprecated `#` alias
 - [Providers](providers.md) — Anthropic, OpenAI/Codex, xAI/Grok, Groq, Ollama, OAuth
 - [Managed agent backend](managed-agent-backend.md) — pinned OpenCode runtime, security boundary, recovery
-- [Modes](modes.md) — suggest, auto, yolo, streaming, structured output
+- [Modes](modes.md) — Ask, Allow, Agent, per-shell scope, streaming, structured output
 - [Front-ends](front-ends.md) — the zsh-PTY interactive shell and the native hook
 - [Native Bash compatibility](bash-compatibility.md) — tested Tier B/B- matrix,
   version differences, and deterministic qualification evidence
@@ -50,6 +50,8 @@ live in the [root README](../README.md).
   `aishe doctor`, …)
 - [Development](development.md) — building, testing, and the validation harness
 - [Release readiness and rollback](release-readiness.md) — required evidence, holds, state compatibility, and failed-rollout response
+- [Adoption and release-readiness plan](design/ADOPTION_RELEASE_READINESS_PLAN.md) — complete v1.1.0 implementation tasks and acceptance criteria
+- [v1.1.0 release candidate](releases/v1.1.0.md) — native shell adoption, agent workflows, qualification, and publication status
 - [Daily-driver agentic shell plan](design/DAILY_DRIVER_AGENTIC_SHELL_PLAN.md) — implementation contract for buffer AI, background agents, isolation, context, trust, and lifecycle
 - [v0.8.0 release record](releases/v0.8.0.md) — complete change summary, compatibility boundaries, qualification evidence, and known limitations
 - [v0.7.0 release record](releases/v0.7.0.md) — the previous milestone's record

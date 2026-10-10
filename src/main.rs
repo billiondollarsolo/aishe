@@ -3,6 +3,7 @@
 //! Behaves like zsh for recognizable commands; anything else is treated as a
 //! natural-language request handled by an LLM (suggest or yolo mode).
 
+mod activation;
 #[path = "cli/args.rs"]
 mod args;
 
@@ -56,6 +57,22 @@ fn run() -> Result<u8> {
     }
     let args = Args::parse();
     aishe::ui::set_machine_output(args.machine_output());
+
+    // Conventional input belongs to one shell process, before configuration or
+    // providers; validate mixed shell/admin flags at the same early boundary.
+    if let Some(code) = run_script_input(&args)? {
+        return Ok(code);
+    }
+    if let Some(Cmd::Activate {
+        shell,
+        apply,
+        remove,
+        rcfile,
+        json,
+    }) = &args.cmd
+    {
+        return activation::run(shell, *apply, *remove, rcfile.as_deref(), *json);
+    }
 
     if let Some(values) = args.hook_cli.as_deref() {
         return aishe::integration::dispatch_hook_cli(&values[0], &values[1]);
@@ -977,24 +994,40 @@ fn run() -> Result<u8> {
     // Piped (non-tty) stdin with no `-c`: read commands from stdin instead of
     // launching the interactive shell. An explicit `aishe zsh` always launches it.
     let explicit_zsh = matches!(args.cmd, Some(Cmd::Zsh));
-    let piped_stdin = !non_interactive && !explicit_zsh && !std::io::stdin().is_terminal();
+    let piped_stdin = !non_interactive && !explicit_zsh && args.agent_lines;
     let want_pty = !non_interactive && !piped_stdin;
 
     if want_pty {
-        if aishe::executor::which("zsh").is_none() {
+        let selected_profile = std::env::var("AISHE_ZSH_PROFILE")
+            .ok()
+            .filter(|profile| matches!(profile.as_str(), "clean" | "personal" | "bash"))
+            .unwrap_or_else(|| config.aishe.shell_profile.clone());
+        let shell = if selected_profile == "bash" {
+            "bash"
+        } else {
+            "zsh"
+        };
+        if aishe::executor::which(shell).is_none() {
             aishe::cli::error_contract::emit_classified(
                 aishe::user_error::ErrorNamespace::Cli,
                 "interactive_shell_missing",
-                "The interactive AIShe shell requires zsh, but zsh is not on PATH.",
-                "Install zsh, rerun AIShe, or use `aishe -c`; Bash users can evaluate `aishe init bash`.",
+                format!("The selected AIShe shell requires {shell}, but {shell} is not on PATH."),
+                "Install the selected shell, choose another profile in `aishe settings`, or use `aishe -c`.",
                 None,
             );
             return Ok(aishe::user_error::ErrorNamespace::Cli.exit_code());
         }
-        return aishe::pty::run_zsh(&config, &aishe::cli::history::history_paths(&config).1);
+        return aishe::pty::run_zsh_with_login(
+            &config,
+            &aishe::cli::history::history_paths(&config).1,
+            args.login,
+        );
     }
 
-    let mut executor = Executor::new()?;
+    let selected_profile = std::env::var("AISHE_ZSH_PROFILE")
+        .ok()
+        .unwrap_or_else(|| config.aishe.shell_profile.clone());
+    let mut executor = Executor::new_with_shell((selected_profile == "bash").then_some("bash"))?;
     context::init(executor.shell());
     // The `history` builtin reads the timestamped log (also available in `-c`).
     executor.set_history_log(aishe::cli::history::history_paths(&config).1);
@@ -1289,7 +1322,8 @@ fn run() -> Result<u8> {
         return result;
     }
 
-    // Pipe/script mode: run each line of piped stdin like a `-c` invocation.
+    // The explicit AIShe line protocol preserves per-line agent routing. Plain
+    // piped stdin already ran as a conventional script before initialization.
     if piped_stdin {
         let mut last = 0u8;
         let stdin = std::io::stdin();
@@ -1351,9 +1385,140 @@ fn run_fast_shell_command(command: &str, forced: bool) -> Result<u8> {
     if forced {
         aishe::cli::runtime::print_forced_shell_cue();
     }
-    let mut executor = Executor::new()?;
-    executor.set_history_log(aishe::cli::history::fast_history_log()?);
-    Ok(executor.run(command) as u8)
+    let (history, profile) = aishe::cli::history::fast_shell_context()?;
+    let preferred = (profile == "bash").then_some("bash");
+    Ok(aishe::executor::run_shell_once_with_shell(command, Some(&history), preferred)? as u8)
+}
+
+fn run_script_input(args: &Args) -> Result<Option<u8>> {
+    let shell_options = args.interactive || args.login || args.stdin_script || args.agent_lines;
+    if args.cmd.is_some() {
+        if shell_options || !args.shell_arguments.is_empty() {
+            return Err(aishe::user_error::UserFacing::cli(
+                "shell_options_with_subcommand",
+                "Shell launch options cannot be combined with an AIShe subcommand.",
+                "Use `aishe -i`, `aishe -l`, or the subcommand separately.",
+            ));
+        }
+        return Ok(None);
+    }
+    let hook = args.hook_cli.is_some()
+        || args.suggest_line.is_some()
+        || args.yolo_line.is_some()
+        || args.auto_line.is_some()
+        || args.fix_line.is_some()
+        || args.edit_line.is_some()
+        || args.background_task.is_some()
+        || args.background_workflow.is_some()
+        || args.record_failure.is_some()
+        || args.accept_yolo;
+    if hook {
+        if shell_options || !args.shell_arguments.is_empty() {
+            return Err(aishe::user_error::UserFacing::cli(
+                "shell_options_with_hook",
+                "Shell launch options cannot be combined with an AIShe hook invocation.",
+                "Run the shell command and AIShe hook separately.",
+            ));
+        }
+        return Ok(None);
+    }
+    if args.agent_lines {
+        if !args.shell_arguments.is_empty() {
+            return Err(aishe::user_error::UserFacing::cli(
+                "agent_lines_arguments",
+                "The --agent-lines protocol does not accept a script filename or arguments.",
+                "Pipe AIShe input lines to `aishe --agent-lines`.",
+            ));
+        }
+        return Ok(None);
+    }
+    if args.interactive {
+        if !args.shell_arguments.is_empty() {
+            return Err(aishe::user_error::UserFacing::cli(
+                "interactive_script",
+                "An interactive AIShe session does not accept a script filename.",
+                "Use `aishe -i` for a session or `aishe SCRIPT` for a script.",
+            ));
+        }
+        return Ok(None);
+    }
+    let script_command = args.command.is_some() && (args.login || !args.shell_arguments.is_empty());
+    let script_file =
+        args.command.is_none() && !args.stdin_script && !args.shell_arguments.is_empty();
+    let script_stdin = args.command.is_none()
+        && !script_file
+        && (args.stdin_script || !std::io::stdin().is_terminal());
+    if !script_command && !script_file && !script_stdin {
+        return Ok(None);
+    }
+    if args.mode.is_some()
+        || args.provider.is_some()
+        || args.model.is_some()
+        || args.connection.is_some()
+    {
+        return Err(aishe::user_error::UserFacing::cli(
+            "ai_options_with_script",
+            "AI selection flags do not apply to conventional shell scripts.",
+            "Use `aishe -c LINE` or `aishe --agent-lines` for agent routing.",
+        ));
+    }
+    // A saved Bash adoption choice also controls the script interpreter. A bad
+    // AI configuration must not take away otherwise ordinary script execution.
+    let profile = std::env::var("AISHE_ZSH_PROFILE")
+        .ok()
+        .filter(|profile| matches!(profile.as_str(), "clean" | "personal" | "bash"))
+        .or_else(|| {
+            Config::load_quiet()
+                .ok()
+                .flatten()
+                .map(|config| config.aishe.shell_profile)
+        });
+    let shell = if profile.as_deref() == Some("bash") {
+        aishe::executor::which("bash").context("the saved Bash profile requires Bash on PATH")?
+    } else {
+        aishe::executor::which("zsh")
+            .or_else(|| aishe::executor::which("bash"))
+            .context("shell scripts require zsh or Bash on PATH")?
+    };
+    let mut command = std::process::Command::new(shell);
+    if args.login {
+        command.arg("-l");
+    }
+    if script_command {
+        let line = args.command.as_deref().expect("script command is present");
+        if !args.login && dispatcher::fast_shell_line(line).is_none() {
+            return Err(aishe::user_error::UserFacing::cli(
+                "agent_positional_arguments",
+                "Positional shell arguments require an unambiguous shell command.",
+                "Use `aishe -lc SCRIPT NAME ARG...` for conventional shell execution.",
+            ));
+        }
+        let line = if args.login {
+            line.to_owned()
+        } else {
+            dispatcher::fast_shell_line(line).expect("shell route was checked")
+        };
+        command.arg("-c").arg(line).args(&args.shell_arguments);
+    } else if script_file {
+        let file = std::path::Path::new(&args.shell_arguments[0]);
+        if !file.is_file() {
+            return Err(aishe::user_error::UserFacing::cli(
+                "script_not_found",
+                format!("Shell script does not exist: {}", file.display()),
+                "Use `aishe --help` for commands, or provide an existing script filename.",
+            ));
+        }
+        command.arg("--").args(&args.shell_arguments);
+    } else {
+        command.arg("-s").arg("--").args(&args.shell_arguments);
+    }
+    let status = command.status().context("cannot launch the script shell")?;
+    use std::os::unix::process::ExitStatusExt;
+    Ok(Some(
+        status
+            .code()
+            .unwrap_or_else(|| 128 + status.signal().unwrap_or(1)) as u8,
+    ))
 }
 
 fn resolve_agent(options: &AgentArgs, config: &Config) -> Result<Option<ResolvedAgent>> {

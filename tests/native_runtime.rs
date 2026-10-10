@@ -100,6 +100,7 @@ struct Script {
     messages: Mutex<Vec<Vec<Msg>>>,
     meter: Arc<UsageMeter>,
     cancel_on_call: Option<Arc<AtomicBool>>,
+    omit_usage: bool,
 }
 
 impl Script {
@@ -110,6 +111,7 @@ impl Script {
             messages: Mutex::new(Vec::new()),
             meter: Arc::new(UsageMeter::default()),
             cancel_on_call: None,
+            omit_usage: false,
         }
     }
 }
@@ -127,7 +129,9 @@ impl Provider for Script {
     ) -> Result<Completion, ProviderError> {
         self.calls.fetch_add(1, Ordering::SeqCst);
         self.messages.lock().unwrap().push(messages.to_vec());
-        self.meter.record(20, 10);
+        if !self.omit_usage {
+            self.meter.record(20, 10);
+        }
         if let Some(flag) = &self.cancel_on_call {
             flag.store(true, Ordering::SeqCst);
         }
@@ -608,6 +612,173 @@ fn explicit_unpriced_cost_cap_fails_before_provider_work() {
         let outcome = run(&fixture, &provider, &config, &AtomicBool::new(false));
         assert_eq!(outcome.state, NativeTurnState::Failed);
         assert_eq!(provider.calls.load(Ordering::SeqCst), 0);
+    }
+}
+
+#[test]
+fn native_cost_coverage_is_durable_and_unmetered_capped_turns_start_no_tools() {
+    let _lock = ENV.lock().unwrap();
+    let fixture = Fixture::new();
+    let mut config = fixture.config();
+    config.set_active_model("coverage-fixture".into());
+    let provider = Script::new(vec![final_answer()]);
+    let outcome = run(&fixture, &provider, &config, &AtomicBool::new(false));
+    let unpriced = aishe::tasks::load(&outcome.task_id).unwrap();
+    assert_eq!(unpriced.execution.costed_provider_turns, Some(0));
+    assert!(!unpriced.execution.cost_is_complete());
+    assert!(unpriced.execution.cost_label().starts_with("n/a"));
+    config.pricing.insert(
+        "coverage-fixture".into(),
+        aishe::usage::Price {
+            input: 1.0,
+            output: 2.0,
+        },
+    );
+    let provider = Script::new(vec![final_answer()]);
+    let outcome = run(&fixture, &provider, &config, &AtomicBool::new(false));
+    let priced = aishe::tasks::load(&outcome.task_id).unwrap();
+    assert!(priced.execution.cost_is_complete());
+    assert_eq!(priced.execution.costed_provider_turns, Some(1));
+    assert_eq!(priced.execution.cost_usd, 0.00004);
+    std::env::set_var("AISHE_TASK_MAX_COST_USD", "1");
+    let mut provider = Script::new(vec![completion(vec![write("unmetered", "must-not-exist")])]);
+    provider.omit_usage = true;
+    let outcome = run(&fixture, &provider, &config, &AtomicBool::new(false));
+    assert_eq!(outcome.state, NativeTurnState::BudgetExhausted);
+    assert!(!fixture.root.join("must-not-exist").exists());
+    let saved = aishe::tasks::load(&outcome.task_id).unwrap();
+    assert!(!saved.execution.cost_is_complete());
+    assert_eq!(saved.execution.tool_calls, 0);
+    config.aishe.provider_fallback = vec!["anthropic".into()];
+    let provider = Script::new(vec![final_answer()]);
+    let outcome = run(&fixture, &provider, &config, &AtomicBool::new(false));
+    assert_eq!(outcome.state, NativeTurnState::Failed);
+    assert_eq!(provider.calls.load(Ordering::SeqCst), 0);
+}
+
+#[test]
+fn missing_http_usage_cannot_make_a_priced_native_task_appear_free() {
+    let _lock = ENV.lock().unwrap();
+    let fixture = Fixture::new();
+    std::env::set_var("AISHE_TASK_MAX_COST_USD", "1");
+    let mut config = fixture.config();
+    config.set_active_model("http-coverage-fixture".into());
+    config.pricing.insert(
+        "http-coverage-fixture".into(),
+        aishe::usage::Price {
+            input: 1.0,
+            output: 2.0,
+        },
+    );
+    for transport in ["anthropic", "chat", "responses"] {
+        let mut server = mockito::Server::new();
+        let arguments = json!({"path": "must-not-exist", "content": "unmetered effect"});
+        let (route, response) = match transport {
+            "anthropic" => (
+                "/v1/messages",
+                json!({"content": [{"type": "tool_use", "id": "missing-usage", "name": "write_file", "input": arguments}]}),
+            ),
+            "chat" => (
+                "/v1/chat/completions",
+                json!({"choices": [{"message": {"tool_calls": [{"id": "missing-usage", "type": "function", "function": {"name": "write_file", "arguments": arguments.to_string()}}]}}]}),
+            ),
+            _ => (
+                "/v1/responses",
+                json!({"id": "missing-usage", "output": [{"type": "function_call", "call_id": "missing-usage", "name": "write_file", "arguments": arguments.to_string()}]}),
+            ),
+        };
+        let request = server
+            .mock("POST", route)
+            .with_status(200)
+            .with_body(response.to_string())
+            .expect(1)
+            .create();
+        let provider: Box<dyn Provider> = if transport == "anthropic" {
+            Box::new(aishe::providers::anthropic::AnthropicProvider::new(
+                server.url(),
+                "fixture".into(),
+                "http-coverage-fixture".into(),
+            ))
+        } else {
+            Box::new(
+                aishe::providers::openai_compat::OpenAiProvider::with_options(
+                    server.url(),
+                    "fixture".into(),
+                    "http-coverage-fixture".into(),
+                    if transport == "chat" {
+                        "chat_completions"
+                    } else {
+                        "responses"
+                    },
+                    "auto",
+                ),
+            )
+        };
+        let outcome = yolo::run(
+            "Unmetered native task",
+            provider.as_ref(),
+            &mut fixture.executor(),
+            &config,
+            &AtomicBool::new(false),
+            &SkillRegistry::default(),
+            &McpRegistry::default(),
+            &mut Session::new(false),
+        )
+        .unwrap();
+        assert_eq!(
+            outcome.state,
+            NativeTurnState::BudgetExhausted,
+            "{transport}"
+        );
+        assert!(!fixture.root.join("must-not-exist").exists());
+        assert_eq!(provider.meter().unreported_requests(), 1);
+        let saved = aishe::tasks::load(&outcome.task_id).unwrap();
+        assert!(saved.execution.cost_label().starts_with("n/a"));
+        assert_eq!(saved.execution.tool_calls, 0);
+        request.assert();
+        let mut reported_zero = match transport {
+            "anthropic" => json!({"content": [{"type": "text", "text": "Zero usage reported."}]}),
+            "chat" => json!({"choices": [{"message": {"content": "Zero usage reported."}}]}),
+            _ => {
+                json!({"id": "reported-zero", "output": [{"type": "message", "role": "assistant", "content": [{"type": "output_text", "text": "Zero usage reported."}]}]})
+            }
+        };
+        reported_zero["usage"] = if transport == "chat" {
+            json!({"prompt_tokens": 0, "completion_tokens": 0})
+        } else {
+            json!({"input_tokens": 0, "output_tokens": 0})
+        };
+        let zero_request = server
+            .mock("POST", route)
+            .with_status(200)
+            .with_body(reported_zero.to_string())
+            .expect(1)
+            .create();
+        let outcome = yolo::run(
+            "Reported zero usage",
+            provider.as_ref(),
+            &mut fixture.executor(),
+            &config,
+            &AtomicBool::new(false),
+            &SkillRegistry::default(),
+            &McpRegistry::default(),
+            &mut Session::new(false),
+        )
+        .unwrap();
+        assert_eq!(outcome.state, NativeTurnState::Completed, "{transport}");
+        let saved = aishe::tasks::load(&outcome.task_id).unwrap();
+        assert!(saved.execution.cost_is_complete());
+        assert_eq!(saved.execution.costed_provider_turns, Some(1));
+        assert!(saved
+            .execution
+            .cost_label()
+            .starts_with("$0.0000 (recorded estimate)"));
+        assert_eq!(
+            provider.meter().unreported_requests(),
+            1,
+            "reported zero was treated as missing usage"
+        );
+        zero_request.assert();
     }
 }
 

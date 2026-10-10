@@ -62,6 +62,51 @@ The release record must name the qualification profile revision, threat-model
 version, route-corpus digest, runtime/plugin pins, OS/shell families, binary
 digest, all skips, and the final owner decision.
 
+## Automated publication gate
+
+The Release workflow checks the exact checkout before creating a draft or tag,
+then rechecks it immediately before publication. It requires a completed,
+successful push run of the configured `ci.yml` workflow for that full commit,
+including every declared required job. Both native platform artifacts must be
+retained and unexpired. Their manifests must match the current version, commit,
+production source digest, qualification revision, runtime/plugin pins, and strict
+benchmark digest. The gate rejects missing/skipped jobs, a stale binary, expired
+artifacts, a diagnostic sample, a relaxed threshold, or a failed startup SLO.
+
+```sh
+GH_TOKEN=... python3 tests/release_gate.py \
+  --repository billiondollarsolo/aishe --commit "$(git rev-parse HEAD)" \
+  --version 1.1.0 --record docs/releases/v1.1.0.qualification.json \
+  --output test-results/release-gate.json
+```
+
+The [v1.1.0 candidate record](releases/v1.1.0.qualification.json) begins at
+`decision: hold`; preparing release files does not approve publication. The
+release owner records a truthful `pass`, `deferred`, or `not_applicable`
+disposition for paid providers, named manual terminals, and long soak. A deferred
+item needs `owner`, `reason`, `risk`, and an ISO-date `expires`. A deterministic
+supported-platform CI failure cannot be deferred through this record.
+
+All dispositions bind `production_source_sha256`, computed by
+`release_evidence.production_source_digest`. The digest covers `src`, `assets`,
+maintained `tests`, Cargo manifest/lock, `build.rs`, `install.sh`, and `ci.yml`.
+Each sorted path and file length delimit its bytes. Git timestamps, build outputs,
+and release prose/JSON are excluded. Changing executable or qualification source
+invalidates even a same-version copied release record.
+
+A passing disposition needs an `evidence` object with `path`, `sha256`, and the
+same `production_source_sha256`. That local JSON file must record its `group`,
+`state: pass`, and source digest. Keep the underlying report and references in
+that evidence file. Missing, failed, unrun, modified or differently sourced
+reports cannot qualify. Manual evidence identifies the actual emulator, version,
+OS and tested interactions; PTY capture alone is insufficient.
+
+After final source edits, refresh the source digest, fill real evidence and
+owned dispositions, and commit the record. Let that exact commit finish CI
+before dispatching Release or pushing its tag. Documentation-only evidence
+updates do not invalidate the production digest, but still require CI for their
+new full commit. No tag or release is created by candidate preparation.
+
 ## Binary rollback
 
 Rollback replaces only program/runtime artifacts unless the user separately
@@ -74,8 +119,8 @@ requests state deletion:
    OpenCode runtime, or install the runtime pinned by the target AIShe binary.
 4. Reinstall the prior verified AIShe package/binary through its original
    package manager.
-5. Run `aishe doctor --json` and `aishe backend verify --live` with the rolled
-   back binary before resuming agent work.
+5. Run `aishe doctor --json` with the rolled-back binary; managed OAuth also
+   requires `aishe backend verify --live` before resuming agent work.
 
 Config migrations are transactional and create timestamped backups, but a
 newer binary may have written fields an older binary does not understand.

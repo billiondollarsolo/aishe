@@ -7,9 +7,9 @@ use std::time::Duration;
 use serde_json::{json, Value};
 
 use super::{
-    provider_http_agent, read_sse, status_is_accepted, stream_post, usage_from_value, Completion,
-    HttpResponse, Msg, Provider, ProviderError, ResponseFormat, ToolCall, ToolDef,
-    MAX_PROVIDER_BODY_BYTES, MAX_TOKENS,
+    provider_http_agent, read_sse, status_is_accepted, stream_post, usage_from_value,
+    usage_is_reported, Completion, HttpResponse, Msg, Provider, ProviderError, ResponseFormat,
+    ToolCall, ToolDef, MAX_PROVIDER_BODY_BYTES, MAX_TOKENS,
 };
 use crate::usage::UsageMeter;
 
@@ -102,7 +102,7 @@ impl AnthropicProvider {
     fn post(&self, body: &Value) -> Result<Value, ProviderError> {
         let resp = post_with_retry(&self.agent, &self.endpoint(), &self.api_key, body)?;
         let (i, o) = usage_from_value(&resp);
-        self.meter.record(i, o);
+        self.meter.record_reported(i, o, usage_is_reported(&resp));
         Ok(resp)
     }
 
@@ -209,6 +209,7 @@ impl Provider for AnthropicProvider {
         // tool_use blocks keyed by content index: (id, name, partial_json).
         let mut blocks: BTreeMap<u64, (String, String, String)> = BTreeMap::new();
         let (mut input, mut output) = (0u64, 0u64);
+        let (mut input_reported, mut output_reported) = (false, false);
         read_sse(resp, |data| {
             let v: Value = match serde_json::from_str(data) {
                 Ok(v) => v,
@@ -221,6 +222,7 @@ impl Provider for AnthropicProvider {
                         .and_then(|n| n.as_u64())
                     {
                         input = n;
+                        input_reported = true;
                     }
                 }
                 Some("content_block_start") => {
@@ -268,12 +270,14 @@ impl Provider for AnthropicProvider {
                 Some("message_delta") => {
                     if let Some(n) = v.pointer("/usage/output_tokens").and_then(|n| n.as_u64()) {
                         output = n;
+                        output_reported = true;
                     }
                 }
                 _ => {}
             }
         })?;
-        self.meter.record(input, output);
+        self.meter
+            .record_reported(input, output, input_reported && output_reported);
 
         let tool_calls = blocks
             .into_values()
@@ -311,6 +315,7 @@ impl Provider for AnthropicProvider {
         )?;
         let mut full = String::new();
         let (mut input, mut output) = (0u64, 0u64);
+        let (mut input_reported, mut output_reported) = (false, false);
         read_sse(resp, |data| {
             if let Some(t) = Self::text_delta(data) {
                 full.push_str(&t);
@@ -319,15 +324,18 @@ impl Provider for AnthropicProvider {
             // `message_start` carries input_tokens; `message_delta` the running
             // output_tokens. Capture both for the meter.
             if let Some((i, o)) = Self::stream_usage(data) {
-                if i > 0 {
+                if let Some(i) = i {
                     input = i;
+                    input_reported = true;
                 }
-                if o > 0 {
+                if let Some(o) = o {
                     output = o;
+                    output_reported = true;
                 }
             }
         })?;
-        self.meter.record(input, output);
+        self.meter
+            .record_reported(input, output, input_reported && output_reported);
         Ok(full)
     }
 
@@ -351,21 +359,15 @@ impl AnthropicProvider {
 
     /// Extract `(input, output)` token counts from `message_start` /
     /// `message_delta` SSE events (either may be 0/absent).
-    fn stream_usage(data: &str) -> Option<(u64, u64)> {
+    fn stream_usage(data: &str) -> Option<(Option<u64>, Option<u64>)> {
         let v: Value = serde_json::from_str(data).ok()?;
         let usage = match v.get("type").and_then(|t| t.as_str()) {
             Some("message_start") => v.get("message")?.get("usage")?,
             Some("message_delta") => v.get("usage")?,
             _ => return None,
         };
-        let i = usage
-            .get("input_tokens")
-            .and_then(|n| n.as_u64())
-            .unwrap_or(0);
-        let o = usage
-            .get("output_tokens")
-            .and_then(|n| n.as_u64())
-            .unwrap_or(0);
+        let i = usage.get("input_tokens").and_then(|n| n.as_u64());
+        let o = usage.get("output_tokens").and_then(|n| n.as_u64());
         Some((i, o))
     }
 }
@@ -459,6 +461,22 @@ fn extract_error_message(mut resp: HttpResponse) -> String {
 mod tests {
     use super::*;
     use crate::providers::AssistantMsg;
+
+    #[test]
+    fn stream_usage_preserves_missing_fields_and_reported_zeroes() {
+        assert_eq!(
+            AnthropicProvider::stream_usage(
+                r#"{"type":"message_start","message":{"usage":{"input_tokens":0}}}"#
+            ),
+            Some((Some(0), None))
+        );
+        assert_eq!(
+            AnthropicProvider::stream_usage(
+                r#"{"type":"message_delta","usage":{"output_tokens":0}}"#
+            ),
+            Some((None, Some(0)))
+        );
+    }
 
     #[test]
     fn builds_tool_result_as_user_block() {

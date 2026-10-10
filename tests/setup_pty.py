@@ -262,6 +262,7 @@ def setup_to_provider(shell, install_runtime=False):
             "Review or change setup choices",
             "Fresh install",
             "Account",
+            "Shell experience",
             "› 1) Install",
         ],
         timeout=30,
@@ -270,6 +271,10 @@ def setup_to_provider(shell, install_runtime=False):
         shell.menu(2)
     elif welcome == "Continue setup":
         shell.line()
+    shell.expect("Shell experience")
+    shell.menu(2)  # explicitly qualify the clean native frontend
+    shell.expect("AI connection")
+    shell.menu(2)  # connect now; the default Connect later has its own probe
     reached = shell.expect_any(
         [
             "Account",
@@ -1156,6 +1161,10 @@ def native_setup_preserves_required_workspace_isolation():
         env["AISHE_POLICY_FILE"] = policy
         shell = Pty([BINARY, "setup"], env)
         try:
+            shell.expect("Shell experience")
+            shell.menu(2)
+            shell.expect("AI connection")
+            shell.menu(2)
             reached = shell.expect_any(["Linux workspace isolation", "Account"])
             shell.drain()
             if reached == "Linux workspace isolation":

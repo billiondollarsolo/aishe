@@ -18,7 +18,7 @@ use serde::{Deserialize, Serialize};
 
 use super::{Record, State, StepState};
 
-const CACHE_SCHEMA: u32 = 2;
+const CACHE_SCHEMA: u32 = 3;
 const MAX_ENTRIES: usize = 4096;
 const MAX_CACHE_BYTES: u64 = 8 * 1024 * 1024;
 const MAX_RECORD_BYTES: u64 = 1024 * 1024;
@@ -65,6 +65,8 @@ pub struct TaskEntry {
     pub pinned: bool,
     pub archived: bool,
     pub reviewed: bool,
+    #[serde(default)]
+    pub seen: bool,
     pub result_revision: String,
     pub metadata_revision: u64,
     pub pending_requests: usize,
@@ -99,8 +101,14 @@ impl TaskEntry {
 
     pub(super) fn with_metadata(record: &Record, metadata: super::metadata::TaskMetadata) -> Self {
         let result_revision = super::metadata::result_revision(record);
-        let reviewed = !result_revision.is_empty()
+        let legacy_reviewed = !result_revision.is_empty()
             && metadata.reviewed_revision.as_deref() == Some(result_revision.as_str());
+        let reviewed = legacy_reviewed && metadata.reviewed_explicit;
+        // Existing implicit reviews retain their quiet status as Seen. New
+        // details visits never claim that the user explicitly reviewed work.
+        let seen = legacy_reviewed
+            || (!result_revision.is_empty()
+                && metadata.seen_revision.as_deref() == Some(result_revision.as_str()));
         let pending_requests = record
             .mailbox
             .requests
@@ -128,6 +136,7 @@ impl TaskEntry {
                 && pending_requests == 0
                 && metadata.archived_revision.as_deref() == Some(result_revision.as_str()),
             reviewed,
+            seen,
             result_revision,
             metadata_revision: metadata.revision,
             pending_requests,
@@ -207,8 +216,8 @@ struct SeenRevision {
     result_revision: String,
 }
 
-/// Compatibility for old per-shell files. Current reviews persist in metadata;
-/// merely listing tasks never marks them as reviewed.
+/// Compatibility for old per-shell files. Current seen and reviewed status
+/// persists in metadata; merely listing tasks acknowledges nothing.
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct SeenTasks {
     #[serde(default)]
@@ -217,7 +226,8 @@ pub struct SeenTasks {
 
 impl SeenTasks {
     pub fn is_seen(&self, entry: &TaskEntry) -> bool {
-        entry.reviewed
+        entry.seen
+            || entry.reviewed
             || self.revisions.get(&entry.id).is_some_and(|revision| {
                 !entry.result_revision.is_empty()
                     && revision.result_revision == entry.result_revision
@@ -352,7 +362,7 @@ pub fn acknowledge_task(entry: &TaskEntry, path: &Path) -> Result<()> {
     if !super::metadata::is_terminal(entry.state) {
         return Ok(());
     }
-    super::metadata::mark_task_reviewed(entry)?;
+    super::metadata::mark_task_seen(entry)?;
     let parent = path.parent().context("seen file has no parent")?;
     fs::create_dir_all(parent)?;
     let lock_path = path.with_extension("lock");
@@ -544,6 +554,7 @@ fn replace_entry(entries: &mut Vec<TaskEntry>, mut new: TaskEntry) {
             new.pinned = previous.pinned;
             new.archived = previous.archived && previous.result_revision == new.result_revision;
             new.reviewed = previous.reviewed && previous.result_revision == new.result_revision;
+            new.seen = previous.seen && previous.result_revision == new.result_revision;
             new.metadata_revision = previous.metadata_revision;
         }
         entries.remove(index);

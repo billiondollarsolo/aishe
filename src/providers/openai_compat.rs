@@ -13,9 +13,9 @@ use std::time::Duration;
 use serde_json::{json, Value};
 
 use super::{
-    provider_http_agent, read_sse, status_is_accepted, stream_post, usage_from_value, Completion,
-    HttpResponse, Msg, Provider, ProviderError, ResponseFormat, ToolCall, ToolDef,
-    MAX_PROVIDER_BODY_BYTES, MAX_TOKENS,
+    provider_http_agent, read_sse, status_is_accepted, stream_post, usage_from_value,
+    usage_is_reported, Completion, HttpResponse, Msg, Provider, ProviderError, ResponseFormat,
+    ToolCall, ToolDef, MAX_PROVIDER_BODY_BYTES, MAX_TOKENS,
 };
 use crate::usage::UsageMeter;
 
@@ -208,7 +208,7 @@ impl OpenAiProvider {
     fn post_chat(&self, body: &Value) -> Result<Value, ProviderError> {
         let resp = post_with_retry(&self.agent, &self.chat_endpoint(), &self.api_key, body)?;
         let (i, o) = usage_from_value(&resp);
-        self.meter.record(i, o);
+        self.meter.record_reported(i, o, usage_is_reported(&resp));
         Ok(resp)
     }
 
@@ -301,7 +301,8 @@ impl OpenAiProvider {
         let response =
             post_with_retry(&self.agent, &self.responses_endpoint(), &self.api_key, body)?;
         let (input, output) = usage_from_value(&response);
-        self.meter.record(input, output);
+        self.meter
+            .record_reported(input, output, usage_is_reported(&response));
         Ok(response)
     }
 
@@ -433,7 +434,8 @@ impl OpenAiProvider {
             ProviderError::Parse("Responses stream ended without response.completed".into())
         })?;
         let (input, output) = usage_from_value(&response);
-        self.meter.record(input, output);
+        self.meter
+            .record_reported(input, output, usage_is_reported(&response));
         let mut completion = Self::parse_responses_completion(&response)?;
         if completion.text.is_none() && !streamed_text.is_empty() {
             completion.text = Some(streamed_text);
@@ -733,12 +735,14 @@ impl Provider for OpenAiProvider {
         // tool calls keyed by their `index`: (id, name, arguments-fragment).
         let mut calls: BTreeMap<u64, (String, String, String)> = BTreeMap::new();
         let (mut input, mut output) = (0u64, 0u64);
+        let mut usage_reported = false;
         read_sse(resp, |data| {
             let v: Value = match serde_json::from_str(data) {
                 Ok(v) => v,
                 Err(_) => return,
             };
             let (i, o) = usage_from_value(&v);
+            usage_reported |= usage_is_reported(&v);
             if i > 0 {
                 input = i;
             }
@@ -785,7 +789,7 @@ impl Provider for OpenAiProvider {
                 }
             }
         })?;
-        self.meter.record(input, output);
+        self.meter.record_reported(input, output, usage_reported);
 
         let tool_calls = calls
             .into_values()
@@ -863,6 +867,7 @@ impl Provider for OpenAiProvider {
 
         let mut full = String::new();
         let (mut input, mut output) = (0u64, 0u64);
+        let mut usage_reported = false;
         read_sse(resp, |data| {
             if let Some(t) = Self::content_delta(data) {
                 full.push_str(&t);
@@ -870,6 +875,7 @@ impl Provider for OpenAiProvider {
             }
             if let Ok(v) = serde_json::from_str::<Value>(data) {
                 let (i, o) = usage_from_value(&v);
+                usage_reported |= usage_is_reported(&v);
                 if i > 0 {
                     input = i;
                 }
@@ -878,7 +884,7 @@ impl Provider for OpenAiProvider {
                 }
             }
         })?;
-        self.meter.record(input, output);
+        self.meter.record_reported(input, output, usage_reported);
         Ok(full)
     }
 

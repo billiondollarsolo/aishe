@@ -26,7 +26,7 @@ pub struct FallbackProvider {
     /// Unified meter returned to callers (cost display + budget).
     meter: Arc<UsageMeter>,
     /// Last-seen usage snapshot per chain member, so new usage is folded once.
-    seen: Mutex<Vec<Usage>>,
+    seen: Mutex<Vec<(Usage, u64)>>,
     /// Fallback indices already announced, so the notice prints at most once each.
     announced: Mutex<HashSet<usize>>,
 }
@@ -39,24 +39,27 @@ impl FallbackProvider {
         Self {
             chain,
             meter: Arc::new(UsageMeter::default()),
-            seen: Mutex::new(vec![Usage::default(); n]),
+            seen: Mutex::new(vec![(Usage::default(), 0); n]),
             announced: Mutex::new(HashSet::new()),
         }
     }
 
     /// Fold any new usage recorded by chain member `i` into the unified meter.
     fn sync_usage(&self, i: usize) {
-        let snap = self.chain[i].1.meter().snapshot();
+        let meter = self.chain[i].1.meter();
+        let snap = meter.snapshot();
+        let unreported = meter.unreported_requests();
         let mut seen = self.seen.lock().unwrap_or_else(|e| e.into_inner());
-        let prev = seen[i];
+        let (prev, previously_unreported) = seen[i];
         let din = snap.input.saturating_sub(prev.input);
         let dout = snap.output.saturating_sub(prev.output);
         let dreq = snap.requests.saturating_sub(prev.requests);
         // One provider call records one request; fold the token delta onto it.
         if dreq > 0 || din > 0 || dout > 0 {
-            self.meter.record(din, dout);
+            self.meter
+                .record_reported(din, dout, unreported == previously_unreported);
         }
-        seen[i] = snap;
+        seen[i] = (snap, unreported);
     }
 
     /// Print a one-time notice that we are moving from chain member `from` to the
@@ -143,6 +146,21 @@ impl Provider for FallbackProvider {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn folded_usage_retains_unknown_coverage_without_counting_it_twice() {
+        let source = Ok2::mk("ok", 0, 0);
+        let fallback = FallbackProvider::new(vec![("first".into(), source.clone())]);
+        source.meter().record_reported(0, 0, false);
+        fallback.sync_usage(0);
+        fallback.sync_usage(0);
+        assert_eq!(fallback.meter().unreported_requests(), 1);
+        assert_eq!(fallback.meter().snapshot().requests, 1);
+        source.meter().record(0, 0);
+        fallback.sync_usage(0);
+        assert_eq!(fallback.meter().unreported_requests(), 1);
+        assert_eq!(fallback.meter().snapshot().requests, 2);
+    }
 
     /// A test double that always succeeds, recording fixed token usage.
     struct Ok2 {

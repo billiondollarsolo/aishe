@@ -1,19 +1,18 @@
 # Installation
 
-aishe ships as a native Rust binary plus a private, compatibility-pinned
-OpenCode agent runtime (LEGACY / heavy specialist only). **Lean interactive default needs no OpenCode payload** — known commands and NL use in-process providers. The OpenCode runtime is lazy: ordinary zsh commands never start
-it, and its per-user supervisor exits when idle. The install script or first
-setup downloads the exact version supported by the AIShe build, verifies its
-size, SHA-256, executable version, license, and trusted integration, and keeps it
-inside AIShe's data directory. You never install or configure OpenCode
-separately.
+AIShe ships as a native Rust binary. Ordinary shell commands work without an
+account, provider connection, or OpenCode payload. API keys and local endpoints
+use its included native agent. Subscription OAuth is an explicit legacy choice:
+setup installs a private, compatibility-pinned OpenCode runtime only when you
+choose that transport. Existing runtime versions are preserved during updates.
 
 ## Requirements
 
 - Rust 1.88 or newer (only to build from source; the prebuilt binaries need no
   toolchain). Install from [rustup.rs](https://rustup.rs).
 - **`zsh`** for the interactive shell: aishe drives your real zsh in a PTY. The
-  installer ensures it; on a manual install add it with your package manager
+  installer detects it and changes system packages only with authorization;
+  on a manual install add it with your package manager
   (`apt install zsh`, etc.). `bash` is enough for the non-interactive paths
   (`aishe -c …` and piped input).
 - **`bubblewrap`** is the supported Linux OS-isolation boundary for
@@ -23,8 +22,8 @@ separately.
   offers to install it only after explicit consent. `.deb` and `.rpm` packages
   declare it as a recommended/weak dependency rather than a hard dependency
   because some containers cannot use its namespaces.
-- A network-reachable LLM endpoint and either an API key (`aishe auth set` or an
-  environment override) or a supported OpenAI/xAI subscription OAuth login
+- For AI requests, a network-reachable LLM endpoint and either an API key
+  (`aishe auth set` or an environment override) or a supported OpenAI/xAI subscription OAuth login
   (`aishe auth login`). See [Providers](providers.md).
 - Platforms: macOS (arm64 and x86_64) and Linux (x86_64 and arm64). WSL is
   currently an unqualified research target, not a supported platform tier;
@@ -33,26 +32,28 @@ separately.
 
 ## Quick install (Linux and macOS)
 
-The fastest path is the install script. It detects your OS and CPU, downloads
-the right AIShe binary and exact managed runtime, verifies both, performs a live
-authenticated backend health check, and only then atomically activates the
-binary. Linux uses the fully-static musl build, so there are no glibc
-requirements:
+The installer detects your OS and CPU, downloads the latest **published** AIShe
+binary, verifies its required SHA-256 checksum and version, then atomically
+activates it. Linux uses the static musl build. Current source can be ahead of
+the public release; inspect `aishe --version` when comparing features.
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/billiondollarsolo/aishe/main/install.sh | sh -s -- --setup
+curl -fsSL https://raw.githubusercontent.com/billiondollarsolo/aishe/main/install.sh | sh -s -- --launch
 ```
 
-This runs guided setup after installation, where sign-in happens; on an upgrade
-the installer goes straight to setup instead of suggesting `aishe doctor`. If no
-terminal is attached, the install still succeeds and prints the command to run
-setup yourself. Omit `-s -- --setup` for an upgrade or a binary/runtime-only
-install.
+`--launch` opens the resolved executable through your controlling terminal even
+when its directory is outside `PATH`. The path and PATH guidance appear before
+setup. If no terminal is attached, installation still succeeds and prints the
+absolute launch command. Omit `--launch` for an unattended install or upgrade.
+Use `--setup --launch` to run guided setup before opening the shell; setup also
+offers **Connect later**.
 
-Checksum verification is mandatory for both artifacts. If the runtime cannot be
-downloaded, extracted, version-checked, or live-verified, an existing AIShe
-binary is not replaced. Runtime versions live side by side, so a failed new
-binary activation does not invalidate the runtime expected by the old binary.
+The default native install downloads no optional runtime. To preinstall the
+pinned legacy runtime, pass `--backend` or `AISHE_INSTALL_BACKEND=1`. That explicit
+path verifies its archive, version and authenticated health before replacing a
+working AIShe executable. An offline or failed runtime install leaves the old
+binary intact. Runtime versions live side by side. `AISHE_SKIP_BACKEND=1` remains
+a compatibility recovery override and wins over an opt-in.
 
 The script also ensures **zsh** is installed (best effort, via your system
 package manager), because aishe's interactive shell drives your real zsh in a
@@ -101,15 +102,16 @@ AISHE_VERSION=vX.Y.Z AISHE_BIN_DIR="$HOME/.local/bin" \
 Installer/runtime controls for mirrors, offline systems, and managed images:
 
 ```sh
-AISHE_RUNTIME_BASE_URL=https://mirror.example/aishe/runtime ./install.sh
-AISHE_RUNTIME_FILE=/media/opencode-1.18.27.tar.gz ./install.sh
-AISHE_SKIP_BACKEND=1 ./install.sh       # binary-only recovery/development
+AISHE_RUNTIME_BASE_URL=https://mirror.example/aishe/runtime ./install.sh --backend
+AISHE_RUNTIME_FILE=/media/opencode-1.18.27.tar.gz ./install.sh --backend
+AISHE_SKIP_BACKEND=1 ./install.sh       # compatible binary-only recovery
 AISHE_SKIP_ZSH=1 ./install.sh
 ```
 
-The embedded compatibility checksum is still enforced for a mirror or local
-archive. `AISHE_SKIP_BACKEND=1` is a recovery/development override; normal AI
-turns require the managed runtime or an allowed pre-admission native fallback.
+The embedded compatibility checksum is still enforced for an explicitly
+selected runtime mirror or local archive. Native AI turns require no managed
+runtime. The optional man page is written to `~/.local/share/man/man1`; use
+`AISHE_MAN_DIR` to choose its destination or `AISHE_SKIP_MAN=1` to omit it.
 
 ## Linux packages (.deb / .rpm)
 
@@ -157,25 +159,44 @@ Each tagged release attaches per-platform tarballs (and `.sha256` checksums):
 The `-musl` builds are fully static and have no glibc version requirement, which
 makes them the most portable choice on Linux (and what the install script uses).
 
-With [cargo-binstall](https://github.com/cargo-bins/cargo-binstall) (no Rust build
-needed, just the installer):
+The default crates.io `cargo binstall aishe` path is not currently published.
+Use the installer or packages above, or build from this checkout. The package's
+binstall metadata is prepared for a future registry publication.
+
+For a manual tarball install, verify its checksum before extraction:
 
 ```sh
-cargo binstall aishe
-```
-
-Or download and install the tarball for your platform by hand:
-
-```sh
-target=x86_64-unknown-linux-musl   # see the table above
-curl -fsSL -O "https://github.com/billiondollarsolo/aishe/releases/latest/download/aishe-$target.tar.gz"
-tar -xzf "aishe-$target.tar.gz"
+target=x86_64-unknown-linux-musl
+asset="aishe-$target.tar.gz"
+base=https://github.com/billiondollarsolo/aishe/releases/latest/download
+curl -fsSL -O "$base/$asset"
+curl -fsSL -O "$base/$asset.sha256"
+shasum -a 256 -c "$asset.sha256"
+tar -xzf "$asset"
 sudo install -m 0755 aishe /usr/local/bin/aishe
 ```
 
 The repository contains a [Homebrew formula template](../packaging/aishe.rb) for
 maintainers. It is not a supported install path until published in a tap with
 release checksums.
+
+## Reversible terminal activation
+
+Open AIShe once before enabling it in every terminal. These commands show the
+proposed startup file and guarded native launch block before writing:
+
+```sh
+aishe activate zsh              # preview ~/.zshrc
+# Or: aishe activate bash       # preview ~/.bashrc
+aishe activate zsh --apply      # private backup, then apply the reviewed block
+aishe activate zsh --remove     # remove only the marked block
+```
+
+`--rcfile PATH` selects a custom startup file; symlinks resolve to their existing
+destination. `--json` reports the same plan for automation. The guarded launch
+prevents nested activation when AIShe loads your personal startup file. Removing
+it preserves surrounding user edits. Activation changes no `chsh` setting or
+`/etc/shells` entry; exiting returns to the parent shell.
 
 ## Shell completions
 
@@ -240,16 +261,18 @@ sudo install -m 0755 target/release/aishe /usr/local/bin/aishe
 ## Keeping it up to date
 
 When installed with `cargo install --path .`, pull the latest source, reinstall,
-then let the new binary verify/install its compatible runtime:
+and reinstall. Native use needs no runtime update:
 
 ```sh
 git pull
-cargo install --path . --force
-aishe backend install
-aishe backend verify --live
+cargo install --path . --force --locked
+aishe doctor
 ```
 
-Re-running the install script is also an in-place binary/runtime update. It does
+For managed subscription OAuth, explicitly run `aishe backend install` and
+`aishe backend verify --live` to install and verify the new compatibility pin.
+
+Re-running the install script is also an in-place binary update. It does
 not rerun setup unless you pass `--setup`, and never removes user state.
 
 ## Uninstall

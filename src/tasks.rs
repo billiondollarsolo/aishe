@@ -66,13 +66,60 @@ impl From<Usage> for UsageSummary {
 /// Cumulative native execution, carried across every checkpoint continuation.
 /// Reservations are recorded before effects so interruption cannot replenish a
 /// tool or network allowance by starting another process.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ExecutionCounters {
     pub provider_turns: u32,
     pub tool_calls: u32,
     pub network_calls: u32,
     pub elapsed_ms: u64,
     pub cost_usd: f64,
+    /// Provider reservations for which both usage and an exact model price were
+    /// recorded. Missing on older checkpoints: their total is unverified.
+    #[serde(default)]
+    pub costed_provider_turns: Option<u32>,
+}
+
+impl Default for ExecutionCounters {
+    fn default() -> Self {
+        Self {
+            provider_turns: 0,
+            tool_calls: 0,
+            network_calls: 0,
+            elapsed_ms: 0,
+            cost_usd: 0.0,
+            costed_provider_turns: Some(0),
+        }
+    }
+}
+
+impl ExecutionCounters {
+    pub fn cost_is_complete(&self) -> bool {
+        self.costed_provider_turns == Some(self.provider_turns)
+            && self.cost_usd.is_finite()
+            && self.cost_usd >= 0.0
+    }
+
+    /// Cost is an estimate from recorded token usage, never a billing receipt.
+    pub fn cost_label(&self) -> String {
+        if self.cost_is_complete() {
+            format!("${:.4} (recorded estimate)", self.cost_usd)
+        } else if self.cost_usd.is_finite() && self.cost_usd > 0.0 {
+            let coverage = self.costed_provider_turns.map_or_else(
+                || "older usage unverified".into(),
+                |turns| format!("{turns}/{} turns priced", self.provider_turns),
+            );
+            format!("partial ${:.4} · {coverage}", self.cost_usd)
+        } else {
+            "n/a · price or usage unavailable".into()
+        }
+    }
+}
+
+fn unverified_execution_counters() -> ExecutionCounters {
+    ExecutionCounters {
+        costed_provider_turns: None,
+        ..ExecutionCounters::default()
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -107,7 +154,7 @@ pub struct Record {
     pub pending_tool: Option<PendingTool>,
     #[serde(default)]
     pub usage: UsageSummary,
-    #[serde(default)]
+    #[serde(default = "unverified_execution_counters")]
     pub execution: ExecutionCounters,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub execution_limits: Option<crate::agent::native::NativeLimits>,
@@ -1134,6 +1181,42 @@ mod tests {
     use super::*;
 
     #[test]
+    fn legacy_and_partial_costs_never_appear_as_a_verified_zero() {
+        let legacy: ExecutionCounters = serde_json::from_value(serde_json::json!({
+            "provider_turns": 2, "tool_calls": 0, "network_calls": 0,
+            "elapsed_ms": 1, "cost_usd": 0.0
+        }))
+        .unwrap();
+        assert!(!legacy.cost_is_complete());
+        assert!(legacy.cost_label().starts_with("n/a"));
+        let partial = ExecutionCounters {
+            provider_turns: 2,
+            cost_usd: 0.2,
+            costed_provider_turns: Some(1),
+            ..ExecutionCounters::default()
+        };
+        assert!(!partial.cost_is_complete());
+        assert!(partial.cost_label().contains("partial $0.2000"));
+        assert!(partial.cost_label().contains("1/2 turns priced"));
+        let saved: ExecutionCounters =
+            serde_json::from_slice(&serde_json::to_vec(&partial).unwrap()).unwrap();
+        assert_eq!(saved, partial);
+        let free = ExecutionCounters {
+            costed_provider_turns: Some(2),
+            cost_usd: 0.0,
+            ..partial
+        };
+        assert!(free.cost_is_complete());
+        assert!(free.cost_label().contains("$0.0000 (recorded estimate)"));
+        let task = Active::start(&Config::default(), Path::new("/tmp"), "old task");
+        let mut old = serde_json::to_value(task.record()).unwrap();
+        old.as_object_mut().unwrap().remove("execution");
+        let old: Record = serde_json::from_value(old).unwrap();
+        assert!(!old.execution.cost_is_complete());
+        assert!(old.execution.cost_label().starts_with("n/a"));
+    }
+
+    #[test]
     fn execution_start_is_durable_and_completion_uses_the_actual_result() {
         let mut task = Active::start(&Config::default(), Path::new("/tmp"), "check changes");
         let dir = std::env::temp_dir().join(format!("aishe-evidence-{}", task.id()));
@@ -1504,7 +1587,7 @@ mod tests {
             value.as_object_mut().unwrap().remove(field);
         }
         let old: Record = serde_json::from_value(value).unwrap();
-        assert_eq!(old.execution, ExecutionCounters::default());
+        assert_eq!(old.execution, unverified_execution_counters());
         assert!(old.evidence.is_empty());
         assert_eq!(old.workspace_revision, 0);
         assert_eq!(old.followup_revision, 0);

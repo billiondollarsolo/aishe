@@ -1,0 +1,39 @@
+{
+  "schema_version": 1,
+  "version": "1.1.0",
+  "decision": "hold",
+  "release_owner": "billiondollarsolo",
+  "production_source_sha256": "f9fbb81445880128ebfba770305edebb8a604a919c7c5a6bbcdb33ba3933b232",
+  "qualification_profile_revision": "2026-10-10.1",
+  "prepared_at": "2026-10-10",
+  "published": false,
+  "qualification": {
+    "state": "not_run",
+    "source_commit": null,
+    "ci_run_id": null,
+    "reason": "Final candidate source must be committed and pass the exact-source maintained CI gates."
+  },
+  "dispositions": {
+    "live_providers": {
+      "state": "not_run",
+      "reason": "No final-candidate paid-provider report is recorded. A provider report or a named, expiring risk disposition is required."
+    },
+    "terminal_manual": {
+      "state": "not_run",
+      "reason": "Named graphical terminals need actual manual evidence or a scoped, owned, expiring risk disposition; synthetic PTYs are not manual passes."
+    },
+    "long_soak": {
+      "state": "not_run",
+      "reason": "Record final-candidate long-soak evidence or an owned, expiring disposition separately from bounded deterministic runtime CI."
+    }
+  },
+  "release_holds": [
+    "Final exact-source maintained CI must pass, including original 100-command/10-warmup Linux/macOS startup SLO.",
+    "Unrun external qualification groups need truthful dispositions before publication."
+  ],
+  "baseline_only": {
+    "source_commit": "9219190b663c12b5a402aeab11f32c48e63d868c",
+    "macos_startup_slo": "fail",
+    "note": "Prior main review is historical evidence, not qualification of the 1.1.0 candidate."
+  }
+}

@@ -17,6 +17,7 @@ pub struct UsageMeter {
     input: AtomicU64,
     output: AtomicU64,
     requests: AtomicU64,
+    unreported_requests: AtomicU64,
 }
 
 impl UsageMeter {
@@ -25,6 +26,19 @@ impl UsageMeter {
         self.input.fetch_add(input, Ordering::Relaxed);
         self.output.fetch_add(output, Ordering::Relaxed);
         self.requests.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// A response without complete usage is still a request, but zero-filled
+    /// missing fields cannot establish its cost.
+    pub fn record_reported(&self, input: u64, output: u64, reported: bool) {
+        self.record(input, output);
+        if !reported {
+            self.unreported_requests.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    pub fn unreported_requests(&self) -> u64 {
+        self.unreported_requests.load(Ordering::Relaxed)
     }
 
     /// A point-in-time read of the counters.

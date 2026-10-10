@@ -40,15 +40,15 @@ commands yourself:
 
 ```sh
 aishe agent                                      # guided launcher
-aishe agent 'review this branch and run tests'   # foreground managed session
+aishe agent 'review this branch and run tests'   # foreground native agent
 aishe agent --background --role build \
   --file Cargo.toml --dir src --diff \
   --max-minutes 25 --max-turns 30 --max-cost 1.50 \
   'finish the parser change and validate it'
 ```
 
-Foreground agents use AIShe's existing managed conversation, tools, audit, and
-undo. Background agents use the isolated task controller below. `--scope
+Foreground agents use the native provider loop with durable task checkpoints,
+tools, and recorded evidence. Background agents use the isolated task controller below. `--scope
 workspace` is the default; `--scope host` requests broader policy authority but
 does not bypass policy or protected-environment confirmation. Explicit
 `--connection` and `--model` win over the selected workload role.
@@ -123,6 +123,27 @@ source branch/HEAD, worktree, plan, limits, and terminal state. The raw request
 and bounded 8 MiB log are separate private files. Background children inherit
 only required runtime variables and explicitly configured credential references;
 agent-spawned commands have those credential names removed again.
+
+The task drawer puts the saved model, scope, source/workspace, limits, and actual
+check summary before the agent's response. Its header shows your position in
+the content. Use Up/Down or Page Up/Page Down to scroll, Home/End to reach either
+end, **e** for recorded checks, and **?** for available actions. Long responses
+stay inside this scrollable view, including on narrow terminals.
+
+Opening a finished result marks that exact revision **Seen** and quiets its
+badge across shells. Press **v** or choose **mark reviewed** after inspecting
+the result and checks to record **Reviewed** explicitly. Neither status verifies
+the result or approves applying changes. New results become unread again;
+renaming, pinning, or archiving does not erase their history. Older implicit
+review flags migrate to Seen while retaining their quiet status.
+
+Task cost uses recorded tokens and an exact configured or built-in model price.
+Missing prices, missing provider usage, and older unverified records show
+**n/a** or a **partial** amount. A known zero is displayed only when all provider
+turns have recorded usage and pricing. A positive task cost limit requires one
+fixed priced provider/model, with automatic provider fallbacks disabled. An
+interrupted or unmetered turn with incomplete cost coverage cannot resume or
+start another effect under that cap. These estimates are not provider bills.
 
 Lifecycle operations are explicit and idempotent where possible:
 

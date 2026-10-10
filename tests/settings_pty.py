@@ -131,7 +131,7 @@ def direct_model_and_persistent_sections():
             shell.line("75")
             choose(shell, "Terminal & history", 3)
             choose(shell, "Agent transcript density", 3)
-            choose(shell, "Terminal & history", 8)
+            choose(shell, "Terminal & history", 9)
             choose(shell, "Choose a section", 5)
             choose(shell, "Usage & logging", 2)
             shell.expect("Session budget USD")

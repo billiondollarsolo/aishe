@@ -307,6 +307,10 @@ def browser_views_and_acknowledgement():
         shell.send("Review")
         shell.send("\r")
         shown(shell, "Task details")
+        shown(shell, "Model: anthropic / menu-model")
+        shown(shell, "Scope: host")
+        capture(shell, "Task authority before the response")
+        shell.send("\x1b[F")
         shown(shell, "Used: 1/20 turns")
         shown(shell, "Usage: 12 input")
         shown(shell, "NATIVE_RESULT_PROOF")
@@ -334,7 +338,8 @@ def browser_views_and_acknowledgement():
         badge = probe(shell, fixture.root)[3]
         assert "1 ready" in badge and "2 ready" not in badge, "viewed completion was not acknowledged"
         metadata = json.loads((fixture.data / "background-tasks" / task_id / "metadata.json").read_text())
-        assert metadata.get("reviewed_revision"), "review did not persist the exact result revision"
+        assert metadata.get("seen_revision"), "opening did not persist the exact seen revision"
+        assert not metadata.get("reviewed_revision"), "opening silently marked the result reviewed"
         assert fixture.persisted(task_id)["state"] == "completed", "viewing changed durable task lifecycle"
         shell.send("\x05\r")
         wait_until(shell, lambda: (fixture.root / "browser-effect").exists(), "browser-restored draft effect")
@@ -463,14 +468,15 @@ def personal_theme_and_persistent_review():
             wait_until(second, lambda: "ready" not in probe(second, fixture.root)[3],
                        "review acknowledgement reaches another shell", 10)
             metadata_path = fixture.data / "background-tasks/personal-complete-001/metadata.json"
-            reviewed = json.loads(metadata_path.read_text()).get("reviewed_revision")
-            assert reviewed, "reviewed result revision was not persisted"
+            seen = json.loads(metadata_path.read_text()).get("seen_revision")
+            assert seen, "seen result revision was not persisted"
+            assert not json.loads(metadata_path.read_text()).get("reviewed_revision"), "opening silently reviewed a result"
             restarted = fixture.shell()
             assert restarted.ready()
             assert "ready" not in probe(restarted, fixture.root)[3], "reviewed result reappeared in a new shell"
             fixture.cli("task", "rename", "personal-complete-001", "PERSONAL_NAMED_PROOF")
             fixture.cli("task", "pin", "personal-complete-001")
-            assert json.loads(metadata_path.read_text())["reviewed_revision"] == reviewed
+            assert json.loads(metadata_path.read_text())["seen_revision"] == seen
             assert "ready" not in probe(first, fixture.root)[3], "name or pin resurrected a reviewed result"
             fixture.update("personal-complete-001", error="new revision detail")
             wait_until(first, lambda: "1 ready" in probe(first, fixture.root)[3], "new terminal revision becomes unread", 10)
@@ -561,11 +567,55 @@ def standalone_reconcile_and_wrapped_end():
         fixture.close()
 
 
+
+def long_results_show_authority_scroll_and_honest_cost():
+    fixture = Fixture("long-result-truth")
+    try:
+        for cols in (100, 58, 32):
+            task_id = "long-truth-" + str(cols)
+            fixture.record(task_id, "completed", "LONG_RESULT_TRUTH task")
+            checkpoint_path = fixture.checkpoint(task_id, result="\n".join(
+                "RESULT_LINE_" + str(index) for index in range(40)))
+            shell = fixture.shell(cols=cols, browser=task_id)
+            shown(shell, "Task details")
+            shown(shell, "Model: anthropic")
+            shown(shell, "Scope: host")
+            shown(shell, "Esc")
+            assert "RESULT_LINE_0" not in shell.plain(), "long response displaced authority in first frame"
+            capture(shell, f"Long task authority and scroll cues at {cols} columns")
+            for _ in range(12):
+                if "Cost: n/a" in shell.plain():
+                    break
+                shell.send("\x1b[6~")
+                shell.drain(.1)
+            shown(shell, "Cost: n/a")
+            assert "recorded cost $0.0000" not in shell.plain(), "legacy unknown cost was shown as free"
+            shell.send("\x1b[F")
+            shown(shell, "RESULT_LINE_39")
+            capture(shell, f"Long task result reached with End at {cols} columns")
+            shell.send("\x03")
+            wait_until(shell, lambda: shell.proc.poll() is not None, "long result browser exits")
+            row = json.loads(checkpoint_path.read_text())
+            row["execution"].update(provider_turns=2, cost_usd=0.025, costed_provider_turns=1)
+            atomic_json(checkpoint_path, row)
+            snapshot = fixture.cli("task", "browse", task_id).stdout
+            assert "partial $0.0250" in snapshot and "1/2 turns priced" in snapshot, snapshot
+            assert snapshot.index("Model:") < snapshot.index("Latest response"), snapshot
+            assert snapshot.index("Scope:") < snapshot.index("Latest response"), snapshot
+            assert snapshot.index("Time limit:") < snapshot.index("Latest response"), snapshot
+            assert snapshot.index("Recorded checks:") < snapshot.index("Latest response"), snapshot
+        fixture.assert_quiet()
+        print("  ok   long results retain authority first, narrow scroll cues and End; legacy/partial costs are honest")
+    finally:
+        fixture.close()
+
+
 def run():
     scenarios = [quiet_idle_and_live_badge, browser_views_and_acknowledgement,
                  confirmed_controls, narrow_ctrl_c_and_cli_fallback,
                  personal_theme_and_persistent_review, static_plain_browser,
-                 standalone_reconcile_and_wrapped_end]
+                 standalone_reconcile_and_wrapped_end,
+                 long_results_show_authority_scroll_and_honest_cost]
     failed = []
     for scenario in scenarios:
         try:

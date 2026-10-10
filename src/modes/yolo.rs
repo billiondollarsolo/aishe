@@ -362,6 +362,9 @@ fn run_loop(
             &budget,
         );
     }
+    if budget.requires_cost_accounting() && !config.aishe.provider_fallback.is_empty() {
+        return finish_turn(task, NativeTurnState::Failed, Some("An explicit task cost limit requires one fixed priced provider/model; disable automatic provider fallbacks before starting this task. No provider work was started.".into()), &history, provider, &budget);
+    }
     if budget.requires_cost_accounting()
         && crate::usage::budget_price_for(config.active_model(), &config.pricing).is_none_or(
             |price| {
@@ -476,7 +479,10 @@ fn run_loop(
         }
         task.checkpoint_execution(budget.counters());
         task.ensure_persisted()?;
-        let before = provider.meter().snapshot();
+        let before = (
+            provider.meter().snapshot(),
+            provider.meter().unreported_requests(),
+        );
         let plan = plan_first(input, &ctx, provider, config);
         record_provider_cost(&mut budget, provider, config, before);
         task.checkpoint_execution(budget.counters());
@@ -596,7 +602,10 @@ fn run_loop(
 
         // Stream the assistant's prose live when streaming is on; otherwise wait
         // for the whole turn. `streamed` tracks whether any text was printed.
-        let before = provider.meter().snapshot();
+        let before = (
+            provider.meter().snapshot(),
+            provider.meter().unreported_requests(),
+        );
         let mut streamed = false;
         renderer.render(&AgentEvent::ReasoningStarted);
         let result = if config.aishe.stream && effective_density(config) == "detailed" {
@@ -682,8 +691,8 @@ fn run_loop(
             "yolo",
             config.active_model(),
             &completion_summary(&completion),
-            after.input.saturating_sub(before.input),
-            after.output.saturating_sub(before.output),
+            after.input.saturating_sub(before.0.input),
+            after.output.saturating_sub(before.0.output),
         );
 
         // No tool calls → final answer.
@@ -1684,15 +1693,26 @@ fn record_provider_cost(
     budget: &mut NativeBudget,
     provider: &dyn Provider,
     config: &Config,
-    before: crate::usage::Usage,
+    before: (crate::usage::Usage, u64),
 ) {
     let after = provider.meter().snapshot();
-    if let Some(price) = crate::usage::budget_price_for(config.active_model(), &config.pricing) {
+    if let Some(price) = crate::usage::budget_price_for(config.active_model(), &config.pricing)
+        .filter(|_| config.aishe.provider_fallback.is_empty())
+        .filter(|price| {
+            price.input.is_finite()
+                && price.output.is_finite()
+                && price.input >= 0.0
+                && price.output >= 0.0
+        })
+        .filter(|_| {
+            after.requests > before.0.requests && provider.meter().unreported_requests() == before.1
+        })
+    {
         budget.record_cost(crate::usage::cost(
             crate::usage::Usage {
-                input: after.input.saturating_sub(before.input),
-                output: after.output.saturating_sub(before.output),
-                requests: after.requests.saturating_sub(before.requests),
+                input: after.input.saturating_sub(before.0.input),
+                output: after.output.saturating_sub(before.0.output),
+                requests: after.requests.saturating_sub(before.0.requests),
             },
             price,
         ));
@@ -2188,7 +2208,10 @@ fn plan_first(input: &str, ctx: &str, provider: &dyn Provider, config: &Config) 
     println!("  {}", "planning…".dim());
     let messages = vec![Msg::User(format!("{ctx}\nUser request: {input}"))];
     crate::audit::ai_request("yolo-plan", config.active_model(), input);
-    let before = provider.meter().snapshot();
+    let before = (
+        provider.meter().snapshot(),
+        provider.meter().unreported_requests(),
+    );
     let plan = match provider.complete(PLAN_SYSTEM, &messages, &ResponseFormat::Text) {
         Ok(p) => p,
         Err(e) => {
@@ -2209,8 +2232,8 @@ fn plan_first(input: &str, ctx: &str, provider: &dyn Provider, config: &Config) 
         "yolo-plan",
         config.active_model(),
         &plan,
-        after.input.saturating_sub(before.input),
-        after.output.saturating_sub(before.output),
+        after.input.saturating_sub(before.0.input),
+        after.output.saturating_sub(before.0.output),
     );
     if plan.trim().is_empty() {
         return PlanOutcome::Skip;

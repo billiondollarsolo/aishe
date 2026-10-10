@@ -1,6 +1,6 @@
 [package]
 name = "aishe"
-version = "1.0.0"
+version = "1.1.0"
 edition = "2021"
 rust-version = "1.88"
 description = "AIShe (AI Shell): natural-language-aware shell that runs real zsh for commands and an agent for everything else"
@@ -12,7 +12,9 @@ readme = "README.md"
 keywords = ["shell", "llm", "ai", "repl", "cli"]
 categories = ["command-line-utilities"]
 
-# `cargo binstall aishe` fetches the prebuilt binary from the GitHub release
+# For a future crates.io publication, cargo-binstall can fetch prebuilt GitHub
+# assets. The supported current paths are install.sh/packages or a source build.
+# The metadata maps to the GitHub release
 # artifacts produced by .github/workflows/release.yml (named aishe-<target>.tar.gz
 # with the `aishe` binary at the archive root).
 [package.metadata.binstall]

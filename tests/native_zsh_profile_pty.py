@@ -106,8 +106,52 @@ def producer_contract():
         assert not list(root.glob('state.tmp.*')), 'failed snapshot left a partial file'
 
 
+def login_profiles():
+    """Personal login stages run in order; clean login keeps them isolated."""
+    home, env = environment('native-login-profile', mode='ask', extra={
+        'AISHE_LEAN': '1', 'NO_COLOR': '1', 'AISHE_UNICODE': 'ascii',
+        'AISHE_COMMAND_HINT_SHOWN': '1', 'AISHE_ZSH_PROFILE': 'personal',
+    })
+    root = Path(home)
+    personal = root / 'personal-login'
+    personal.mkdir()
+    trace = root / 'login-trace'
+    (root / '.zshenv').write_text('export PROFILE_ORDER=env\n'
+                                 'print -r -- env >> "$HOME/login-trace"\n'
+                                 'ZDOTDIR="$HOME/personal-login"\n')
+    for filename, stage in (('.zprofile', 'profile'), ('.zshrc', 'rc'), ('.zlogin', 'login')):
+        (personal / filename).write_text('export PROFILE_ORDER="${PROFILE_ORDER}:' + stage + '"\n'
+                                          'print -r -- ' + stage + ' >> "$HOME/login-trace"\n'
+                                          + ('PROMPT="LOGIN> "\n' if stage == 'rc' else ''))
+    (personal / '.zlogout').write_text('print -r -- logout >> "$HOME/login-trace"\n')
+    shell = None
+    try:
+        shell = Pty(env, argv=[binary(), '-l'])
+        assert shell.ready(), shell.plain()[-4000:]
+        shell.send('print -r -- LOGIN_\'\'ORDER=$PROFILE_ORDER ZDOTDIR_\'\'FINAL=$ZDOTDIR\r')
+        assert shell.expect('LOGIN_ORDER=env:profile:rc:login', 4), shell.plain()[-4000:]
+        assert shell.expect('ZDOTDIR_FINAL=' + str(personal), 4), '.zlogin did not restore the real directory'
+        shell.send('exit\r')
+        shell.proc.wait(timeout=5)
+        assert trace.read_text().splitlines() == ['env', 'profile', 'rc', 'login', 'logout']
+        shell.close()
+        shell = None
+        trace.unlink()
+        env['AISHE_ZSH_PROFILE'] = 'clean'
+        shell = Pty(env, argv=[binary(), '-l'])
+        assert shell.ready(), shell.plain()[-4000:]
+        shell.send('exit\r')
+        shell.proc.wait(timeout=5)
+        assert not trace.exists(), 'clean login loaded personal startup or cleanup'
+    finally:
+        if shell is not None:
+            shell.close()
+        shutil.rmtree(home, ignore_errors=True)
+
+
 def run():
     producer_contract()
+    login_profiles()
     home, env = environment('native-profile', zshrc=RC, mode='ask', extra={
         'AISHE_LEAN': '1', 'AISHE_LEGACY_OPENCODE': '0',
         'AISHE_ZSH_PROFILE': 'personal', 'NO_COLOR': '1',

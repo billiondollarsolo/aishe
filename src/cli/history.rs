@@ -42,17 +42,41 @@ pub fn history_paths(config: &Config) -> (std::path::PathBuf, std::path::PathBuf
 
 /// History destination for the direct `-c` fast path. A parent AIShe PTY
 /// exports the exact active file; standalone invocations preserve the existing
-/// first-run, migration, malformed-config, and `share_history=false` contracts.
+/// malformed-config and `share_history=false` contracts. A fresh shell command
+/// needs neither credentials nor a saved configuration.
 /// No provider, plugin, MCP registry, or managed backend is constructed.
 pub fn fast_history_log() -> Result<std::path::PathBuf> {
-    if let Some(path) = std::env::var_os("AISHE_HISTFILE").filter(|path| !path.is_empty()) {
-        return Ok(path.into());
+    fast_shell_context().map(|(history, _)| history)
+}
+
+/// Resolve history and backing shell together. A parent shell supplies both
+/// exact values, avoiding another configuration read for ordinary commands.
+pub fn fast_shell_context() -> Result<(std::path::PathBuf, String)> {
+    let inherited_history = std::env::var_os("AISHE_HISTFILE").filter(|path| !path.is_empty());
+    let inherited_profile = std::env::var("AISHE_ZSH_PROFILE").ok();
+    if let (Some(path), Some(profile)) = (&inherited_history, &inherited_profile) {
+        validate_shell_profile(profile)?;
+        return Ok((path.into(), profile.clone()));
     }
-    let mut config = Config::load_or_init()?;
+    let mut config = Config::load_for_shell_command()?;
     let _project_overlay = std::env::current_dir()
         .ok()
         .and_then(|cwd| config.apply_project_overlay(&cwd));
-    Ok(history_paths(&config).1)
+    let profile = inherited_profile.unwrap_or(config.aishe.shell_profile.clone());
+    validate_shell_profile(&profile)?;
+    Ok((
+        inherited_history
+            .map(Into::into)
+            .unwrap_or_else(|| history_paths(&config).1),
+        profile,
+    ))
+}
+
+fn validate_shell_profile(profile: &str) -> Result<()> {
+    if !matches!(profile, "clean" | "personal" | "bash") {
+        anyhow::bail!("invalid shell profile {profile:?}; choose clean, personal, or bash");
+    }
+    Ok(())
 }
 
 /// The on-disk semantic-history vector store.

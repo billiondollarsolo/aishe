@@ -39,6 +39,7 @@ enum Control {
     Rename,
     Pin,
     Archive,
+    Reviewed,
     Views,
     Actions,
     Foreground,
@@ -310,7 +311,7 @@ impl Browser {
             if let Some(path) = seen {
                 background::acknowledge_task(&details.entry, path)?;
             } else {
-                background::mark_task_reviewed(&details.entry)?;
+                background::mark_task_seen(&details.entry)?;
             }
         }
         self.selected_id = Some(id.into());
@@ -543,11 +544,32 @@ fn frame_lines(browser: &Browser, page: Page, size: (usize, usize)) -> Vec<Strin
         Page::Evidence => "Recorded checks",
         Page::Timeline => "Task timeline",
     };
-    let mut lines = vec![format!("  {title}")];
+    let body = (page != Page::List).then(|| body_rows(browser, page, width));
+    let available = body_viewport(browser, page, size);
+    let offset = body.as_ref().map_or(0, |body| {
+        browser.scroll.min(body.len().saturating_sub(available))
+    });
+    let mut lines = vec![if let Some(body) = &body {
+        let end = (offset + available).min(body.len());
+        format!(
+            "  {title} · {}-{end}/{}{}",
+            offset + 1,
+            body.len(),
+            if end < body.len() {
+                " · more below"
+            } else {
+                ""
+            }
+        )
+    } else {
+        format!("  {title}")
+    }];
     if budget == 1 {
         return fit_lines(lines, width, budget);
     }
-    let footer = if page == Page::List {
+    let footer = if page != Page::List && width < 58 {
+        "↑/↓ · Esc back · ?".to_string()
+    } else if page == Page::List {
         "Enter details · Tab project/all · Ctrl-V views · Esc close".to_string()
     } else if page == Page::Details {
         if browser
@@ -555,21 +577,21 @@ fn frame_lines(browser: &Browser, page: Page, size: (usize, usize)) -> Vec<Strin
             .as_ref()
             .is_some_and(|d| !d.interaction.pending.is_empty())
         {
-            "Enter respond · f follow-up · t timeline · ? actions · Esc back".into()
+            "↑/↓ scroll · Enter respond · f steer · ? actions · Esc back".into()
         } else if browser
             .details
             .as_ref()
             .is_some_and(|d| matches!(d.record.state, State::Starting | State::Running))
         {
-            "f follow-up · t timeline · e checks · ? actions · Esc back".into()
+            "↑/↓ scroll · f steer · e checks · ? actions · Esc back".into()
         } else if browser
             .details
             .as_ref()
             .is_some_and(|details| details.record.worktree.is_some())
         {
-            "e checks · t timeline · p changes · ? actions · Esc back".into()
+            "↑/↓ scroll · e checks · p changes · ? actions · Esc back".into()
         } else {
-            "e checks · t timeline · ? actions · Esc back".into()
+            "↑/↓ scroll · e checks · ? actions · Esc back".into()
         }
     } else if page == Page::Timeline {
         "↑/↓ scroll · Ctrl-F filter · Ctrl-R refresh · Esc back".into()
@@ -631,11 +653,9 @@ fn frame_lines(browser: &Browser, page: Page, size: (usize, usize)) -> Vec<Strin
             }
         }
     } else {
-        let body = body_rows(browser, page, width);
-        let available = body_viewport(browser, page, size);
-        let offset = browser.scroll.min(body.len().saturating_sub(available));
         lines.extend(
-            body.into_iter()
+            body.unwrap_or_default()
+                .into_iter()
                 .skip(offset)
                 .take(available)
                 .map(|line| format!("  {line}")),
@@ -778,40 +798,7 @@ fn detail_lines(details: &TaskDetails, notice: Option<&str>) -> Vec<String> {
         ),
         format!("Last activity: {}", details.activity),
     ];
-    if details.entry.title != record.objective {
-        lines.push(format!("Objective: {}", record.objective));
-    }
-    if let Some(stage) = &record.workflow {
-        lines.push(format!(
-            "Workflow: {} · stage {}",
-            stage.run_id, stage.stage_name
-        ));
-        if !stage.dependencies.is_empty() {
-            lines.push(format!("Depends on: {}", stage.dependencies.join(", ")));
-        }
-        if !stage.required_checks.is_empty() {
-            lines.push(format!(
-                "Required checks: {}",
-                stage.required_checks.join("; ")
-            ));
-        }
-    }
-    if let Some(handoff) = &details.handoff {
-        use crate::agent::native::handoff::Status;
-        match (handoff.status, handoff.requested) {
-            (Status::Queued, Some(direction)) => lines.push(format!(
-                "Handoff: queued to {} · waits for a safe execution boundary",
-                direction.label()
-            )),
-            (Status::Parked, Some(direction)) => lines.push(format!(
-                "Handoff: received · checkpoint parked for {} continuation",
-                direction.label()
-            )),
-            (Status::Active, _) => lines.push(format!("Execution: {}", handoff.direction.label())),
-            _ => {}
-        }
-    }
-    for request in &details.interaction.pending {
+    if let Some(request) = details.interaction.pending.first() {
         lines.push(
             match request.kind {
                 InteractionKind::Question => "Needs you: question · Enter to answer",
@@ -819,92 +806,19 @@ fn detail_lines(details: &TaskDetails, notice: Option<&str>) -> Vec<String> {
             }
             .into(),
         );
-        lines.extend(request.prompt.lines().take(30).map(ToOwned::to_owned));
-        if request.kind == InteractionKind::Approval {
-            lines.push(format!(
-                "Action: {} · {} · network {}",
-                request.binding.tool_name,
-                scope_label(request.binding.scope),
-                network_label(request.binding.network)
-            ));
-            lines.push(format!("Directory: {}", request.binding.cwd.display()));
-        }
+        lines.extend(
+            request
+                .prompt
+                .lines()
+                .take(2)
+                .map(|line| crate::ui::truncate_cells(line, 80)),
+        );
     }
     if details.interaction.queued > 0 || details.interaction.received > 0 {
         lines.push(format!(
             "Follow-ups: {} queued · {} received · f to steer",
             details.interaction.queued, details.interaction.received
         ));
-        for followup in details
-            .interaction
-            .followups
-            .iter()
-            .rev()
-            .filter(|f| f.status != FollowupStatus::Removed)
-            .take(4)
-        {
-            lines.push(format!(
-                "#{} {} · {}",
-                followup.revision,
-                followup_label(followup.status),
-                followup.text
-            ));
-        }
-    }
-    if let Some(checkpoint) = &details.checkpoint {
-        lines.push(format!(
-            "{} · e to inspect",
-            checkpoint.check_summary.label()
-        ));
-        if details.interaction.pending.is_empty()
-            && (!matches!(record.state, State::Starting | State::Running)
-                || checkpoint.check_summary.total > 0)
-        {
-            for unresolved in checkpoint.check_summary.unresolved.iter().take(6) {
-                lines.push(format!("Unresolved: {unresolved}"));
-            }
-        }
-        let execution = checkpoint.execution;
-        lines.push(if bounded {
-            format!(
-                "Used: {}/{} turns · {}/{} tools · {}/{} network",
-                execution.provider_turns,
-                limits.provider_turns.unwrap(),
-                execution.tool_calls,
-                limits.tool_calls.unwrap(),
-                execution.network_calls,
-                limits.network_calls.unwrap()
-            )
-        } else {
-            format!(
-                "Used: {} turns · {} tools · {} network",
-                execution.provider_turns, execution.tool_calls, execution.network_calls
-            )
-        });
-        lines.push(format!(
-            "Usage: {} input · {} output tokens · recorded cost ${:.4}",
-            checkpoint.usage.input, checkpoint.usage.output, execution.cost_usd
-        ));
-        if let Some(result) = &checkpoint.latest_result {
-            lines.push("Latest response:".into());
-            lines.extend(result.lines().take(150).map(ToOwned::to_owned));
-        }
-        if matches!(
-            record.state,
-            State::Failed | State::Interrupted | State::Cancelled
-        ) {
-            if let Some(error) = &checkpoint.last_error {
-                lines.push(format!("Checkpoint: {error}"));
-            }
-        }
-    }
-    if details.interaction.pending.is_empty() {
-        if let Some(error) = &record.error {
-            lines.push(format!("Attention: {error}"));
-        }
-    }
-    if let Some(notice) = notice {
-        lines.push(format!("Notice: {notice}"));
     }
     lines.extend([
         format!("Model: {} / {}", record.provider, record.model),
@@ -920,6 +834,9 @@ fn detail_lines(details: &TaskDetails, notice: Option<&str>) -> Vec<String> {
         ),
         format!("Source: {}", record.source_cwd.display()),
     ]);
+    if record.run_cwd != record.source_cwd {
+        lines.push(format!("Workspace: {}", record.run_cwd.display()));
+    }
     let count_cap = |value: Option<u32>| {
         value
             .map(|value| value.to_string())
@@ -958,8 +875,152 @@ fn detail_lines(details: &TaskDetails, notice: Option<&str>) -> Vec<String> {
     if let Some(cost) = limits.cost_usd {
         lines.push(format!("Cost limit: ${cost:.2}"));
     }
+    if !details.entry.result_revision.is_empty() {
+        lines.push(if details.entry.reviewed {
+            "Review: reviewed by you".into()
+        } else {
+            "Review: seen · v to mark reviewed".into()
+        });
+    }
+    if let Some(checkpoint) = &details.checkpoint {
+        lines.push(format!(
+            "{} · e to inspect",
+            checkpoint.check_summary.label()
+        ));
+        if details.interaction.pending.is_empty()
+            && (!matches!(record.state, State::Starting | State::Running)
+                || checkpoint.check_summary.total > 0)
+        {
+            for unresolved in checkpoint.check_summary.unresolved.iter().take(6) {
+                lines.push(format!("Unresolved: {unresolved}"));
+            }
+        }
+    }
+    if details.entry.title != record.objective {
+        lines.push(format!("Objective: {}", record.objective));
+    }
+    if let Some(stage) = &record.workflow {
+        lines.push(format!(
+            "Workflow: {} · stage {}",
+            stage.run_id, stage.stage_name
+        ));
+        if !stage.dependencies.is_empty() {
+            lines.push(format!("Depends on: {}", stage.dependencies.join(", ")));
+        }
+        if !stage.required_checks.is_empty() {
+            lines.push(format!(
+                "Required checks: {}",
+                stage.required_checks.join("; ")
+            ));
+        }
+    }
+    if let Some(handoff) = &details.handoff {
+        use crate::agent::native::handoff::Status;
+        match (handoff.status, handoff.requested) {
+            (Status::Queued, Some(direction)) => lines.push(format!(
+                "Handoff: queued to {} · waits for a safe execution boundary",
+                direction.label()
+            )),
+            (Status::Parked, Some(direction)) => lines.push(format!(
+                "Handoff: received · checkpoint parked for {} continuation",
+                direction.label()
+            )),
+            (Status::Active, _) => lines.push(format!("Execution: {}", handoff.direction.label())),
+            _ => {}
+        }
+    }
+    for (index, request) in details.interaction.pending.iter().enumerate() {
+        if index > 0
+            || request.prompt.lines().nth(2).is_some()
+            || request
+                .prompt
+                .lines()
+                .take(2)
+                .any(|line| crate::ui::cell_width(line) > 80)
+        {
+            lines.push("Full request · Enter to respond:".into());
+            lines.extend(request.prompt.lines().take(30).map(ToOwned::to_owned));
+        }
+        if request.kind == InteractionKind::Approval {
+            lines.push(format!(
+                "Action: {} · {} · network {}",
+                request.binding.tool_name,
+                scope_label(request.binding.scope),
+                network_label(request.binding.network)
+            ));
+            lines.push(format!("Directory: {}", request.binding.cwd.display()));
+        }
+    }
+    if details.interaction.queued > 0 || details.interaction.received > 0 {
+        for followup in details
+            .interaction
+            .followups
+            .iter()
+            .rev()
+            .filter(|f| f.status != FollowupStatus::Removed)
+            .take(4)
+        {
+            lines.push(format!(
+                "#{} {} · {}",
+                followup.revision,
+                followup_label(followup.status),
+                followup.text
+            ));
+        }
+    }
+    if let Some(checkpoint) = &details.checkpoint {
+        let execution = checkpoint.execution;
+        lines.push(if bounded {
+            format!(
+                "Used: {}/{} turns · {}/{} tools · {}/{} network",
+                execution.provider_turns,
+                limits.provider_turns.unwrap(),
+                execution.tool_calls,
+                limits.tool_calls.unwrap(),
+                execution.network_calls,
+                limits.network_calls.unwrap()
+            )
+        } else {
+            format!(
+                "Used: {} turns · {} tools · {} network",
+                execution.provider_turns, execution.tool_calls, execution.network_calls
+            )
+        });
+        lines.push(format!(
+            "Usage: {} input · {} output tokens",
+            checkpoint.usage.input, checkpoint.usage.output
+        ));
+        lines.push(format!("Cost: {}", execution.cost_label()));
+        if matches!(
+            record.state,
+            State::Failed | State::Interrupted | State::Cancelled
+        ) {
+            if let Some(error) = &checkpoint.last_error {
+                lines.push(format!("Checkpoint: {error}"));
+            }
+        }
+    }
+    if details.interaction.pending.is_empty() {
+        if let Some(error) = &record.error {
+            lines.push(format!("Attention: {error}"));
+        }
+    }
+    if let Some(notice) = notice {
+        lines.push(format!("Notice: {notice}"));
+    }
     if record.state == State::Completed {
         lines.push("Finished by the agent; review its result and checks before applying.".into());
+    }
+    if let Some(result) = details
+        .checkpoint
+        .as_ref()
+        .and_then(|c| c.latest_result.as_ref())
+    {
+        lines.push("Latest response · ↑/↓ scroll:".into());
+        lines.extend(result.lines().take(150).map(ToOwned::to_owned));
+        if result.lines().nth(150).is_some() {
+            lines.push("Response continues in the saved task transcript.".into());
+        }
     }
     if !record.plan.is_empty() {
         lines.push("Plan:".into());
@@ -1097,6 +1158,9 @@ fn controls(details: &TaskDetails) -> Vec<(char, &'static str, Control)> {
         if details.entry.pinned { "unpin" } else { "pin" },
         Control::Pin,
     ));
+    if !details.entry.reviewed && !details.entry.result_revision.is_empty() {
+        choices.push(('v', "mark reviewed", Control::Reviewed));
+    }
     if !matches!(
         record.state,
         State::Starting | State::Running | State::Waiting
@@ -1460,6 +1524,10 @@ fn run_control(config: &Config, details: &TaskDetails, control: Control) -> Resu
         }
         Control::Pin => {
             background::pin_task(&id, !details.entry.pinned)?;
+            return Ok(());
+        }
+        Control::Reviewed => {
+            background::mark_task_reviewed(&details.entry)?;
             return Ok(());
         }
         Control::Archive if details.entry.archived => {

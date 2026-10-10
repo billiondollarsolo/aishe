@@ -29,6 +29,8 @@ use super::pty_out::PtyOut;
 use super::sessions::LeanSessionStore;
 use super::stdout_redirect::StdoutRedirect;
 
+const AI_NOT_CONNECTED: &str = "AI is not connected. Run /setup to connect an account; ordinary shell commands remain available.";
+
 /// Load local registries once per live lean shell; connect MCP only when an
 /// agent turn or explicit `/mcp` discovery needs it.
 #[derive(Default)]
@@ -40,9 +42,26 @@ pub struct LeanWarm {
     // Per-shell accounting survives provider replacement and conversation
     // resets. Attribute each delta to the connection and model that billed it.
     usage: BTreeMap<(String, String), crate::usage::Usage>,
+    // Native task metadata is local and scoped to the connection that ran it.
+    recent_tasks: BTreeMap<String, (String, u64)>,
 }
 
 impl LeanWarm {
+    pub(crate) fn recent_status(&self, connection_id: &str) -> Vec<(&'static str, String)> {
+        self.recent_tasks
+            .get(connection_id)
+            .map(|(task, elapsed_ms)| {
+                vec![
+                    ("task", format!("last task {task}")),
+                    (
+                        "elapsed",
+                        format!("last {:.1}s", *elapsed_ms as f64 / 1000.0),
+                    ),
+                ]
+            })
+            .unwrap_or_default()
+    }
+
     /// Record a provider-meter delta after a request. Callers must supply only
     /// newly metered usage, never the provider's cumulative snapshot.
     pub fn record_usage(&mut self, usage: crate::usage::Usage, model: &str, connection_id: &str) {
@@ -345,6 +364,14 @@ pub fn run_nl(
 ) -> Result<()> {
     super::mark_nl_turn_start();
     let lean_mode = LeanMode::parse(mode);
+    let Some(provider) = provider else {
+        return Err(crate::user_error::UserFacing::new(
+            crate::user_error::ErrorNamespace::Auth,
+            "not_connected",
+            "AI is not connected.",
+            "Run /setup to connect an account; ordinary shell commands remain available.",
+        ));
+    };
     if lean_mode != LeanMode::Ask {
         match ensure_session_grant(config, lean_mode)? {
             LeanGrant::Accepted => {}
@@ -352,13 +379,6 @@ pub fn run_nl(
         }
         prepare_agent_executor(executor, config, lean_mode)?;
     }
-    let Some(provider) = provider else {
-        eprintln!(
-            "aishe: no provider configured for connection '{}'",
-            crate::commands::display_safe(config.active_connection_id())
-        );
-        return Ok(());
-    };
     let nl = prepare_nl_prompt(nl, executor.cwd(), config);
     match lean_mode {
         LeanMode::Agent => {
@@ -567,8 +587,7 @@ fn handle_nl(
         *provider = providers::make(config).ok();
     }
     let Some(provider_ref) = provider.as_deref() else {
-        return "ERROR\tno provider configured (set an API key, or AISHE_FAKE_LLM for tests)"
-            .into();
+        return format!("ERROR\t{AI_NOT_CONNECTED}");
     };
     let cwd_path = if cwd.is_empty() {
         executor.cwd().to_path_buf()
@@ -646,7 +665,7 @@ fn explain_last_failure(
         *provider = providers::make(config).ok();
     }
     let Some(provider_ref) = provider.as_deref() else {
-        return "ERROR\tno provider configured".into();
+        return format!("ERROR\t{AI_NOT_CONNECTED}");
     };
     let reply = suggest_reply(&prompt, provider_ref, executor, config, session, pty, false);
     persist_store(store, session);
@@ -684,7 +703,7 @@ fn handle_fix(
         *provider = providers::make(config).ok();
     }
     let Some(provider_ref) = provider.as_deref() else {
-        return "ERROR\tno provider configured".into();
+        return format!("ERROR\t{AI_NOT_CONNECTED}");
     };
     let ctx = crate::fix::error_context(&capsule.command, config.aishe.fix_capture_stderr);
     let prompt = crate::fix::build_prompt(
@@ -898,6 +917,7 @@ fn agent_reply(
     };
     let capabilities = crate::ui::TerminalCapabilities::detect_stdout();
     let _redirect = StdoutRedirect::to_pty(pty.clone());
+    let started = std::time::Instant::now();
     match modes::yolo::run_with_terminal(
         line,
         provider,
@@ -909,27 +929,41 @@ fn agent_reply(
         session,
         capabilities,
     ) {
-        Ok(outcome) => match outcome.state {
-            crate::agent::native::NativeTurnState::Completed => "RAN".into(),
-            crate::agent::native::NativeTurnState::Cancelled => "CANCELLED".into(),
-            crate::agent::native::NativeTurnState::HandedOff => {
-                let receipt = outcome
-                    .detail
-                    .as_deref()
-                    .unwrap_or("Task moved to the background; open /tasks to view it.");
-                emit_text(pty, &format!("\n{receipt}"));
-                "RAN".into()
+        Ok(outcome) => {
+            if let Ok(record) = crate::tasks::load(&outcome.task_id) {
+                let label = record
+                    .name
+                    .unwrap_or_else(|| record.id.chars().take(12).collect());
+                warm.recent_tasks.insert(
+                    config.active_connection_id().to_string(),
+                    (
+                        label,
+                        started.elapsed().as_millis().min(u128::from(u64::MAX)) as u64,
+                    ),
+                );
             }
-            _ => format!(
-                "ERROR\t{}",
-                one_line(
-                    outcome
+            match outcome.state {
+                crate::agent::native::NativeTurnState::Completed => "RAN".into(),
+                crate::agent::native::NativeTurnState::Cancelled => "CANCELLED".into(),
+                crate::agent::native::NativeTurnState::HandedOff => {
+                    let receipt = outcome
                         .detail
                         .as_deref()
-                        .unwrap_or("native task did not complete")
-                )
-            ),
-        },
+                        .unwrap_or("Task moved to the background; open /tasks to view it.");
+                    emit_text(pty, &format!("\n{receipt}"));
+                    "RAN".into()
+                }
+                _ => format!(
+                    "ERROR\t{}",
+                    one_line(
+                        outcome
+                            .detail
+                            .as_deref()
+                            .unwrap_or("native task did not complete")
+                    )
+                ),
+            }
+        }
         Err(error) => format!("ERROR\t{}", one_line(&error.to_string())),
     }
 }
@@ -1153,7 +1187,10 @@ fn emit_lean_help(warm: &LeanWarm, pty: &PtyOut, all_commands: bool, topic: &str
     if !all_commands && !topic.is_empty() {
         if topic == "keys" {
             emit_text(pty, "AIShe · keys");
-            emit_text(pty, "  / then Tab    browse commands; Tab cycles matches");
+            emit_text(
+                pty,
+                "  / then Tab    search commands; Enter stages, Esc closes",
+            );
             emit_text(
                 pty,
                 "  ?             ask the AI; empty ? explains the last failure",
@@ -2243,6 +2280,19 @@ mod tests {
             assert_eq!(usage.requests, 2, "agent exceeded the remaining allowance");
             assert_eq!(usage.input, 2_000_000);
             assert_eq!(config.aishe.budget_usd, 10.0);
+            let recent = warm.recent_status(config.active_connection_id());
+            let task_label = recent
+                .iter()
+                .find(|(field, _)| *field == "task")
+                .expect("native outcome should expose its recorded task")
+                .1
+                .strip_prefix("last task ")
+                .unwrap();
+            assert!(crate::tasks::list().iter().any(|record| {
+                record.id.starts_with(task_label) || record.name.as_deref() == Some(task_label)
+            }));
+            assert!(recent.iter().any(|(field, _)| *field == "elapsed"));
+            assert!(warm.recent_status("unrelated-connection").is_empty());
             std::env::remove_var("AISHE_DATA_DIR");
         });
         std::env::remove_var("AISHE_FAKE_LLM");

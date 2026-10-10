@@ -32,7 +32,7 @@ data_root="$work/data-root"
 mirror="$work/releases/latest/download"
 stage="$work/stage"
 mkdir -p "$test_home" "$test_bin" "$config_root/aishe" \
-  "$data_root/aishe/tasks" "$mirror" "$stage"
+  "$data_root/aishe/tasks" "$data_root/aishe/backend/preserved-runtime" "$mirror" "$stage"
 
 cat > "$work/fake-aishe.c" <<'EOF'
 #include <stdio.h>
@@ -100,6 +100,7 @@ EOF
 cat > "$data_root/aishe/session-map.json" <<'EOF'
 {"schema_version":1,"sessions":{"shell":"managed"}}
 EOF
+printf 'old-verified-runtime\n' > "$data_root/aishe/backend/preserved-runtime/identity"
 
 hash_tree() {
   root="$1"
@@ -138,6 +139,8 @@ install_attempt() {
     AISHE_RELEASE_BASE_URL="file://$work/releases" \
     AISHE_RUNTIME_FILE="$runtime_file" \
     AISHE_SKIP_ZSH=1 \
+    AISHE_INSTALL_BACKEND=1 \
+    AISHE_SKIP_MAN=1 \
     AISHE_TEST_BACKEND_LOG="$backend_log" \
     "$@" \
     sh "$repo_root/install.sh" >"$output" 2>&1
@@ -227,6 +230,26 @@ grep -q 'installer-fixture' "$test_bin/aishe"
   exit 1
 }
 
+# Native is the default even with a stale/offline runtime-file override. An
+# existing runtime remains byte-for-byte unchanged and backend is never invoked.
+: > "$backend_log"
+install_attempt "$work/native.out" AISHE_INSTALL_BACKEND=0 AISHE_RUNTIME_FILE="$work/missing-runtime.tar.gz"
+if grep -q '^backend ' "$backend_log"; then
+  printf 'FAIL: native default touched the optional backend\n' >&2
+  exit 1
+fi
+[ "$data_before" = "$(hash_tree "$data_root")" ]
+grep -q 'native engine included' "$work/native.out"
+grep -q 'Start AIShe with:' "$work/native.out"
+
+# Compatibility recovery override still wins over explicit opt-in.
+: > "$backend_log"
+install_attempt "$work/skipped.out" AISHE_SKIP_BACKEND=1
+if grep -q '^backend ' "$backend_log"; then
+  printf 'FAIL: AISHE_SKIP_BACKEND did not preserve binary-only recovery\n' >&2
+  exit 1
+fi
+
 # The documented curl-pipe form still has a controlling terminal even though
 # the installer's stdin is the script pipe. Prove --setup reaches the binary.
 if command -v python3 >/dev/null 2>&1; then
@@ -234,7 +257,7 @@ if command -v python3 >/dev/null 2>&1; then
   HOME="$test_home" AISHE_BIN_DIR="$test_bin" \
   AISHE_CONFIG_DIR="$config_root" AISHE_DATA_DIR="$data_root" \
   AISHE_RELEASE_BASE_URL="file://$work/releases" \
-  AISHE_RUNTIME_FILE="$runtime_file" AISHE_SKIP_ZSH=1 \
+  AISHE_RUNTIME_FILE="$runtime_file" AISHE_SKIP_ZSH=1 AISHE_SKIP_MAN=1 \
   AISHE_TEST_BACKEND_LOG="$backend_log" \
   AISHE_TEST_INSTALLER="$repo_root/install.sh" AISHE_TEST_OUTPUT="$work/setup-pipe.out" \
   python3 - <<'PY'
@@ -243,7 +266,7 @@ import pty
 
 pid, fd = pty.fork()
 if pid == 0:
-    os.execl("/bin/sh", "sh", "-c", 'cat "$AISHE_TEST_INSTALLER" | sh -s -- --setup')
+    os.execl("/bin/sh", "sh", "-c", 'cat "$AISHE_TEST_INSTALLER" | sh -s -- --setup --launch')
 with open(os.environ["AISHE_TEST_OUTPUT"], "wb") as output:
     while True:
         try:
@@ -256,7 +279,21 @@ with open(os.environ["AISHE_TEST_OUTPUT"], "wb") as output:
 _, status = os.waitpid(pid, 0)
 raise SystemExit(os.waitstatus_to_exitcode(status))
 PY
+  python3 - "$work/setup-pipe.out" <<'PY'
+import pathlib
+import sys
+
+output = pathlib.Path(sys.argv[1]).read_text()
+assert output.index("Start AIShe with:") < output.index("starting guided setup")
+assert "is not on your PATH" in output
+assert "opening AIShe" in output
+PY
   grep -Fx 'setup' "$backend_log"
+  grep -Fx '' "$backend_log"
+  if grep -q '^backend ' "$backend_log"; then
+    printf 'FAIL: default first launch installed the optional runtime\n' >&2
+    exit 1
+  fi
 fi
 
 printf 'PASS: runtime staging, live verification, extraction, activation, exact argv, and state preservation\n'

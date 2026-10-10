@@ -91,7 +91,7 @@ AISHE_CONFIG_DIR="$config_root" \
 AISHE_DATA_DIR="$data_root" \
 AISHE_RELEASE_BASE_URL="file://$work/releases" \
 AISHE_SKIP_ZSH=1 \
-AISHE_SKIP_BACKEND=1 \
+AISHE_SKIP_MAN=1 \
 sh "$repo_root/install.sh" >"$bad_output" 2>&1; then
   printf 'FAIL: installer accepted a corrupt checksum\n' >&2
   exit 1
@@ -115,7 +115,7 @@ AISHE_CONFIG_DIR="$config_root" \
 AISHE_DATA_DIR="$data_root" \
 AISHE_RELEASE_BASE_URL="file://$work/releases" \
 AISHE_SKIP_ZSH=1 \
-AISHE_SKIP_BACKEND=1 \
+AISHE_SKIP_MAN=1 \
 sh "$repo_root/install.sh" >"$output" 2>&1
 
 cmp "$source_binary" "$test_bin/aishe"

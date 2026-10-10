@@ -43,6 +43,21 @@ pub(crate) struct Args {
     /// Run a single input non-interactively and exit.
     #[arg(short = 'c', value_name = "LINE")]
     pub(crate) command: Option<String>,
+    /// Launch an interactive AIShe session even when stdin is not a terminal.
+    #[arg(short = 'i', long, conflicts_with_all = ["stdin_script", "agent_lines", "command"])]
+    pub(crate) interactive: bool,
+    /// Read login startup files for this shell session or a shell-only -c command.
+    #[arg(short = 'l', long)]
+    pub(crate) login: bool,
+    /// Execute stdin as one conventional shell script; never route lines to AI.
+    #[arg(short = 's', conflicts_with_all = ["interactive", "command", "agent_lines"])]
+    pub(crate) stdin_script: bool,
+    /// Explicitly route each stdin line through AIShe, including natural language.
+    #[arg(long, conflicts_with_all = ["interactive", "command", "stdin_script", "login"])]
+    pub(crate) agent_lines: bool,
+    /// Shell script filename and arguments, or positional arguments after -c/-s.
+    #[arg(value_name = "SCRIPT_OR_ARG", trailing_var_arg = true, num_args = 0..)]
+    pub(crate) shell_arguments: Vec<std::ffi::OsString>,
     /// (shell hook) Suggest a command for a natural-language line: prints the
     /// command to stdout and the explanation/answer to stderr.
     #[arg(long, hide = true)]
@@ -274,7 +289,25 @@ pub(crate) enum Cmd {
         #[arg(value_parser = ["zsh", "bash"])]
         shell: String,
     },
-    /// Launch the lean interactive zsh shell (legacy: AISHE_LEGACY_OPENCODE=1).
+    /// Preview, apply, or remove reversible native terminal activation.
+    Activate {
+        /// Startup-file family to activate (native AIShe, not the legacy hook).
+        #[arg(value_parser = ["zsh", "bash"])]
+        shell: String,
+        /// Write the displayed activation block, with a private backup first.
+        #[arg(long, conflicts_with = "remove")]
+        apply: bool,
+        /// Remove only AIShe's activation block, keeping other startup settings.
+        #[arg(long)]
+        remove: bool,
+        /// Explicit startup file; useful with a dotfile manager or custom ZDOTDIR.
+        #[arg(long, value_name = "PATH")]
+        rcfile: Option<std::path::PathBuf>,
+        /// Emit the activation preview or result as JSON.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Launch the interactive AIShe shell using the saved profile.
     Zsh,
     /// Check your environment: shell, config, front-end, provider, API key.
     Doctor {
@@ -1722,6 +1755,7 @@ impl Args {
             Some(Cmd::Setup(setup)) => setup.json,
             Some(
                 Cmd::Settings { json }
+                | Cmd::Activate { json, .. }
                 | Cmd::Doctor { json, .. }
                 | Cmd::Models { json, .. }
                 | Cmd::Readiness { json }

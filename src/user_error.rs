@@ -351,7 +351,7 @@ impl UserError {
                 ErrorNamespace::Auth,
                 "unavailable",
                 "The required authentication is unavailable.",
-                "Run `aishe auth status`, repair the named credential, then retry.",
+                "Run `/setup` in AIShe or `aishe setup` to connect AI; use `aishe auth status` to inspect an existing account.",
                 false,
             )
         } else if contains_any(

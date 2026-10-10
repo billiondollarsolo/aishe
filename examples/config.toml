@@ -20,10 +20,15 @@ version = 7
 safety_profile = "custom"
 
 # Interaction mode for natural-language input.
-#   suggest = propose a command, you confirm  (default)
-#   auto    = run safe commands immediately, confirm dangerous ones
-#   yolo    = agentic loop that runs commands and iterates until done
-mode = "suggest"
+#   ask   = answer or propose a command, you confirm (default)
+#   allow = agent work with approval for consequential actions
+#   agent = agent work after a scope grant for this live shell
+# Legacy aliases suggest/auto/yolo remain accepted.
+mode = "ask"
+
+# Saved new-shell experience: clean (Clean AIShe), personal (Keep my zsh),
+# or bash (Bash integration; reduced feature tier).
+shell_profile = "clean"
 
 # Durable default connection. `/model` changes only the current shell unless
 # you confirm the follow-up default prompt or pass `--default`.
@@ -35,14 +40,9 @@ connection_fallback = "anthropic"
 # tool effect; interrupted managed turns remain resumable instead.
 # provider_fallback = ["openai"]
 
-# In the zsh-PTY front-end, show aishe's branded prompt (`<cwd> <glyph>`, with the
-# glyph reflecting the mode: ❯ suggest, » auto, * yolo) instead of your normal zsh
-# prompt, so it's obvious you're in aishe. This OVERRIDES your real prompt, so any
-# git/branch/dirty segments from powerlevel10k & friends are hidden while in aishe.
-# Set false to keep your own prompt (recommended for p10k users, whose instant- and
-# transient-prompt can otherwise conflict). Everything else — autosuggestions,
-# syntax highlighting, completions, fzf-tab, oh-my-zsh — is inherited natively
-# regardless; only the prompt is overridden.
+# Clean AIShe supplies a branded prompt. Keep my zsh preserves your own prompt,
+# history, widgets, and plugins; AISHE_PTY_PROMPT=force explicitly overrides it.
+# Set false to suppress the branded prompt in a clean shell as well.
 pty_prompt = true
 
 # Deprecated native-backend compatibility settings. Managed yolo asks once for
@@ -239,12 +239,13 @@ unicode = "auto"               # auto | unicode | ascii
 motion = "auto"                # auto | live | static
 
 # ---------------------------------------------------------------------------
-# Managed agent engine. Aishe owns the exact OpenCode version and hash; those
-# are not editable config. The backend starts lazily only for AI turns.
+# Native API/local-model agent by default. Managed OpenCode is an explicit
+# OAuth/compatibility transport; its pinned version and hash are not editable.
+# Provider/backend initialization remains lazy until AI is requested.
 # ---------------------------------------------------------------------------
 
 [backend]
-engine = "opencode"             # native is a temporary repair/legacy override
+engine = "native"               # native | opencode (explicit managed transport)
 fallback = "native"             # allowed only before OpenCode admits a prompt
 managed = true
 idle_timeout_secs = 1800

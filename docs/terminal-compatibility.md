@@ -6,6 +6,42 @@ same. The automated evidence covers the PTY byte stream, agent proposal staging,
 history, delayed escape sequences, and resize propagation. Visual behavior in a
 named terminal application still needs a named manual result.
 
+## Daily shell adoption and interpreter boundaries
+
+Native AIShe runs a real interactive shell. **Keep my zsh** preserves personal
+startup files, aliases, functions, prompt, history, and widgets; **Clean AIShe**
+provides its own isolated zsh configuration. **Bash integration** preserves a
+user's Bash startup file and uses the supported Bash hook surface. Its routing
+and keyboard capabilities differ from the flagship zsh PTY; see
+[Bash compatibility](bash-compatibility.md).
+
+Use `aishe` to launch the saved profile, or `aishe -i` to request a session
+explicitly. Personal zsh supports `aishe -il` and its `.zprofile`/`.zlogin`
+startup behavior. Interactive Bash login mode is not yet supported by the
+native launcher; its rc-file hook requires a normal interactive launch.
+
+`aishe activate zsh` or `aishe activate bash` previews a native startup block.
+Only `--apply` changes the startup file, after making a private backup. The
+block prevents recursion and leaves non-interactive shells alone. `--remove`
+removes that block while retaining unrelated settings and later edits. No
+activation command changes `chsh`, `/etc/shells`, or the OS login shell. Treat
+AIShe as a terminal session application until those separate system contracts
+are implemented and qualified.
+
+Plain piped stdin, `-s`, and script filenames use one conventional interpreter,
+with no per-line AI fallback. `-lc SCRIPT NAME ARG...` runs a conventional login
+shell command and preserves positional parameters. Normal `-c LINE` retains
+AIShe's shell-or-agent routing, and `--agent-lines` explicitly requests its
+per-line automation protocol. Script execution respects the saved Bash profile;
+otherwise it prefers zsh with a Bash fallback. It does not infer or execute a
+different interpreter from a shebang.
+
+`tests/shell_adoption.py` checks these script and activation contracts using
+isolated homes, real shell executables, and the candidate binary's recorded
+identity. Native profile PTY tests cover the separate interactive startup
+contract. These automated checks do not establish compatibility with every
+plugin combination or terminal application's key configuration.
+
 ## Status vocabulary
 
 The machine-readable report from `tests/terminal_compat.py` uses four outcomes:

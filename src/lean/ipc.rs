@@ -140,6 +140,10 @@ impl LeanShellFiles {
                 last,
                 &config.effective_status_line_items(),
             );
+            crate::usagelog::merge_status(
+                status,
+                &warm.recent_status(config.active_connection_id()),
+            );
         }
     }
 }

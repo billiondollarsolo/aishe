@@ -82,18 +82,34 @@ def main():
         assert not provider_started.exists(), "completion constructed a provider"
 
         start = len(shell.plain())
-        value = probe("/\t")
+        value = probe("/\t\x1b")
         menu = shell.plain()[start:]
+        assert "Commands 1/" in menu and "Search:" in menu, menu
         assert "Choose a model for this shell" in menu, menu
-        assert "Connect an AI provider" in menu, menu
-        assert "Write the private test marker" in menu, menu
-        assert value == "/", "browsing inserted an arbitrary command"
-        first = probe("/\t\t")
-        assert first.strip().startswith("/") and first.strip() != "/", first
-        down = probe("/\t\t\x1b[B")
-        assert down.strip().startswith("/") and down != first, (first, down)
-        back = probe("/\t\t\x1b[B\x1b[A")
+        assert "Tab/arrows | Enter stages | Esc" in menu, menu
+        assert value == "/", "cancelling discovery changed the input"
+        first = probe("/\t\r")
+        assert first == "/help ", first
+        down = probe("/\t\x1b[B\r")
+        assert down == "/mode ", (first, down)
+        back = probe("/\t\x1b[B\x1b[A\r")
         assert back == first, (first, down, back)
+        assert probe("/\tAI provider\r") == "/setup ", "description search failed"
+        assert probe("/\tslashproof\r") == "/slashproof ", "custom search failed"
+        assert not execution.exists(), "Enter executed a picker selection"
+        assert probe("/\tno-such-command\x1b") == "/", "empty search cancellation lost input"
+        assert probe("/\tconnectiox\x7fn\r") == "/connection ", "search backspace failed"
+        assert probe("/\t\x1b[200~connection\x1b[201~\r") == "/connection ", "paste search failed"
+
+        # Small terminals retain a bounded, searchable list and Enter only
+        # stages the choice. Prefix/argument/path completion below stays native.
+        for columns in (32, 58):
+            shell.resize(columns, rows=18)
+            shell.drain(.3)
+            assert probe("/\tbackground work\r") == "/tasks ", "narrow description search failed"
+            assert not execution.exists(), "narrow discovery executed a command"
+        shell.resize(100, rows=30)
+        shell.drain(.3)
 
         value = probe("/model original-argument\t")
         assert "original-argument" in value and value.startswith("/model "), value
@@ -127,7 +143,7 @@ def main():
         assert shell.expect("SLASH_MODE=ask", 4), "discovery changed authority"
         assert not mcp_started.exists(), "local slashes started MCP"
         assert not provider_started.exists(), "local slashes constructed a provider"
-        print("PASS: described slash menu, custom discovery, completion buffers, help, paths, and local execution")
+        print("PASS: bounded searchable slash picker, staging/cancel, narrow widths, custom discovery, native completion, help, paths, and local execution")
     finally:
         shell.close()
         shutil.rmtree(home, ignore_errors=True)

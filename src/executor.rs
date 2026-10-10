@@ -58,6 +58,65 @@ const DRAIN_MAX_LINES: usize = 20_000;
 /// Default timeout for captured (yolo) commands.
 pub const DEFAULT_CAPTURE_TIMEOUT: Duration = Duration::from_secs(120);
 
+/// Run one ordinary shell command without allocating an interactive executor.
+///
+/// A standalone `-c` invocation never reuses aliases, directory stacks, jobs or
+/// its environment snapshot. Constructing those structures and writing a
+/// private replay file adds work to every command without preserving any state
+/// across invocations. Source the same user rc directly instead. Keep a parent
+/// wait so history is recorded after completion, including explicit `exit`,
+/// shell `exec` and signal termination; an EXIT trap cannot cover all three.
+pub fn run_shell_once(line: &str, history_log: Option<&Path>) -> Result<i32> {
+    run_shell_once_with_shell(line, history_log, None)
+}
+
+/// Run a one-shot command with an explicit supported backing shell.
+/// `None` retains the historical zsh-first, Bash-fallback choice.
+pub fn run_shell_once_with_shell(
+    line: &str,
+    history_log: Option<&Path>,
+    preferred_shell: Option<&str>,
+) -> Result<i32> {
+    let shell = backing_shell(preferred_shell)?;
+    let home = dirs::home_dir();
+    let config = crate::config::config_root();
+    let bootstrap = session_rc_content(&shell, home.as_deref(), config.as_deref());
+    let status = Command::new(&shell)
+        .arg("-c")
+        .arg(format!(
+            "{{\n{bootstrap}}} 2>/dev/null; eval \"$AISHE_CMD\""
+        ))
+        .env("AISHE_CMD", line)
+        // Inherit cwd, stdio and the complete OS environment. Unlike the
+        // mutable executor, this path neither changes nor filters that state.
+        .status();
+    let code = match status {
+        Ok(status) => exit_code(&status),
+        Err(error) => {
+            eprintln!("aishe: failed to launch shell: {error}");
+            127
+        }
+    };
+    if let Some(path) = history_log {
+        if !Executor::is_history_mgmt_cmd(line) {
+            crate::histlog::append(path, line);
+        }
+    }
+    Ok(code)
+}
+
+fn backing_shell(preferred_shell: Option<&str>) -> Result<PathBuf> {
+    match preferred_shell {
+        None => which("zsh")
+            .or_else(|| which("bash"))
+            .ok_or_else(|| anyhow!("neither zsh nor bash found on $PATH")),
+        Some(name @ ("bash" | "zsh")) => {
+            which(name).ok_or_else(|| anyhow!("{name} not found on $PATH"))
+        }
+        Some(name) => anyhow::bail!("unsupported backing shell: {name}"),
+    }
+}
+
 /// Bounded, FIFO-evicting accumulator for one child's captured output.
 ///
 /// Both drainer threads (stdout and stderr) push into a single instance behind a
@@ -216,10 +275,18 @@ impl Executor {
         Self::new_with_session_rc(true)
     }
 
+    /// Construct an ordinary mutable executor using the selected shell.
+    /// Agent constructors continue to use their existing restricted defaults.
+    pub fn new_with_shell(preferred_shell: Option<&str>) -> Result<Self> {
+        Self::new_with_options(true, preferred_shell)
+    }
+
     fn new_with_session_rc(source_user_rc: bool) -> Result<Self> {
-        let shell = which("zsh")
-            .or_else(|| which("bash"))
-            .ok_or_else(|| anyhow!("neither zsh nor bash found on $PATH"))?;
+        Self::new_with_options(source_user_rc, None)
+    }
+
+    fn new_with_options(source_user_rc: bool, preferred_shell: Option<&str>) -> Result<Self> {
+        let shell = backing_shell(preferred_shell)?;
         let env: HashMap<String, String> = std::env::vars().collect();
         let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/"));
         let session_rc = source_user_rc
@@ -1706,6 +1773,19 @@ fn init_session_rc_for_paths(
         std::process::id(),
         rand::random::<u64>()
     ));
+    let content = session_rc_content(shell, home, config);
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
+        .open(&path)?;
+    file.write_all(content.as_bytes())?;
+    Ok(path)
+}
+
+/// Shared bootstrap for persistent executors and standalone shell delegation.
+fn session_rc_content(shell: &Path, home: Option<&Path>, config: Option<&Path>) -> String {
     // A foreign builtin is an external-command lookup and an extra fork:
     // `shopt` is absent in zsh, and `setopt` is absent in bash. Select from the
     // actual backing executable rather than spoofable version environment vars.
@@ -1724,14 +1804,7 @@ fn init_session_rc_for_paths(
         let p = single_quote(&cfg.join("aishe").join("aishrc"));
         content.push_str(&format!("[ -f {p} ] && source {p}\n"));
     }
-    let mut file = std::fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .mode(0o600)
-        .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
-        .open(&path)?;
-    file.write_all(content.as_bytes())?;
-    Ok(path)
+    content
 }
 
 /// Render a path with a leading `$HOME` abbreviated to `~` (for `dirs`).

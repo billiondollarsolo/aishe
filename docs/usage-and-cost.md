@@ -2,6 +2,16 @@
 
 aishe meters every model call so you can see what a session costs and cap it.
 
+Background task details distinguish recorded cost from missing pricing. A
+fully priced task can show a known zero; unpriced work shows n/a, and partially
+priced work labels its recorded subtotal and missing coverage. Older task
+records without pricing provenance remain unknown. A money-limited task cannot
+resume by treating unknown historical spend as zero; token and request limits
+continue to apply independently. Provider responses without token usage remain
+unmetered even when the model has an exact price. Automatic provider fallbacks
+also leave task pricing coverage unknown; a positive task money cap requires a
+fixed provider/model with automatic fallbacks disabled.
+
 ## What you see
 
 The interactive shell keeps a live status chip in zsh's native right prompt.
@@ -37,9 +47,8 @@ show_usage = false
 
 ### Whole-session summary
 
-The interactive zsh front-end runs each natural-language line as its own process,
-so when you exit the shell aishe prints a single dim line totalling the whole
-session across every call:
+When you exit the interactive shell, AIShe prints a single dim line totalling
+the session across model calls:
 
 ```
 aishe session: 18,204 in · 5,130 out · 9 reqs · ~$0.0731

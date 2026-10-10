@@ -246,7 +246,7 @@ def live_followup_shows_queued_then_received():
         shell.send("f")
         shown(shell, "Follow-up")
         shell.send("LIVE_UI_FOLLOWUP_PROOF\r")
-        wait_until(shell, lambda: len(fixture.show(task_id)["mailbox"]["followups"]) == 1,
+        wait_until(shell, lambda: len(fixture.show(task_id)["mailbox"].get("followups", [])) == 1,
                    "UI persists the follow-up")
         queued = fixture.show(task_id)["mailbox"]["followups"][0]
         assert queued["status"] == "queued" and not finished_effect.exists(), queued
@@ -286,8 +286,12 @@ def naming_pinning_archive_and_persistent_review_are_unobtrusive():
         before = probe(first, fixture.home)
         first.send("\x18b\r")
         shown(first, "Task details")
-        wait_until(first, lambda: metadata_path.exists() and json.loads(metadata_path.read_text()).get("reviewed_revision"),
-                   "reviewed exact result is durable")
+        wait_until(first, lambda: metadata_path.exists() and json.loads(metadata_path.read_text()).get("seen_revision"),
+                   "seen exact result is durable")
+        assert not json.loads(metadata_path.read_text()).get("reviewed_revision"), "opening silently marked reviewed"
+        first.send("v")
+        wait_until(first, lambda: json.loads(metadata_path.read_text()).get("reviewed_revision"),
+                   "explicit review action is durable")
         stamp = json.loads(metadata_path.read_text())["reviewed_revision"]
         first.send("n")
         shown(first, "Task name")

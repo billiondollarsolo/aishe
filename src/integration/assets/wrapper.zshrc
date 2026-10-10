@@ -31,6 +31,10 @@ AI Shell'
   else
     print -r -- '__AISHE_TEMPLATE_ASCII_LOGO__'
   fi
-  print -P "${AISHE_COLOR_MUTED:-%F{244}}aishe: __AISHE_TEMPLATE_CONTROLS_HINT__%f"
-  export AISHE_COMMAND_HINT_SHOWN=1
+  if print -P "${AISHE_COLOR_MUTED:-%F{244}}aishe: __AISHE_TEMPLATE_CONTROLS_HINT__%f"; then
+    export AISHE_COMMAND_HINT_SHOWN=1
+    if [[ -n "${AISHE_LAUNCH_HINT_ACK:-}" ]]; then
+      print -r -- shown >| "$AISHE_LAUNCH_HINT_ACK" 2>/dev/null || true
+    fi
+  fi
 fi

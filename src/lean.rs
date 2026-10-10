@@ -24,6 +24,7 @@ use std::time::Instant;
 
 pub use grant::{ensure_session_grant, grant_accepted, LeanGrant, LeanMode};
 pub use hook::{
+    wrapper_zlogin_for_profile, wrapper_zlogout_for_profile, wrapper_zprofile_for_profile,
     wrapper_zshenv, wrapper_zshenv_for_profile, wrapper_zshrc, wrapper_zshrc_for_profile, zsh_argv,
     zsh_argv_for_profile, ZshProfile,
 };

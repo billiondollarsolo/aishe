@@ -147,6 +147,20 @@ class LeanPromptTests(unittest.TestCase):
         for value in ("new-model", "New provider", "123/45 tok", "~$0.0040", "1 req"):
             self.assertIn(value, result["RIGHT"])
 
+    def test_recent_activity_fields_preserve_unknown_cost(self):
+        status = self.root / "recent-status"
+        status.write_text("task\ttask release checks\nlast_tokens\tlast 123/45 tok\n"
+                          "last_cost\tlast cost n/a\n")
+        result = self.render({
+            "AISHE_STATUS_FILE": str(status),
+            "AISHE_STATUS_ITEMS": "task,last_tokens,last_cost",
+            "AISHE_MODEL": "model",
+            "AISHE_CONNECTION_LABEL": "Work",
+        })
+        for value in ("task release checks", "last 123/45 tok", "last cost n/a"):
+            self.assertIn(value, result["RIGHT"])
+        self.assertNotIn("$0.0000", result["RIGHT"])
+
     def test_status_off_and_ascii_policy(self):
         result = self.render({"AISHE_STATUS_POSITION": "off"})
         self.assertEqual(result["RIGHT"], "")

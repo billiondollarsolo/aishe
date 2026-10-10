@@ -12,12 +12,16 @@ line. The CLI package name is `aishe`.
 > prefer workspace scope and Linux isolation for untrusted work, read
 > [the safety model](docs/safety.md), and keep backups.
 
-AIShe runs an actual interactive zsh. The default `clean` profile uses an
-isolated, lightweight configuration; `AISHE_ZSH_PROFILE=personal aishe` loads
-your zsh configuration and plugins with the same native agent. Completion, job
-control, history, and ordinary commands stay in zsh. Optional native startup
-files are `~/.aishe/leanrc` and `~/.aishe/leanrc.post`. Input that is not a
-command becomes a plain-English request to the AI.
+This source prepares [v1.1.0](docs/releases/v1.1.0.md); installation follows the
+latest published release until that candidate is qualified and published.
+
+AIShe runs an actual interactive zsh. Fresh installs keep your zsh configuration,
+plugins, prompt and history. Choose the isolated **Clean AIShe** profile or
+**Bash integration** in setup or `/settings`; existing configurations without a
+profile field retain their clean behavior. Completion, job control, history and
+ordinary commands stay in your shell. Clean-profile startup files are
+`~/.aishe/leanrc` and `~/.aishe/leanrc.post`. Input that is not a command becomes a
+plain-English request to the AI after you connect an account.
 
 The default agent uses pooled native provider connections and keeps the model,
 execution scope, approvals, budget, and usage visible in the shell. Managed
@@ -38,17 +42,18 @@ OpenCode and its historical shell integration remain available explicitly with
 ## Get productive in 60 seconds
 
 ```sh
-# 1. Install + guided setup (includes API-key or subscription OAuth sign-in)
-curl -fsSL https://raw.githubusercontent.com/billiondollarsolo/aishe/main/install.sh | sh -s -- --setup
+# 1. Install and open the native shell; connect an AI account when ready
+curl -fsSL https://raw.githubusercontent.com/billiondollarsolo/aishe/main/install.sh | sh -s -- --launch
 
 # 2. Use it — no shell hook required
-aishe                                      # real zsh with aishe active
-AISHE_ZSH_PROFILE=personal aishe            # your zsh settings, native agent
+aishe                                      # your zsh settings, native agent
+aishe setup                                # connect now, or choose Connect later
 aishe -c "turn the logs directory into a tarball"
 aishe suggest --json "list files by size" | jq -r .command
 
-# 3. (Optional) make every new terminal AI-aware
-echo 'eval "$(aishe init zsh)"' >> ~/.zshrc   # or: aishe init bash
+# 3. Choose your shell experience in /settings, or preview terminal activation
+aishe activate zsh                       # --apply installs; --remove reverses
+# Keep my zsh · Clean AIShe · Bash integration
 ```
 
 ### Everyday controls (in the shell)
@@ -183,30 +188,37 @@ for safe suggestions, and grant `agent-host` when the task needs host access.
 
 ## Install
 
-**One line on Linux or macOS** (binary, exact managed agent runtime, and guided
-setup; ensures `zsh` is present when needed):
+**One line on Linux or macOS** installs the verified native binary and opens a
+working shell. Your commands work before you connect an AI account:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/billiondollarsolo/aishe/main/install.sh | sh -s -- --setup
+curl -fsSL https://raw.githubusercontent.com/billiondollarsolo/aishe/main/install.sh | sh -s -- --launch
 ```
 
 <details>
 <summary>Other ways to install (packages, cargo, from source)</summary>
 
 ```sh
-cargo binstall aishe                       # prebuilt binary via cargo-binstall
 sudo apt install ./aishe_<ver>_amd64.deb   # Debian/Ubuntu (.deb from the release)
 sudo dnf install ./aishe-<ver>-1.x86_64.rpm # Fedora/RHEL (.rpm from the release)
-cargo install --path .                     # from a checkout (needs Rust 1.88+)
+cargo install --path . --locked             # from a checkout (needs Rust 1.88+)
 ```
 
-Every tagged release attaches per-platform tarballs (`aishe-<target>.tar.gz` +
+The installer resolves the latest **published** GitHub release; a source checkout
+can contain newer features until its next release is published. The native engine
+needs no OpenCode download. Subscription OAuth setup installs its pinned legacy
+runtime only when selected; `--backend` opts into installation in advance. Use
+`--setup --launch` to connect during installation. The installer prints the exact
+executable path before setup if its directory is outside `PATH`.
+
+Every published release attaches per-platform tarballs (`aishe-<target>.tar.gz` +
 `.sha256`) for Linux x86_64/arm64 (gnu and static musl) and macOS arm64/x86_64,
 plus `.deb`/`.rpm` packages. Full guide: [docs/installation.md](docs/installation.md).
 </details>
 
-**Requirements:** `zsh` on `PATH` for the interactive shell (installer can add
-it); `bash` is enough for `aishe -c` and pipes. On Linux, functional
+**Requirements:** `zsh` on `PATH` for the full native interactive shell; the
+Bash integration provides the documented reduced tier. System packages are
+installed only with explicit authorization. On Linux, functional
 `bubblewrap` is the supported OS-isolation boundary for autonomous workspace
 actions. Prebuilt binaries target macOS and Linux — no Rust toolchain or
 separate OpenCode install required.
@@ -214,13 +226,16 @@ separate OpenCode install required.
 ## Quickstart
 
 ```sh
-aishe setup                                 # guided setup includes authentication
-aishe                                       # launch real zsh with aishe active
+aishe                                       # open now, no account required
+aishe setup                                 # connect or choose Connect later
 ```
 
 Then type real commands or plain English. Validate with `aishe doctor --probe`.
-Setup cannot modify the already-running parent shell — run `aishe` afterward (or
-install the optional hook). Walkthrough:
+Fresh installs keep your zsh configuration and plugins. Choose Clean AIShe or
+Bash integration in `/settings`; this setting applies to new shells. Exiting
+AIShe returns to the shell you launched it from. `aishe activate zsh` previews
+optional terminal activation; `--apply` writes a backed-up block and `--remove`
+reverses it. See [installation](docs/installation.md). Walkthrough:
 [docs/getting-started.md](docs/getting-started.md).
 
 **Where aishe keeps its files** (not always `~/.config/aishe` on macOS):
@@ -427,7 +442,7 @@ Native interactive startup files: `~/.aishe/leanrc` before widgets and
 | Logging | [docs/logging.md](docs/logging.md) |
 | Troubleshooting | [docs/troubleshooting.md](docs/troubleshooting.md) |
 | Architecture | [docs/architecture.md](docs/architecture.md) |
-| Product plan | [v0.8.0 release record](docs/releases/v0.8.0.md) · [implementation evidence and next queue](docs/design/NEXT_PRODUCT_UX_RELIABILITY_PLAN.md) · [design lifecycle index](docs/design/README.md) |
+| Product plan | [v1.1.0 candidate release record](docs/releases/v1.1.0.md) · [implementation evidence and next queue](docs/design/NEXT_PRODUCT_UX_RELIABILITY_PLAN.md) · [design lifecycle index](docs/design/README.md) |
 | **Index** | **[docs/README.md](docs/README.md)** |
 
 ## Development
