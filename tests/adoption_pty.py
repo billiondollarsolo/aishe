@@ -292,7 +292,8 @@ def internal_controls_outside_path():
                 shell.expect('"total_estimated_tokens"')
                 if profile == "bash":
                     shell.line("/auth")
-                    shell.expect("selected: none")
+                    shell.expect("connection: anthropic")
+                    shell.expect("auth: auto")
                 shell.line("printf 'OUTSIDE_PATH_%s\\n' COMPLETE")
                 shell.expect("OUTSIDE_PATH_COMPLETE")
                 shell.line("exit")
