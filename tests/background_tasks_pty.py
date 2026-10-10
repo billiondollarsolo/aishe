@@ -336,12 +336,44 @@ def browser_views_and_acknowledgement():
         shell.drain(.15)
         assert probe(shell, fixture.root)[:2] == before[:2], "browser changed editing buffer/cursor"
         assert termios.tcgetattr(shell.master) == flags, "browser did not restore terminal modes"
-        badge = probe(shell, fixture.root)[3]
-        assert "1 ready" in badge and "2 ready" not in badge, "viewed completion was not acknowledged"
-        metadata = json.loads((fixture.data / "background-tasks" / task_id / "metadata.json").read_text())
+        metadata_path = fixture.data / "background-tasks" / task_id / "metadata.json"
+        index_path = fixture.data / "background-tasks/status-v1.json"
+        metadata = json.loads(metadata_path.read_text())
         assert metadata.get("seen_revision"), "opening did not persist the exact seen revision"
+        index = json.loads(index_path.read_text())
+        entry = next(row for row in index["entries"] if row["id"] == task_id)
+        assert metadata["seen_revision"] == entry["result_revision"], "opening persisted a different result revision"
         assert not metadata.get("reviewed_revision"), "opening silently marked the result reviewed"
         assert fixture.persisted(task_id)["state"] == "completed", "viewing changed durable task lifecycle"
+
+        # Durable acknowledgement is synchronous; the watcher and ZLE deliver
+        # its badge update asynchronously while preserving the editing buffer.
+        badge = None
+
+        def acknowledgement_visible():
+            nonlocal badge
+            badge = probe(shell, fixture.root)[3]
+            return badge == "1 ready"
+
+        try:
+            wait_until(shell, acknowledgement_visible, "viewed completion badge becomes exactly 1 ready")
+        except AssertionError as error:
+            diagnostics = {"last_badge": badge}
+            for label, path in (
+                ("metadata", metadata_path),
+                ("record", fixture.data / "background-tasks" / task_id / "record.json"),
+                ("status_index", index_path),
+            ):
+                try:
+                    with path.open("rb") as file:
+                        content = file.read(32_769)
+                    diagnostics[label] = content[:32_768].decode("utf-8", errors="replace")
+                    if len(content) > 32_768:
+                        diagnostics[label] += "\n[truncated after 32768 bytes]"
+                except OSError as read_error:
+                    diagnostics[label] = "unavailable: " + str(read_error)
+            raise AssertionError(str(error) + "\n" + json.dumps(diagnostics, indent=2)) from error
+        assert "1 ready" in badge and "2 ready" not in badge, "viewed completion was not acknowledged"
         shell.send("\x05\r")
         wait_until(shell, lambda: (fixture.root / "browser-effect").exists(), "browser-restored draft effect")
         assert (fixture.root / "browser-effect").read_text().strip() == "BROWSER_DRAFT"

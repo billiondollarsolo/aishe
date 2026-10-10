@@ -301,7 +301,7 @@ fn spawn_background_watcher(
                             }
                         }
                     }
-                    std::thread::park_timeout(std::time::Duration::from_secs(5));
+                    std::thread::park_timeout(std::time::Duration::from_secs(2));
                 }
             })?,
     ))

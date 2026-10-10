@@ -3,7 +3,7 @@
   "version": "1.1.0",
   "decision": "hold",
   "release_owner": "billiondollarsolo",
-  "production_source_sha256": "f416d5a35250229cdad4b338709491b524755429725790c4d6a0939061c29b38",
+  "production_source_sha256": "2f5f589ede707cad019dde31a1d71926fa19dd2844cab0641af8e6cdb46eea78",
   "qualification_profile_revision": "2026-10-10.1",
   "prepared_at": "2026-10-10",
   "published": false,
@@ -11,7 +11,7 @@
     "state": "not_run",
     "source_commit": null,
     "ci_run_id": null,
-    "reason": "P7 startup, native TLS and corrected macOS MCP checks passed, but original Linux cancellation acknowledged Ctrl-C then printed the forbidden answer without a final cancelled receipt. P8 changes production request ownership, reply publication, guarded answer/transcript output and CANCELLED grant handling; it requires fresh committed-source local/native/UI/exact-main CI proof. All original failed candidates and scoped passes remain retained."
+    "reason": "P8 both original startup, native TLS and cancellation gates passed, but both hosted background acknowledgment assertions and local partial native background-ui failed. Both release identity manifests were absent; only 16 unreviewed captures exist. P9 restores the intended two-second watcher and synchronizes the unchanged exact one-ready assertion on durable Seen/fresh prompt evidence; it requires new same-source local/native/UI/exact-main CI qualification. All previous failures and scoped passes remain retained."
   },
   "dispositions": {
     "live_providers": {
@@ -2183,6 +2183,317 @@
           }
         ],
         "scope": "Actual local captures retained; intentionally not rendered or personally reviewed. No P7 visual pass or external manual qualification."
+      }
+    },
+    {
+      "branch_commit": "78d38b36e2df4fabf32ecc9c13abd74d16f4aa38",
+      "tested_commit": "78d38b36e2df4fabf32ecc9c13abd74d16f4aa38",
+      "source_tree": "0405e45f1f211935877c47bfc81588812741fc27",
+      "production_source_sha256": "f416d5a35250229cdad4b338709491b524755429725790c4d6a0939061c29b38",
+      "ci_run_id": 38038039740,
+      "ci_url": "https://github.com/billiondollarsolo/aishe/actions/runs/38038039740",
+      "ci_event": "push",
+      "state": "fail",
+      "linux_added_p95_ms": 1.526,
+      "macos_added_p95_ms": 9.905,
+      "reason": "Nine of eleven original maintained jobs passed. Both native jobs failed the exact one-ready background badge acknowledgment assertion, each eight of nine scenarios passing; the original badge value was not printed and remains unknown. Both original startup gates, native TLS tests and cancellation PTYs passed, but both release identity manifests and later MCP/task suites were absent/skipped. Local core passed 1138 Rust tests/38 targets; local native stopped after 19 commands, 18 pass and one background-ui failure. Only 16 background captures were retained, without rendering/personal review. P8 inadvertently changed the production watcher from two to five seconds during test-bound edits. P9 restores two seconds and verifies durable Seen state before one bounded fresh prompt probe; no startup/TLS/cancellation pass replaces the failed acknowledgment gates.",
+      "hosted_evidence": {
+        "state": "fail",
+        "required_jobs_passed": 9,
+        "required_jobs_total": 11,
+        "run_attempt": 1,
+        "summary_file": "hosted-performance-summary.json",
+        "summary_sha256": "444b00428692c5129ea7154433b4aa04933b8ab954c9b869f1fadd6243d73661",
+        "performance_pass": true,
+        "ci_pass": false,
+        "release_qualified": false,
+        "original_uploaded_artifacts": {
+          "macOS": {
+            "artifact_id": 11664912281,
+            "url": "https://github.com/billiondollarsolo/aishe/actions/runs/38038039740/artifacts/11664912281",
+            "archive_sha256": "10ed74bf05e827dba2aa7732461bb828ed65ecbfd1cade3c64cf4b2bb60cde6c",
+            "release_identity_manifest_present": false,
+            "binary_identity": {
+              "version": "1.1.0",
+              "commit": "78d38b3",
+              "date": "2026-10-10"
+            },
+            "binary_sha256": "aca6e0fb660eb6e6be1d262b079a34fac6e22bfccccdeb460ae6d13ff962ff65",
+            "benchmark_file": "direct-shell-benchmark-20261010T083253Z.json",
+            "benchmark_sha256": "60d27637e1f8e2f02d192b41297bd44cf1c8ff23a53dd3c28ad82d1bf6e181f5"
+          },
+          "Linux": {
+            "artifact_id": 11664981386,
+            "url": "https://github.com/billiondollarsolo/aishe/actions/runs/38038039740/artifacts/11664981386",
+            "archive_sha256": "e93761ebc7f4dafd4619bd18e6939b22c254dced3486981fb2f37880a84c256b",
+            "release_identity_manifest_present": false,
+            "binary_identity": {
+              "version": "1.1.0",
+              "commit": "78d38b3",
+              "date": "2026-10-10"
+            },
+            "binary_sha256": "69e78bc8555b308e93e15bd23c88cbd13e98c30897bc94154d345aa3fd51f766",
+            "benchmark_file": "direct-shell-benchmark-20261010T083204Z.json",
+            "benchmark_sha256": "39aeaca1ab223f8cddd83231ab6d272b0ddca2e792d1eededa858e44abc9c248"
+          }
+        },
+        "completed_job_logs": {
+          "manifest_file": "completed-job-log-manifest.json",
+          "manifest_sha256": "5733a20aa0a83ea9d5f5d0041f4b8feb61ceff5fc7f8e3cb077cd5837b436b85",
+          "all_11_full_completed_logs_preserved": true
+        },
+        "strict_sample": {
+          "commands": 100,
+          "warmup": 10,
+          "backend_started": false,
+          "allowed_added_p95_ms": 10.0
+        },
+        "actual_main_negative_validation": {
+          "file": "actual-main-negative-validation.json",
+          "sha256": "9f827074105b5f203ddd06ecb0f1c6024b296504792120cd981457358ea73000",
+          "passed": false,
+          "problems": [
+            "exact-source CI did not complete successfully",
+            "required CI job missing or unsuccessful: Native shell (macos-latest)",
+            "required CI job missing or unsuccessful: Native shell (ubuntu-latest)",
+            "Linux: one candidate identity manifest is required",
+            "macOS: one candidate identity manifest is required"
+          ]
+        },
+        "scope": "Original completed attempt 1. Both identity manifests genuinely absent; neither synthesized. Scoped startup/TLS/cancellation passes, overall CI/release failure.",
+        "linux_original_raw_zsh_p95_ms": 1.757,
+        "linux_original_aishe_p95_ms": 3.283,
+        "macos_original_raw_zsh_p95_ms": 16.194,
+        "macos_original_aishe_p95_ms": 26.099
+      },
+      "badge_acknowledgement_failure": {
+        "failed_platforms": [
+          "Linux",
+          "macOS"
+        ],
+        "assertion_line": 340,
+        "assertion": "\"1 ready\" in badge and \"2 ready\" not in badge",
+        "observed_badge_text": null,
+        "background_refresh_interval_seconds": 5,
+        "original_failures": [
+          {
+            "platform": "Linux",
+            "job_id": 114172502365,
+            "job": "Native shell (ubuntu-latest)",
+            "stage": "Quiet background work and task browser",
+            "file": "tests/background_tasks_pty.py",
+            "scenario": "browser_views_and_acknowledgement",
+            "line": 340,
+            "assertion": "\"1 ready\" in badge and \"2 ready\" not in badge",
+            "error": "viewed completion was not acknowledged",
+            "actual_failed_badge_text": null,
+            "actual_failed_badge_text_unavailable_reason": "The original failure log did not print the badge value.",
+            "suite_cases_passed": 8,
+            "suite_cases_total": 9,
+            "original_failure_preserved": true,
+            "source_commit": "78d38b36e2df4fabf32ecc9c13abd74d16f4aa38",
+            "original_completed_log_sha256": "7e36b14ef1fab5c9930f96804c8f2e854faa29fd2243fb5774c829fe771a4039",
+            "original_completed_log_file": "native-linux-job-114172502365.log"
+          },
+          {
+            "platform": "macOS",
+            "job_id": 114172502425,
+            "job": "Native shell (macos-latest)",
+            "stage": "Quiet background work and task browser",
+            "file": "tests/background_tasks_pty.py",
+            "scenario": "browser_views_and_acknowledgement",
+            "line": 340,
+            "assertion": "\"1 ready\" in badge and \"2 ready\" not in badge",
+            "error": "viewed completion was not acknowledged",
+            "actual_failed_badge_text": null,
+            "actual_failed_badge_text_unavailable_reason": "The original failure log did not print the badge value.",
+            "suite_cases_passed": 8,
+            "suite_cases_total": 9,
+            "original_failure_preserved": true,
+            "source_commit": "78d38b36e2df4fabf32ecc9c13abd74d16f4aa38",
+            "original_completed_log_sha256": "04e42b409cd37cdcd564e1184791ee402551f80f45f0b4baeeff1a7715c6547f",
+            "original_completed_log_file": "native-macos-job-114172502425.log"
+          }
+        ],
+        "source_derived_diagnosis": "Production park_timeout changed unintentionally from two to five seconds while test scheduling bounds were expanded; P9 restores the original two-second cadence and synchronizes the fixture on durable Seen state before a fresh exact-count probe.",
+        "scope": "Actual failed exact one-ready assertions, with badge text unavailable; source diagnosis kept separate from observed output."
+      },
+      "local_qualification": {
+        "core": {
+          "state": "pass",
+          "command_count": 11,
+          "rust_tests": 1138,
+          "rust_targets": 38,
+          "file": "core-validation.json",
+          "sha256": "1f4f5bb42714f72fd59e77870a968fd1719808679f304944deaf134d5ae0a18b"
+        },
+        "native": {
+          "state": "fail",
+          "command_count": 19,
+          "passed_commands": 18,
+          "failed_commands": 1,
+          "expected_full_command_count": 37,
+          "last_command": "background-ui",
+          "file": "native-validation.json",
+          "sha256": "fb70de878b799b74209e902063241b79cfdec5853ae029f79021f26d33442d24",
+          "completed_utc": "2026-10-10T08:38:20.301500+00:00",
+          "binary_sha256": "e426da6be68fa9ec3550b758c6a5d821836843379b3b64b42be71d185fd01a1e",
+          "failed_background_ui_log": {
+            "file": "native-background-ui.log",
+            "sha256": "3964a0d129beda83d4bd865dd0192a6ff5aee539250053e1e44a20959ed16aa2"
+          }
+        },
+        "strict_startup": {
+          "file": "strict-startup.json",
+          "sha256": "6edb420340fc75f8d20066605d728cb9bf29e8105b318c85c8fe495008678e00",
+          "state": "pass",
+          "added_p95_ms": 1.406,
+          "commands": 100,
+          "warmup": 10,
+          "backend_started": false
+        },
+        "scope": "Completed core; failed partial native collection, not 37-command qualification."
+      },
+      "native_tls_activation": {
+        "state": "pass",
+        "report_file": "native-tls-activation-macOS.json",
+        "report_sha256": "cf54d6c238c711de1ab129e51e288c53abe75eaec7171072be0254b1d9f4157a",
+        "verification_file": "native-tls-activation-verification.json",
+        "verification_sha256": "1ba092743e58e3f8608960d141bfae60525c9bfb196a02128c2aeab2dfef02bf",
+        "original_artifact_id": 11664912281,
+        "actual_test_results": {
+          "platform_tls::tests::native_first_concurrent_https_and_untrusted_rejection": {
+            "executed": true,
+            "returncode": 0,
+            "bounded_failure": null,
+            "log_sha256": "d34e16c48a36253c47af9d71dca8d5c3b51a16c36244a63cf0ec01c6207a02f0",
+            "result": {
+              "status": "ok",
+              "passed": 1,
+              "failed": 0,
+              "ignored": 0,
+              "measured": 0
+            }
+          },
+          "platform_tls::tests::native_https_proxy_activates_for_http_target": {
+            "executed": true,
+            "returncode": 0,
+            "bounded_failure": null,
+            "log_sha256": "a67cc73cedeb8cf2eeafce4b43aa911dc739e1b90cd51bbb1a5b0e18caca994a",
+            "result": {
+              "status": "ok",
+              "passed": 1,
+              "failed": 0,
+              "ignored": 0,
+              "measured": 0
+            }
+          }
+        },
+        "compiled_link_records": [
+          {
+            "schema_version": 1,
+            "source_commit": "78d38b36e2df4fabf32ecc9c13abd74d16f4aa38",
+            "target": "aarch64-apple-darwin",
+            "baseline_min_os": 720896,
+            "probe_opt_level": "z",
+            "machine_outliner_disabled": true,
+            "delayed_frameworks": true,
+            "chained_fixups": true,
+            "flags": [
+              "-Wl,-delay_framework,CoreFoundation",
+              "-Wl,-delay_framework,Security",
+              "-Wl,-fixup_chains"
+            ],
+            "delayed_status": "verified",
+            "chained_status": "verified"
+          },
+          {
+            "schema_version": 1,
+            "source_commit": "78d38b36e2df4fabf32ecc9c13abd74d16f4aa38",
+            "target": "aarch64-apple-darwin",
+            "baseline_min_os": 720896,
+            "probe_opt_level": "z",
+            "machine_outliner_disabled": true,
+            "delayed_frameworks": true,
+            "chained_fixups": true,
+            "flags": [
+              "-Wl,-delay_framework,CoreFoundation",
+              "-Wl,-delay_framework,Security",
+              "-Wl,-fixup_chains"
+            ],
+            "delayed_status": "verified",
+            "chained_status": "verified"
+          }
+        ],
+        "two_exact_fresh_passing_tests_verified": true,
+        "companion_file_hashes_verified": true,
+        "product_binary_sha256": "aca6e0fb660eb6e6be1d262b079a34fac6e22bfccccdeb460ae6d13ff962ff65",
+        "product_binary_bytes": 8172656,
+        "test_executable_sha256": "252048371d1622c35d87fbca0b5128795f0c1f4e69526b08156c4d9b0d85b384",
+        "test_executable_bytes": 9498080,
+        "untrusted_http_requests": 0,
+        "http_redirect_requests": 1,
+        "trust_store_modified": false,
+        "paid_provider_used": false,
+        "scope": "Actual fresh two-test TLS pass; not overall release, MCP or older-OS execution proof."
+      },
+      "native_startup_attribution": {
+        "state": "recorded",
+        "qualification_substitute": false,
+        "report_file": "native-startup-diagnostic-macOS.json",
+        "report_sha256": "44fcad005e28459a13e32f54c38d8cec4df5c223faf0b8319e8123cf0747c05d",
+        "verification_file": "native-startup-diagnostic-verification.json",
+        "verification_sha256": "eced7276a9be71e489a2b2d4f63efd80881c1af014aaee74f6871f2e9f1ef545",
+        "verified_raw_rows": 700,
+        "case_count": 7,
+        "probe_count": 3,
+        "loader_log_count": 5
+      },
+      "cancellation_receipts": {
+        "state": "pass",
+        "receipts": [
+          {
+            "platform": "Linux",
+            "source_commit": "78d38b36e2df4fabf32ecc9c13abd74d16f4aa38",
+            "job_id": 114172502365,
+            "suite": "lean_cancel_pty.py",
+            "receipt": "PASS: lean Ctrl-C cancels delayed providers and child processes without stale FIFO replies",
+            "passed": true,
+            "original_completed_log_sha256": "7e36b14ef1fab5c9930f96804c8f2e854faa29fd2243fb5774c829fe771a4039",
+            "original_completed_log_file": "native-linux-job-114172502365.log"
+          },
+          {
+            "platform": "macOS",
+            "source_commit": "78d38b36e2df4fabf32ecc9c13abd74d16f4aa38",
+            "job_id": 114172502425,
+            "suite": "lean_cancel_pty.py",
+            "receipt": "PASS: lean Ctrl-C cancels delayed providers and child processes without stale FIFO replies",
+            "passed": true,
+            "original_completed_log_sha256": "04e42b409cd37cdcd564e1184791ee402551f80f45f0b4baeeff1a7715c6547f",
+            "original_completed_log_file": "native-macos-job-114172502425.log"
+          }
+        ],
+        "limits": [
+          "Guard applies to IPC answer/transcript sink; stderr diagnostics remain allowed.",
+          "Ctrl-C after a committed MODE reply may still be followed by NL; no universal postcommit cancellation claim."
+        ]
+      },
+      "mcp_lifecycle": {
+        "state": "not_run",
+        "reason": "Later step skipped after failed background UI; no original P8 MCP receipt."
+      },
+      "visual_review": {
+        "state": "not_run",
+        "captured_views": 16,
+        "rendered_views": 0,
+        "personally_viewed_views": 0,
+        "background_capture_collection": {
+          "file": "background-ui-captures.json",
+          "sha256": "aa384a5fa77b72be61bf3b57caea893e4ccbedaf7a38ff8085b027e2bbaeacec"
+        },
+        "task_interactions_capture_present": false,
+        "workflow_capture_present": false,
+        "scope": "Only 16 background captures retained, none rendered/personally reviewed; no 63-view or visual qualification pass."
       }
     }
   ]

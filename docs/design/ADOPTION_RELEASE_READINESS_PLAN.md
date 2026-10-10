@@ -883,3 +883,61 @@ gates and actual native TLS proof. The plan remains Active with all 38 A–F
 items unchecked, R1–R4 open, Hold, unpublished and external groups not_run.
 All thirteen earlier history entries remain unchanged; the fourteenth retains
 P7's completed original negative evidence alongside its scoped passes.
+
+### P8 background acknowledgment failures and pending P9
+
+Main `78d38b36e2df4fabf32ecc9c13abd74d16f4aa38`, tree
+`0405e45f1f211935877c47bfc81588812741fc27`, passed eleven local core commands
+and 1,138 Rust tests across 38 targets. Its local native run completed 19 commands:
+18 passed and background-ui failed. The failed suite passed eight of nine
+scenarios. Original local Linux startup passed at 1.406 ms added p95. Only 16
+background captures were retained; none were rendered or personally reviewed.
+Task-interaction and workflow captures were not produced. There is no full
+37-command native or 63-view visual pass for P8.
+
+Original exact-main [CI 38038039740](https://github.com/billiondollarsolo/aishe/actions/runs/38038039740)
+completed on attempt one with nine of eleven jobs passing. Both native jobs
+failed `browser_views_and_acknowledgement` at `background_tasks_pty.py:340`,
+the exact assertion `"1 ready" in badge and "2 ready" not in badge`; both suites
+passed eight of nine scenarios. The original failure logs did not print the
+badge value, so no actual count is invented. Both release identity manifests
+and later MCP/task suites were genuinely absent or skipped. The actual main
+validator independently refused this candidate with five problems covering
+failed CI/jobs and both missing identity manifests.
+
+Original Linux startup passed at 1.526 ms added p95, raw zsh 1.757 ms and AIShe
+3.283 ms. Original macOS startup passed at 9.905 ms added p95, raw zsh 16.194 ms
+and AIShe 26.099 ms. Both retain the unchanged 100-command, ten-warmup,
+no-backend, clean-source contract and 10 ms allowance. The original
+[Linux artifact](https://github.com/billiondollarsolo/aishe/actions/runs/38038039740/artifacts/11664981386)
+and [macOS artifact](https://github.com/billiondollarsolo/aishe/actions/runs/38038039740/artifacts/11664912281)
+retain exact benchmark bytes; no identity manifest is synthesized. Both actual
+fresh native TLS tests passed with one passed, zero failed and zero ignored
+each, zero untrusted HTTP requests and one redirect request. Actual product/test
+copies and opt-z/outliner-disabled/delayed/chained records were verified, with
+unchanged macOS 11 minimum, delayed framework edges and generic64 format 2.
+Diagnostics retain 700 rows, seven cases, three controls and five loader logs.
+Both original cancellation PTYs passed. These remain scoped P8 passes.
+
+Source review identified an unintended production change: the background
+watcher's `park_timeout` changed from two to five seconds while test scheduling
+bounds were expanded. P9 restores its original two-second cadence. The fixture
+checks durable Seen metadata against the terminal result revision before a
+bounded wait for fresh prompt probes. It uses Seen rather than Reviewed, preserves all
+ten original browser assertions and adds the durable revision assertion. The
+fresh probe still requires exactly one ready task, preserves the draft/cursor
+and emits useful failure diagnostics. It adds no sleep, retry or relaxed count.
+The absent original badge text remains separate from this source diagnosis.
+
+The P8 cancellation correction and its boundaries remain: guarded IPC
+answer/transcript output is suppressed after acknowledgment; stderr diagnostics
+remain allowed. Publishing replies are immutable, so a Ctrl-C after a MODE
+reply commits can still be followed by NL. P9 changes only the watcher interval
+and background fixture synchronization; no current P9 qualification is claimed.
+
+P9 requires new committed-source core, all 37 native gates, fresh source-bound
+personally inspected UI evidence and exact-main CI with both original startup
+gates and native TLS proof. Active, all 38 A–F unchecked, R1–R4 open, Hold,
+unpublished and external not_run remain unchanged. The fifteenth history entry
+preserves P8's actual failures and scoped passes; all fourteen earlier entries
+remain unchanged.
