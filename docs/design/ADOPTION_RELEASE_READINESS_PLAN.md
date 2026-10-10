@@ -54,6 +54,7 @@ The adoption review found the following concrete problems:
 | AD-20 | Absolute-path installer launch leaves internal shell controls dependent on PATH | `/setup` can silently fail before the new executable directory is configured |
 | AD-21 | Setup's saved next-step examples use fixed aligned columns | At 32 columns, explanations split into isolated letters and unreadable fragments |
 | AD-22 | Settings immediately redraws its menu after showing a prompt preview | On an 18-row terminal, the preview scrolls away before the user can inspect it |
+| AD-23 | A specific-action approval prints its full request above an unbounded decision menu | At 32 columns and 18 rows, the exact command scrolls away while the approval choices remain visible |
 
 ### Existing evidence and its limits
 
@@ -119,7 +120,10 @@ supported by the native prompt, including honest unavailable usage/cost values.
 
 Retain quiet task counts and the Needs you inbox. Questions must show which
 task needs the answer. Approvals remain bound to the exact action and default
-to leaving work waiting. Follow-ups show queued and received states and remain
+to leaving work waiting. Full action arguments and effective scope must remain
+inspectable through a bounded, scrollable review at narrow and short sizes;
+choosing to continue that review must not grant permission. Follow-ups show
+queued and received states and remain
 deliverable to a running task without disrupting the foreground command line.
 
 Task details prioritize status, task identity, model/connection, effective
@@ -227,6 +231,8 @@ The checkbox status will be reconciled with actual candidate evidence.
 - [ ] C5 Separate Seen from explicit Reviewed while retaining old decisions and quiet archives.
 - [ ] C6 Qualify unknown/partial pricing, long results, explicit review, new attention,
   questions/approvals, follow-up receipts, and recorded-check failure/staleness.
+- [ ] C7 Keep the full exact-action approval request inspectable at 32/58 columns
+  and 18 rows, with explicit continuation, cancellation, and a safe default decision.
 
 ### D. Script and command compatibility
 
@@ -255,6 +261,26 @@ The checkbox status will be reconciled with actual candidate evidence.
 - [ ] F5 Review the final diff for permission regressions, stale claims, migrations, and startup behavior.
 - [ ] F6 Open reviewable PR work and qualify the resulting main commit after authorized merging.
 - [ ] F7 Leave public release publication pending with a concrete qualification record.
+
+### R. Publication qualification and release decision
+
+These tasks remain separate from completion of the A–F implementation milestone.
+
+- [ ] R1 Record source-bound paid-provider qualification, or an explicitly
+  accepted owner/reason/risk/expiry disposition. Missing credentials or budget
+  remain `not_run`; deterministic supported-provider failures are not passes.
+- [ ] R2 Record named graphical terminal/version/OS manual interaction evidence,
+  or accepted scoped owner/reason/risk/expiry dispositions. Recorded synthetic
+  PTYs do not establish manual emulator passes.
+- [ ] R3 Record final-source long-soak evidence, or an accepted
+  owner/reason/risk/expiry disposition. Bounded runtime CI does not establish
+  a long-duration soak pass.
+- [ ] R4 Reconcile the release owner's decision and source-bound record; require
+  successful maintained push CI and unexpired Linux/macOS evidence for the
+  exact full release commit, including later documentation/decision changes.
+  Keep `decision: hold` and `published: false` until publication requirements
+  are met. Run the release workflow only for a later authorized publication
+  and record its actual outcome separately.
 
 ### Implementation and evidence map
 
@@ -373,3 +399,31 @@ ordinary-command admission. Keep the same admission logic in a small entry
 function and call the rich orchestration only after a miss, preventing that
 unnecessary allocation. This is observed instruction-level work removed, not
 a claim about its macOS wall-time gain; the unchanged end-to-end gate decides.
+
+The clean `9388e7ee3615c57e4affd3ad1fad29f0875f5fc7` local candidate
+passed all recorded core checks (1,114 Rust tests across 37 targets) and all
+37 native command checks. Its original Linux startup gate measured 1.312 ms
+added p95, with 100 commands, ten warmups and no backend start. Actual setup,
+settings and discovery captures confirmed AD-21 and AD-22 were corrected.
+An additional focused approval probe then exposed AD-23: at 32 columns and
+18 rows, the exact command left the visible decision viewport. The safe default
+still left the action waiting, but that is insufficient for usable approval
+review. Keep those source-bound observations and qualify the bounded-action
+review correction on new source; automated passes alone do not erase this
+observed UI failure.
+
+Hosted `9388e7e` CI run `38022810493` completed with ten of eleven jobs
+passing. Linux passed the original startup gate at 1.616 ms added p95. macOS
+passed its functional checks but failed startup at 10.319 ms against the
+unchanged 10 ms limit, so its release identity manifest correctly refused
+qualification. The later diagnostic measured roughly 4.850 ms of additional
+child CPU; avoiding the config read saved only 0.201 ms. This does not provide
+comfortable release headroom. The next production build uses size optimization
+(`opt-level = "s"`) with full LTO and one code-generation unit, preserving
+unwinding, native TLS trust and the single-file distribution. Record actual
+binary size and unchanged platform gate results before claiming improvement.
+
+Candidate `a98a3bc270520ff771de98b57bbe4140e7d38a45` also retains its
+earlier compile failure in CI run `38022690647`: the Settings path accessed
+`glyphs` as a field rather than calling `glyphs()`. Compilation stopped before
+startup measurement; that candidate has no recorded startup pass.

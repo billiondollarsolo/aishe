@@ -115,6 +115,12 @@ task. Approval is one-shot for the exact proposed action; it does not change
 scope, network access, or policy. The interactive approval menu defaults to
 **Leave for later**.
 
+Review the complete action and its scope in the scrollable preview before
+deciding. Up/Down and Home/End navigate the request; Enter opens the separate
+decision menu and grants nothing by itself. **Review exact action** returns
+to the preview. Escape leaves the request pending. Plain terminal mode offers
+the same review through text pagination.
+
 Follow-ups are **queued** until the worker durably receives them at a safe
 boundary. Edit and remove work only while the message is queued and delivery
 has not begun. A running command can finish before steering is received; use

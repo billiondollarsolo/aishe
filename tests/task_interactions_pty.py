@@ -42,10 +42,10 @@ zle -N _background_fixture_probe _interaction_probe_with_terminal
         self.env["PATH"] = str(bin_dir) + ":" + self.env.get("PATH", "")
         self.shells = []
 
-    def shell(self, cols=100, browser=None):
+    def shell(self, cols=100, browser=None, rows=28):
         args = [binary(), "zsh"] if browser is None else [binary(), "task", "browse", browser]
         launcher = ["/bin/sh", "-c", 'cd "$1" && shift && exec "$@"', "fixture", str(self.work), *args]
-        shell = Pty(self.env, cols=cols, rows=28, argv=launcher)
+        shell = Pty(self.env, cols=cols, rows=rows, argv=launcher)
         self.shells.append(shell)
         return shell
 
@@ -165,6 +165,9 @@ def action_approval_is_specific_and_defaults_to_no():
         assert not marker.exists(), "viewing an approval executed it"
         capture(shell, "Exact action awaiting approval")
         shell.send("u")
+        shown(shell, "Review exact action")
+        capture(shell, "Complete exact action before the approval decision")
+        shell.send("\r")
         shown(shell, "Specific action approval")
         capture(shell, "Specific action approval defaults to Leave for later")
         # An empty/default choice cannot grant permission.
@@ -173,6 +176,8 @@ def action_approval_is_specific_and_defaults_to_no():
         assert not marker.exists() and len(fixture.loopback.calls) == 1, "default UI choice approved an action"
         assert fixture.show(task_id)["state"] == "waiting"
         shell.send("u")
+        shown(shell, "Review exact action")
+        shell.send("\r")
         shown(shell, "Specific action approval")
         shell.send("\x1b[H\r")
         wait_until(shell, marker.exists, "specific approved action")
@@ -189,6 +194,119 @@ def action_approval_is_specific_and_defaults_to_no():
         print("  ok   approval shows the exact action; default choice keeps it pending; explicit approval runs once", flush=True)
     finally:
         fixture.close()
+
+
+def narrow_exact_action_review_is_complete_and_defaults_to_leave():
+    for cols, static in ((58, False), (32, False), (32, True)):
+        command = "printf '%s\\n' 'NARROW   EXACT  SPACES' > exact-approved-effect; "
+        command += "; ".join(f"printf '%s' 'inspect-{index:02}' > /dev/null" for index in range(12))
+        command += "; printf '%s\\n' 'ACTION_TAIL_PROOF' >> exact-approved-effect"
+
+        def choose(index, payload):
+            if index == 0:
+                return response(tool("request_approval", {
+                    "tool": "run_command", "arguments": {"command": command},
+                    "reason": "NARROW_APPROVAL_PROOF inspect the whole action"}, "narrow-approval"))
+            if index == 1:
+                assert "approved" in input_text(payload).lower(), input_text(payload)
+                return response(tool("run_command", {"command": command}, "narrow-approved-action"))
+            assert index == 2, index
+            return response(text="NARROW_APPROVED_RESULT_PROOF exact action ran once")
+
+        fixture = UiFixture(f"narrow-approval-{cols}-{static}", choose)
+        try:
+            if static:
+                fixture.env["AISHE_MOTION"] = "static"
+            marker = fixture.work / "exact-approved-effect"
+            task_id = fixture.start("NARROW_APPROVAL_TASK inspect exact action")
+            waiting = fixture.waiting(task_id)
+            request = waiting["mailbox"]["requests"][0]
+            binding = request["binding"]
+            shell = fixture.shell(cols=cols, rows=18, browser=task_id)
+            view_cols = cols
+
+            def fresh(text, keys):
+                start = len(shell.plain())
+                shell.send(keys)
+                shown(shell, text, start, 8)
+                return start
+
+            def open_review():
+                if static:
+                    fresh("Review exact action", "respond\r\r")
+                else:
+                    fresh("Review exact action", "u")
+
+            def tail_review():
+                # Return to the start so End must paint a new tail frame even
+                # after a resize or an earlier tail inspection.
+                shell.send("home\r" if static else "\x1b[H")
+                shell.drain(.2)
+                start = len(shell.plain())
+                shell.send("end\r" if static else "\x1b[F")
+                # A cell-wrapped marker can cross rows; inspect the new frame
+                # bytes, without borrowing an earlier details preview.
+                wait_until(shell, lambda: "ACTION_TAIL_PROOF" in "".join(
+                    line.removeprefix("  ") for line in shell.plain()[start:].splitlines()),
+                    "complete exact action tail in the review viewport", 8)
+                capture(shell, f"Exact approval tail at {view_cols}x18; " + ("static" if static else "live"))
+
+            shown(shell, "Task actions" if static else "Task details")
+            open_review()
+            shown(shell, "d choices | b back" if static else "Enter choices | Esc back")
+            capture(shell, f"Bounded exact approval identity at {cols}x18; " + ("static" if static else "live"))
+            if cols == 58 and not static:
+                for view_cols in (32, 58):
+                    start = len(shell.plain())
+                    shell.resize(cols=view_cols, rows=18)
+                    shown(shell, "Review exact action", start, 8)
+                    tail_review()
+                    assert not marker.exists() and len(fixture.loopback.calls) == 1
+                    assert fixture.show(task_id)["mailbox"]["requests"][0]["binding"] == binding
+            tail_review()
+            fresh("Specific action approval", "d\r" if static else "\r")
+            shown(shell, "Review exact action")
+            capture(shell, f"Exact approval choices default to Leave at {cols}x18; " + ("static" if static else "live"))
+            fresh("Task actions" if static else "Task details", "\r")
+            assert not marker.exists() and len(fixture.loopback.calls) == 1
+            pending = fixture.show(task_id)
+            assert pending["state"] == "waiting"
+            assert pending["mailbox"]["requests"][0]["binding"] == binding
+
+            open_review()
+            tail_review()
+            fresh("Specific action approval", "d\r" if static else "\r")
+            # Return from the decision picker to complete context; this grants
+            # no permission and retains the same task/request/action binding.
+            fresh("Review exact action", "3\r" if static else "\x1b[A\r")
+            assert not marker.exists() and len(fixture.loopback.calls) == 1
+            fresh("Task actions" if static else "Task details", "b\r" if static else "\x1b")
+            assert fixture.show(task_id)["mailbox"]["requests"][0]["binding"] == binding
+
+            if not static:
+                open_review()
+                fresh("Task details", "\x04")
+                assert not marker.exists() and len(fixture.loopback.calls) == 1
+                assert fixture.show(task_id)["state"] == "waiting"
+                assert fixture.show(task_id)["mailbox"]["requests"][0]["binding"] == binding
+
+            open_review()
+            tail_review()
+            fresh("Specific action approval", "d\r" if static else "\r")
+            shell.send("1\r" if static else "\x1b[H\r")
+            wait_until(shell, marker.exists, "same explicitly approved exact action", 12)
+            finished = fixture.finish(task_id)
+            assert marker.read_text() == "NARROW   EXACT  SPACES\nACTION_TAIL_PROOF\n"
+            assert finished["state"] == "completed" and finished["native_task_id"] == waiting["native_task_id"]
+            consumed = finished["mailbox"]["requests"][0]
+            assert consumed["id"] == request["id"] and consumed["binding"] == binding
+            assert consumed["status"] == "consumed" and len(fixture.loopback.calls) == 3
+            if static:
+                assert "\x1b" not in shell.transcript, "static action review emitted ANSI controls"
+            fixture.loopback.assert_ok()
+        finally:
+            fixture.close()
+    print("  ok   complete 58/32x18 action review scrolls and returns safely; live/static defaults grant nothing; exact approval runs once", flush=True)
 
 
 def recorded_results_show_checks_and_unresolved_work():
@@ -450,6 +568,7 @@ def native_session_budget_blocks_missing_or_legacy_usage_before_more_http():
 def main():
     scenarios = [question_inbox_answer_preserves_the_editing_draft,
                  action_approval_is_specific_and_defaults_to_no,
+                 narrow_exact_action_review_is_complete_and_defaults_to_leave,
                  recorded_results_show_checks_and_unresolved_work,
                  live_followup_shows_queued_then_received,
                  naming_pinning_archive_and_persistent_review_are_unobtrusive,

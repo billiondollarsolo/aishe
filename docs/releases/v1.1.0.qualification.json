@@ -3,7 +3,7 @@
   "version": "1.1.0",
   "decision": "hold",
   "release_owner": "billiondollarsolo",
-  "production_source_sha256": "ba06be7f86a6ac64050d8325e01af0ecc52ba98b33433e775b8d0c2c5e39b4b4",
+  "production_source_sha256": "f89f7835f4cc63cf176f5eb0ee06841227a09c4de3845652a896e4860ba8dfac",
   "qualification_profile_revision": "2026-10-10.1",
   "prepared_at": "2026-10-10",
   "published": false,
@@ -72,6 +72,24 @@
       "linux_added_p95_ms": 1.187,
       "macos_added_p95_ms": 11.145,
       "reason": "Original macOS startup SLO failed; generated Trust help was stale on both native jobs, and managed runtime toolchain download timed out before tests. New source includes help/UI corrections and full LTO with one code-generation unit; retained diagnostic passes do not replace this failure."
+    },
+    {
+      "branch_commit": "a98a3bc270520ff771de98b57bbe4140e7d38a45",
+      "tested_commit": null,
+      "ci_run_id": 38022690647,
+      "state": "fail",
+      "linux_added_p95_ms": null,
+      "macos_added_p95_ms": null,
+      "reason": "Static Settings preview used glyphs as a field instead of a method. Compilation failed before startup measurement; no benchmark pass exists for this source."
+    },
+    {
+      "branch_commit": "9388e7ee3615c57e4affd3ad1fad29f0875f5fc7",
+      "tested_commit": "6c9138f2b59ea1beebd516373861694a107b9914",
+      "ci_run_id": 38022810493,
+      "state": "fail",
+      "linux_added_p95_ms": 1.616,
+      "macos_added_p95_ms": 10.319,
+      "reason": "All functional jobs passed but original macOS startup SLO failed. A focused actual32x18approval probe also showed the exact command outside the decision viewport. Corrected action review and size-optimized production source require new qualification; no unchanged retry replaces either failure."
     }
   ]
 }
