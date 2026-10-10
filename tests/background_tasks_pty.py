@@ -583,7 +583,7 @@ def long_results_show_authority_scroll_and_honest_cost():
             shown(shell, "Esc")
             initial = shell.plain()
             if "RESULT_LINE_0" in initial:
-                for authority in ("Model:", "Scope:", "Source:", "Time limit:", "Recorded checks:"):
+                for authority in ("Model:", "Scope:", "Source:", "Time limit:", "No recorded checks"):
                     assert initial.index(authority) < initial.index("RESULT_LINE_0"), "response displaced saved authority or checks"
             capture(shell, f"Long task authority and scroll cues at {cols} columns")
             for _ in range(12):
@@ -606,7 +606,7 @@ def long_results_show_authority_scroll_and_honest_cost():
             assert snapshot.index("Model:") < snapshot.index("Latest response"), snapshot
             assert snapshot.index("Scope:") < snapshot.index("Latest response"), snapshot
             assert snapshot.index("Time limit:") < snapshot.index("Latest response"), snapshot
-            assert snapshot.index("Recorded checks:") < snapshot.index("Latest response"), snapshot
+            assert snapshot.index("No recorded checks") < snapshot.index("Latest response"), snapshot
         fixture.assert_quiet()
         print("  ok   long results retain authority first, narrow scroll cues and End; legacy/partial costs are honest")
     finally:

@@ -250,13 +250,15 @@ def live_followup_shows_queued_then_received():
                    "UI persists the follow-up")
         queued = fixture.show(task_id)["mailbox"]["followups"][0]
         assert queued["status"] == "queued" and not finished_effect.exists(), queued
-        shown(shell, "queued")
+        shown(shell, "Follow-ups: 1 queued")
+        shown(shell, "0 received")
         capture(shell, "Live follow-up queued during command")
         finished = fixture.finish(task_id)
         entry = finished["mailbox"]["followups"][0]
         assert entry["status"] == "received" and entry.get("received_at_ms"), finished
         assert finished_effect.exists()
-        shown(shell, "received", timeout=8)
+        shown(shell, "Follow-ups: 0 queued", timeout=8)
+        shown(shell, "1 received")
         shell.send("\x1b[F")
         shown(shell, "LIVE_UI_RESULT_PROOF", timeout=8)
         capture(shell, "Live follow-up received after safe boundary")
