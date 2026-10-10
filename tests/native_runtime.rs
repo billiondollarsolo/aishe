@@ -172,7 +172,7 @@ fn write(id: &str, path: &str) -> ToolCall {
 
 fn run(
     fixture: &Fixture,
-    provider: &Script,
+    provider: &dyn Provider,
     config: &Config,
     interrupt: &AtomicBool,
 ) -> aishe::agent::NativeTurnOutcome {
