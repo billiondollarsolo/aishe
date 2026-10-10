@@ -105,7 +105,7 @@ fn generated_shell_artifacts_match_the_reviewed_byte_snapshots() {
         (
             "bash init",
             bash_script(),
-            "96b8ec96109b00da5e998670ca743b442149370d2165e5e7214a6a493644ed95",
+            "4d12399ad29e64c69bb5827bbe6c37175aab88cf724270bbb400af966891732d",
         ),
         (
             "wrapper zshenv",
@@ -115,7 +115,7 @@ fn generated_shell_artifacts_match_the_reviewed_byte_snapshots() {
         (
             "wrapper zshrc",
             wrapper_zshrc(),
-            "661c0c2595baa42409cf823f18c33335f43a567348ea2ca950cb57fcb14625f3",
+            "b941f6c1306eaa360fe67df55c1e407447fa8720c5b5226b90e8d11f49b2f1ff",
         ),
     ] {
         assert_eq!(digest(&rendered), expected, "unexpected {name} byte drift");
@@ -332,7 +332,7 @@ fn bash_script_has_fix_command_key() {
     assert!(s.contains("__aishe_fix"));
     assert!(s.contains("__aishe_toggle_details"));
     assert!(s.contains(r#"bind -x '"\C-o": __aishe_toggle_details'"#));
-    assert!(s.contains("command aishe reset"));
+    assert!(s.contains(r#"command "$_AISHE_CLI_BIN" reset"#));
     assert!(s.contains(r#"bind -x '"\C-x\C-f": __aishe_fix'"#));
     assert!(s.contains("AISHE_AUTODIAGNOSE"));
     assert!(s.contains("AISHE_FAILURE_HINTS"));
@@ -404,7 +404,9 @@ fn bash_script_cleans_up_temp_files_on_exit() {
 #[test]
 fn bash_auto_fallback_uses_main_shell_handoff() {
     let s = script("bash").unwrap();
-    assert!(s.contains(r#"AISHE_PENDING_FILE="$AISHE_PENDING_FILE" command aishe --auto-line"#));
+    assert!(s.contains(
+        r#"AISHE_PENDING_FILE="$AISHE_PENDING_FILE" command "$_AISHE_CLI_BIN" --auto-line"#
+    ));
     assert!(s.contains(r#"[ "$action" = run ]"#));
 }
 
@@ -670,7 +672,7 @@ fn bash_script_has_handle_and_force_nl() {
     assert!(s.contains("printf 'suggest\\n%s\\n' \"$line\""));
     assert!(s.contains("__aishe_capture_suggestion"));
     assert!(s.contains("suggest)\n      if __aishe_capture_suggestion"));
-    assert!(!s.contains("$(set +m; command aishe --suggest-line"));
+    assert!(!s.contains(r#"$(set +m; command "$_AISHE_CLI_BIN" --suggest-line"#));
     assert!(s.matches("set +m").count() >= 5);
 }
 

@@ -170,11 +170,11 @@ pub fn run_turn(
     let baseline_spent_usd = snapshot.usage.cost_usd.or_else(|| {
         price.map(|price| {
             crate::usage::cost(
-                crate::usage::Usage {
-                    input: snapshot.usage.input_tokens,
-                    output: snapshot.usage.output_tokens,
-                    requests: 0,
-                },
+                crate::usage::Usage::reported(
+                    snapshot.usage.input_tokens,
+                    snapshot.usage.output_tokens,
+                    0,
+                ),
                 price,
             )
         })
@@ -364,6 +364,7 @@ pub fn run_turn(
     let text = collect_text(&events);
     let reasoning = collect_reasoning(&events);
     let usage = collect_usage(&events);
+    let metered_usage = metered_usage(&events);
     audit_managed_response(
         config,
         &options,
@@ -373,6 +374,7 @@ pub fn run_turn(
         &text,
         &reasoning,
         &usage,
+        &metered_usage,
         started_at.elapsed().as_millis(),
     );
     Ok(TurnOutcome {
@@ -459,12 +461,20 @@ fn audit_managed_response(
     response: &str,
     reasoning: &str,
     usage: &UsageDelta,
+    metered_usage: &crate::usage::Usage,
     duration_ms: u128,
 ) {
     let mut fields = serde_json::json!({
         "response": response,
         "tokens_in": usage.input_tokens,
         "tokens_out": usage.output_tokens,
+        "requests": metered_usage.requests,
+        "unreported_requests": metered_usage.unreported_requests,
+        "reported_tokens_in": metered_usage.reported_input,
+        "reported_tokens_out": metered_usage.reported_output,
+        "attributed_requests": metered_usage.attributed_requests,
+        "attributed_tokens_in": metered_usage.attributed_input,
+        "attributed_tokens_out": metered_usage.attributed_output,
         "reasoning_tokens": usage.reasoning_tokens,
         "cache_read_tokens": usage.cache_read_tokens,
         "cache_write_tokens": usage.cache_write_tokens,
@@ -485,6 +495,13 @@ fn audit_managed_response(
         "mode": options.mode,
         "tokens_in": usage.input_tokens,
         "tokens_out": usage.output_tokens,
+        "requests": metered_usage.requests,
+        "unreported_requests": metered_usage.unreported_requests,
+        "reported_tokens_in": metered_usage.reported_input,
+        "reported_tokens_out": metered_usage.reported_output,
+        "attributed_requests": metered_usage.attributed_requests,
+        "attributed_tokens_in": metered_usage.attributed_input,
+        "attributed_tokens_out": metered_usage.attributed_output,
         "reasoning_tokens": usage.reasoning_tokens,
         "cache_read_tokens": usage.cache_read_tokens,
         "cache_write_tokens": usage.cache_write_tokens,
@@ -664,11 +681,17 @@ fn audit_managed_events(
 }
 
 fn collect_usage(events: &[AgentEvent]) -> UsageDelta {
-    let mut total = UsageDelta::default();
+    let mut total = UsageDelta {
+        reported: true,
+        ..Default::default()
+    };
+    let mut requests = 0u64;
     for usage in events.iter().filter_map(|event| match event {
         AgentEvent::Usage { usage } => Some(usage),
         _ => None,
     }) {
+        requests += 1;
+        total.reported &= usage.reported;
         total.input_tokens = total.input_tokens.saturating_add(usage.input_tokens);
         total.output_tokens = total.output_tokens.saturating_add(usage.output_tokens);
         total.reasoning_tokens = total
@@ -685,6 +708,23 @@ fn collect_usage(events: &[AgentEvent]) -> UsageDelta {
             (None, Some(value)) => Some(value),
             (value, None) => value,
         };
+    }
+    total.reported &= requests > 0;
+    total
+}
+
+/// Preserve complete-usage subtotals instead of treating defaulted token fields
+/// in older backend events as authoritative zeroes.
+pub(crate) fn metered_usage(events: &[AgentEvent]) -> crate::usage::Usage {
+    let mut total = crate::usage::Usage::default();
+    for event in events {
+        if let AgentEvent::Usage { usage } = event {
+            total.add(if usage.reported {
+                crate::usage::Usage::reported(usage.input_tokens, usage.output_tokens, 1)
+            } else {
+                crate::usage::Usage::unknown(usage.input_tokens, usage.output_tokens, 1)
+            });
+        }
     }
     total
 }
@@ -757,6 +797,44 @@ mod tests {
             },
         ];
         assert_eq!(collect_reasoning(&events), "inspect then verify");
+    }
+
+    #[test]
+    fn managed_usage_events_keep_missing_and_zero_reports_distinct() {
+        let events = [
+            AgentEvent::Usage {
+                usage: UsageDelta {
+                    input_tokens: 900,
+                    ..UsageDelta::default()
+                },
+            },
+            AgentEvent::Usage {
+                usage: UsageDelta {
+                    reported: true,
+                    ..UsageDelta::default()
+                },
+            },
+            AgentEvent::Usage {
+                usage: UsageDelta {
+                    reported: true,
+                    input_tokens: 10,
+                    output_tokens: 5,
+                    ..UsageDelta::default()
+                },
+            },
+        ];
+        let usage = metered_usage(&events);
+        assert_eq!(usage.input, 910);
+        assert_eq!(usage.requests, 3);
+        assert_eq!(usage.unreported_requests, 1);
+        assert_eq!(usage.reported_input, 10);
+        assert_eq!(usage.reported_output, 5);
+        assert_eq!(usage.attributed_requests, 2);
+        assert!(!collect_usage(&events).reported);
+        assert!(collect_usage(&events[1..]).reported);
+        assert!(!collect_usage(&[]).reported);
+        let legacy: UsageDelta = serde_json::from_str(r#"{"input_tokens":0,"output_tokens":0,"reasoning_tokens":0,"cache_read_tokens":0,"cache_write_tokens":0,"cost_usd":null}"#).unwrap();
+        assert!(!legacy.reported);
     }
 
     #[test]

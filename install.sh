@@ -10,14 +10,19 @@
 #   AISHE_BIN_DIR   install directory (default: a writable Homebrew bin already
 #                   on PATH, else /usr/local/bin, else ~/.local/bin)
 #   AISHE_SKIP_ZSH  set to 1 to skip ensuring zsh is installed
-#   AISHE_SKIP_BACKEND set to 1 to install only the Aishe binary
+#   AISHE_INSTALL_BACKEND set to 1 to opt into the pinned legacy runtime
+#   AISHE_SKIP_BACKEND set to 1 to prevent runtime installation (compatibility)
+#   AISHE_MAN_DIR   man-page directory (default: ~/.local/share/man/man1)
+#   AISHE_SKIP_MAN  set to 1 to skip the optional man page
 #   AISHE_RUNTIME_BASE_URL pinned-runtime mirror base URL
 #   AISHE_RUNTIME_FILE approved local pinned-runtime archive
 #   AISHE_INSTALL_SYSTEM_DEPS set to 1 to authorize zsh package installation
 #   AISHE_CONFIG_DIR  configuration directory override (see `aishe doctor`)
 #   AISHE_DATA_DIR    data directory override (history, runtime, sessions)
 # Arguments:
-#   --setup         run interactive setup after a fresh/updated install (TTY only)
+#   --setup         run interactive setup after installation (TTY only)
+#   --launch        open the installed shell after installation/setup (TTY only)
+#   --backend       install and live-verify the optional pinned legacy runtime
 #
 # aishe's interactive shell drives your real zsh in a PTY (your plugins, history,
 # job control, completions), so it needs zsh. This installer ensures zsh is
@@ -32,12 +37,21 @@ set -eu
 REPO="billiondollarsolo/aishe"
 VERSION="${AISHE_VERSION:-latest}"
 RUN_SETUP=0
+RUN_LAUNCH=0
+INSTALL_BACKEND="${AISHE_INSTALL_BACKEND:-0}"
 for arg in "$@"; do
   case "$arg" in
     --setup) RUN_SETUP=1 ;;
+    --launch) RUN_LAUNCH=1 ;;
+    --backend) INSTALL_BACKEND=1 ;;
     *) printf 'aishe-install: unknown argument: %s\n' "$arg" >&2; exit 1 ;;
   esac
 done
+case "$INSTALL_BACKEND" in
+  0|1) : ;;
+  *) printf 'aishe-install: AISHE_INSTALL_BACKEND must be 0 or 1\n' >&2; exit 1 ;;
+esac
+if [ "${AISHE_SKIP_BACKEND:-0}" = 1 ]; then INSTALL_BACKEND=0; fi
 
 err() { printf 'aishe-install: %s\n' "$1" >&2; exit 1; }
 note() { printf 'aishe-install: %s\n' "$1" >&2; }
@@ -242,12 +256,13 @@ fi
 state_inventory "config before install" "$config_state"
 state_inventory "data before install" "$data_state"
 
-# Install and live-verify the exact runtime supported by the staged Aishe binary
+# The native engine needs no additional runtime. Only an explicit --backend or
+# AISHE_INSTALL_BACKEND=1 installs and live-verifies the exact legacy runtime
 # before replacing a working Aishe binary. Runtime activation is versioned under
 # the user's data directory and never rewrites config, credentials, history,
 # tasks, sessions, audit, or undo state.
-if [ "${AISHE_SKIP_BACKEND:-0}" = 1 ]; then
-  note "managed runtime install skipped (AISHE_SKIP_BACKEND=1)"
+if [ "$INSTALL_BACKEND" != 1 ]; then
+  note "native engine included; existing managed runtimes are preserved. Subscription OAuth can install its pinned runtime during setup."
 else
   note "installing and verifying the compatibility-pinned OpenCode runtime before binary activation"
   if [ -n "${AISHE_RUNTIME_FILE:-}" ]; then
@@ -286,16 +301,26 @@ fi
 state_inventory "config after install (preserved)" "$config_state"
 state_inventory "data after install (user state preserved; runtime may be added)" "$data_state"
 
-# Best-effort man page: `aishe man` emits a roff page; install it if a standard
-# man dir is writable (system, then the per-user fallback). Never fatal.
-for mandir in /usr/local/share/man/man1 /usr/share/man/man1 "$HOME/.local/share/man/man1"; do
+# Optional per-user man page. Never probe/create system directories as scratch.
+if [ "${AISHE_SKIP_MAN:-0}" != 1 ]; then
+  mandir="${AISHE_MAN_DIR:-$HOME/.local/share/man/man1}"
   if mkdir -p "$mandir" 2>/dev/null && [ -w "$mandir" ]; then
     if "$bindir/aishe" man > "$mandir/aishe.1" 2>/dev/null; then
-      printf 'aishe-install: installed man page to %s/aishe.1\n' "$mandir" >&2
+      note "installed man page to $mandir/aishe.1"
     fi
-    break
   fi
-done
+fi
+
+# Put the runnable path before setup, where a fresh user will see it.
+case ":$PATH:" in
+  *":$bindir:"*) : ;;
+  *)
+    note "$bindir is not on your PATH. Add this to your shell rc when ready:"
+    note "  export PATH=\"$bindir:\$PATH\""
+    ;;
+esac
+note "Start AIShe with: \"$bindir/aishe\""
+note "Exit returns to your current shell; no shell startup file or login shell was changed."
 
 # Ensure zsh for the robust front-end (best effort; opt out with AISHE_SKIP_ZSH=1).
 ensure_zsh
@@ -317,29 +342,27 @@ if [ "$os" = "Linux" ] && ! command -v bwrap >/dev/null 2>&1; then
 fi
 
 if [ "$existing" = 1 ] && [ "$RUN_SETUP" != 1 ]; then
-  note "Run \`aishe doctor\` to verify the upgraded installation."
-elif [ "$RUN_SETUP" = 1 ]; then
-  note "starting guided setup"
-else
-  note "Run \`aishe setup\`"
+  note "Verify this upgrade with: \"$bindir/aishe\" doctor"
 fi
 
 if [ "$RUN_SETUP" = 1 ]; then
-  # `curl ... | sh -s -- --setup` makes stdin the script pipe even when the
-  # user is in a terminal. Read the wizard from the controlling terminal after
-  # the pipe reaches EOF.
+  # The curl-pipe form reads setup keys from the controlling terminal.
   if [ -t 1 ] && [ -r /dev/tty ] && [ -w /dev/tty ]; then
+    note "starting guided setup"
     "$bindir/aishe" setup </dev/tty
   else
-    note "--setup skipped: no terminal attached. Run '$bindir/aishe setup' from a terminal."
+    note "--setup skipped: no terminal attached. Run \"$bindir/aishe\" setup from a terminal."
   fi
 fi
 
-case ":$PATH:" in
-  *":$bindir:"*) : ;;
-  *)
-    note "$bindir is not on your PATH. Add it to your shell rc:"
-    note "  export PATH=\"$bindir:\$PATH\""
-    note "until then, start AIShe with: $bindir/aishe"
-    ;;
-esac
+if [ "$RUN_LAUNCH" = 1 ]; then
+  if [ -t 1 ] && [ -r /dev/tty ] && [ -w /dev/tty ]; then
+    note "opening AIShe; ordinary commands work before connecting an account"
+    # exec does not trigger the installer's EXIT trap.
+    rm -rf "$tmp"
+    trap - EXIT
+    exec "$bindir/aishe" </dev/tty
+  else
+    note "--launch skipped: no terminal attached. Run \"$bindir/aishe\" from a terminal."
+  fi
+fi

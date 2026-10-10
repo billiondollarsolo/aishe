@@ -59,7 +59,11 @@ pub fn init_for_config(
     redact: bool,
     config: &crate::config::Config,
 ) {
-    let identity = config
+    init_with_identity(enabled, path, redact, connection_identity(config));
+}
+
+fn connection_identity(config: &crate::config::Config) -> Value {
+    config
         .active_connection()
         .map_or(Value::Null, |connection| {
             let (auth_type, auth_profile) = match &connection.auth {
@@ -82,8 +86,7 @@ pub fn init_for_config(
                 "model": config.active_model(),
                 "reasoning_effort": config.active_reasoning_effort(),
             })
-        });
-    init_with_identity(enabled, path, redact, identity);
+        })
 }
 
 fn init_with_identity(enabled: bool, path: Option<PathBuf>, redact: bool, identity: Value) {
@@ -315,6 +318,80 @@ pub fn ai_response(mode: &str, model: &str, summary: &str, input: u64, output: u
     );
 }
 
+/// Record a native response's measured usage even when content logging is off.
+/// Coverage travels with the counters: a zero-filled missing usage block must
+/// never become a free model call when the record is read later.
+pub fn ai_response_with_usage(
+    mode: &str,
+    config: &crate::config::Config,
+    summary: &str,
+    usage: crate::usage::Usage,
+) {
+    let mut fields = response_usage_fields(mode, config, usage);
+    fields["outcome"] = json!("success");
+    if !usage.is_empty() {
+        ledger::record(fields.clone());
+    }
+    if let Some(object) = fields.as_object_mut() {
+        object.insert("summary".into(), Value::String(field(summary)));
+    }
+    event("ai_response", fields);
+}
+
+/// A response can consume tokens before its content fails validation or its
+/// stream ends with an error. Record those counters once without labelling the
+/// failed call a successful response or persisting its error text in the ledger.
+pub fn ai_error_with_usage(
+    mode: &str,
+    config: &crate::config::Config,
+    error: &str,
+    usage: crate::usage::Usage,
+) {
+    let mut fields = response_usage_fields(mode, config, usage);
+    fields["outcome"] = json!("error");
+    if !usage.is_empty() {
+        ledger::record(fields.clone());
+    }
+    fields["error"] = Value::String(field(error));
+    event("ai_error", fields);
+}
+
+fn response_usage_fields(
+    mode: &str,
+    config: &crate::config::Config,
+    usage: crate::usage::Usage,
+) -> Value {
+    // Fallback meters fold tokens across providers without carrying the model
+    // that billed each request. Preserve counts, but never price them as if
+    // they all came from the configured primary model.
+    let usage = if config.aishe.provider_fallback.is_empty() {
+        usage
+    } else {
+        usage.without_attribution()
+    };
+    let mut fields = json!({
+        "session": session_id(),
+        "mode": mode,
+        "model": config.active_model(),
+        "tokens_in": usage.input,
+        "tokens_out": usage.output,
+        "requests": usage.requests,
+        "unreported_requests": usage.unreported_requests,
+        "reported_tokens_in": usage.reported_input,
+        "reported_tokens_out": usage.reported_output,
+        "attributed_requests": usage.attributed_requests,
+        "attributed_tokens_in": usage.attributed_input,
+        "attributed_tokens_out": usage.attributed_output,
+    });
+    if let (Some(fields), Some(identity)) = (
+        fields.as_object_mut(),
+        connection_identity(config).as_object(),
+    ) {
+        fields.extend(identity.clone());
+    }
+    fields
+}
+
 /// Log a failed model call.
 pub fn ai_error(mode: &str, model: &str, error: &str) {
     if !is_active() {
@@ -414,6 +491,15 @@ pub struct Entry {
     pub mode: Option<String>,
     pub tokens_in: Option<u64>,
     pub tokens_out: Option<u64>,
+    pub requests: Option<u64>,
+    /// Absent in older records, whose usage coverage cannot be established.
+    pub unreported_requests: Option<u64>,
+    pub reported_tokens_in: Option<u64>,
+    pub reported_tokens_out: Option<u64>,
+    /// Separately establish which reported requests can be priced as this model.
+    pub attributed_requests: Option<u64>,
+    pub attributed_tokens_in: Option<u64>,
+    pub attributed_tokens_out: Option<u64>,
     /// Prompt-cache accounting. Recorded per response; a high read share is
     /// usually what explains a long agent turn's bill.
     pub cache_read_tokens: Option<u64>,
@@ -435,6 +521,65 @@ pub struct Entry {
     /// A short human label: the response summary, request prompt, or error text.
     pub text: Option<String>,
     pub raw: Value,
+}
+
+impl Entry {
+    /// Old or inconsistent records retain their historical counters but do not
+    /// establish a token-cost estimate. Both numeric zero counts are valid.
+    pub fn usage(&self) -> crate::usage::Usage {
+        let input = self.tokens_in.unwrap_or(0);
+        let output = self.tokens_out.unwrap_or(0);
+        let requests = self.requests.unwrap_or(1);
+        let unknown = crate::usage::Usage::unknown(input, output, requests);
+        let (Some(unreported), Some(reported_input), Some(reported_output)) = (
+            self.unreported_requests,
+            self.reported_tokens_in,
+            self.reported_tokens_out,
+        ) else {
+            return unknown;
+        };
+        if self.tokens_in.is_none()
+            || self.tokens_out.is_none()
+            || unreported > requests
+            || reported_input > input
+            || reported_output > output
+            || (unreported == requests && (reported_input > 0 || reported_output > 0))
+            || (unreported == 0 && (reported_input != input || reported_output != output))
+        {
+            return unknown;
+        }
+        let mut usage = crate::usage::Usage {
+            input,
+            output,
+            requests,
+            unreported_requests: unreported,
+            reported_input,
+            reported_output,
+            attributed_requests: 0,
+            attributed_input: 0,
+            attributed_output: 0,
+        };
+        let (Some(attributed_requests), Some(attributed_input), Some(attributed_output)) = (
+            self.attributed_requests,
+            self.attributed_tokens_in,
+            self.attributed_tokens_out,
+        ) else {
+            return usage;
+        };
+        if attributed_requests > usage.reported_requests()
+            || attributed_input > reported_input
+            || attributed_output > reported_output
+            || (attributed_requests == 0 && (attributed_input > 0 || attributed_output > 0))
+            || (attributed_requests == usage.reported_requests()
+                && (attributed_input != reported_input || attributed_output != reported_output))
+        {
+            return usage;
+        }
+        usage.attributed_requests = attributed_requests;
+        usage.attributed_input = attributed_input;
+        usage.attributed_output = attributed_output;
+        usage
+    }
 }
 
 /// Read and parse every line of an audit log. Missing file or malformed lines
@@ -472,6 +617,13 @@ fn entry_from(v: Value) -> Entry {
         mode: s("mode"),
         tokens_in: u("tokens_in"),
         tokens_out: u("tokens_out"),
+        requests: u("requests"),
+        unreported_requests: u("unreported_requests"),
+        reported_tokens_in: u("reported_tokens_in"),
+        reported_tokens_out: u("reported_tokens_out"),
+        attributed_requests: u("attributed_requests"),
+        attributed_tokens_in: u("attributed_tokens_in"),
+        attributed_tokens_out: u("attributed_tokens_out"),
         cache_read_tokens: u("cache_read_tokens"),
         cache_write_tokens: u("cache_write_tokens"),
         reasoning_tokens: u("reasoning_tokens"),
@@ -621,6 +773,93 @@ mod tests {
         assert_eq!(entry.success, Some(true));
         assert_eq!(entry.duration_ms, Some(42));
         assert_eq!(entry.text.as_deref(), Some("ok"));
+    }
+
+    #[test]
+    fn response_coverage_preserves_reported_zero_and_partial_subtotals() {
+        let config = crate::config::Config::default();
+        let zero = response_usage_fields("ask", &config, crate::usage::Usage::reported(0, 0, 1));
+        assert_eq!(zero["unreported_requests"], 0);
+        assert_eq!(
+            entry_from(zero).usage(),
+            crate::usage::Usage::reported(0, 0, 1)
+        );
+
+        let mut partial = crate::usage::Usage::reported(10, 20, 1);
+        partial.add(crate::usage::Usage::unknown(7, 0, 1));
+        let fields = response_usage_fields("ask", &config, partial);
+        assert_eq!(fields["tokens_in"], 17);
+        assert_eq!(fields["reported_tokens_in"], 10);
+        assert_eq!(fields["unreported_requests"], 1);
+        assert_eq!(entry_from(fields.clone()).usage(), partial);
+        for forbidden in ["prompt", "response", "summary", "command"] {
+            assert!(!fields.as_object().unwrap().contains_key(forbidden));
+        }
+    }
+
+    #[test]
+    fn old_or_inconsistent_usage_records_have_unknown_coverage() {
+        let old = entry_from(json!({"tokens_in": 12, "tokens_out": 3}));
+        assert_eq!(old.usage(), crate::usage::Usage::unknown(12, 3, 1));
+        let inconsistent = entry_from(json!({
+            "tokens_in": 12, "tokens_out": 3, "requests": 1,
+            "unreported_requests": 0, "reported_tokens_in": 0,
+            "reported_tokens_out": 0
+        }));
+        assert_eq!(inconsistent.usage(), crate::usage::Usage::unknown(12, 3, 1));
+    }
+
+    #[test]
+    fn native_usage_identity_tracks_the_current_connection() {
+        let mut config = crate::config::Config::default();
+        let previous =
+            response_usage_fields("ask", &config, crate::usage::Usage::reported(0, 0, 1));
+        let mut connection = config.connections["openai"].clone();
+        connection.label = "Current work".into();
+        connection.settings.model = "current-work-model".into();
+        config.connections.insert("work-current".into(), connection);
+        // Exercise the same connection switch as the CLI. Directly changing
+        // only the ID leaves the legacy provider selection on Anthropic.
+        config.select_connection("work-current").unwrap();
+        let fields = response_usage_fields("ask", &config, crate::usage::Usage::reported(0, 0, 1));
+        assert_eq!(previous["connection_id"], "anthropic");
+        assert_eq!(fields["connection_id"], "work-current");
+        assert_eq!(fields["provider"], "openai");
+        assert_eq!(fields["connection_label"], "Current work");
+        assert_eq!(fields["model"], "current-work-model");
+    }
+
+    #[test]
+    fn configured_fallback_keeps_counts_without_claiming_cost_attribution() {
+        let mut config = crate::config::Config::default();
+        config.aishe.provider_fallback = vec!["openai".into()];
+        let fields =
+            response_usage_fields("ask", &config, crate::usage::Usage::reported(10, 20, 1));
+        assert_eq!(fields["tokens_in"], 10);
+        assert_eq!(fields["tokens_out"], 20);
+        assert_eq!(fields["unreported_requests"], 0);
+        assert_eq!(fields["reported_tokens_in"], 10);
+        assert_eq!(fields["attributed_requests"], 0);
+        assert_eq!(fields["attributed_tokens_in"], 0);
+        assert_eq!(
+            entry_from(fields).usage(),
+            crate::usage::Usage::reported(10, 20, 1).without_attribution()
+        );
+    }
+
+    #[test]
+    fn missing_or_invalid_price_attribution_preserves_verified_tokens() {
+        let expected = crate::usage::Usage::reported(12, 3, 1).without_attribution();
+        let mut value = json!({
+            "tokens_in": 12, "tokens_out": 3, "requests": 1,
+            "unreported_requests": 0, "reported_tokens_in": 12,
+            "reported_tokens_out": 3
+        });
+        assert_eq!(entry_from(value.clone()).usage(), expected);
+        value["attributed_requests"] = json!(2);
+        value["attributed_tokens_in"] = json!(12);
+        value["attributed_tokens_out"] = json!(3);
+        assert_eq!(entry_from(value).usage(), expected);
     }
 
     #[test]

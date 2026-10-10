@@ -28,7 +28,9 @@ pub use interactions::{
     FollowupStatus, InteractionBinding, InteractionKind, InteractionMailbox, InteractionRequest,
     InteractionResponse, InteractionStatus, InteractionSummary,
 };
-pub use metadata::{archive_task, mark_task_reviewed, pin_task, rename_task, TaskMetadata};
+pub use metadata::{
+    archive_task, mark_task_reviewed, mark_task_seen, pin_task, rename_task, TaskMetadata,
+};
 pub use presentation::{
     acknowledge_task, cached_task_entries, cached_task_entries_with_query, read_seen,
     refresh_task_cache, shell_status_text, task_details, task_entries, task_entries_with_query,
@@ -936,7 +938,13 @@ fn list(json: bool) -> Result<u8> {
                 branch_label(&record),
                 entry.title.chars().take(72).collect::<String>(),
                 if entry.pinned { " · pinned" } else { "" },
-                if entry.reviewed { " · reviewed" } else { "" },
+                if entry.reviewed {
+                    " · reviewed"
+                } else if entry.seen {
+                    " · seen"
+                } else {
+                    ""
+                },
             );
         }
     }
@@ -2034,6 +2042,8 @@ fn validate_remaining_budget(record: &Record, checkpoint: &crate::tasks::Record)
     let used = checkpoint.execution;
     let reason = if used.provider_turns >= record.budget.max_provider_turns {
         Some("provider-turn")
+    } else if record.budget.max_cost_usd > 0.0 && !used.cost_is_complete() {
+        anyhow::bail!("task {} cost coverage is incomplete; resume cannot verify its remaining cost allowance", record.id);
     } else if record.budget.max_cost_usd > 0.0 && used.cost_usd >= record.budget.max_cost_usd {
         Some("cost")
     } else if used.elapsed_ms.max(elapsed(record)) >= u64::from(record.budget.max_minutes) * 60_000
@@ -2828,11 +2838,13 @@ mod tests {
             network_calls: 1,
             elapsed_ms: 1234,
             cost_usd: 0.5,
+            costed_provider_turns: Some(3),
         };
         checkpoint.usage = crate::tasks::UsageSummary {
             input: 100,
             output: 200,
             requests: 3,
+            ..crate::tasks::UsageSummary::default()
         };
         let messages = serde_json::to_value(&checkpoint.messages).unwrap();
         let counters = checkpoint.execution;

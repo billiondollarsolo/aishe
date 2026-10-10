@@ -43,6 +43,21 @@ pub(crate) struct Args {
     /// Run a single input non-interactively and exit.
     #[arg(short = 'c', value_name = "LINE")]
     pub(crate) command: Option<String>,
+    /// Launch an interactive AIShe session even when stdin is not a terminal.
+    #[arg(short = 'i', long, conflicts_with_all = ["stdin_script", "agent_lines", "command"])]
+    pub(crate) interactive: bool,
+    /// Read login startup files for this shell session or a shell-only -c command.
+    #[arg(short = 'l', long)]
+    pub(crate) login: bool,
+    /// Execute stdin as one conventional shell script; never route lines to AI.
+    #[arg(short = 's', conflicts_with_all = ["interactive", "command", "agent_lines"])]
+    pub(crate) stdin_script: bool,
+    /// Explicitly route each stdin line through AIShe, including natural language.
+    #[arg(long, conflicts_with_all = ["interactive", "command", "stdin_script", "login"])]
+    pub(crate) agent_lines: bool,
+    /// Shell script filename and arguments, or positional arguments after -c/-s.
+    #[arg(value_name = "SCRIPT_OR_ARG", trailing_var_arg = true, num_args = 0..)]
+    pub(crate) shell_arguments: Vec<std::ffi::OsString>,
     /// (shell hook) Suggest a command for a natural-language line: prints the
     /// command to stdout and the explanation/answer to stderr.
     #[arg(long, hide = true)]
@@ -231,6 +246,27 @@ pub(crate) struct AgentArgs {
     pub(crate) max_cost: Option<f64>,
 }
 
+impl AgentArgs {
+    pub(crate) fn launch_options(&self) -> aishe::cli::agent_launch::Options<'_> {
+        aishe::cli::agent_launch::Options {
+            objective: &self.objective,
+            background: self.background,
+            role: self.role.as_deref(),
+            connection: self.connection.as_deref(),
+            model: self.model.as_deref(),
+            scope: self.scope.as_deref(),
+            file: &self.file,
+            dir: &self.dir,
+            diff: self.diff,
+            clipboard: self.clipboard,
+            no_isolation: self.no_isolation,
+            max_minutes: self.max_minutes,
+            max_turns: self.max_turns,
+            max_cost: self.max_cost,
+        }
+    }
+}
+
 #[derive(Subcommand, Debug)]
 pub(crate) enum Cmd {
     /// Internal managed backend supervisor.
@@ -274,7 +310,25 @@ pub(crate) enum Cmd {
         #[arg(value_parser = ["zsh", "bash"])]
         shell: String,
     },
-    /// Launch the lean interactive zsh shell (legacy: AISHE_LEGACY_OPENCODE=1).
+    /// Preview, apply, or remove reversible native terminal activation.
+    Activate {
+        /// Startup-file family to activate (native AIShe, not the legacy hook).
+        #[arg(value_parser = ["zsh", "bash"])]
+        shell: String,
+        /// Write the displayed activation block, with a private backup first.
+        #[arg(long, conflicts_with = "remove")]
+        apply: bool,
+        /// Remove only AIShe's activation block, keeping other startup settings.
+        #[arg(long)]
+        remove: bool,
+        /// Explicit startup file; useful with a dotfile manager or custom ZDOTDIR.
+        #[arg(long, value_name = "PATH")]
+        rcfile: Option<std::path::PathBuf>,
+        /// Emit the activation preview or result as JSON.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Launch the interactive AIShe shell using the saved profile.
     Zsh,
     /// Check your environment: shell, config, front-end, provider, API key.
     Doctor {
@@ -343,7 +397,7 @@ pub(crate) enum Cmd {
         yes: bool,
     },
     /// Trust the current project's `.aishe/config.toml` so its sensitive keys
-    /// (provider/endpoint, MCP servers, audit logging, safety toggles, `yolo`)
+    /// (provider/endpoint, shell profile, MCP servers, audit logging, safety toggles, `agent`/`yolo`)
     /// apply. Safe cosmetic keys apply without trust.
     Trust {
         /// List every trusted file instead of trusting one.
@@ -1715,6 +1769,32 @@ pub(crate) fn price_action(command: &PriceCmd) -> aishe::cli::settings::PriceAct
 }
 
 impl Args {
+    pub(crate) fn shell_input(&self) -> aishe::cli::shell_input::Options<'_> {
+        aishe::cli::shell_input::Options {
+            subcommand: self.cmd.is_some(),
+            hook: self.hook_cli.is_some()
+                || self.suggest_line.is_some()
+                || self.yolo_line.is_some()
+                || self.auto_line.is_some()
+                || self.fix_line.is_some()
+                || self.edit_line.is_some()
+                || self.background_task.is_some()
+                || self.background_workflow.is_some()
+                || self.record_failure.is_some()
+                || self.accept_yolo,
+            interactive: self.interactive,
+            login: self.login,
+            stdin_script: self.stdin_script,
+            agent_lines: self.agent_lines,
+            ai_selection: self.mode.is_some()
+                || self.provider.is_some()
+                || self.model.is_some()
+                || self.connection.is_some(),
+            command: self.command.as_deref(),
+            shell_arguments: &self.shell_arguments,
+        }
+    }
+
     /// Whether the selected command promises JSON/JSONL stream ownership.
     /// Resolve this before any config migration can print a human notice.
     pub(crate) fn machine_output(&self) -> bool {
@@ -1722,6 +1802,7 @@ impl Args {
             Some(Cmd::Setup(setup)) => setup.json,
             Some(
                 Cmd::Settings { json }
+                | Cmd::Activate { json, .. }
                 | Cmd::Doctor { json, .. }
                 | Cmd::Models { json, .. }
                 | Cmd::Readiness { json }

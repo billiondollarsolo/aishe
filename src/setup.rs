@@ -55,6 +55,7 @@ fn classified(code: u8, error: impl std::fmt::Display) -> anyhow::Error {
 #[serde(rename_all = "snake_case")]
 enum Step {
     Discovery,
+    Shell,
     Platform,
     Runtime,
     Sandbox,
@@ -79,7 +80,8 @@ enum PromptResult<T> {
 impl Step {
     fn next(self) -> Self {
         match self {
-            Self::Discovery => Self::Platform,
+            Self::Discovery => Self::Shell,
+            Self::Shell => Self::Platform,
             Self::Platform => Self::Runtime,
             Self::Runtime => Self::Sandbox,
             Self::Sandbox => Self::Service,
@@ -98,7 +100,8 @@ impl Step {
     fn previous(self) -> Self {
         match self {
             Self::Discovery => Self::Discovery,
-            Self::Platform => Self::Discovery,
+            Self::Shell => Self::Discovery,
+            Self::Platform => Self::Shell,
             Self::Runtime => Self::Platform,
             Self::Sandbox => Self::Runtime,
             Self::Service => Self::Sandbox,
@@ -157,18 +160,15 @@ fn service_menu_entries() -> Vec<ServiceMenuEntry> {
 
 fn service_menu_label(entry: ServiceMenuEntry) -> String {
     match entry {
-        ServiceMenuEntry::ChatGptCodexOAuth => {
-            "ChatGPT / Codex OAuth — Subscription · managed".into()
-        }
-        ServiceMenuEntry::GrokOAuth => "Grok OAuth — Subscription · managed".into(),
+        ServiceMenuEntry::ChatGptCodexOAuth => "ChatGPT / Codex OAuth".into(),
+        ServiceMenuEntry::GrokOAuth => "Grok OAuth".into(),
         ServiceMenuEntry::Catalog(index) => {
             let service = &provider_catalog::SERVICES[index];
-            let method = match service.key {
-                "ollama" => "Local models",
-                "custom" => "Your endpoint",
-                _ => "API key",
-            };
-            format!("{} — {method}", service.label)
+            match service.key {
+                "ollama" => "Ollama · local models".into(),
+                "custom" => "Custom endpoint".into(),
+                _ => format!("{} · API key", service.label),
+            }
         }
     }
 }
@@ -266,17 +266,44 @@ pub fn next_action_for(code: u8) -> &'static str {
 }
 
 pub fn completion_next_steps(launch_follows: bool) -> String {
+    completion_next_steps_at_width(launch_follows, crate::promptui::terminal_size().0)
+}
+
+fn completion_next_steps_at_width(launch_follows: bool, width: usize) -> String {
     let mut out = String::from("\n");
+    let mut paragraph = |indent: usize, text: &str| {
+        let available = width.saturating_sub(indent).max(1);
+        let lines = if crate::ui::cell_width(text) <= available {
+            vec![text.to_string()]
+        } else {
+            crate::ui::wrap_cells(text, available)
+        };
+        for line in lines {
+            out.push_str(&" ".repeat(indent));
+            out.push_str(&line);
+            out.push('\n');
+        }
+    };
     if launch_follows {
-        out.push_str("  Starting your shell…\n");
+        paragraph(2, "Starting your shell…");
     } else {
-        out.push_str("  Run: aishe\n");
+        paragraph(2, "Run: aishe");
     }
-    out.push_str("  Inside AIShe:\n");
-    out.push_str("    git status                 runs in zsh\n");
-    out.push_str("    explain this repository    asks the agent\n");
-    out.push_str("    ? install kubectl please   asks the agent, not /usr/bin/install\n");
-    out.push_str("\n  Run `aishe tour` when you are ready.\n");
+    paragraph(2, "Inside AIShe:");
+    for (command, description) in [
+        ("git status", "runs in your shell"),
+        ("explain this repository", "asks the agent"),
+        ("? install kubectl please", "? forces AI routing"),
+    ] {
+        if width >= 72 {
+            paragraph(4, &format!("{command:<27}{description}"));
+        } else {
+            paragraph(4, command);
+            paragraph(6, description);
+        }
+    }
+    paragraph(0, "");
+    paragraph(2, "Run `aishe tour` when you are ready.");
     out
 }
 
@@ -571,8 +598,8 @@ fn run_interactive(options: Options) -> Result<Outcome> {
     crate::ui::configure(&baseline.ui);
     promptui::header(
         "AIShe setup",
-        "Connect an account. Choose how AIShe works. Review and apply.",
-        "Configuration stays in a resumable draft until Apply. API keys never enter the draft.",
+        "Choose your shell. Connect AI now or later.",
+        "Review before saving. Your existing shell files stay untouched.",
     );
 
     let mut draft = if options.resume {
@@ -643,7 +670,7 @@ fn run_interactive(options: Options) -> Result<Outcome> {
                 // only real choice is "Continue setup"; say where the config
                 // will land and go to the first real question.
                 if !Config::path().exists() && !quick_verify_available(&baseline) {
-                    promptui::note("Fresh install · account, behavior, then review.");
+                    promptui::note("Fresh install · your shell works without an AI account.");
                     advance(&mut draft)?;
                     continue;
                 }
@@ -681,9 +708,66 @@ fn run_interactive(options: Options) -> Result<Outcome> {
                     MenuResult::Selected(_) => unreachable!(),
                 }
             }
+            Step::Shell => {
+                if !choose_shell_profile(&mut draft.config)? {
+                    return cancel(draft);
+                }
+                save_draft(&draft)?;
+                match promptui::menu(
+                    "AI connection",
+                    &[
+                        "Connect later — use my shell now".into(),
+                        "Connect an account now".into(),
+                    ],
+                    0,
+                    true,
+                    "Shell commands work immediately. Run /setup whenever you want AI help.",
+                )? {
+                    MenuResult::Selected(0) => {
+                        if existing.is_none() {
+                            profiles::apply(&mut draft.config, Profile::Conservative);
+                            draft.config.backend.engine = "native".into();
+                        }
+                        if let Some(loaded) = crate::policy::load()? {
+                            loaded.policy.constrain(&mut draft.config)?;
+                        }
+                        validate_config(&draft.config)?;
+                        promptui::section("Review shell setup");
+                        promptui::key_value(
+                            "Shell",
+                            shell_profile_label(&draft.config.aishe.shell_profile),
+                        );
+                        promptui::key_value("AI", "Connect later · no provider check run");
+                        if !promptui::confirm("Save these shell defaults", true)?.unwrap_or(false) {
+                            return cancel(draft);
+                        }
+                        let backup = save_settings_transactional(&draft.config)?;
+                        discard_draft()?;
+                        promptui::success("Shell ready");
+                        promptui::note("Connect AI later with /setup. Change your shell choice with /settings.");
+                        print!("{}", completion_next_steps(options.launch_follows));
+                        return Ok(Outcome {
+                            exit_code: EXIT_OK,
+                            applied: true,
+                            requires_legacy_shell: uses_subscription_oauth(&draft.config),
+                            config_path: Config::path(),
+                            backup,
+                            report: None,
+                        });
+                    }
+                    MenuResult::Selected(_) => advance(&mut draft)?,
+                    MenuResult::Back => continue,
+                    MenuResult::Cancel => return cancel(draft),
+                }
+            }
             Step::Platform => {
+                if draft.config.aishe.shell_profile == "bash"
+                    && crate::executor::which("bash").is_some()
+                {
+                    advance(&mut draft)?;
+                    continue;
+                }
                 if crate::executor::which("zsh").is_some() {
-                    promptui::success("Shell ready · zsh found");
                     advance(&mut draft)?;
                     continue;
                 }
@@ -726,7 +810,6 @@ fn run_interactive(options: Options) -> Result<Outcome> {
                     &draft.config,
                     explicit_managed_runtime(&options) || draft.runtime_return.is_some(),
                 ) {
-                    promptui::success("Native agent · included with AIShe");
                     advance(&mut draft)?;
                     continue;
                 }
@@ -867,16 +950,6 @@ fn run_interactive(options: Options) -> Result<Outcome> {
                 {
                     if !cfg!(target_os = "linux") {
                         draft.config.sandbox.linux_backend = "policy".into();
-                        promptui::warning(
-                            "Workspace policy checks · this platform has no kernel isolation.",
-                        );
-                    } else if matches!(
-                        crate::dependencies::bubblewrap_probe(),
-                        crate::dependencies::BubblewrapState::Usable { .. }
-                    ) {
-                        promptui::success("Workspace isolation · bubblewrap verified");
-                    } else {
-                        promptui::warning("Workspace agent unavailable here · functional bubblewrap is required. Ask and allow remain available.");
                     }
                     advance(&mut draft)?;
                     continue;
@@ -974,7 +1047,6 @@ fn run_interactive(options: Options) -> Result<Outcome> {
                 }
             }
             Step::Service => {
-                promptui::note("API keys and local models work with the native agent. Subscription logins require the managed legacy shell.");
                 let entries = service_menu_entries();
                 let labels: Vec<String> = entries.iter().copied().map(service_menu_label).collect();
                 let default = service_menu_default(&draft);
@@ -1436,10 +1508,10 @@ fn run_interactive(options: Options) -> Result<Outcome> {
                         ],
                         0,
                         true,
-                        "Balanced behavior · workspace scope · network denied · focus output · compact status on the right · audit off. Change any setting later with /settings.",
+                        "Ask before running AI proposals · workspace scope · network denied · focus output · compact status · audit off. Change any setting later with /settings.",
                     )? {
                         MenuResult::Selected(0) => {
-                            profiles::apply(&mut draft.config, Profile::Balanced);
+                            profiles::apply(&mut draft.config, Profile::Conservative);
                             draft.config.backend.default_scope = "workspace".into();
                             draft.config.backend.workspace_network = "deny".into();
                             draft.config.backend.output = "focus".into();
@@ -1815,6 +1887,46 @@ fn step_header(_number: usize, title: &str) {
     promptui::section(title);
 }
 
+pub(crate) fn shell_profile_label(value: &str) -> &'static str {
+    match value {
+        "personal" => "Keep my zsh",
+        "bash" => "Bash integration",
+        _ => "Clean AIShe",
+    }
+}
+
+/// Shared by Setup and Settings: choices change a draft, never shell files.
+pub(crate) fn choose_shell_profile(config: &mut Config) -> Result<bool> {
+    let choices = vec![
+        "Keep my zsh — preserve my prompt, plugins and history".into(),
+        "Clean AIShe — a focused shell with native task indicators".into(),
+        "Bash integration — keep my Bash settings and prompt".into(),
+    ];
+    let selected = match config.aishe.shell_profile.as_str() {
+        "personal" => 0,
+        "bash" => 2,
+        _ => 1,
+    };
+    match promptui::menu(
+        "Shell experience",
+        &choices,
+        selected,
+        true,
+        "Saved for new AIShe shells. Bash offers the lighter integration; native task indicators require zsh. Your startup files stay untouched.",
+    )? {
+        MenuResult::Selected(index) => {
+            let value = ["personal", "clean", "bash"][index];
+            let required = if value == "bash" { "bash" } else { "zsh" };
+            if crate::executor::which(required).is_none() {
+                promptui::warning(&format!("{required} is unavailable. Install it before launching this shell experience."));
+            }
+            config.aishe.shell_profile = value.into();
+            Ok(true)
+        }
+        MenuResult::Back | MenuResult::Cancel => Ok(false),
+    }
+}
+
 fn account_summary(config: &Config) -> String {
     format!(
         "{} · {}",
@@ -1875,6 +1987,9 @@ fn compact_status_items() -> Vec<String> {
 }
 
 fn fresh_interactive_draft(mut config: Config, existing: bool, options: &Options) -> Draft {
+    if !existing {
+        config.aishe.shell_profile = Config::shell_defaults().aishe.shell_profile;
+    }
     select_interactive_backend(&mut config, existing, crate::lean::enabled(), options);
     fresh_draft(config)
 }
@@ -2666,6 +2781,12 @@ fn validate_transport(value: &str) -> Result<()> {
 }
 
 pub(crate) fn validate_config(config: &Config) -> Result<()> {
+    if !matches!(
+        config.aishe.shell_profile.as_str(),
+        "clean" | "personal" | "bash"
+    ) {
+        anyhow::bail!("aishe.shell_profile must be clean, personal, or bash");
+    }
     if !matches!(config.backend.engine.as_str(), "opencode" | "native") {
         anyhow::bail!("backend.engine must be opencode or native");
     }
@@ -3501,7 +3622,9 @@ mod tests {
 
     #[test]
     fn step_state_machine_moves_forward_and_back() {
-        assert_eq!(Step::Discovery.next(), Step::Platform);
+        assert_eq!(Step::Discovery.next(), Step::Shell);
+        assert_eq!(Step::Shell.next(), Step::Platform);
+        assert_eq!(Step::Platform.previous(), Step::Shell);
         assert_eq!(Step::Sandbox.next(), Step::Service);
         assert_eq!(Step::Service.next(), Step::Endpoint);
         assert_eq!(Step::Review.next(), Step::Review);
@@ -3639,11 +3762,11 @@ mod tests {
         assert_eq!(entries[1], ServiceMenuEntry::GrokOAuth);
         assert_eq!(
             service_menu_label(ServiceMenuEntry::ChatGptCodexOAuth),
-            "ChatGPT / Codex OAuth — Subscription · managed"
+            "ChatGPT / Codex OAuth"
         );
         assert_eq!(
             service_menu_label(ServiceMenuEntry::GrokOAuth),
-            "Grok OAuth — Subscription · managed"
+            "Grok OAuth"
         );
         assert!(entries.iter().any(|entry| {
             matches!(entry, ServiceMenuEntry::Catalog(index)

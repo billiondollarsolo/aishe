@@ -3,6 +3,14 @@
 # suggest). bash runs command_not_found_handle in a SUBSHELL, so it can't touch
 # shell state directly — it writes a temp file that a PROMPT_COMMAND hook acts
 # on in the main shell.
+if [[ -z "${_AISHE_CLI_BIN+x}" ]]; then
+  _AISHE_CLI_BIN="${AISHE_CLI_BIN:-}"
+  if [[ -z "$_AISHE_CLI_BIN" ]]; then
+    _AISHE_CLI_BIN="$(type -P aishe 2>/dev/null)"
+    [[ -n "$_AISHE_CLI_BIN" ]] || _AISHE_CLI_BIN=aishe
+  fi
+  readonly _AISHE_CLI_BIN
+fi
 : ${AISHE_PENDING_FILE:=${TMPDIR:-/tmp}/aishe-pending-$$}
 : ${AISHE_FORCE_FILE:=${TMPDIR:-/tmp}/aishe-force-$$}
 # Conversation memory shared across the per-call NL invocations in this shell.
@@ -17,9 +25,9 @@ export AISHE_SHELL_ID
 export AISHE_ACCEPTANCE_FILE
 __aishe_show_auth() {
   if [[ -n "${AISHE_CONNECTION:-}" ]]; then
-    command aishe auth status --connection "$AISHE_CONNECTION" < /dev/tty > /dev/tty 2>&1
+    command "$_AISHE_CLI_BIN" auth status --connection "$AISHE_CONNECTION" < /dev/tty > /dev/tty 2>&1
   else
-    command aishe auth status < /dev/tty > /dev/tty 2>&1
+    command "$_AISHE_CLI_BIN" auth status < /dev/tty > /dev/tty 2>&1
   fi
 }
 
@@ -33,9 +41,9 @@ __aishe_capture_suggestion() {
   AISHE_CAPTURED_SUGGESTION=""
   case "$-" in *m*) had_monitor=1; set +m ;; esac
   if [[ "$stderr_mode" == quiet ]]; then
-    command aishe --suggest-line "$request" > "$AISHE_FORCE_FILE" 2>/dev/null
+    command "$_AISHE_CLI_BIN" --suggest-line "$request" > "$AISHE_FORCE_FILE" 2>/dev/null
   else
-    command aishe --suggest-line "$request" > "$AISHE_FORCE_FILE" 2>/dev/tty
+    command "$_AISHE_CLI_BIN" --suggest-line "$request" > "$AISHE_FORCE_FILE" 2>/dev/tty
   fi
   status=$?
   [[ "$had_monitor" -eq 1 ]] && set -m
@@ -63,11 +71,11 @@ command_not_found_handle() {
   fi
   case "${AISHE_MODE:-suggest}" in
     yolo)
-      (set +m; AISHE_PENDING_FILE="$AISHE_PENDING_FILE" command aishe --yolo-line "$line" < /dev/tty > /dev/tty 2>&1)
+      (set +m; AISHE_PENDING_FILE="$AISHE_PENDING_FILE" command "$_AISHE_CLI_BIN" --yolo-line "$line" < /dev/tty > /dev/tty 2>&1)
       return 0
       ;;
     auto)
-      (set +m; AISHE_PENDING_FILE="$AISHE_PENDING_FILE" command aishe --auto-line "$line" < /dev/tty > /dev/tty 2>&1)
+      (set +m; AISHE_PENDING_FILE="$AISHE_PENDING_FILE" command "$_AISHE_CLI_BIN" --auto-line "$line" < /dev/tty > /dev/tty 2>&1)
       return 0
       ;;
     *)
@@ -296,7 +304,7 @@ __aishe_cycle_mode() {
   case "${AISHE_MODE:-suggest}" in
     suggest) export AISHE_MODE=auto ;;
     auto)
-      if (set +m; command aishe --accept-yolo < /dev/tty > /dev/tty 2>&1); then
+      if (set +m; command "$_AISHE_CLI_BIN" --accept-yolo < /dev/tty > /dev/tty 2>&1); then
         export AISHE_MODE=yolo
       else
         export AISHE_MODE=auto

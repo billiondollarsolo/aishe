@@ -204,13 +204,14 @@ class Fixture:
             "schema_version": 1, "id": native_id, "name": None,
             "created_at_ms": row["created_at_ms"], "updated_at_ms": row["updated_at_ms"],
             "status": "completed" if completed else "interrupted", "mode": "yolo", "provider": "anthropic",
-            "model": "menu-model", "connection_id": "anthropic",
+            "model": "menu-model", "connection_id": row["connection_id"],
             "execution_scope": "host", "network_policy": "allow",
             "workspace_root": row["run_cwd"], "cwd": row["run_cwd"],
             "objective": row["objective"],
             "messages": [{"role": "user", "data": row["objective"]}],
             "completed_tools": [], "pending_tool": None,
-            "usage": {"input": 12, "output": 34, "requests": 1},
+            "usage": {"input": 12, "output": 34, "requests": 1,
+                      "reported_requests": 1, "reported_input": 12, "reported_output": 34},
             "execution": {"provider_turns": 1, "tool_calls": 0, "network_calls": 0,
                           "elapsed_ms": 4500, "cost_usd": 0},
             "native_state": "completed" if completed else "cancelled",
@@ -307,6 +308,10 @@ def browser_views_and_acknowledgement():
         shell.send("Review")
         shell.send("\r")
         shown(shell, "Task details")
+        shown(shell, "Model: anthropic / menu-model")
+        shown(shell, "Scope: host")
+        capture(shell, "Task authority before the response")
+        shell.send("\x1b[F")
         shown(shell, "Used: 1/20 turns")
         shown(shell, "Usage: 12 input")
         shown(shell, "NATIVE_RESULT_PROOF")
@@ -334,7 +339,8 @@ def browser_views_and_acknowledgement():
         badge = probe(shell, fixture.root)[3]
         assert "1 ready" in badge and "2 ready" not in badge, "viewed completion was not acknowledged"
         metadata = json.loads((fixture.data / "background-tasks" / task_id / "metadata.json").read_text())
-        assert metadata.get("reviewed_revision"), "review did not persist the exact result revision"
+        assert metadata.get("seen_revision"), "opening did not persist the exact seen revision"
+        assert not metadata.get("reviewed_revision"), "opening silently marked the result reviewed"
         assert fixture.persisted(task_id)["state"] == "completed", "viewing changed durable task lifecycle"
         shell.send("\x05\r")
         wait_until(shell, lambda: (fixture.root / "browser-effect").exists(), "browser-restored draft effect")
@@ -463,14 +469,15 @@ def personal_theme_and_persistent_review():
             wait_until(second, lambda: "ready" not in probe(second, fixture.root)[3],
                        "review acknowledgement reaches another shell", 10)
             metadata_path = fixture.data / "background-tasks/personal-complete-001/metadata.json"
-            reviewed = json.loads(metadata_path.read_text()).get("reviewed_revision")
-            assert reviewed, "reviewed result revision was not persisted"
+            seen = json.loads(metadata_path.read_text()).get("seen_revision")
+            assert seen, "seen result revision was not persisted"
+            assert not json.loads(metadata_path.read_text()).get("reviewed_revision"), "opening silently reviewed a result"
             restarted = fixture.shell()
             assert restarted.ready()
             assert "ready" not in probe(restarted, fixture.root)[3], "reviewed result reappeared in a new shell"
             fixture.cli("task", "rename", "personal-complete-001", "PERSONAL_NAMED_PROOF")
             fixture.cli("task", "pin", "personal-complete-001")
-            assert json.loads(metadata_path.read_text())["reviewed_revision"] == reviewed
+            assert json.loads(metadata_path.read_text())["seen_revision"] == seen
             assert "ready" not in probe(first, fixture.root)[3], "name or pin resurrected a reviewed result"
             fixture.update("personal-complete-001", error="new revision detail")
             wait_until(first, lambda: "1 ready" in probe(first, fixture.root)[3], "new terminal revision becomes unread", 10)
@@ -561,11 +568,120 @@ def standalone_reconcile_and_wrapped_end():
         fixture.close()
 
 
+
+def long_results_show_authority_scroll_and_honest_cost():
+    fixture = Fixture("long-result-truth")
+    try:
+        for cols in (100, 58, 32):
+            task_id = "long-truth-" + str(cols)
+            fixture.record(task_id, "completed", "LONG_RESULT_TRUTH task")
+            fixture.update(task_id, connection_id="review-account")
+            checkpoint_path = fixture.checkpoint(task_id, result="\n".join(
+                "RESULT_LINE_" + str(index) for index in range(40)))
+            shell = fixture.shell(cols=cols, browser=task_id)
+            shown(shell, "Task details")
+            shown(shell, "Connection: review-account")
+            shown(shell, "Model: anthropic")
+            shown(shell, "Scope: host")
+            shown(shell, "Esc")
+            initial = shell.plain()
+            assert initial.index("Connection: review-account") < initial.index("Model:"), initial
+            if "RESULT_LINE_0" in initial:
+                for authority in ("Connection:", "Model:", "Scope:", "Source:", "Time limit:", "No recorded checks"):
+                    assert initial.index(authority) < initial.index("RESULT_LINE_0"), "response displaced saved authority or checks"
+            capture(shell, f"Long task authority and scroll cues at {cols} columns")
+            for _ in range(12):
+                if "Cost: n/a" in shell.plain():
+                    break
+                shell.send("\x1b[6~")
+                shell.drain(.1)
+            shown(shell, "Cost: n/a")
+            assert "recorded cost $0.0000" not in shell.plain(), "legacy unknown cost was shown as free"
+            shell.send("\x1b[F")
+            shown(shell, "RESULT_LINE_39")
+            capture(shell, f"Long task result reached with End at {cols} columns")
+            shell.send("\x03")
+            wait_until(shell, lambda: shell.proc.poll() is not None, "long result browser exits")
+            row = json.loads(checkpoint_path.read_text())
+            row["execution"].update(provider_turns=2, cost_usd=0.025, costed_provider_turns=1)
+            atomic_json(checkpoint_path, row)
+            snapshot = fixture.cli("task", "browse", task_id).stdout
+            assert "partial $0.0250" in snapshot and "1/2 turns priced" in snapshot, snapshot
+            assert "Connection: review-account" in snapshot, snapshot
+            assert snapshot.index("Connection:") < snapshot.index("Model:"), snapshot
+            assert snapshot.index("Model:") < snapshot.index("Latest response"), snapshot
+            assert snapshot.index("Scope:") < snapshot.index("Latest response"), snapshot
+            assert snapshot.index("Time limit:") < snapshot.index("Latest response"), snapshot
+            assert snapshot.index("No recorded checks") < snapshot.index("Latest response"), snapshot
+        fixture.assert_quiet()
+        print("  ok   long results retain authority first, narrow scroll cues and End; legacy/partial costs are honest")
+    finally:
+        fixture.close()
+
+
+def task_token_reports_are_distinct_from_missing_usage_and_pricing():
+    fixture = Fixture("token-report-truth")
+    try:
+        cases = [
+            ("missing", {"input": 0, "output": 0, "requests": 1,
+                         "reported_requests": 0, "reported_input": 0, "reported_output": 0},
+             "Usage: tokens n/a · usage unavailable"),
+            ("zero", {"input": 0, "output": 0, "requests": 1,
+                      "reported_requests": 1, "reported_input": 0, "reported_output": 0},
+             "Usage: 0 input · 0 output tokens"),
+            ("partial", {"input": 910, "output": 205, "requests": 2,
+                         "reported_requests": 1, "reported_input": 10, "reported_output": 5},
+             "Usage: 10 input · 5 output tokens (partial subtotal; 1/2 requests reported)"),
+            ("legacy", {"input": 12, "output": 34, "requests": 1},
+             "Usage: tokens n/a · older usage unverified"),
+        ]
+        for label, usage, expected in cases:
+            task_id = "token-truth-" + label
+            fixture.record(task_id, "completed", "TOKEN_REPORT_TRUTH " + label)
+            checkpoint_path = fixture.checkpoint(task_id)
+            row = json.loads(checkpoint_path.read_text())
+            row["usage"] = usage
+            # Reported usage must remain known even when this model has no
+            # recorded price. Cost provenance is a separate checkpoint field.
+            row["model"] = "unpriced-model"
+            atomic_json(checkpoint_path, row)
+            snapshot = fixture.cli("task", "browse", task_id).stdout
+            assert expected.replace(" · ", " | ") in snapshot, snapshot
+            assert "Cost: n/a" in snapshot, snapshot
+            # The durable native checkpoint is inspected with session show;
+            # task show addresses its separately linked background record.
+            saved_details = fixture.cli("session", "show", row["id"]).stdout
+            assert expected.replace("Usage: ", "usage: ") in saved_details, saved_details
+            if label in ("missing", "legacy"):
+                assert "Usage: 0 input" not in snapshot, snapshot
+            if label == "partial":
+                assert "910 input" not in snapshot and "205 output" not in snapshot, snapshot
+                shell = fixture.shell(cols=58, browser=task_id)
+                shown(shell, "Task details")
+                for _ in range(8):
+                    if "Usage: 10 input" in shell.plain():
+                        break
+                    shell.send("\x1b[6~")
+                    shell.drain(.1)
+                shown(shell, "Usage: 10 input")
+                shown(shell, "partial subtotal")
+                shown(shell, "1/2")
+                capture(shell, "Partial verified token subtotal at 58 columns; unknown model price")
+                shell.send("\x03")
+                wait_until(shell, lambda: shell.proc.poll() is not None, "token report browser exits")
+        fixture.assert_quiet()
+        print("  ok   task usage distinguishes missing, reported zero, partial subtotals and historical totals without a model price")
+    finally:
+        fixture.close()
+
+
 def run():
     scenarios = [quiet_idle_and_live_badge, browser_views_and_acknowledgement,
                  confirmed_controls, narrow_ctrl_c_and_cli_fallback,
                  personal_theme_and_persistent_review, static_plain_browser,
-                 standalone_reconcile_and_wrapped_end]
+                 standalone_reconcile_and_wrapped_end,
+                 long_results_show_authority_scroll_and_honest_cost,
+                 task_token_reports_are_distinct_from_missing_usage_and_pricing]
     failed = []
     for scenario in scenarios:
         try:

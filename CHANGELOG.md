@@ -5,6 +5,31 @@ All notable changes to **aishe** are documented here. The format loosely follows
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-10-10 (release candidate)
+
+This candidate is prepared for qualification; no v1.1.0 tag or release has been
+published. See [candidate notes](docs/releases/v1.1.0.md) for adoption, compatibility,
+evidence, and the publication hold.
+
+### Added
+- Native foreground, CLI and background agent execution with explicit outcomes,
+  cumulative effect budgets, cancellation, durable checkpoints, and cautious resume.
+- A quiet task badge and searchable browser, a **Needs you** inbox for background
+  questions and exact-action approvals, live follow-ups with queued/received
+  status, recorded checks, task names, pinning, archive, and persistent seen/reviewed
+  status. Opening a result and explicitly reviewing it are separate actions.
+- Foreground/background handoffs, revision-bound selective file/hunk review and
+  application, factual execution timelines, and reusable bounded task workflows.
+- Saved Keep my zsh, Clean AIShe and Bash integration choices. Fresh shells and
+  ordinary commands work without connecting an account; setup offers Connect later.
+- Reversible, preview-first terminal activation with managed startup blocks and
+  backups, and explicit conventional shell-program execution for stdin/files.
+- Installer `--launch` opens the exact installed executable through the terminal;
+  `--backend` opts into the separately pinned legacy runtime.
+- A release gate binds the published candidate to successful exact-source Linux
+  and macOS CI, strict native startup evidence, tested binary digests, and owned,
+  source-bound release dispositions before draft/tag creation and publication.
+
 ### Changed
 - Native provider requests reuse HTTP connections across completions, streams,
   embeddings, and retries instead of constructing a new transport per request.
@@ -14,6 +39,17 @@ All notable changes to **aishe** are documented here. The format loosely follows
 - Repository search retains and copies only the requested highest-ranked
   chunks. Semantic-history candidate selection scans newest-first, preserving
   recency and deduplication while avoiding repeated removal of older copies.
+
+- Installation uses the native engine by default and preserves existing optional
+  runtimes; API-key and local-provider users need no OpenCode download.
+- Personal zsh preserves user startup configuration, themes, widgets and history;
+  the clean profile remains available, and existing configurations keep their
+  prior profile unless changed explicitly.
+- Slash discovery is bounded and searchable. Task authority and limits appear
+  before long result prose, with visible scrolling cues on narrow terminals.
+- Unknown and partially priced task usage is identified explicitly instead of
+  showing a fabricated zero-dollar total. Setup recommends ask mode.
+- First-shell help is shown before its persisted seen state is acknowledged.
 
 ### Fixed
 - Refreshing a repository index tolerates deleted tracked files and discovers

@@ -126,7 +126,9 @@ jobs:
         run: python3 tests/require_gate.py python3 tests/shell_contract.py target/debug/aishe
 
       - name: Qualification reporting contract
-        run: python3 tests/require_gate.py python3 tests/qualify_test.py
+        run: |
+          python3 tests/require_gate.py python3 tests/qualify_test.py
+          python3 tests/require_gate.py python3 tests/release_gate_test.py
 
       - name: Test
         # Bound the step so a nested-PTY deadlock cannot burn ~15m then cancel.
@@ -227,6 +229,16 @@ jobs:
         timeout-minutes: 10
         run: cargo build --release --locked
 
+      - name: Shell programs and reversible activation
+        timeout-minutes: 5
+        run: >-
+          python3 tests/require_gate.py python3 tests/shell_adoption.py target/release/aishe
+          --json test-results/shell-adoption.json
+
+      - name: Direct startup preserves shell contracts
+        timeout-minutes: 5
+        run: python3 tests/require_gate.py python3 tests/direct_shell_startup_test.py target/release/aishe
+
       - name: Direct commands stay local and meet the startup SLO
         id: direct_shell_benchmark
         # Preserve a failed performance result while still collecting the
@@ -250,6 +262,12 @@ jobs:
           python3 tests/require_gate.py python3 tests/lean_slash_pty.py target/release/aishe
           python3 tests/require_gate.py python3 tests/lean_picker_pty.py target/release/aishe
           python3 tests/require_gate.py python3 tests/picker_arrows_pty.py target/release/aishe
+
+      - name: Fresh adoption and first-shell discovery
+        timeout-minutes: 8
+        run: |
+          python3 tests/require_gate.py python3 tests/adoption_pty.py target/release/aishe
+          python3 tests/require_gate.py python3 tests/native_discovery_pty.py target/release/aishe
 
       - name: Setup, settings, and terminal restoration
         timeout-minutes: 8
@@ -353,6 +371,11 @@ jobs:
           python3 tests/require_gate.py python3 tests/direct_shell_profile.py target/release/aishe
           --commands 100 --warmup 10
           --output test-results/direct-shell-profile-${{ runner.os }}.json
+
+      - name: Record exact candidate binary and startup evidence
+        run: >-
+          python3 tests/release_evidence.py target/release/aishe
+          --output test-results/release-evidence-${{ runner.os }}.json
 
       - name: Upload terminal qualification evidence
         if: always()

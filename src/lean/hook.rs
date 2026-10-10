@@ -11,9 +11,24 @@ export AISHE_REAL_ZDOTDIR="${ZDOTDIR:-$HOME}"
 ZDOTDIR="$AISHE_OUR_ZDOTDIR"
 setopt RCS
 "#;
+const PERSONAL_ZPROFILE: &str = r#"# Forward the login environment before the interactive hook.
+ZDOTDIR="$AISHE_REAL_ZDOTDIR"
+[[ -r "$ZDOTDIR/.zprofile" ]] && source "$ZDOTDIR/.zprofile"
+export AISHE_REAL_ZDOTDIR="${ZDOTDIR:-$HOME}"
+ZDOTDIR="$AISHE_OUR_ZDOTDIR"
+"#;
+const PERSONAL_ZLOGIN: &str = r#"# Restore the real directory for the remainder of this login shell.
+ZDOTDIR="$AISHE_REAL_ZDOTDIR"
+[[ -r "$ZDOTDIR/.zlogin" ]] && source "$ZDOTDIR/.zlogin"
+"#;
+const PERSONAL_ZLOGOUT: &str = r#"# Preserve the user's login-shell cleanup.
+[[ -r "${ZDOTDIR:-$HOME}/.zlogout" ]] && source "${ZDOTDIR:-$HOME}/.zlogout"
+"#;
 const PERSONAL_ZSHRC: &str = r#"# User configuration runs before AIShe wraps its widgets.
 ZDOTDIR="$AISHE_REAL_ZDOTDIR"
 [[ -r "$ZDOTDIR/.zshrc" ]] && source "$ZDOTDIR/.zshrc"
+export AISHE_REAL_ZDOTDIR="${ZDOTDIR:-$HOME}"
+[[ -o login ]] && ZDOTDIR="$AISHE_OUR_ZDOTDIR"
 "#;
 const QUESTION_GRAMMAR_MARKER: &str = "# __AISHE_GENERATED_QUESTION_GRAMMAR__";
 const SLASH_CATALOGUE_MARKER: &str = "# __AISHE_GENERATED_SLASH_CATALOGUE__";
@@ -51,6 +66,27 @@ pub fn wrapper_zshenv_for_profile(profile: ZshProfile) -> &'static str {
     match profile {
         ZshProfile::Clean => wrapper_zshenv(),
         ZshProfile::Personal => PERSONAL_ZSHENV,
+    }
+}
+
+pub fn wrapper_zprofile_for_profile(profile: ZshProfile) -> &'static str {
+    match profile {
+        ZshProfile::Clean => "# Clean AIShe does not load a personal login profile.\n",
+        ZshProfile::Personal => PERSONAL_ZPROFILE,
+    }
+}
+
+pub fn wrapper_zlogin_for_profile(profile: ZshProfile) -> &'static str {
+    match profile {
+        ZshProfile::Clean => "# Clean AIShe keeps login startup isolated.\n",
+        ZshProfile::Personal => PERSONAL_ZLOGIN,
+    }
+}
+
+pub fn wrapper_zlogout_for_profile(profile: ZshProfile) -> &'static str {
+    match profile {
+        ZshProfile::Clean => "# Clean AIShe has no personal login cleanup.\n",
+        ZshProfile::Personal => PERSONAL_ZLOGOUT,
     }
 }
 

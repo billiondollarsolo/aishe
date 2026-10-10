@@ -45,7 +45,16 @@ fn random_shell_id() -> String {
 
 /// Run the user's real zsh inside a PTY, returning its exit code.
 pub fn run_zsh(config: &Config, history_log: &std::path::Path) -> Result<u8> {
-    run_zsh_inner(config, history_log, random_shell_id())
+    run_zsh_with_login(config, history_log, false)
+}
+
+/// Launch the configured shell, with login startup semantics when requested.
+pub fn run_zsh_with_login(
+    config: &Config,
+    history_log: &std::path::Path,
+    login: bool,
+) -> Result<u8> {
+    run_zsh_inner(config, history_log, random_shell_id(), login)
 }
 
 /// Start a new interactive shell already bound to a durable managed session.
@@ -62,19 +71,32 @@ pub fn run_zsh_with_shell_id(
     {
         anyhow::bail!("invalid resumed AIShe shell identity");
     }
-    run_zsh_inner(config, history_log, shell_id.to_string())
+    run_zsh_inner(config, history_log, shell_id.to_string(), false)
 }
 
-fn run_zsh_inner(config: &Config, history_log: &std::path::Path, shell_id: String) -> Result<u8> {
-    let zsh = which("zsh").ok_or_else(|| {
-        anyhow!("zsh not found on $PATH — the interactive front-end requires zsh (install it, or use `aishe -c …` / the bash hook)")
-    })?;
-
+fn run_zsh_inner(
+    config: &Config,
+    history_log: &std::path::Path,
+    shell_id: String,
+    login: bool,
+) -> Result<u8> {
     // Customization is independent of the provider/runtime selection. Reject a
     // typo before creating a shell rather than silently loading another profile.
-    let lean = crate::lean::enabled();
+    let override_profile = std::env::var("AISHE_ZSH_PROFILE").ok();
+    let selected_profile = override_profile
+        .as_deref()
+        .unwrap_or(&config.aishe.shell_profile);
+    let bash = selected_profile == "bash";
+    if bash && login {
+        anyhow::bail!("AIShe's Bash integration supports interactive shells, not login shells; use `aishe -i`, or load `aishe init bash` from your Bash login startup file");
+    }
+    let shell_name = if bash { "bash" } else { "zsh" };
+    let zsh = which(shell_name).ok_or_else(|| {
+        anyhow!("{shell_name} not found on PATH; install it or change Shell experience with `aishe settings`")
+    })?;
+    let lean = crate::lean::enabled() && !bash;
     let profile =
-        crate::lean::ZshProfile::parse(std::env::var("AISHE_ZSH_PROFILE").ok().as_deref())?;
+        crate::lean::ZshProfile::parse(Some(if bash { "clean" } else { selected_profile }))?;
     let zdotdir = make_zdotdir(lean, profile).context("preparing zsh integration dir")?;
     let _zdotdir_guard = ZdotdirGuard(zdotdir.clone());
     let real_zdotdir = std::env::var("ZDOTDIR").unwrap_or_else(|_| {
@@ -111,16 +133,51 @@ fn run_zsh_inner(config: &Config, history_log: &std::path::Path, shell_id: Strin
     let mut lean_files = crate::lean::LeanShellFiles::default();
 
     let mut cmd = CommandBuilder::new(&zsh);
-    if lean {
+    // An installer can launch this executable by absolute path before its
+    // directory reaches PATH. Internal controls must re-enter this same CLI
+    // without changing the user's command resolution or aliases.
+    cmd.env(
+        "AISHE_CLI_BIN",
+        std::env::current_exe().context("locating the running AIShe executable")?,
+    );
+    if bash {
+        let bashrc = zdotdir.join("bashrc");
+        let rc = format!(
+            "[ -r \"$HOME/.bashrc\" ] && . \"$HOME/.bashrc\"\n{}\nif [ -z \"${{AISHE_COMMAND_HINT_SHOWN:-}}\" ]; then\n  printf '%s\\n' 'AIShe: /help | ? ask | /mode' && [ -n \"${{AISHE_LAUNCH_HINT_ACK:-}}\" ] && printf 'shown\\n' > \"$AISHE_LAUNCH_HINT_ACK\"\nfi\n",
+            integration::bash_script(),
+        );
+        std::fs::write(&bashrc, rc)?;
+        // --rcfile preserves Bash's native Readline, prompt and startup file.
+        cmd.arg("--rcfile");
+        cmd.arg(&bashrc);
+        cmd.arg("-i");
+    } else if lean {
         for arg in crate::lean::zsh_argv_for_profile(profile) {
             cmd.arg(*arg);
         }
+        if login {
+            cmd.arg("-l");
+        }
     } else {
         cmd.arg("-i");
+        if login {
+            cmd.arg("-l");
+        }
     }
-    cmd.env("ZDOTDIR", &zdotdir);
-    cmd.env("AISHE_OUR_ZDOTDIR", &zdotdir);
-    cmd.env("AISHE_ZSH_PROFILE", profile.as_str());
+    if !bash {
+        cmd.env("ZDOTDIR", &zdotdir);
+        cmd.env("AISHE_OUR_ZDOTDIR", &zdotdir);
+    }
+    cmd.env(
+        "AISHE_ZSH_PROFILE",
+        if bash { "bash" } else { profile.as_str() },
+    );
+    if !bash && profile == crate::lean::ZshProfile::Personal {
+        cmd.env(
+            "AISHE_PERSONAL_INDICATOR",
+            std::env::var("AISHE_PERSONAL_INDICATOR").unwrap_or_else(|_| "1".into()),
+        );
+    }
     if !lean || profile == crate::lean::ZshProfile::Personal {
         cmd.env("AISHE_REAL_ZDOTDIR", &real_zdotdir);
     }
@@ -234,6 +291,10 @@ fn run_zsh_inner(config: &Config, history_log: &std::path::Path, shell_id: Strin
         if config.aishe.failure_hints { "1" } else { "0" },
     );
     let show_launch_hint = crate::hints::launch_hint_pending(config);
+    let hint_ack = zdotdir.join("launch-hint-ack");
+    if show_launch_hint {
+        cmd.env("AISHE_LAUNCH_HINT_ACK", &hint_ack);
+    }
     if !show_launch_hint {
         // The generated wrapper uses this inherited marker to suppress both
         // the logo and launch hint. Disabled/seen state remains entirely local.
@@ -400,12 +461,6 @@ fn run_zsh_inner(config: &Config, history_log: &std::path::Path, shell_id: Strin
         .slave
         .spawn_command(cmd)
         .map_err(|e| anyhow!("failed to spawn zsh: {e}"))?;
-    if show_launch_hint {
-        // Only consume the one-time state after the child was successfully
-        // admitted. A metadata write failure is non-fatal and fails quiet on
-        // the next launch through `launch_hint_pending`.
-        let _ = crate::hints::mark_launch_hint_seen(config);
-    }
     // The parent does not use the slave end.
     drop(pair.slave);
 
@@ -542,6 +597,16 @@ fn run_zsh_inner(config: &Config, history_log: &std::path::Path, shell_id: Strin
 
     // pty -> stdout (main thread; ends at EOF when zsh exits).
     let mut buf = [0u8; 4096];
+    let mut hint_acknowledged = !show_launch_hint;
+    let hint_markers: &[&[u8]] = if bash {
+        &[b"AIShe: /help | ? ask | /mode"]
+    } else if lean {
+        &[b"/help | ? ask | Shift-Tab mode", b"/help | ? ask | /mode"]
+    } else {
+        &[crate::product_help::CONTROLS_HINT.as_bytes()]
+    };
+    let mut hint_tail = Vec::new();
+    let mut hint_presented = false;
     loop {
         if TERMINATED.load(Ordering::SeqCst) {
             break;
@@ -551,6 +616,30 @@ fn run_zsh_inner(config: &Config, history_log: &std::path::Path, shell_id: Strin
             Ok(n) => {
                 if pty_out.write_all(&buf[..n]).is_err() {
                     break;
+                }
+                // Spawning a shell is not evidence that its hint appeared.
+                // Consume only the child's presentation acknowledgement after
+                // successfully relaying its terminal output.
+                if !hint_acknowledged && !hint_presented {
+                    hint_tail.extend_from_slice(&buf[..n]);
+                    hint_presented = hint_markers.iter().any(|marker| {
+                        hint_tail
+                            .windows(marker.len())
+                            .any(|window| window == *marker)
+                    });
+                    let retained = hint_markers
+                        .iter()
+                        .map(|marker| marker.len())
+                        .max()
+                        .unwrap_or(0)
+                        .saturating_sub(1);
+                    if hint_tail.len() > retained {
+                        hint_tail.drain(..hint_tail.len() - retained);
+                    }
+                }
+                if !hint_acknowledged && hint_presented && launch_hint_acknowledged(&hint_ack) {
+                    let _ = crate::hints::mark_launch_hint_seen(config);
+                    hint_acknowledged = true;
                 }
             }
             // A signal (EINTR) or a real read error both land here; in either case
@@ -566,6 +655,11 @@ fn run_zsh_inner(config: &Config, history_log: &std::path::Path, shell_id: Strin
         let _ = child.kill();
     }
     let status = child.wait().map_err(|e| anyhow!("waiting for zsh: {e}"))?;
+    // The child can write its acknowledgement just after the final display
+    // chunk. Reaping it closes that race without consuming an unseen hint.
+    if !hint_acknowledged && hint_presented && launch_hint_acknowledged(&hint_ack) {
+        let _ = crate::hints::mark_launch_hint_seen(config);
+    }
 
     // Restore cooked mode before printing so the summary's newline isn't
     // staircased (the RawGuard would also do this on drop; doing it twice is
@@ -616,6 +710,25 @@ impl Drop for FileGuard {
     }
 }
 
+fn launch_hint_acknowledged(path: &std::path::Path) -> bool {
+    use std::os::unix::fs::OpenOptionsExt;
+    let Ok(file) = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW)
+        .open(path)
+    else {
+        return false;
+    };
+    if !file
+        .metadata()
+        .is_ok_and(|metadata| metadata.is_file() && metadata.len() == 6)
+    {
+        return false;
+    }
+    let mut bytes = Vec::new();
+    file.take(7).read_to_end(&mut bytes).is_ok() && bytes == b"shown\n"
+}
+
 /// Create a temp ZDOTDIR containing `.zshenv` and `.zshrc`.
 fn make_zdotdir(lean: bool, profile: crate::lean::ZshProfile) -> Result<std::path::PathBuf> {
     let dir = std::env::temp_dir().join(format!(
@@ -632,6 +745,18 @@ fn make_zdotdir(lean: bool, profile: crate::lean::ZshProfile) -> Result<std::pat
         std::fs::write(
             dir.join(".zshrc"),
             crate::lean::wrapper_zshrc_for_profile(profile),
+        )?;
+        std::fs::write(
+            dir.join(".zprofile"),
+            crate::lean::wrapper_zprofile_for_profile(profile),
+        )?;
+        std::fs::write(
+            dir.join(".zlogin"),
+            crate::lean::wrapper_zlogin_for_profile(profile),
+        )?;
+        std::fs::write(
+            dir.join(".zlogout"),
+            crate::lean::wrapper_zlogout_for_profile(profile),
         )?;
     } else {
         std::fs::write(dir.join(".zshenv"), integration::WRAPPER_ZSHENV)?;
@@ -694,6 +819,22 @@ impl Drop for ZdotdirGuard {
 mod tests {
     use super::*;
     use std::os::unix::fs::{symlink, PermissionsExt};
+
+    #[test]
+    fn launch_hint_requires_an_exact_regular_presentation_acknowledgement() {
+        let root = std::env::temp_dir().join(format!("aishe-hint-ack-{}", random_shell_id()));
+        create_private_directory(&root).unwrap();
+        let _cleanup = ZdotdirGuard(root.clone());
+        let ack = root.join("ack");
+        assert!(!launch_hint_acknowledged(&ack));
+        std::fs::write(&ack, b"not-shown\n").unwrap();
+        assert!(!launch_hint_acknowledged(&ack));
+        std::fs::write(&ack, b"shown\n").unwrap();
+        assert!(launch_hint_acknowledged(&ack));
+        let linked = root.join("linked");
+        symlink(&ack, &linked).unwrap();
+        assert!(!launch_hint_acknowledged(&linked));
+    }
 
     #[test]
     fn shell_state_directories_are_private_and_reject_shared_or_linked_paths() {

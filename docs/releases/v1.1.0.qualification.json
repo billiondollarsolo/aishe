@@ -1,0 +1,95 @@
+{
+  "schema_version": 1,
+  "version": "1.1.0",
+  "decision": "hold",
+  "release_owner": "billiondollarsolo",
+  "production_source_sha256": "f89f7835f4cc63cf176f5eb0ee06841227a09c4de3845652a896e4860ba8dfac",
+  "qualification_profile_revision": "2026-10-10.1",
+  "prepared_at": "2026-10-10",
+  "published": false,
+  "qualification": {
+    "state": "not_run",
+    "source_commit": null,
+    "ci_run_id": null,
+    "reason": "Final candidate source must be committed and pass the exact-source maintained CI gates."
+  },
+  "dispositions": {
+    "live_providers": {
+      "state": "not_run",
+      "reason": "No final-candidate paid-provider report is recorded. A provider report or a named, expiring risk disposition is required."
+    },
+    "terminal_manual": {
+      "state": "not_run",
+      "reason": "Named graphical terminals need actual manual evidence or a scoped, owned, expiring risk disposition; synthetic PTYs are not manual passes."
+    },
+    "long_soak": {
+      "state": "not_run",
+      "reason": "Record final-candidate long-soak evidence or an owned, expiring disposition separately from bounded deterministic runtime CI."
+    }
+  },
+  "release_holds": [
+    "Final exact-source maintained CI must pass, including original 100-command/10-warmup Linux/macOS startup SLO.",
+    "Unrun external qualification groups need truthful dispositions before publication."
+  ],
+  "baseline_only": {
+    "source_commit": "9219190b663c12b5a402aeab11f32c48e63d868c",
+    "macos_startup_slo": "fail",
+    "note": "Prior main review is historical evidence, not qualification of the 1.1.0 candidate."
+  },
+  "candidate_history": [
+    {
+      "branch_commit": "3253b914d9ef4a8e2e23a58f4cba925b52dfcd81",
+      "tested_commit": "e43176bfc7bdb524109900026fa1c487c880307f",
+      "ci_run_id": 38017643029,
+      "state": "fail",
+      "linux_added_p95_ms": 1.673,
+      "macos_added_p95_ms": 12.628,
+      "reason": "Original macOS startup SLO and unit/legacy/admin regressions failed; corrected source requires new qualification."
+    },
+    {
+      "branch_commit": "620caea86bb7436724c4d9cf5f8b0b5afb1c31da",
+      "tested_commit": "d1ee69047ba9ca71154b2da4adc6da9ef9357a0f",
+      "ci_run_id": 38019521259,
+      "state": "fail",
+      "linux_added_p95_ms": 1.717,
+      "macos_added_p95_ms": 5.702,
+      "reason": "Original startup SLO passed on both platforms; integration fixtures and macOS login-exit qualification require corrected-source validation."
+    },
+    {
+      "branch_commit": "ddc5a64dc750c2780d5e9931e9df2a850c8c4dfe",
+      "tested_commit": "01549c0b4ad94449fbac7e03055cb40a080a53db",
+      "ci_run_id": 38020570655,
+      "state": "fail",
+      "linux_added_p95_ms": 1.585,
+      "macos_added_p95_ms": 6.748,
+      "reason": "Original startup, adoption, managed-runtime and legacy gates passed; explicit piped-agent fixture and task-UI observation contracts needed correction."
+    },
+    {
+      "branch_commit": "a09c7050512a49f67305a8c44588ff7854e5512e",
+      "tested_commit": "f94b7165da4d321a8a8a40e522d765b917410ad8",
+      "ci_run_id": 38021294912,
+      "state": "fail",
+      "linux_added_p95_ms": 1.187,
+      "macos_added_p95_ms": 11.145,
+      "reason": "Original macOS startup SLO failed; generated Trust help was stale on both native jobs, and managed runtime toolchain download timed out before tests. New source includes help/UI corrections and full LTO with one code-generation unit; retained diagnostic passes do not replace this failure."
+    },
+    {
+      "branch_commit": "a98a3bc270520ff771de98b57bbe4140e7d38a45",
+      "tested_commit": null,
+      "ci_run_id": 38022690647,
+      "state": "fail",
+      "linux_added_p95_ms": null,
+      "macos_added_p95_ms": null,
+      "reason": "Static Settings preview used glyphs as a field instead of a method. Compilation failed before startup measurement; no benchmark pass exists for this source."
+    },
+    {
+      "branch_commit": "9388e7ee3615c57e4affd3ad1fad29f0875f5fc7",
+      "tested_commit": "6c9138f2b59ea1beebd516373861694a107b9914",
+      "ci_run_id": 38022810493,
+      "state": "fail",
+      "linux_added_p95_ms": 1.616,
+      "macos_added_p95_ms": 10.319,
+      "reason": "All functional jobs passed but original macOS startup SLO failed. A focused actual32x18approval probe also showed the exact command outside the decision viewport. Corrected action review and size-optimized production source require new qualification; no unchanged retry replaces either failure."
+    }
+  ]
+}

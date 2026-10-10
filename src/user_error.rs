@@ -313,6 +313,11 @@ impl UserError {
         let chain = source_chain(source);
         let mut current: Option<&(dyn Error + 'static)> = Some(source);
         while let Some(candidate) = current {
+            if let Some(error @ crate::providers::ProviderError::Budget(_)) =
+                candidate.downcast_ref::<crate::providers::ProviderError>()
+            {
+                return crate::providers::user_error(error).with_detail(chain);
+            }
             if let Some(facing) = candidate.downcast_ref::<UserFacing>() {
                 return Self::classified(
                     facing.namespace,
@@ -351,7 +356,7 @@ impl UserError {
                 ErrorNamespace::Auth,
                 "unavailable",
                 "The required authentication is unavailable.",
-                "Run `aishe auth status`, repair the named credential, then retry.",
+                "Run `/setup` in AIShe or `aishe setup` to connect AI; use `aishe auth status` to inspect an existing account.",
                 false,
             )
         } else if contains_any(
@@ -916,6 +921,21 @@ mod tests {
             error.detail(),
             Some("outer TOKEN=<redacted>\nCaused by: middle\nCaused by: leaf failure")
         );
+    }
+
+    #[test]
+    fn propagated_provider_budget_keeps_its_public_policy_code_and_remedy() {
+        let source = anyhow::Error::new(crate::providers::ProviderError::Budget(
+            "cannot enforce the session dollar budget: recorded usage is unknown".into(),
+        ))
+        .context("requesting a command correction");
+        let error = UserError::from_error(source.as_ref());
+        assert_eq!(error.code().as_str(), "policy.budget");
+        assert_eq!(error.exit_code(), ErrorNamespace::Policy.exit_code());
+        assert!(!error.retryable());
+        assert!(error.message().contains("recorded usage is unknown"));
+        assert!(error.next_action().contains("/usage"));
+        assert!(error.detail().unwrap().contains("command correction"));
     }
 
     #[test]

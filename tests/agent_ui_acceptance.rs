@@ -289,6 +289,9 @@ fn piped_answer_emits_exactly_one_plain_body() {
         .env("AISHE_FAKE_LLM", response)
         .env("NO_COLOR", "1")
         .env("TERM", "dumb")
+        // Piped stdin is a conventional shell program unless this protocol
+        // explicitly requests per-line AIShe routing.
+        .arg("--agent-lines")
         .write_stdin("what is the acceptance marker?\n")
         .assert()
         .success()

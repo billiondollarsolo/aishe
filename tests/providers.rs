@@ -42,6 +42,7 @@ fn anthropic_complete_request_and_parse() {
         .complete("SYS", &[Msg::User("hi".into())], &ResponseFormat::Json)
         .unwrap();
     assert_eq!(out, "hello world");
+    assert_eq!(p.meter().unreported_requests(), 1);
     m.assert();
 }
 
@@ -153,6 +154,7 @@ fn anthropic_streams_text_deltas() {
         .unwrap();
     assert_eq!(full, "Hello world");
     assert_eq!(chunks, vec!["Hello", " world"]);
+    assert_eq!(p.meter().unreported_requests(), 1);
     m.assert();
 }
 
@@ -184,6 +186,7 @@ fn openai_streams_content_deltas() {
         .unwrap();
     assert_eq!(full, "Hello");
     assert_eq!(got, "Hello");
+    assert_eq!(p.meter().unreported_requests(), 1);
     m.assert();
 }
 

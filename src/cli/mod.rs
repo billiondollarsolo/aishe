@@ -4,6 +4,7 @@
 //! rendering so command behavior can be tested without depending on the binary
 //! entry point.
 
+pub mod agent_launch;
 pub mod backend;
 pub mod changeui;
 pub mod connection;
@@ -14,6 +15,7 @@ pub mod json_contract;
 pub mod runtime;
 pub mod session;
 pub mod settings;
+pub mod shell_input;
 pub mod status;
 pub mod taskui;
 pub mod workflowui;

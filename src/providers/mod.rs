@@ -209,6 +209,8 @@ pub enum ProviderError {
     Api { status: u16, message: String },
     #[error("failed to parse provider response: {0}")]
     Parse(String),
+    #[error("{0}")]
+    Budget(String),
 }
 
 /// Stable classification used by Setup, Doctor, support bundles, and
@@ -245,6 +247,7 @@ impl ProviderError {
                 }
             }
             Self::Parse(_) => ErrorKind::MalformedResponse,
+            Self::Budget(_) => ErrorKind::Unknown,
             Self::Api { status, message } => classify_api_error(*status, message),
         }
     }
@@ -256,12 +259,19 @@ impl ProviderError {
 pub fn user_error(error: &ProviderError) -> crate::user_error::UserError {
     use crate::user_error::ErrorNamespace;
 
+    if let ProviderError::Budget(reason) = error {
+        return crate::user_error::UserError::classified(
+            ErrorNamespace::Policy, "budget", reason,
+            "Inspect `/usage`; configure exact valid pricing and a fixed provider, or explicitly disable `budget_usd`.",
+        ).expect("static budget error code is valid").with_source_chain(error);
+    }
+
     let (namespace, name, message, next, retryable) = match error.kind() {
         ErrorKind::MissingCredential => (
             ErrorNamespace::Auth,
             "missing_credential",
             "The provider credential is missing.",
-            "Set the named API-key environment variable, then run `aishe doctor --live`.",
+            "Run `/setup` in AIShe or `aishe setup` to connect AI; ordinary shell commands remain available.",
             false,
         ),
         ErrorKind::InvalidCredential => (
@@ -516,6 +526,18 @@ pub trait Provider: Send + Sync {
         format: &ResponseFormat,
     ) -> Result<String, ProviderError>;
 
+    /// Completion that bypasses response-cache decorators. Agent planning
+    /// reserves a real provider turn and needs fresh metered usage for its
+    /// cost coverage. Providers without a cache use their ordinary completion.
+    fn complete_uncached(
+        &self,
+        system: &str,
+        messages: &[Msg],
+        format: &ResponseFormat,
+    ) -> Result<String, ProviderError> {
+        self.complete(system, messages, format)
+    }
+
     /// Streaming completion: invokes `sink` with text deltas as they arrive and
     /// returns the full concatenated text. The default implementation falls back
     /// to a single non-streaming call, so callers work even against a provider or
@@ -598,6 +620,16 @@ pub(crate) fn usage_from_value(v: &Value) -> (u64, u64) {
         get(&["input_tokens", "prompt_tokens"]),
         get(&["output_tokens", "completion_tokens"]),
     )
+}
+
+pub(crate) fn usage_is_reported(v: &Value) -> bool {
+    let input = v
+        .pointer("/usage/input_tokens")
+        .or_else(|| v.pointer("/usage/prompt_tokens"));
+    let output = v
+        .pointer("/usage/output_tokens")
+        .or_else(|| v.pointer("/usage/completion_tokens"));
+    input.and_then(Value::as_u64).is_some() && output.and_then(Value::as_u64).is_some()
 }
 
 /// POST a request for a Server-Sent Events stream, retrying transient failures
@@ -1301,5 +1333,12 @@ mod tests {
         );
         // Missing usage -> zeros.
         assert_eq!(usage_from_value(&serde_json::json!({})), (0, 0));
+        assert!(!usage_is_reported(&serde_json::json!({})));
+        assert!(!usage_is_reported(
+            &serde_json::json!({"usage": {"input_tokens": 5}})
+        ));
+        assert!(usage_is_reported(
+            &serde_json::json!({"usage": {"input_tokens": 0, "output_tokens": 0}})
+        ));
     }
 }

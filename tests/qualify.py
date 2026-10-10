@@ -31,7 +31,7 @@ from harness_identity import cargo_version, parse_binary_identity, require_curre
 
 
 SCHEMA_VERSION = 1
-PROFILE_REVISION = "2026-10-09.2"
+PROFILE_REVISION = "2026-10-10.1"
 THREAT_MODEL_VERSION = "2026-07-31.1"
 THREAT_MODEL_REVIEWED = "2026-07-31"
 BINARY = "{release_binary}"
@@ -245,6 +245,26 @@ NATIVE_SETTINGS = python_gate(
     "native-settings-pty", "Reviewed settings transactions and draft isolation", "tests/settings_pty.py", BINARY,
     required_tools=("zsh",), timeout=300,
 )
+NATIVE_ADOPTION = python_gate(
+    "native-adoption-pty", "Account-free startup, saved shell profiles, and connection preservation",
+    "tests/adoption_pty.py", BINARY, required_tools=("zsh", "bash"), timeout=300,
+)
+NATIVE_DISCOVERY = python_gate(
+    "native-discovery-pty", "Rendered one-time discovery and failed/suppressed display acknowledgment",
+    "tests/native_discovery_pty.py", BINARY, required_tools=("zsh",), timeout=180,
+)
+DIRECT_SHELL_CONTRACTS = python_gate(
+    "direct-shell-contracts", "One-shot rc, environment, status, and after-completion history",
+    "tests/direct_shell_startup_test.py", BINARY, required_tools=("zsh",), timeout=180,
+)
+SHELL_ADOPTION = python_gate(
+    "shell-adoption-contracts", "Whole-program stdin, script arguments, and reversible terminal activation",
+    "tests/shell_adoption.py", BINARY, required_tools=("zsh", "bash"), timeout=300,
+)
+RELEASE_GATE_CONTRACT = python_gate(
+    "release-gate-contract", "Exact-source CI, retained performance evidence, and release dispositions",
+    "tests/release_gate_test.py", timeout=180,
+)
 NATIVE_PROMPTS = python_gate(
     "native-prompts-pty", "Shared prompt controls and exact terminal restoration", "tests/prompt_primitives_pty.py", BINARY,
     required_tools=("zsh", "rustc"), timeout=180,
@@ -400,6 +420,9 @@ LOCAL_FULL_GATES = (
     IDENTITY,
     SHELL_CONTRACT,
     DOCS_CONTRACT,
+    RELEASE_GATE_CONTRACT,
+    DIRECT_SHELL_CONTRACTS,
+    SHELL_ADOPTION,
     ADVISORY_POLICY,
     LAZY_LOADING,
     PERFORMANCE_EVIDENCE,
@@ -468,6 +491,8 @@ LOCAL_FULL_GATES = (
     NATIVE_MODE_GRANTS,
     NATIVE_PICKERS,
     NATIVE_SETTINGS,
+    NATIVE_ADOPTION,
+    NATIVE_DISCOVERY,
     NATIVE_PROMPTS,
     NATIVE_PROFILE,
     NATIVE_SHELL_STATE,

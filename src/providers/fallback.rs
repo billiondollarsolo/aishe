@@ -46,16 +46,14 @@ impl FallbackProvider {
 
     /// Fold any new usage recorded by chain member `i` into the unified meter.
     fn sync_usage(&self, i: usize) {
-        let snap = self.chain[i].1.meter().snapshot();
+        let meter = self.chain[i].1.meter();
+        let snap = meter.snapshot();
         let mut seen = self.seen.lock().unwrap_or_else(|e| e.into_inner());
-        let prev = seen[i];
-        let din = snap.input.saturating_sub(prev.input);
-        let dout = snap.output.saturating_sub(prev.output);
-        let dreq = snap.requests.saturating_sub(prev.requests);
-        // One provider call records one request; fold the token delta onto it.
-        if dreq > 0 || din > 0 || dout > 0 {
-            self.meter.record(din, dout);
+        let mut delta = snap.delta_since(seen[i]);
+        if self.chain.len() > 1 {
+            delta = delta.without_attribution();
         }
+        self.meter.record_delta(delta);
         seen[i] = snap;
     }
 
@@ -143,6 +141,21 @@ impl Provider for FallbackProvider {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn folded_usage_retains_unknown_coverage_without_counting_it_twice() {
+        let source = Ok2::mk("ok", 0, 0);
+        let fallback = FallbackProvider::new(vec![("first".into(), source.clone())]);
+        source.meter().record_reported(0, 0, false);
+        fallback.sync_usage(0);
+        fallback.sync_usage(0);
+        assert_eq!(fallback.meter().unreported_requests(), 1);
+        assert_eq!(fallback.meter().snapshot().requests, 1);
+        source.meter().record(0, 0);
+        fallback.sync_usage(0);
+        assert_eq!(fallback.meter().unreported_requests(), 1);
+        assert_eq!(fallback.meter().snapshot().requests, 2);
+    }
 
     /// A test double that always succeeds, recording fixed token usage.
     struct Ok2 {

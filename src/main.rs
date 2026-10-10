@@ -3,6 +3,7 @@
 //! Behaves like zsh for recognizable commands; anything else is treated as a
 //! natural-language request handled by an LLM (suggest or yolo mode).
 
+mod activation;
 #[path = "cli/args.rs"]
 mod args;
 
@@ -31,7 +32,7 @@ fn main() -> ExitCode {
     unsafe {
         libc::signal(libc::SIGPIPE, libc::SIG_DFL);
     }
-    match run() {
+    match run_entry() {
         Ok(code) => ExitCode::from(code),
         Err(error) => {
             let public = aishe::user_error::UserError::from_error(error.as_ref());
@@ -50,12 +51,34 @@ fn main() -> ExitCode {
     }
 }
 
-fn run() -> Result<u8> {
+// Ordinary commands should not allocate the rich orchestration stack frame.
+fn run_entry() -> Result<u8> {
     if let Some((command, forced)) = args::fast_shell_command(std::env::args_os()) {
         return run_fast_shell_command(&command, forced);
     }
+    run()
+}
+
+#[inline(never)]
+fn run() -> Result<u8> {
     let args = Args::parse();
     aishe::ui::set_machine_output(args.machine_output());
+
+    // Conventional input belongs to one shell process, before configuration or
+    // providers; validate mixed shell/admin flags at the same early boundary.
+    if let Some(code) = aishe::cli::shell_input::run(args.shell_input())? {
+        return Ok(code);
+    }
+    if let Some(Cmd::Activate {
+        shell,
+        apply,
+        remove,
+        rcfile,
+        json,
+    }) = &args.cmd
+    {
+        return activation::run(shell, *apply, *remove, rcfile.as_deref(), *json);
+    }
 
     if let Some(values) = args.hook_cli.as_deref() {
         return aishe::integration::dispatch_hook_cli(&values[0], &values[1]);
@@ -449,10 +472,12 @@ fn run() -> Result<u8> {
         args.model.as_deref(),
     )?;
     let agent_request = match &args.cmd {
-        Some(Cmd::Agent(options)) => match resolve_agent(options, &config)? {
-            Some(request) => Some(request),
-            None => return Ok(0),
-        },
+        Some(Cmd::Agent(options)) => {
+            match aishe::cli::agent_launch::resolve(options.launch_options(), &config)? {
+                Some(request) => Some(request),
+                None => return Ok(0),
+            }
+        }
         _ => None,
     };
     let background_role = args
@@ -938,7 +963,8 @@ fn run() -> Result<u8> {
     }
 
     // Tell an interactive user what a project config did (and how to trust it).
-    let interactive_entry = args.command.is_none()
+    let interactive_entry = matches!(args.cmd, None | Some(Cmd::Zsh))
+        && args.command.is_none()
         && args.suggest_line.is_none()
         && args.yolo_line.is_none()
         && args.auto_line.is_none()
@@ -969,7 +995,14 @@ fn run() -> Result<u8> {
         || args.accept_yolo
         || matches!(
             args.cmd,
-            Some(Cmd::Suggest { .. } | Cmd::Ask { .. } | Cmd::Agent(_))
+            Some(
+                Cmd::Suggest { .. }
+                    | Cmd::Ask { .. }
+                    | Cmd::Agent(_)
+                    | Cmd::Last {
+                        cmd: LastCmd::Explain | LastCmd::Fix
+                    }
+            )
         );
 
     // The interactive shell is the zsh-PTY front-end: it drives the user's real
@@ -977,24 +1010,40 @@ fn run() -> Result<u8> {
     // Piped (non-tty) stdin with no `-c`: read commands from stdin instead of
     // launching the interactive shell. An explicit `aishe zsh` always launches it.
     let explicit_zsh = matches!(args.cmd, Some(Cmd::Zsh));
-    let piped_stdin = !non_interactive && !explicit_zsh && !std::io::stdin().is_terminal();
+    let piped_stdin = !non_interactive && !explicit_zsh && args.agent_lines;
     let want_pty = !non_interactive && !piped_stdin;
 
     if want_pty {
-        if aishe::executor::which("zsh").is_none() {
+        let selected_profile = std::env::var("AISHE_ZSH_PROFILE")
+            .ok()
+            .filter(|profile| matches!(profile.as_str(), "clean" | "personal" | "bash"))
+            .unwrap_or_else(|| config.aishe.shell_profile.clone());
+        let shell = if selected_profile == "bash" {
+            "bash"
+        } else {
+            "zsh"
+        };
+        if aishe::executor::which(shell).is_none() {
             aishe::cli::error_contract::emit_classified(
                 aishe::user_error::ErrorNamespace::Cli,
                 "interactive_shell_missing",
-                "The interactive AIShe shell requires zsh, but zsh is not on PATH.",
-                "Install zsh, rerun AIShe, or use `aishe -c`; Bash users can evaluate `aishe init bash`.",
+                format!("The selected AIShe shell requires {shell}, but {shell} is not on PATH."),
+                "Install the selected shell, choose another profile in `aishe settings`, or use `aishe -c`.",
                 None,
             );
             return Ok(aishe::user_error::ErrorNamespace::Cli.exit_code());
         }
-        return aishe::pty::run_zsh(&config, &aishe::cli::history::history_paths(&config).1);
+        return aishe::pty::run_zsh_with_login(
+            &config,
+            &aishe::cli::history::history_paths(&config).1,
+            args.login,
+        );
     }
 
-    let mut executor = Executor::new()?;
+    let selected_profile = std::env::var("AISHE_ZSH_PROFILE")
+        .ok()
+        .unwrap_or_else(|| config.aishe.shell_profile.clone());
+    let mut executor = Executor::new_with_shell((selected_profile == "bash").then_some("bash"))?;
     context::init(executor.shell());
     // The `history` builtin reads the timestamped log (also available in `-c`).
     executor.set_history_log(aishe::cli::history::history_paths(&config).1);
@@ -1289,7 +1338,8 @@ fn run() -> Result<u8> {
         return result;
     }
 
-    // Pipe/script mode: run each line of piped stdin like a `-c` invocation.
+    // The explicit AIShe line protocol preserves per-line agent routing. Plain
+    // piped stdin already ran as a conventional script before initialization.
     if piped_stdin {
         let mut last = 0u8;
         let stdin = std::io::stdin();
@@ -1333,159 +1383,11 @@ fn run() -> Result<u8> {
     Ok(0)
 }
 
-#[derive(Clone, Debug)]
-struct ResolvedAgent {
-    objective: String,
-    background: bool,
-    role: String,
-    connection: Option<String>,
-    model: Option<String>,
-    scope: String,
-    no_isolation: bool,
-    max_minutes: u32,
-    max_turns: u32,
-    max_cost: Option<f64>,
-}
-
 fn run_fast_shell_command(command: &str, forced: bool) -> Result<u8> {
     if forced {
         aishe::cli::runtime::print_forced_shell_cue();
     }
-    let mut executor = Executor::new()?;
-    executor.set_history_log(aishe::cli::history::fast_history_log()?);
-    Ok(executor.run(command) as u8)
-}
-
-fn resolve_agent(options: &AgentArgs, config: &Config) -> Result<Option<ResolvedAgent>> {
-    let guided = options.objective.is_empty();
-    let objective = if guided {
-        if !std::io::stdin().is_terminal() || !std::io::stdout().is_terminal() {
-            anyhow::bail!("agent objective is required outside an interactive terminal");
-        }
-        aishe::promptui::header(
-            "launch an AIShe agent",
-            "Choose the work, authority, model role, and execution style in one place.",
-            "Workspace scope and isolated background worktrees are the safe defaults.",
-        );
-        let Some(value) = aishe::promptui::text(
-            "Objective",
-            "inspect this repository and recommend the next improvement",
-            |value| {
-                if value.trim().is_empty() || value.len() > 64 * 1024 {
-                    anyhow::bail!("objective must contain 1..=65536 bytes")
-                }
-                Ok(())
-            },
-        )?
-        else {
-            return Ok(None);
-        };
-        if value == ":back" {
-            return Ok(None);
-        }
-        value
-    } else {
-        options.objective.join(" ")
-    };
-    let background = if guided {
-        let choices = vec![
-            "Foreground · stream progress in this terminal".into(),
-            "Background · isolated git worktree and inbox".into(),
-        ];
-        let aishe::promptui::PickerResult::Use(index) =
-            aishe::promptui::filter_picker("Execution", &choices, usize::from(options.background))?
-        else {
-            return Ok(None);
-        };
-        index == 1
-    } else {
-        options.background
-    };
-    let role = if guided && options.role.is_none() {
-        let choices = aishe::roles::NAMES
-            .iter()
-            .map(|role| format!("{role} · workload-specific connection/model/reasoning"))
-            .collect::<Vec<_>>();
-        let default = aishe::roles::NAMES
-            .iter()
-            .position(|role| *role == "build")
-            .unwrap_or(0);
-        let aishe::promptui::PickerResult::Use(index) =
-            aishe::promptui::filter_picker("Model role", &choices, default)?
-        else {
-            return Ok(None);
-        };
-        aishe::roles::NAMES[index].to_string()
-    } else {
-        options.role.clone().unwrap_or_else(|| "build".into())
-    };
-    let scope = if guided && options.scope.is_none() {
-        let choices = vec![
-            "workspace · project-bound authority".into(),
-            "host · explicit whole-machine authority".into(),
-        ];
-        let default = usize::from(config.backend.default_scope == "host");
-        let aishe::promptui::PickerResult::Use(index) =
-            aishe::promptui::filter_picker("Authority", &choices, default)?
-        else {
-            return Ok(None);
-        };
-        if index == 1 {
-            "host".into()
-        } else {
-            "workspace".into()
-        }
-    } else {
-        options
-            .scope
-            .clone()
-            .unwrap_or_else(|| config.backend.default_scope.clone())
-    };
-    if options
-        .max_cost
-        .is_some_and(|value| !value.is_finite() || value < 0.0)
-    {
-        anyhow::bail!("--max-cost must be a finite non-negative number");
-    }
-    let mut objective = objective.trim().to_string();
-    for path in &options.file {
-        objective.push(' ');
-        objective.push_str(&attachment_reference("file", path)?);
-    }
-    for path in &options.dir {
-        objective.push(' ');
-        objective.push_str(&attachment_reference("dir", path)?);
-    }
-    if options.diff {
-        objective.push_str(" @diff");
-    }
-    if options.clipboard {
-        objective.push_str(" @clipboard");
-    }
-    Ok(Some(ResolvedAgent {
-        objective,
-        background,
-        role,
-        connection: options.connection.clone(),
-        model: options.model.clone(),
-        scope,
-        no_isolation: options.no_isolation,
-        max_minutes: options.max_minutes,
-        max_turns: options.max_turns,
-        max_cost: options.max_cost,
-    }))
-}
-
-fn attachment_reference(kind: &str, path: &std::path::Path) -> Result<String> {
-    let value = path.to_str().context("attachment path is not UTF-8")?;
-    if value.is_empty() || value.chars().any(char::is_control) {
-        anyhow::bail!("attachment path is empty or contains control characters");
-    }
-    if !value.contains('"') {
-        Ok(format!("@{kind}:\"{value}\""))
-    } else if !value.contains('\'') {
-        Ok(format!("@{kind}:'{value}'"))
-    } else {
-        anyhow::bail!("attachment paths containing both quote styles are not supported")
-    }
+    let (history, profile) = aishe::cli::history::fast_shell_context()?;
+    let preferred = (profile == "bash").then_some("bash");
+    Ok(aishe::executor::run_shell_once_with_shell(command, Some(&history), preferred)? as u8)
 }

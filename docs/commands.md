@@ -1,7 +1,6 @@
 # Commands and slash-commands
 
-> **Alpha (pre-1.0).** The command surface can still change; prefer `/help` in a
-> live shell for the current task-oriented index. Overview:
+> Prefer `/help` in a live shell for the current task-oriented index. Overview:
 > [docs index](README.md) · [root README](../README.md).
 
 aishe's interactive shell is your real zsh; aishe adds a small set of
@@ -23,6 +22,68 @@ opens it from the CLI. Navigation, attention counts, and review behavior are
 described in [background work](front-ends.md#background-work).
 `/inbox` or `aishe inbox` opens **Needs you** for background questions and
 specific action approvals across all projects.
+
+## Shell sessions, scripts, and terminal activation
+
+`aishe` opens the saved shell profile: **Keep my zsh**, **Clean AIShe**, or
+**Bash integration**. `aishe -i` explicitly requests an interactive session.
+Personal zsh also supports `aishe -il`, which loads its login startup files.
+These launches keep your operating system's login shell unchanged. Native Bash
+integration does not yet support interactive `-l`; use a normal Bash session.
+
+To make new terminals open AIShe, first review the startup block:
+
+```sh
+aishe activate zsh              # preview only; use bash for a Bash startup file
+aishe activate zsh --apply      # back up the startup file, then activate
+aishe activate zsh --remove     # remove only the AIShe block
+```
+
+Activation uses `.zshrc` (respecting `ZDOTDIR`) or `.bashrc`. The block runs only
+in an interactive terminal and skips the inner AIShe shell. AIShe starts your
+saved experience: matching personal zsh or Bash profiles load that shell's
+startup code; Clean AIShe keeps its isolated startup files. The activation
+target alone does not change the saved profile. Backups are private, applying twice is safe,
+and removal preserves changes you make outside the block. For a custom startup
+file, use the same `--rcfile PATH` when previewing, applying, and removing.
+That path selects the outer startup file containing the block; the saved
+profile determines which startup files AIShe's inner shell loads.
+Symlinks are preserved: inspect their destination and pass the real file with
+`--rcfile`. Incomplete or duplicated AIShe markers require manual review.
+`--json` returns the target, block, whether it changed, and backup path.
+
+Non-interactive script input runs as one conventional shell program, before AI
+configuration is loaded. Compound statements, variables, heredocs, script
+arguments, and exit statuses retain real shell semantics:
+
+```sh
+printf 'if true; then\nprintf "ready\\n"\nfi\n' | aishe
+aishe ./maintenance.sh 'argument with spaces'
+aishe -s -- 'first argument' < maintenance.sh
+aishe -lc 'printf "%s:%s\\n" "$0" "$1"' script-name 'first argument'
+```
+
+Scripts use Bash when the saved shell profile selects Bash; otherwise they
+prefer zsh, with Bash as the fallback when zsh is unavailable. An
+unknown program or script syntax error remains a shell error and cannot become
+an AI request. Script files are shell input; AIShe does not dispatch arbitrary
+shebang interpreters or act as a system login shell.
+
+`aishe -c LINE` keeps AIShe routing: an ordinary shell command runs locally,
+while natural language reaches the configured agent. Positional arguments
+after `-c` require an unambiguous shell command. Use `-lc` when the entire input
+must use conventional shell execution. AI connection/model/mode flags do not
+apply to conventional scripts.
+
+For automation that intentionally routes each input line through AIShe, opt in
+with `aishe --agent-lines`. That protocol accepts AIShe prefixes, slash commands,
+and natural language. It does not support multiline shell syntax; use a normal
+script for that. `aishe ask` and `aishe suggest` also provide explicit AI
+automation interfaces.
+
+`eval "$(aishe init zsh)"` installs the historical managed shell hook in an
+existing shell. It is a separate interface from native terminal activation;
+use the saved profiles and `activate` command for the native AIShe experience.
 
 ## Background task controls
 
@@ -54,6 +115,12 @@ task. Approval is one-shot for the exact proposed action; it does not change
 scope, network access, or policy. The interactive approval menu defaults to
 **Leave for later**.
 
+Review the complete action and its scope in the scrollable preview before
+deciding. Up/Down and Home/End navigate the request; Enter opens the separate
+decision menu and grants nothing by itself. **Review exact action** returns
+to the preview. Escape leaves the request pending. Plain terminal mode offers
+the same review through text pagination.
+
 Follow-ups are **queued** until the worker durably receives them at a safe
 boundary. Edit and remove work only while the message is queued and delivery
 has not begun. A running command can finish before steering is received; use
@@ -63,9 +130,10 @@ retains it queued; `aishe task resume` delivers it through the saved transcript.
 
 Renaming does not change the objective. Pinning affects browser order. Archive
 hides finished work while keeping its result and workspace; running or waiting
-tasks cannot be archived. Opening finished details, or `task reviewed`, marks
-that exact result reviewed across shells. A subsequent result becomes unseen
-again. `--needs-you` and `--archived` select separate views and cannot be combined.
+tasks cannot be archived. Opening finished details marks that exact result Seen
+across shells. Press **v** or run `task reviewed` to explicitly mark it Reviewed.
+A subsequent result becomes unseen again. `--needs-you` and `--archived` select
+separate views and cannot be combined.
 
 Task details include the native journal's recorded-check summary and unresolved
 items. Press **e** for actual commands, exit statuses, durations, and bounded
@@ -82,14 +150,15 @@ aishe settings         Edit the current configuration through an interactive sec
 aishe auth ...         Manage provider API keys and OAuth subscriptions in AIShe's private stores
 aishe tour             Run the resumable guided first-session tour
 aishe init             Print a shell integration snippet: `eval "$(aishe init zsh)"`
-aishe zsh              Launch the lean interactive zsh shell (legacy: AISHE_LEGACY_OPENCODE=1)
+aishe activate         Preview, apply, or remove reversible native terminal activation
+aishe zsh              Launch the interactive AIShe shell using the saved profile
 aishe doctor           Check your environment: shell, config, front-end, provider, API key
 aishe backend ...      Manage AIShe's private, compatibility-pinned agent runtime
 aishe update ...       Check, apply, or roll back the AIShe binary itself
 aishe completions      Print a shell completion script for `aishe` itself (bash/zsh/fish/...)
 aishe man              Print a roff man page for `aishe` (e.g. `aishe man > /usr/share/man/man1/aishe.1`)
 aishe uninstall        Remove AIShe components by category; user state is preserved by default
-aishe trust            Trust the current project's `.aishe/config.toml` so its sensitive keys (provider/endpoint, MCP servers, audit logging, safety toggles, `yolo`) apply. Safe cosmetic keys apply without trust
+aishe trust            Trust the current project's `.aishe/config.toml` so its sensitive keys (provider/endpoint, shell profile, MCP servers, audit logging, safety toggles, `agent`/`yolo`) apply. Safe cosmetic keys apply without trust
 aishe untrust          Drop trust for the current project's `.aishe/config.toml`, or for a specific project file
 aishe mode             Show or set the interaction mode for this shell; `--default` also saves it
 aishe scope            Show or set the agent execution scope for future turns

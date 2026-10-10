@@ -83,9 +83,7 @@ pub fn run(
     auto: bool,
     session: &mut Session,
 ) -> Result<()> {
-    if super::budget_reached(provider, config) {
-        return Ok(());
-    }
+    super::ensure_session_budget(provider, config)?;
     // Interactive streaming: render answers token-by-token. Not used for the
     // scriptable (`-c`) path, whose stdout is consumed by the shell hook.
     let result = if config.aishe.stream && !scriptable {
@@ -137,6 +135,7 @@ fn run_stream(
     auto: bool,
     session: &mut Session,
 ) -> Result<()> {
+    super::ensure_session_budget(provider, config)?;
     let _ = config; // streaming needs no further per-request tuning yet
     let ctx = context::build(executor, config);
     let shell = executor
@@ -168,7 +167,12 @@ fn run_stream(
     let full = match result {
         Ok(f) => f,
         Err(e) => {
-            crate::audit::ai_error(mode, model, &e.to_string());
+            crate::audit::ai_error_with_usage(
+                mode,
+                config,
+                &e.to_string(),
+                provider.meter().snapshot().delta_since(before),
+            );
             let message = format!("AIShe error: {}", crate::providers::actionable_error(&e));
             eprintln!(
                 "{}",
@@ -178,13 +182,8 @@ fn run_stream(
         }
     };
     let after = provider.meter().snapshot();
-    crate::audit::ai_response(
-        mode,
-        model,
-        &full,
-        after.input.saturating_sub(before.input),
-        after.output.saturating_sub(before.output),
-    );
+    crate::audit::ai_response_with_usage(mode, config, &full, after.delta_since(before));
+    super::ensure_session_budget(provider, config)?;
 
     if streamer.finish(&mut out) {
         // The model committed to a command; nothing was streamed to the screen.
@@ -387,6 +386,7 @@ pub fn request_strict(
     config: &Config,
     history: Vec<Msg>,
 ) -> std::result::Result<Suggestion, ProviderError> {
+    super::ensure_session_budget(provider, config)?;
     let ctx = context::build(executor, config);
     let shell = executor
         .shell()
@@ -412,17 +412,22 @@ pub fn request_strict(
         Ok(text) => {
             let after = provider.meter().snapshot();
             let s = parse_suggestion(&text);
-            crate::audit::ai_response(
+            crate::audit::ai_response_with_usage(
                 mode,
-                model,
+                config,
                 &suggestion_summary(&s),
-                after.input.saturating_sub(before.input),
-                after.output.saturating_sub(before.output),
+                after.delta_since(before),
             );
+            super::ensure_session_budget(provider, config)?;
             Ok(s)
         }
         Err(e) => {
-            crate::audit::ai_error(mode, model, &e.to_string());
+            crate::audit::ai_error_with_usage(
+                mode,
+                config,
+                &e.to_string(),
+                provider.meter().snapshot().delta_since(before),
+            );
             Err(e)
         }
     }
@@ -443,6 +448,7 @@ pub fn request_streamed<W: std::io::Write>(
     history: Vec<Msg>,
     out: &mut W,
 ) -> Result<Suggestion> {
+    super::ensure_session_budget(provider, config)?;
     let ctx = context::build(executor, config);
     let shell = executor
         .shell()
@@ -471,7 +477,12 @@ pub fn request_streamed<W: std::io::Write>(
     let full = match result {
         Ok(f) => f,
         Err(e) => {
-            crate::audit::ai_error(mode, model, &e.to_string());
+            crate::audit::ai_error_with_usage(
+                mode,
+                config,
+                &e.to_string(),
+                provider.meter().snapshot().delta_since(before),
+            );
             let message = format!("AIShe error: {}", crate::providers::actionable_error(&e));
             let _ = writeln!(out, "{message}");
             return Ok(Suggestion::Answer {
@@ -500,13 +511,13 @@ pub fn request_streamed<W: std::io::Write>(
             explanation: full.trim().to_string(),
         }
     };
-    crate::audit::ai_response(
+    crate::audit::ai_response_with_usage(
         mode,
-        model,
+        config,
         &suggestion_summary(&suggestion),
-        after.input.saturating_sub(before.input),
-        after.output.saturating_sub(before.output),
+        after.delta_since(before),
     );
+    super::ensure_session_budget(provider, config)?;
     Ok(suggestion)
 }
 

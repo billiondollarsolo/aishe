@@ -106,8 +106,92 @@ def producer_contract():
         assert not list(root.glob('state.tmp.*')), 'failed snapshot left a partial file'
 
 
+def login_profiles():
+    """Personal login stages run in order; clean login keeps them isolated."""
+    home, env = environment('native-login-profile', mode='ask', extra={
+        'AISHE_LEAN': '1', 'NO_COLOR': '1', 'AISHE_UNICODE': 'ascii',
+        'AISHE_COMMAND_HINT_SHOWN': '1', 'AISHE_ZSH_PROFILE': 'personal',
+    })
+    root = Path(home)
+    personal = root / 'personal-login'
+    personal.mkdir()
+    trace = root / 'login-trace'
+    input_ready = root / 'login-input-ready'
+    readiness_hook = root / 'login-readiness.zsh'
+    readiness_hook.write_text('typeset -gi _profile_input_ready=0\n'
+                              '_profile_input_ready() {\n'
+                              '  (( _profile_input_ready++ ))\n'
+                              '  print -r -- "$_profile_input_ready" > "$HOME/login-input-ready"\n'
+                              '}\n'
+                              'autoload -Uz add-zle-hook-widget\n'
+                              'add-zle-hook-widget zle-line-init _profile_input_ready\n')
+    env['AISHE_LEANRC_POST'] = str(readiness_hook)
+
+    def ready_for_input(shell, after=0):
+        # Command output and even a prompt can precede ZLE's terminal-mode
+        # transition. On Darwin that transition can discard early keystrokes.
+        end = time.monotonic() + 4
+        while time.monotonic() < end:
+            try:
+                if int(input_ready.read_text()) > after:
+                    return
+            except (FileNotFoundError, ValueError):
+                pass
+            shell.drain(.05)
+        raise AssertionError('login shell did not enter its input editor:\n' + shell.plain()[-4000:])
+
+    def exit_and_drain(shell):
+        shell.send('exit\r')
+        end = time.monotonic() + 5
+        # AIShe relays child output synchronously. Waiting without reading our
+        # PTY can block that relay during logout, so keep acting as a terminal.
+        while shell.proc.poll() is None and time.monotonic() < end:
+            shell.drain(.05)
+        shell.drain(.05)
+        assert shell.proc.poll() is not None, 'login shell did not exit within 5 s:\n' + shell.plain()[-4000:]
+        assert shell.proc.returncode == 0, 'login shell exit failed:\n' + shell.plain()[-4000:]
+    (root / '.zshenv').write_text('export PROFILE_ORDER=env\n'
+                                 'print -r -- env >> "$HOME/login-trace"\n'
+                                 'ZDOTDIR="$HOME/personal-login"\n')
+    for filename, stage in (('.zprofile', 'profile'), ('.zshrc', 'rc'), ('.zlogin', 'login')):
+        (personal / filename).write_text('export PROFILE_ORDER="${PROFILE_ORDER}:' + stage + '"\n'
+                                          'print -r -- ' + stage + ' >> "$HOME/login-trace"\n'
+                                          + ('PROMPT="LOGIN> "\n' if stage == 'rc' else ''))
+    # More than a PTY buffer of valid cleanup output makes the shutdown
+    # contract fail deterministically if the harness stops reading.
+    (personal / '.zlogout').write_text('print -r -- logout >> "$HOME/login-trace"\n'
+                                      'print -r -- LOGOUT_OUTPUT_BEGIN\n'
+                                      'repeat 256 print -r -- "${(l:256::x:)empty}"\n'
+                                      'print -r -- LOGOUT_OUTPUT_END\n')
+    shell = None
+    try:
+        shell = Pty(env, argv=[binary(), '-l'])
+        ready_for_input(shell)
+        shell.send('print -r -- LOGIN_\'\'ORDER=$PROFILE_ORDER ZDOTDIR_\'\'FINAL=$ZDOTDIR\r')
+        assert shell.expect('LOGIN_ORDER=env:profile:rc:login', 4), shell.plain()[-4000:]
+        assert shell.expect('ZDOTDIR_FINAL=' + str(personal), 4), '.zlogin did not restore the real directory'
+        ready_for_input(shell, after=1)
+        exit_and_drain(shell)
+        assert 'LOGOUT_OUTPUT_END' in shell.transcript, 'login cleanup output was not forwarded'
+        assert trace.read_text().splitlines() == ['env', 'profile', 'rc', 'login', 'logout']
+        shell.close()
+        shell = None
+        trace.unlink()
+        input_ready.unlink()
+        env['AISHE_ZSH_PROFILE'] = 'clean'
+        shell = Pty(env, argv=[binary(), '-l'])
+        ready_for_input(shell)
+        exit_and_drain(shell)
+        assert not trace.exists(), 'clean login loaded personal startup or cleanup'
+    finally:
+        if shell is not None:
+            shell.close()
+        shutil.rmtree(home, ignore_errors=True)
+
+
 def run():
     producer_contract()
+    login_profiles()
     home, env = environment('native-profile', zshrc=RC, mode='ask', extra={
         'AISHE_LEAN': '1', 'AISHE_LEGACY_OPENCODE': '0',
         'AISHE_ZSH_PROFILE': 'personal', 'NO_COLOR': '1',

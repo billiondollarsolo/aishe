@@ -6,11 +6,13 @@ AIShe configures three provider shapes:
 - the official OpenAI and xAI **Responses APIs**, and
 - any custom **OpenAI-compatible Chat Completions API**.
 
-For normal AI turns, AIShe generates a private provider definition for its
-managed OpenCode engine. AIShe remains authoritative for the named connection,
-endpoint, model, authentication binding, prices, budget, and organization restrictions. API keys
-enter only the provider process environment; OAuth tokens remain in the
-managed runtime's private store. Model-controlled tools inherit neither.
+Native API-key and local-model turns use AIShe's provider clients and native
+agent. An AI account is optional for shell use; connect through `/setup` or
+`aishe setup` when you want AI. OAuth and explicitly selected compatibility
+transport use a private provider definition in the managed OpenCode engine.
+AIShe remains authoritative for the named connection, endpoint, model,
+authentication binding, prices, budget, and organization restrictions. Keys
+and OAuth tokens are excluded from model-controlled tool environments.
 
 A connection's `transport = "auto"` selects the wire format
 from `base_url`. `https://api.openai.com` and `https://api.x.ai` use Responses,

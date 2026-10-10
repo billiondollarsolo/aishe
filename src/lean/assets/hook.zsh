@@ -22,12 +22,16 @@ fi
 : ${AISHE_MODE:=ask}
 export AISHE_MODE
 export AISHE_LEAN=1
+# Parent-launched shells keep the exact running CLI. Standalone hook sourcing
+# can resolve the external command once without changing PATH or user aliases.
+(( ${+_AISHE_CLI_BIN} )) || readonly _AISHE_CLI_BIN="${AISHE_CLI_BIN:-${commands[aishe]:-aishe}}"
 # The parent selected these private controls. Later environment edits must not
 # redirect the producer or weaken credential filtering for an agent request.
 (( ${+_AISHE_STATE_CONTROL_FILE} )) || readonly _AISHE_STATE_CONTROL_FILE="${AISHE_EXECUTION_STATE_FILE:-}"
 (( ${+_AISHE_STATE_CONTROL_DENY} )) || readonly _AISHE_STATE_CONTROL_DENY="${AISHE_EXECUTION_STATE_DENY:-}"
 (( ${+_AISHE_BACKGROUND_CONTROL_FILE} )) || readonly _AISHE_BACKGROUND_CONTROL_FILE="${AISHE_BACKGROUND_FILE:-}"
 (( ${+_AISHE_BACKGROUND_CONTROL_EVENTS} )) || readonly _AISHE_BACKGROUND_CONTROL_EVENTS="${AISHE_BACKGROUND_EVENTS:-}"
+(( ${+_AISHE_LAUNCH_HINT_ACK} )) || readonly _AISHE_LAUNCH_HINT_ACK="${AISHE_LAUNCH_HINT_ACK:-}"
 
 # The parent writes counts, never task output. Read the small private cache only
 # before a prompt or after a native fd notification, never on each keystroke.
@@ -265,7 +269,7 @@ aishe_set_prompt() {
   if [[ -n "${AISHE_STATUS_FILE:-}" && -r "$AISHE_STATUS_FILE" ]]; then
     while IFS=$'\t' read -r key value; do
       case "$key" in
-        session_tokens|session_cost|requests|elapsed|context)
+        task|last_tokens|last_cost|session_tokens|session_cost|requests|elapsed|context)
           _aishe_lean_prompt_value "$value"
           metrics[$key]="$REPLY"
           ;;
@@ -290,7 +294,7 @@ aishe_set_prompt() {
   fi
   for item in ${(s:,:)AISHE_STATUS_ITEMS}; do
     case "$item" in
-      session_tokens|session_cost|requests|elapsed|context)
+      task|last_tokens|last_cost|session_tokens|session_cost|requests|elapsed|context)
         value="${metrics[$item]:-}"
         [[ -n "$value" ]] || continue
         values+=("${value#session }")
@@ -404,6 +408,139 @@ _aishe_slash_completion() {
   _main_complete _aishe_complete_slashes
 }
 
+# Bare-slash discovery is a bounded view, independent of the user's native
+# completion list. A nested edit captures search/navigation; Enter only stages
+# a command back into the original edit, where a second Enter can execute it.
+_aishe_slash_picker_render() {
+  emulate -L zsh
+  local name description row value
+  local -i width=${COLUMNS:-80} height=${LINES:-24} limit first last index count
+  local -a lines
+  _AISHE_SLASH_PICKER_MATCHES=()
+  for name in "${_AISHE_SLASH_PICKER_NAMES[@]}"; do
+    description="${_AISHE_SLASH_PICKER_DESCRIPTIONS[$name]}"
+    if [[ -z "$_AISHE_SLASH_PICKER_QUERY" ||
+          "${name:l} ${description:l}" == *"${_AISHE_SLASH_PICKER_QUERY:l}"* ]]; then
+      _AISHE_SLASH_PICKER_MATCHES+=("$name")
+    fi
+  done
+  count=${#_AISHE_SLASH_PICKER_MATCHES}
+  (( _AISHE_SLASH_PICKER_INDEX > count )) && _AISHE_SLASH_PICKER_INDEX=$count
+  (( _AISHE_SLASH_PICKER_INDEX < 1 )) && _AISHE_SLASH_PICKER_INDEX=1
+  limit=$(( height - 7 ))
+  (( limit > 6 )) && limit=6
+  (( limit < 1 )) && limit=1
+  first=$(( ((_AISHE_SLASH_PICKER_INDEX - 1) / limit) * limit + 1 ))
+  last=$(( first + limit - 1 ))
+  (( last > count )) && last=$count
+  if (( count )); then
+    lines+=("Commands ${_AISHE_SLASH_PICKER_INDEX}/${count}")
+  else
+    lines+=('Commands - no matches')
+  fi
+  _aishe_lean_prompt_fit "Search: $_AISHE_SLASH_PICKER_QUERY" $(( width - 1 ))
+  lines+=("$REPLY")
+  for (( index=first; index<=last; index++ )); do
+    name="${_AISHE_SLASH_PICKER_MATCHES[$index]}"
+    description="${_AISHE_SLASH_PICKER_DESCRIPTIONS[$name]}"
+    row='  '
+    (( index == _AISHE_SLASH_PICKER_INDEX )) && row='> '
+    row+="/${name}  ${description}"
+    _aishe_lean_prompt_fit "$row" $(( width - 1 ))
+    lines+=("$REPLY")
+  done
+  _aishe_lean_prompt_fit 'Tab/arrows | Enter stages | Esc' $(( width - 1 ))
+  lines+=("$REPLY")
+  POSTDISPLAY=$'\n'"${(F)lines}"
+  zle -R
+}
+
+aishe-slash-picker-insert() {
+  (( ${#_AISHE_SLASH_PICKER_QUERY} >= 128 )) && { zle beep; return; }
+  _AISHE_SLASH_PICKER_QUERY+="$KEYS"
+  _AISHE_SLASH_PICKER_INDEX=1
+  _aishe_slash_picker_render
+}
+
+aishe-slash-picker-paste() {
+  local pasted
+  zle .bracketed-paste pasted || return
+  pasted="${pasted//[[:cntrl:]]/}"
+  local -i available=$(( 128 - ${#_AISHE_SLASH_PICKER_QUERY} ))
+  (( available > 0 )) && _AISHE_SLASH_PICKER_QUERY+="${pasted[1,$available]}"
+  _AISHE_SLASH_PICKER_INDEX=1
+  _aishe_slash_picker_render
+}
+
+aishe-slash-picker-delete() {
+  _AISHE_SLASH_PICKER_QUERY="${_AISHE_SLASH_PICKER_QUERY[1,-2]}"
+  _AISHE_SLASH_PICKER_INDEX=1
+  _aishe_slash_picker_render
+}
+
+aishe-slash-picker-clear() {
+  _AISHE_SLASH_PICKER_QUERY=''
+  _AISHE_SLASH_PICKER_INDEX=1
+  _aishe_slash_picker_render
+}
+
+aishe-slash-picker-next() {
+  (( _AISHE_SLASH_PICKER_INDEX++ ))
+  (( _AISHE_SLASH_PICKER_INDEX > ${#_AISHE_SLASH_PICKER_MATCHES} )) && _AISHE_SLASH_PICKER_INDEX=1
+  _aishe_slash_picker_render
+}
+
+aishe-slash-picker-previous() {
+  (( _AISHE_SLASH_PICKER_INDEX-- ))
+  (( _AISHE_SLASH_PICKER_INDEX < 1 )) && _AISHE_SLASH_PICKER_INDEX=${#_AISHE_SLASH_PICKER_MATCHES}
+  _aishe_slash_picker_render
+}
+
+aishe-slash-picker-accept() {
+  (( ${#_AISHE_SLASH_PICKER_MATCHES} )) || { zle beep; return; }
+  zle .accept-line
+}
+
+_aishe_slash_picker() {
+  emulate -L zsh
+  setopt extendedglob
+  if [[ "${_AISHE_SLASH_DISCOVERED:-0}" != 1 ]]; then
+    local reply
+    reply="$(_aishe_lean_send COMMANDS)" || return 1
+    [[ "$reply" == OK ]] || return 1
+    typeset -g _AISHE_SLASH_DISCOVERED=1
+  fi
+  local _AISHE_SLASH_PICKER_QUERY=''
+  local -i _AISHE_SLASH_PICKER_INDEX=1 accepted=0
+  local -a _AISHE_SLASH_PICKER_NAMES=("${_AISHE_SLASH_NAMES[@]}") _AISHE_SLASH_PICKER_MATCHES
+  local -A _AISHE_SLASH_PICKER_DESCRIPTIONS=("${(@kv)_AISHE_SLASH_DESCRIPTIONS}")
+  local name description old_buffer="$BUFFER" old_cursor="$CURSOR"
+  local old_postdisplay="$POSTDISPLAY" old_keymap="$KEYMAP"
+  if [[ -n "${AISHE_LEAN_CMDS_FILE:-}" && -r "$AISHE_LEAN_CMDS_FILE" ]]; then
+    while IFS=$'\t' read -r name description; do
+      [[ "$name" == [[:alnum:]_-]## ]] || continue
+      [[ -n "${_AISHE_SLASH_PICKER_DESCRIPTIONS[$name]:-}" ]] && continue
+      _aishe_lean_prompt_value "$description"
+      description="${REPLY:-Custom command}"
+      _AISHE_SLASH_PICKER_NAMES+=("$name")
+      _AISHE_SLASH_PICKER_DESCRIPTIONS[$name]="$description"
+    done < "$AISHE_LEAN_CMDS_FILE"
+  fi
+  zle -K aishe-slash-picker
+  _aishe_slash_picker_render
+  zle recursive-edit && accepted=1
+  POSTDISPLAY="$old_postdisplay"
+  BUFFER="$old_buffer"
+  CURSOR="$old_cursor"
+  zle -K "$old_keymap"
+  if (( accepted )); then
+    local leading="${old_buffer%%[^[:space:]]*}"
+    BUFFER="${leading}/${_AISHE_SLASH_PICKER_MATCHES[$_AISHE_SLASH_PICKER_INDEX]} "
+    CURSOR=${#BUFFER}
+  fi
+  zle -R
+}
+
 aishe-slash-tab() {
   emulate -L zsh
   setopt extendedglob
@@ -415,6 +552,10 @@ aishe-slash-tab() {
     local REPLY
     _aishe_effective_keymap
     zle "${_AISHE_USER_TAB_NAMES[$REPLY]:-expand-or-complete}" -w
+    return
+  fi
+  if [[ "$head" == / && "$trimmed" == / ]]; then
+    _aishe_slash_picker
     return
   fi
   zle aishe-complete-slashes
@@ -938,11 +1079,11 @@ _aishe_lean_slash() {
         # Interactive prompts belong to the inner shell's real terminal, not
         # the parent FIFO worker. The selection handoff updates the next turn.
         if [[ "$_AISHE_LOCAL_NAME" == /model ]]; then
-          if [[ -n "$_AISHE_LOCAL_ARG" ]]; then command aishe model "$_AISHE_LOCAL_ARG" <&$_AISHE_INPUT_FD
-          else command aishe model <&$_AISHE_INPUT_FD; fi
+          if [[ -n "$_AISHE_LOCAL_ARG" ]]; then command "$_AISHE_CLI_BIN" model "$_AISHE_LOCAL_ARG" <&$_AISHE_INPUT_FD
+          else command "$_AISHE_CLI_BIN" model <&$_AISHE_INPUT_FD; fi
         else
-          if [[ -n "$_AISHE_LOCAL_ARG" ]]; then command aishe connection pick "$_AISHE_LOCAL_ARG" <&$_AISHE_INPUT_FD
-          else command aishe connection pick <&$_AISHE_INPUT_FD; fi
+          if [[ -n "$_AISHE_LOCAL_ARG" ]]; then command "$_AISHE_CLI_BIN" connection pick "$_AISHE_LOCAL_ARG" <&$_AISHE_INPUT_FD
+          else command "$_AISHE_CLI_BIN" connection pick <&$_AISHE_INPUT_FD; fi
         fi
       else
         local _AISHE_LOCAL_REPLY
@@ -950,28 +1091,28 @@ _aishe_lean_slash() {
         _aishe_lean_handle_reply "$_AISHE_LOCAL_REPLY"
       fi
       ;;
-    /settings) command aishe settings "${(@)_AISHE_LOCAL_CLI_ARGS}" <&$_AISHE_INPUT_FD ;;
-    /setup) command aishe setup "${(@)_AISHE_LOCAL_CLI_ARGS}" <&$_AISHE_INPUT_FD ;;
-    /tour) command aishe tour "${(@)_AISHE_LOCAL_CLI_ARGS}" <&$_AISHE_INPUT_FD ;;
-    /context) command aishe context "${(@)_AISHE_LOCAL_CLI_ARGS}" <&$_AISHE_INPUT_FD ;;
-    /doctor) command aishe doctor "${(@)_AISHE_LOCAL_CLI_ARGS}" <&$_AISHE_INPUT_FD ;;
-    /inbox) command aishe inbox "${(@)_AISHE_LOCAL_CLI_ARGS}" <&$_AISHE_INPUT_FD ;;
+    /settings) command "$_AISHE_CLI_BIN" settings "${(@)_AISHE_LOCAL_CLI_ARGS}" <&$_AISHE_INPUT_FD ;;
+    /setup) command "$_AISHE_CLI_BIN" setup "${(@)_AISHE_LOCAL_CLI_ARGS}" <&$_AISHE_INPUT_FD ;;
+    /tour) command "$_AISHE_CLI_BIN" tour "${(@)_AISHE_LOCAL_CLI_ARGS}" <&$_AISHE_INPUT_FD ;;
+    /context) command "$_AISHE_CLI_BIN" context "${(@)_AISHE_LOCAL_CLI_ARGS}" <&$_AISHE_INPUT_FD ;;
+    /doctor) command "$_AISHE_CLI_BIN" doctor "${(@)_AISHE_LOCAL_CLI_ARGS}" <&$_AISHE_INPUT_FD ;;
+    /inbox) command "$_AISHE_CLI_BIN" inbox "${(@)_AISHE_LOCAL_CLI_ARGS}" <&$_AISHE_INPUT_FD ;;
     /workflow)
       if (( ${#_AISHE_LOCAL_CLI_ARGS} )); then
-        command aishe workflow "${(@)_AISHE_LOCAL_CLI_ARGS}" <&$_AISHE_INPUT_FD
+        command "$_AISHE_CLI_BIN" workflow "${(@)_AISHE_LOCAL_CLI_ARGS}" <&$_AISHE_INPUT_FD
       else
-        command aishe workflow browse <&$_AISHE_INPUT_FD
+        command "$_AISHE_CLI_BIN" workflow browse <&$_AISHE_INPUT_FD
       fi
       ;;
     /tasks)
       # The browser and any explicit action own the child terminal. Forward
       # tokenized arguments literally; model text never becomes shell syntax.
       if (( ${#_AISHE_LOCAL_CLI_ARGS} == 1 )) && [[ "${_AISHE_LOCAL_CLI_ARGS[1]}" == [[:xdigit:]]##-[[:xdigit:]]## ]]; then
-        command aishe task browse "${_AISHE_LOCAL_CLI_ARGS[1]}" <&$_AISHE_INPUT_FD
+        command "$_AISHE_CLI_BIN" task browse "${_AISHE_LOCAL_CLI_ARGS[1]}" <&$_AISHE_INPUT_FD
       elif (( ${#_AISHE_LOCAL_CLI_ARGS} )); then
-        command aishe task "${(@)_AISHE_LOCAL_CLI_ARGS}" <&$_AISHE_INPUT_FD
+        command "$_AISHE_CLI_BIN" task "${(@)_AISHE_LOCAL_CLI_ARGS}" <&$_AISHE_INPUT_FD
       else
-        command aishe task browse <&$_AISHE_INPUT_FD
+        command "$_AISHE_CLI_BIN" task browse <&$_AISHE_INPUT_FD
       fi
       ;;
     /help|/commands|/status|/reset|/undo|/usage|/details|/mcp|/skills|/sessions|/backend)
@@ -1023,7 +1164,7 @@ _aishe_capture_exit() {
       elapsed=${elapsed%.*}
     fi
     # Capsule write is local JSON only — not OpenCode. Backgrounded so prompts stay fast.
-    AISHE_LAST_EXIT="$AISHE_LAST_EXIT" AISHE_LAST_DURATION_MS="$elapsed" command aishe --record-failure "$AISHE_LAST_CMD" >/dev/null 2>&1 &!
+    AISHE_LAST_EXIT="$AISHE_LAST_EXIT" AISHE_LAST_DURATION_MS="$elapsed" command "$_AISHE_CLI_BIN" --record-failure "$AISHE_LAST_CMD" >/dev/null 2>&1 &!
     typeset -g _AISHE_FAILURE_ACTIVE=1
     if [[ "${AISHE_FAILURE_HINTS:-1}" == 1 ]]; then
       local hint="aishe: exit ${AISHE_LAST_EXIT} | ? explain | Ctrl-X Ctrl-F fix"
@@ -1037,7 +1178,7 @@ _aishe_capture_exit() {
       fi
     fi
   elif [[ "${_AISHE_FAILURE_ACTIVE:-0}" == 1 ]]; then
-    command aishe last clear >/dev/null 2>&1
+    command "$_AISHE_CLI_BIN" last clear >/dev/null 2>&1
     typeset -g _AISHE_FAILURE_ACTIVE=""
   fi
 }
@@ -1106,7 +1247,7 @@ aishe-background-tasks() {
   local _AISHE_BACKGROUND_LAST_EXIT="${AISHE_LAST_EXIT:-0}"
   zle -I
   {
-    command aishe task browse <&$_AISHE_INPUT_FD
+    command "$_AISHE_CLI_BIN" task browse <&$_AISHE_INPUT_FD
   } always {
     BUFFER="$_AISHE_BACKGROUND_BUFFER"
     CURSOR="$_AISHE_BACKGROUND_CURSOR"
@@ -1343,6 +1484,30 @@ zle -N aishe-show-route
   zle -N aishe-background-tasks
   zle -N aishe-background-event
   zle -N aishe-slash-tab
+  zle -N aishe-slash-picker-insert
+  zle -N aishe-slash-picker-delete
+  zle -N aishe-slash-picker-paste
+  zle -N aishe-slash-picker-clear
+  zle -N aishe-slash-picker-next
+  zle -N aishe-slash-picker-previous
+  zle -N aishe-slash-picker-accept
+  bindkey -N aishe-slash-picker
+  bindkey -M aishe-slash-picker -R ' '-'\M-^?' aishe-slash-picker-insert
+  bindkey -M aishe-slash-picker '^?' aishe-slash-picker-delete
+  bindkey -M aishe-slash-picker '^[[200~' aishe-slash-picker-paste
+  bindkey -M aishe-slash-picker '^H' aishe-slash-picker-delete
+  bindkey -M aishe-slash-picker '^U' aishe-slash-picker-clear
+  bindkey -M aishe-slash-picker '^I' aishe-slash-picker-next
+  bindkey -M aishe-slash-picker '^N' aishe-slash-picker-next
+  bindkey -M aishe-slash-picker '^P' aishe-slash-picker-previous
+  bindkey -M aishe-slash-picker '^[[B' aishe-slash-picker-next
+  bindkey -M aishe-slash-picker '^[[A' aishe-slash-picker-previous
+  bindkey -M aishe-slash-picker '^[[Z' aishe-slash-picker-previous
+  bindkey -M aishe-slash-picker '^M' aishe-slash-picker-accept
+  bindkey -M aishe-slash-picker '^J' aishe-slash-picker-accept
+  bindkey -M aishe-slash-picker '^[' send-break
+  bindkey -M aishe-slash-picker '^C' send-break
+  bindkey -M aishe-slash-picker '^D' send-break
   zle -C aishe-complete-slashes complete-word _aishe_slash_completion
   zstyle ':completion:aishe-slashes:*' group-name ''
   zstyle ':completion:aishe-slashes:*' list-grouped true
@@ -1408,6 +1573,25 @@ zle -N aishe-show-route
     source "$AISHE_LEANRC_POST"
   elif [[ -r "$HOME/.aishe/leanrc.post" ]]; then
     source "$HOME/.aishe/leanrc.post"
+  fi
+  # This is the actual presentation boundary. Merely spawning zsh must not
+  # consume the persisted first-launch hint, because user startup can abort.
+  if [[ "${AISHE_COMMAND_HINT_SHOWN:-0}" != 1 ]]; then
+    local -a _aishe_hint_binding
+    _aishe_hint_binding=(${(z)$(bindkey -M main '^[[Z' 2>/dev/null)})
+    local _aishe_mode_hint='/mode'
+    if [[ "${AISHE_MODE_KEY:-^[[Z}" == '^[[Z' &&
+          "${_aishe_hint_binding[2]:-}" == aishe-cycle-mode ]]; then
+      _aishe_mode_hint='Shift-Tab mode'
+    fi
+    local _aishe_launch_hint="/help | ? ask | $_aishe_mode_hint"
+    (( ${COLUMNS:-80} >= 40 )) && _aishe_launch_hint="AIShe: $_aishe_launch_hint"
+    if print -r -- "$_aishe_launch_hint"; then
+      typeset -gx AISHE_COMMAND_HINT_SHOWN=1
+      if [[ -n "$_AISHE_LAUNCH_HINT_ACK" ]]; then
+        print -r -- shown >| "$_AISHE_LAUNCH_HINT_ACK" 2>/dev/null || true
+      fi
+    fi
   fi
   aishe_set_prompt
 fi

@@ -6,6 +6,18 @@ approvals. Names, pins, reviewed results, and archived history persist across
 shells. The drawer shows running work, queued dependencies, and recorded results
 without starting a provider merely to inspect them.
 
+Task details start with saved authority, workspace, limits, and recorded checks
+before the response. Up/Down and Page Up/Page Down scroll; Home/End reach either
+end. The header shows the visible range and continuation. **e** opens checks and
+**?** lists actions. Questions and queued/received follow-ups remain near the top.
+
+Opening finished work records **Seen**, which quiets only that exact result.
+**v** or **mark reviewed** records an explicit **Reviewed** decision after your
+inspection; it neither certifies checks nor applies changes. Both survive shell
+restarts, and a new result revision becomes unread. Previous implicit review
+flags retain their quiet status as Seen. Naming, pinning, and archive remain
+separate from execution and result history.
+
 ## Move a conversation between foreground and background
 
 During a native agent turn in the AIShe zsh front-end, press **Ctrl-X d** to
@@ -218,7 +230,12 @@ check is not manufactured from an agent's claims.
 Omitted stage budgets default to 30 active minutes, 40 provider turns, 200 tool
 calls, 100 changed files, 10 MiB changed content, 50 recognized network-capable
 tool calls, and no explicit task cost cap. A zero cost cap does not mean free
-model use. Paused questions keep their workflow slot; waiting time does not
+model use. Costs are recorded estimates only when both token usage and an exact
+model price are available for each provider turn. Missing coverage shows n/a or
+a partial amount, including older checkpoints. Positive cost caps require a
+fixed priced provider/model with automatic fallbacks disabled; an interrupted or
+unmetered turn cannot replenish a cost allowance or admit further effects.
+Paused questions keep their workflow slot; waiting time does not
 consume active execution time. Queued dependencies are counted as queued rather
 than Needs you; a failed dependency is attention.
 

@@ -17,30 +17,55 @@ use crate::ui::ColorDepth;
 use crate::ui::{StyleToken, TerminalCapabilities, Theme};
 use crate::usage;
 
-/// `true` if the session has reached the configured `budget_usd`. When it has,
-/// prints a one-line notice (so the caller can simply stop).
-pub fn budget_reached(provider: &dyn Provider, config: &Config) -> bool {
+/// Native request/action admission. A money cap needs exact finite pricing,
+/// complete usage, and a fixed billing model before any further work.
+pub(crate) fn session_budget_failure(provider: &dyn Provider, config: &Config) -> Option<String> {
+    let budget = config.aishe.budget_usd;
+    if budget == 0.0 {
+        return None;
+    }
+    if !budget.is_finite() || budget < 0.0 {
+        return Some(
+            "invalid session dollar budget: budget_usd must be zero or a finite positive amount"
+                .into(),
+        );
+    }
+    if !config.aishe.provider_fallback.is_empty() {
+        return Some("cannot enforce the session dollar budget with automatic provider fallbacks: select one fixed provider/model or explicitly disable budget_usd".into());
+    }
+    let Some(price) =
+        usage::budget_price_for(config.active_model(), &config.pricing).filter(|price| {
+            price.input.is_finite()
+                && price.output.is_finite()
+                && price.input >= 0.0
+                && price.output >= 0.0
+        })
+    else {
+        return Some("cannot enforce the session dollar budget: configure exact valid pricing for this provider/model or explicitly disable budget_usd".into());
+    };
     let snap = provider.meter().snapshot();
-    if usage::over_budget(
-        snap,
-        config.active_model(),
-        &config.pricing,
-        config.aishe.budget_usd,
-    ) {
-        let message = if crate::lean::enabled() {
-            // IPC carries an adjusted per-provider threshold for a cumulative
-            // shell budget. Display the configured total through /usage rather
-            // than presenting that internal threshold as the user's limit.
+    if snap.attributed_requests != snap.requests || snap.unreported_requests > 0 {
+        return Some("cannot enforce the session dollar budget: recorded usage coverage or billing attribution is unknown; start a new session or explicitly disable budget_usd to continue".into());
+    }
+    if usage::cost(snap, price) >= budget {
+        Some(if crate::lean::enabled() {
             "session budget reached; raise `budget_usd` to continue (see /usage)".into()
         } else {
             format!(
-                "budget reached (~${:.2} ≥ ${:.2}); raise `budget_usd` to continue",
-                usage::price_for(config.active_model(), &config.pricing)
-                    .map(|p| usage::cost(snap, p))
-                    .unwrap_or(0.0),
-                config.aishe.budget_usd,
+                "budget reached (~${:.4} ≥ ${:.4}); raise `budget_usd` to continue",
+                usage::cost(snap, price),
+                budget
             )
-        };
+        })
+    } else {
+        None
+    }
+}
+
+/// `true` if the session has reached or cannot verify `budget_usd`. When it has,
+/// prints a one-line notice (so the caller can simply stop).
+pub fn budget_reached(provider: &dyn Provider, config: &Config) -> bool {
+    if let Some(message) = session_budget_failure(provider, config) {
         eprintln!(
             "  {}",
             TerminalCapabilities::detect_stderr().paint(StyleToken::Danger, &message)
@@ -50,13 +75,27 @@ pub fn budget_reached(provider: &dyn Provider, config: &Config) -> bool {
     false
 }
 
+pub(crate) fn ensure_session_budget(
+    provider: &dyn Provider,
+    config: &Config,
+) -> Result<(), crate::providers::ProviderError> {
+    match session_budget_failure(provider, config) {
+        Some(reason) => Err(crate::providers::ProviderError::Budget(reason)),
+        None => Ok(()),
+    }
+}
+
 /// Print a dim per-session token/cost line, when `show_usage` is on and at least
 /// one request has been made.
 pub fn report_usage(provider: &dyn Provider, config: &Config) {
     if !config.aishe.show_usage {
         return;
     }
-    let snap = provider.meter().snapshot();
+    let snap = if config.aishe.provider_fallback.is_empty() {
+        provider.meter().snapshot()
+    } else {
+        provider.meter().snapshot().without_attribution()
+    };
     if snap.is_empty() {
         return;
     }

@@ -13,6 +13,11 @@ such as `aishe mode`, `aishe scope`, `aishe network`, and `aishe output` change
 defaults for new shells. Picker choices say “this shell” until an explicit
 post-selection `y` promotes them.
 
+An AI account is optional for ordinary shell use. Start the shell first and
+connect later through `/setup` or `aishe setup`. Shell-profile preferences apply
+to new shells; account, model, and mode pickers can also select this shell's
+values without changing saved defaults.
+
 ## File locations
 
 aishe follows each platform's own convention, so the directories differ between
@@ -71,7 +76,8 @@ brevity. Read `~/.config/aishe/...` as `<config>/...` and
 | Field | Type | Default | Meaning |
 |-------|------|---------|---------|
 | `safety_profile` | string | `custom` | Named settings bundle: `conservative`, `balanced`, `autonomous`, or `custom`. |
-| `mode` | string | `suggest` | Interaction mode: `ask`, `allow`, or `agent`; legacy aliases `suggest`, `auto`, and `yolo` remain accepted. A saved agent mode is not an unattended tool grant. |
+| `mode` | string | `ask` | Interaction mode: `ask`, `allow`, or `agent`; legacy aliases `suggest`, `auto`, and `yolo` remain accepted. A saved agent mode is not an unattended tool grant. |
+| `shell_profile` | string | `clean` for existing configs | New-shell experience: `clean` for Clean AIShe, `personal` for Keep my zsh, or `bash` for Bash integration with its reduced compatibility tier. Fresh account-free launch selects personal zsh when available, Bash otherwise; Setup and Settings persist your choice. |
 | `connection` | string | `anthropic` | Durable default named connection ID. `/connection` switches account for this shell unless the post-selection prompt or `--default` saves it; `/model` changes only the model on the active connection. |
 | `connection_fallback` | string | active connection | Named compatibility fallback connection. |
 | `provider` | string | `anthropic` | Which provider block to use: `anthropic` or `openai`. |
@@ -544,17 +550,19 @@ server launched from `command`. List connected tools with `aishe mcp`. See
   embedded checksum and exact asset size remain mandatory.
 - `AISHE_POLICY_FILE`: alternate organization-policy path for managed
   deployment/testing.
-- `AISHE_MODE`: mode used by the native shell hook (`suggest`, `auto`, `yolo`).
-- `AISHE_ZSH_PROFILE`: native interactive profile, `clean` (default) or
-  `personal`. Personal loads real `.zshenv`/`.zshrc` and plugins without selecting
+- `AISHE_MODE`: mode used by the native shell hook (`ask`, `allow`, `agent`;
+  legacy aliases remain accepted).
+- `AISHE_ZSH_PROFILE`: temporary override of the saved shell profile, `clean`,
+  `personal`, or `bash`. Personal loads real `.zshenv`/`.zshrc` and plugins without selecting
   OpenCode; its prompt, history settings, and custom optional shortcuts remain
   under your control.
 - `AISHE_LEANRC`: early native startup file, default `~/.aishe/leanrc`; use it
   for exports, aliases, and completion paths before AIShe installs widgets.
 - `AISHE_LEANRC_POST`: late native startup file, default
   `~/.aishe/leanrc.post`; use it to extend or override installed widgets/bindings.
-- `AISHE_PERSONAL_INDICATOR=1`: opt into a mode/scope and background-work suffix
-  on the personal right prompt. Themes can instead display the refreshed
+- `AISHE_PERSONAL_INDICATOR`: the personal right prompt includes a quiet
+  mode/scope and background-work suffix by default. Set it to `0` to hide the
+  suffix. Themes can instead display the refreshed
   `AISHE_MODE_INDICATOR` and `AISHE_BACKGROUND_INDICATOR`; the latter is empty
   when there is no running or unseen work. Counts cover all projects.
 - `AISHE_BACKGROUND_INDICATOR_ENABLED=0`: hide the native background-work badge

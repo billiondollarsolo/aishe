@@ -140,6 +140,10 @@ impl LeanShellFiles {
                 last,
                 &config.effective_status_line_items(),
             );
+            crate::usagelog::merge_status(
+                status,
+                &warm.recent_status(config.active_connection_id()),
+            );
         }
     }
 }
@@ -379,11 +383,12 @@ pub fn spawn_ipc_with_files(
                     _ => false,
                 };
                 if same_provider {
-                    let delta = crate::usage::Usage {
-                        input: after.input.saturating_sub(before.input),
-                        output: after.output.saturating_sub(before.output),
-                        requests: after.requests.saturating_sub(before.requests),
-                    };
+                    let mut delta = after.delta_since(before);
+                    if !config.aishe.provider_fallback.is_empty() {
+                        // The unified meter cannot attribute a fallback turn
+                        // to the configured model's price.
+                        delta = delta.without_attribution();
+                    }
                     if !delta.is_empty() {
                         warm.record_usage(delta, &call_model, &call_connection);
                         if let Some(path) = &files.usage {

@@ -525,12 +525,13 @@ impl CommandCache {
         {
             let mut commands = self.write();
             commands.extend(FALLBACK_BUILTINS.iter().map(|name| name.to_string()));
+            commands.extend(INTERCEPTED.iter().map(|name| name.to_string()));
         }
         for segment in split_top_level(line) {
             let EffectiveHead::Token(head) = effective_command_token(&tokenize(&segment)) else {
                 continue;
             };
-            if path_executable_exists(&head) {
+            if !self.contains(&head) && path_executable_exists(&head) {
                 self.write().insert(head);
             }
         }
@@ -1804,6 +1805,10 @@ mod tests {
             Some("unknown-but-forced")
         );
         assert!(fast_shell_line("cd /tmp").is_none());
+        assert_eq!(
+            fast_shell_line("printf ''; exit 23").as_deref(),
+            Some("printf ''; exit 23")
+        );
         assert!(fast_shell_line("please explain this directory").is_none());
         assert!(fast_shell_line("/echo-args hello").is_none());
         assert_eq!(

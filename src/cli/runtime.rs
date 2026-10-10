@@ -753,15 +753,7 @@ fn managed_turn(
 }
 
 fn record_managed_usage(outcome: &TurnOutcome, config: &Config) {
-    let usage = crate::usage::Usage {
-        input: outcome.usage.input_tokens,
-        output: outcome.usage.output_tokens,
-        requests: outcome
-            .events
-            .iter()
-            .filter(|event| matches!(event, crate::agent::AgentEvent::Usage { .. }))
-            .count() as u64,
-    };
+    let usage = crate::agent::controller::metered_usage(&outcome.events);
     if usage.is_empty() {
         return;
     }

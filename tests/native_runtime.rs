@@ -47,6 +47,7 @@ impl Fixture {
             "AISHE_TASK_MAX_MINUTES",
             "AISHE_TASK_MAX_COST_USD",
             "AISHE_BACKGROUND_TASK_ID",
+            "AISHE_DISABLE_TASKS",
         ] {
             fixture.save(name);
             std::env::remove_var(name);
@@ -100,6 +101,7 @@ struct Script {
     messages: Mutex<Vec<Vec<Msg>>>,
     meter: Arc<UsageMeter>,
     cancel_on_call: Option<Arc<AtomicBool>>,
+    omit_usage: bool,
 }
 
 impl Script {
@@ -110,6 +112,7 @@ impl Script {
             messages: Mutex::new(Vec::new()),
             meter: Arc::new(UsageMeter::default()),
             cancel_on_call: None,
+            omit_usage: false,
         }
     }
 }
@@ -127,7 +130,9 @@ impl Provider for Script {
     ) -> Result<Completion, ProviderError> {
         self.calls.fetch_add(1, Ordering::SeqCst);
         self.messages.lock().unwrap().push(messages.to_vec());
-        self.meter.record(20, 10);
+        if !self.omit_usage {
+            self.meter.record(20, 10);
+        }
         if let Some(flag) = &self.cancel_on_call {
             flag.store(true, Ordering::SeqCst);
         }
@@ -168,7 +173,7 @@ fn write(id: &str, path: &str) -> ToolCall {
 
 fn run(
     fixture: &Fixture,
-    provider: &Script,
+    provider: &dyn Provider,
     config: &Config,
     interrupt: &AtomicBool,
 ) -> aishe::agent::NativeTurnOutcome {
@@ -183,6 +188,64 @@ fn run(
         &mut Session::new(false),
     )
     .unwrap()
+}
+
+#[test]
+fn private_task_root_makes_native_turns_durable_without_default_harness_writes() {
+    let _lock = ENV.lock().unwrap();
+    let fixture = Fixture::new();
+    let config = fixture.config();
+    let default_root = fixture.root.join("data/aishe/tasks");
+    let private_root = fixture.root.join("tasks");
+
+    // Harness safety applies to the implicit data directory, even when it is
+    // isolated by the test environment. An empty override has the same meaning.
+    for override_value in [None, Some("")] {
+        match override_value {
+            Some(value) => std::env::set_var("AISHE_TASKS_DIR", value),
+            None => std::env::remove_var("AISHE_TASKS_DIR"),
+        }
+        let outcome = run(
+            &fixture,
+            &Script::new(vec![final_answer()]),
+            &config,
+            &AtomicBool::new(false),
+        );
+        assert_eq!(outcome.state, NativeTurnState::Completed);
+        assert!(aishe::tasks::load(&outcome.task_id).is_err());
+        assert!(!default_root.exists());
+        assert!(!private_root.exists());
+    }
+
+    std::env::set_var("AISHE_TASKS_DIR", &private_root);
+    let provider = Script::new(vec![final_answer()]);
+    let outcome = run(&fixture, &provider, &config, &AtomicBool::new(false));
+    assert_eq!(outcome.state, NativeTurnState::Completed);
+    let saved = aishe::tasks::load(&outcome.task_id).unwrap();
+    assert_eq!(saved.native_state.as_deref(), Some("completed"));
+    assert_eq!(saved.objective, "Complete this task");
+    assert_eq!(saved.connection_id, config.active_connection_id());
+    assert_eq!(saved.usage.requests, 1);
+    assert_eq!(saved.usage.reported_requests, Some(1));
+    assert_eq!(saved.execution.provider_turns, 1);
+    assert!(private_root
+        .join(format!("{}.json", outcome.task_id))
+        .is_file());
+    assert_eq!(aishe::tasks::list().len(), 1);
+    assert!(!default_root.exists());
+
+    // The explicit disable remains stronger than a configured private root.
+    std::env::set_var("AISHE_DISABLE_TASKS", "1");
+    let outcome = run(
+        &fixture,
+        &Script::new(vec![final_answer()]),
+        &config,
+        &AtomicBool::new(false),
+    );
+    assert_eq!(outcome.state, NativeTurnState::Completed);
+    assert!(aishe::tasks::load(&outcome.task_id).is_err());
+    assert_eq!(aishe::tasks::list().len(), 1);
+    assert!(!default_root.exists());
 }
 
 #[test]
@@ -429,8 +492,7 @@ fn resuming_a_spent_configured_iteration_ceiling_cannot_contact_provider_or_repe
     let mut config = fixture.config();
     config.aishe.max_yolo_iterations = 1;
     let original = Script::new(vec![completion(vec![write("original", "original-effect")])]);
-    // Foreground auto-persistence is intentionally disabled for integration
-    // harness binaries. Resume a seeded record to exercise the durable path.
+    // Resume a seeded checkpoint to exercise the durable continuation path.
     let seed = aishe::tasks::Active::start(&config, &fixture.root, "Complete this task");
     let outcome = yolo::resume(
         seed.record().clone(),
@@ -612,6 +674,432 @@ fn explicit_unpriced_cost_cap_fails_before_provider_work() {
 }
 
 #[test]
+fn native_cost_coverage_is_durable_and_unmetered_capped_turns_start_no_tools() {
+    let _lock = ENV.lock().unwrap();
+    let fixture = Fixture::new();
+    let mut config = fixture.config();
+    config.set_active_model("coverage-fixture".into());
+    let provider = Script::new(vec![final_answer()]);
+    let outcome = run(&fixture, &provider, &config, &AtomicBool::new(false));
+    let unpriced = aishe::tasks::load(&outcome.task_id).unwrap();
+    assert_eq!(unpriced.execution.costed_provider_turns, Some(0));
+    assert!(!unpriced.execution.cost_is_complete());
+    assert!(unpriced.execution.cost_label().starts_with("n/a"));
+    config.pricing.insert(
+        "coverage-fixture".into(),
+        aishe::usage::Price {
+            input: 1.0,
+            output: 2.0,
+        },
+    );
+    let provider = Script::new(vec![final_answer()]);
+    let outcome = run(&fixture, &provider, &config, &AtomicBool::new(false));
+    let priced = aishe::tasks::load(&outcome.task_id).unwrap();
+    assert!(priced.execution.cost_is_complete());
+    assert_eq!(priced.execution.costed_provider_turns, Some(1));
+    assert_eq!(priced.execution.cost_usd, 0.00004);
+    std::env::set_var("AISHE_TASK_MAX_COST_USD", "1");
+    let mut provider = Script::new(vec![completion(vec![write("unmetered", "must-not-exist")])]);
+    provider.omit_usage = true;
+    let outcome = run(&fixture, &provider, &config, &AtomicBool::new(false));
+    assert_eq!(outcome.state, NativeTurnState::BudgetExhausted);
+    assert!(!fixture.root.join("must-not-exist").exists());
+    let saved = aishe::tasks::load(&outcome.task_id).unwrap();
+    assert!(!saved.execution.cost_is_complete());
+    assert_eq!(saved.execution.tool_calls, 0);
+    config.aishe.provider_fallback = vec!["anthropic".into()];
+    let provider = Script::new(vec![final_answer()]);
+    let outcome = run(&fixture, &provider, &config, &AtomicBool::new(false));
+    assert_eq!(outcome.state, NativeTurnState::Failed);
+    assert_eq!(provider.calls.load(Ordering::SeqCst), 0);
+}
+
+#[test]
+fn wrapped_provider_ambiguous_attribution_cannot_spend_a_fixed_model_money_cap() {
+    let _lock = ENV.lock().unwrap();
+    let fixture = Fixture::new();
+    std::env::set_var("AISHE_TASK_MAX_COST_USD", "1");
+    let mut config = fixture.config();
+    config.set_active_model("attribution-fixture".into());
+    config.pricing.insert(
+        "attribution-fixture".into(),
+        aishe::usage::Price {
+            input: 1.0,
+            output: 2.0,
+        },
+    );
+    // The caller supplies a wrapper without changing configured identity; its
+    // complete tokens cannot establish which model should be priced.
+    let first = Arc::new(Script::new(vec![completion(vec![write(
+        "ambiguous",
+        "must-not-exist",
+    )])]));
+    let second = Arc::new(Script::new(vec![]));
+    let wrapped = aishe::providers::fallback::FallbackProvider::new(vec![
+        ("first".into(), first.clone()),
+        ("second".into(), second.clone()),
+    ]);
+    let outcome = run(&fixture, &wrapped, &config, &AtomicBool::new(false));
+    assert_eq!(outcome.state, NativeTurnState::BudgetExhausted);
+    assert!(!fixture.root.join("must-not-exist").exists());
+    let usage = wrapped.meter().snapshot();
+    assert_eq!(usage.reported_requests(), 1);
+    assert_eq!(usage.reported_input, 20);
+    assert_eq!(usage.reported_output, 10);
+    assert_eq!(usage.attributed_requests, 0);
+    let saved = aishe::tasks::load(&outcome.task_id).unwrap();
+    assert_eq!(saved.execution.costed_provider_turns, Some(0));
+    assert_eq!(saved.execution.tool_calls, 0);
+    assert_eq!(first.calls.load(Ordering::SeqCst), 1);
+    assert_eq!(second.calls.load(Ordering::SeqCst), 0);
+}
+
+#[test]
+fn missing_http_usage_cannot_make_a_priced_native_task_appear_free() {
+    let _lock = ENV.lock().unwrap();
+    let fixture = Fixture::new();
+    std::env::set_var("AISHE_TASK_MAX_COST_USD", "1");
+    let mut config = fixture.config();
+    config.set_active_model("http-coverage-fixture".into());
+    config.pricing.insert(
+        "http-coverage-fixture".into(),
+        aishe::usage::Price {
+            input: 1.0,
+            output: 2.0,
+        },
+    );
+    for transport in ["anthropic", "chat", "responses"] {
+        let mut server = mockito::Server::new();
+        let arguments = json!({"path": "must-not-exist", "content": "unmetered effect"});
+        let (route, response) = match transport {
+            "anthropic" => (
+                "/v1/messages",
+                json!({"content": [{"type": "tool_use", "id": "missing-usage", "name": "write_file", "input": arguments}]}),
+            ),
+            "chat" => (
+                "/v1/chat/completions",
+                json!({"choices": [{"message": {"tool_calls": [{"id": "missing-usage", "type": "function", "function": {"name": "write_file", "arguments": arguments.to_string()}}]}}]}),
+            ),
+            _ => (
+                "/v1/responses",
+                json!({"id": "missing-usage", "output": [{"type": "function_call", "call_id": "missing-usage", "name": "write_file", "arguments": arguments.to_string()}]}),
+            ),
+        };
+        let request = server
+            .mock("POST", route)
+            .with_status(200)
+            .with_body(response.to_string())
+            .expect(1)
+            .create();
+        let provider: Box<dyn Provider> = if transport == "anthropic" {
+            Box::new(aishe::providers::anthropic::AnthropicProvider::new(
+                server.url(),
+                "fixture".into(),
+                "http-coverage-fixture".into(),
+            ))
+        } else {
+            Box::new(
+                aishe::providers::openai_compat::OpenAiProvider::with_options(
+                    server.url(),
+                    "fixture".into(),
+                    "http-coverage-fixture".into(),
+                    if transport == "chat" {
+                        "chat_completions"
+                    } else {
+                        "responses"
+                    },
+                    "auto",
+                ),
+            )
+        };
+        let outcome = yolo::run(
+            "Unmetered native task",
+            provider.as_ref(),
+            &mut fixture.executor(),
+            &config,
+            &AtomicBool::new(false),
+            &SkillRegistry::default(),
+            &McpRegistry::default(),
+            &mut Session::new(false),
+        )
+        .unwrap();
+        assert_eq!(
+            outcome.state,
+            NativeTurnState::BudgetExhausted,
+            "{transport}"
+        );
+        assert!(!fixture.root.join("must-not-exist").exists());
+        assert_eq!(provider.meter().unreported_requests(), 1);
+        let unreported = provider.meter().snapshot();
+        assert_eq!(unreported.unreported_requests, 1, "{transport}");
+        assert_eq!(unreported.reported_requests(), 0, "{transport}");
+        let text = aishe::usage::summary(unreported, config.active_model(), &config.pricing);
+        assert!(text.contains("cost n/a"), "{transport}: {text}");
+        assert!(!text.contains("$0.0000"), "{transport}: {text}");
+        let saved = aishe::tasks::load(&outcome.task_id).unwrap();
+        assert!(saved.execution.cost_label().starts_with("n/a"));
+        assert_eq!(saved.execution.tool_calls, 0);
+        request.assert();
+        let mut reported_zero = match transport {
+            "anthropic" => json!({"content": [{"type": "text", "text": "Zero usage reported."}]}),
+            "chat" => json!({"choices": [{"message": {"content": "Zero usage reported."}}]}),
+            _ => {
+                json!({"id": "reported-zero", "output": [{"type": "message", "role": "assistant", "content": [{"type": "output_text", "text": "Zero usage reported."}]}]})
+            }
+        };
+        reported_zero["usage"] = if transport == "chat" {
+            json!({"prompt_tokens": 0, "completion_tokens": 0})
+        } else {
+            json!({"input_tokens": 0, "output_tokens": 0})
+        };
+        let zero_request = server
+            .mock("POST", route)
+            .with_status(200)
+            .with_body(reported_zero.to_string())
+            .expect(1)
+            .create();
+        let outcome = yolo::run(
+            "Reported zero usage",
+            provider.as_ref(),
+            &mut fixture.executor(),
+            &config,
+            &AtomicBool::new(false),
+            &SkillRegistry::default(),
+            &McpRegistry::default(),
+            &mut Session::new(false),
+        )
+        .unwrap();
+        assert_eq!(outcome.state, NativeTurnState::Completed, "{transport}");
+        let saved = aishe::tasks::load(&outcome.task_id).unwrap();
+        assert!(saved.execution.cost_is_complete());
+        assert_eq!(saved.execution.costed_provider_turns, Some(1));
+        assert!(saved
+            .execution
+            .cost_label()
+            .starts_with("$0.0000 (recorded estimate)"));
+        assert_eq!(
+            provider.meter().unreported_requests(),
+            1,
+            "reported zero was treated as missing usage"
+        );
+        let zero_delta = provider.meter().snapshot().delta_since(unreported);
+        assert_eq!(
+            zero_delta,
+            aishe::usage::Usage::reported(0, 0, 1),
+            "{transport}"
+        );
+        let text = aishe::usage::summary(zero_delta, config.active_model(), &config.pricing);
+        assert!(text.contains("~$0.0000"), "{transport}: {text}");
+        zero_request.assert();
+    }
+}
+
+#[test]
+fn session_money_cap_alone_stops_unreported_http_tool_response_before_effects() {
+    let _lock = ENV.lock().unwrap();
+    let fixture = Fixture::new();
+    let mut config = fixture.config();
+    config.aishe.budget_usd = 1.0;
+    config.set_active_model("session-coverage-fixture".into());
+    config.pricing.insert(
+        "session-coverage-fixture".into(),
+        aishe::usage::Price {
+            input: 1.0,
+            output: 2.0,
+        },
+    );
+    let mut server = mockito::Server::new();
+    let arguments = json!({"path": "must-not-exist", "content": "missing session usage"});
+    let missing = server.mock("POST", "/v1/responses").with_status(200)
+        .with_body(json!({"id": "missing-session-usage", "output": [{"type": "function_call", "call_id": "missing-session-usage", "name": "write_file", "arguments": arguments.to_string()}]}).to_string())
+        .expect(1).create();
+    let provider = aishe::providers::openai_compat::OpenAiProvider::with_options(
+        server.url(),
+        "fixture".into(),
+        "session-coverage-fixture".into(),
+        "responses",
+        "auto",
+    );
+    let outcome = run(&fixture, &provider, &config, &AtomicBool::new(false));
+    assert_eq!(outcome.state, NativeTurnState::BudgetExhausted);
+    assert!(outcome
+        .detail
+        .as_deref()
+        .unwrap()
+        .contains("usage coverage or billing attribution is unknown"));
+    assert_eq!(provider.meter().snapshot().requests, 1);
+    let saved = aishe::tasks::load(&outcome.task_id).unwrap();
+    assert_eq!(saved.execution.provider_turns, 1);
+    assert_eq!(saved.execution.tool_calls, 0);
+    assert!(!fixture.root.join("must-not-exist").exists());
+    missing.assert();
+    let zero = server.mock("POST", "/v1/responses").with_status(200)
+        .with_body(json!({"id":"reported-session-zero", "output":[{"type":"message", "role":"assistant", "content":[{"type":"output_text", "text":"Explicit zero is covered."}]}], "usage":{"input_tokens":0, "output_tokens":0}}).to_string())
+        .expect(1).create();
+    let provider = aishe::providers::openai_compat::OpenAiProvider::with_options(
+        server.url(),
+        "fixture".into(),
+        "session-coverage-fixture".into(),
+        "responses",
+        "auto",
+    );
+    let outcome = run(&fixture, &provider, &config, &AtomicBool::new(false));
+    assert_eq!(outcome.state, NativeTurnState::Completed);
+    assert_eq!(provider.meter().snapshot(), Usage::reported(0, 0, 1));
+    zero.assert();
+}
+
+#[test]
+fn direct_native_money_cap_rejects_invalid_amount_unknown_price_and_fallback_before_requests() {
+    let _lock = ENV.lock().unwrap();
+    let fixture = Fixture::new();
+    for cap in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY, -1.0] {
+        let mut config = fixture.config();
+        config.aishe.budget_usd = cap;
+        let provider = Script::new(vec![final_answer()]);
+        let outcome = run(&fixture, &provider, &config, &AtomicBool::new(false));
+        assert_eq!(outcome.state, NativeTurnState::BudgetExhausted);
+        assert!(outcome
+            .detail
+            .as_deref()
+            .unwrap()
+            .contains("invalid session dollar budget"));
+        assert_eq!(provider.calls.load(Ordering::SeqCst), 0);
+    }
+    for case in ["unknown", "display-substring", "invalid-price", "fallback"] {
+        let mut config = fixture.config();
+        config.aishe.budget_usd = 1.0;
+        config.set_active_model(if case == "display-substring" {
+            "custom-claude-sonnet".into()
+        } else {
+            "exact-session-fixture".into()
+        });
+        if matches!(case, "invalid-price" | "fallback") {
+            config.pricing.insert(
+                "exact-session-fixture".into(),
+                aishe::usage::Price {
+                    input: if case == "invalid-price" {
+                        f64::NAN
+                    } else {
+                        1.0
+                    },
+                    output: 2.0,
+                },
+            );
+        }
+        if case == "fallback" {
+            config.aishe.provider_fallback = vec!["other".into()];
+        }
+        let provider = Script::new(vec![final_answer()]);
+        let outcome = run(&fixture, &provider, &config, &AtomicBool::new(false));
+        assert_eq!(outcome.state, NativeTurnState::BudgetExhausted, "{case}");
+        assert_eq!(provider.calls.load(Ordering::SeqCst), 0, "{case}");
+        let error = aishe::modes::suggest::request_strict(
+            "must not call",
+            &provider,
+            &fixture.executor(),
+            &config,
+            vec![],
+        )
+        .unwrap_err();
+        assert!(matches!(error, ProviderError::Budget(_)), "{case}: {error}");
+    }
+    let config = fixture.config();
+    assert_eq!(config.aishe.budget_usd, 0.0);
+    let provider = Script::new(vec![final_answer()]);
+    assert_eq!(
+        run(&fixture, &provider, &config, &AtomicBool::new(false)).state,
+        NativeTurnState::Completed
+    );
+    assert_eq!(provider.calls.load(Ordering::SeqCst), 1);
+}
+
+#[test]
+fn strict_and_streamed_suggestions_do_not_return_effects_after_missing_priced_http_usage() {
+    let _lock = ENV.lock().unwrap();
+    let fixture = Fixture::new();
+    let mut config = fixture.config();
+    config.aishe.budget_usd = 1.0;
+    config.set_active_model("suggest-budget-fixture".into());
+    config.pricing.insert(
+        "suggest-budget-fixture".into(),
+        aishe::usage::Price {
+            input: 1.0,
+            output: 2.0,
+        },
+    );
+    let mut server = mockito::Server::new();
+    for stream in [false, true] {
+        let text = if stream {
+            "CMD: touch must-not-exist\nWHY: Private budget fixture".to_string()
+        } else {
+            json!({"type":"command", "command":"touch must-not-exist", "explanation":"Private budget fixture"}).to_string()
+        };
+        let answer = json!({"id":"suggest-missing-usage", "output":[{"type":"message", "role":"assistant", "content":[{"type":"output_text", "text":text}]}]});
+        let body = if stream {
+            format!(
+                "data: {}\n\n",
+                json!({"type":"response.completed", "response":answer})
+            )
+        } else {
+            answer.to_string()
+        };
+        let request = server
+            .mock("POST", "/v1/responses")
+            .with_status(200)
+            .with_header(
+                "content-type",
+                if stream {
+                    "text/event-stream"
+                } else {
+                    "application/json"
+                },
+            )
+            .with_body(body)
+            .expect(1)
+            .create();
+        let provider = aishe::providers::openai_compat::OpenAiProvider::with_options(
+            server.url(),
+            "fixture".into(),
+            "suggest-budget-fixture".into(),
+            "responses",
+            "auto",
+        );
+        if stream {
+            let error = aishe::modes::suggest::request_streamed(
+                "private suggestion",
+                &provider,
+                &fixture.executor(),
+                &config,
+                vec![],
+                &mut Vec::new(),
+            )
+            .unwrap_err();
+            assert!(error
+                .to_string()
+                .contains("usage coverage or billing attribution is unknown"));
+        } else {
+            let error = aishe::modes::suggest::request_strict(
+                "private suggestion",
+                &provider,
+                &fixture.executor(),
+                &config,
+                vec![],
+            )
+            .unwrap_err();
+            assert!(matches!(error, ProviderError::Budget(_)), "{error}");
+            assert_eq!(
+                aishe::providers::user_error(&error).code().to_string(),
+                "policy.budget"
+            );
+        }
+        assert_eq!(provider.meter().snapshot().unreported_requests, 1);
+        assert!(!fixture.root.join("must-not-exist").exists());
+        request.assert();
+    }
+}
+
+#[test]
 fn network_budget_prevents_a_second_http_request_and_later_effects() {
     let _lock = ENV.lock().unwrap();
     let fixture = Fixture::new();
@@ -758,4 +1246,123 @@ fn authoritative_background_cancellation_before_admission_persists_cancelled_nat
     assert_eq!(checkpoint.status, aishe::tasks::Status::Interrupted);
     assert_eq!(checkpoint.native_state.as_deref(), Some("cancelled"));
     assert!(aishe::background::is_cancelled(id).unwrap());
+}
+
+#[test]
+fn failed_http_response_keeps_authoritative_usage_in_content_free_ledger_once() {
+    let _lock = ENV.lock().unwrap();
+    let fixture = Fixture::new();
+    let mut config = fixture.config();
+    config.pricing.insert(
+        "error-usage-fixture".into(),
+        aishe::usage::Price {
+            input: 1.0,
+            output: 2.0,
+        },
+    );
+    for transport in ["anthropic", "chat", "responses"] {
+        let family = if transport == "anthropic" {
+            "anthropic"
+        } else {
+            "openai"
+        };
+        config.aishe.provider = family.into();
+        config.aishe.connection = family.into();
+        config.set_active_model("error-usage-fixture".into());
+        let mut server = mockito::Server::new();
+        let route = match transport {
+            "anthropic" => "/v1/messages",
+            "chat" => "/v1/chat/completions",
+            _ => "/v1/responses",
+        };
+        // HTTP succeeded and authoritative usage exists, but the expected
+        // content/choices/output shape is absent, so parsing must fail.
+        let body = if transport == "chat" {
+            json!({"usage": {"prompt_tokens": 1000, "completion_tokens": 200}})
+        } else {
+            json!({"usage": {"input_tokens": 1000, "output_tokens": 200}})
+        };
+        let request = server
+            .mock("POST", route)
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(body.to_string())
+            .expect(2)
+            .create();
+        let provider: Box<dyn Provider> = if transport == "anthropic" {
+            Box::new(aishe::providers::anthropic::AnthropicProvider::new(
+                server.url(),
+                "fixture".into(),
+                "error-usage-fixture".into(),
+            ))
+        } else {
+            Box::new(
+                aishe::providers::openai_compat::OpenAiProvider::with_options(
+                    server.url(),
+                    "fixture".into(),
+                    "error-usage-fixture".into(),
+                    if transport == "chat" {
+                        "chat_completions"
+                    } else {
+                        "responses"
+                    },
+                    "auto",
+                ),
+            )
+        };
+        let before = aishe::audit::ledger::read().len();
+        let outcome = yolo::run(
+            "Invalid response must still account for consumption",
+            provider.as_ref(),
+            &mut fixture.executor(),
+            &config,
+            &AtomicBool::new(false),
+            &SkillRegistry::default(),
+            &McpRegistry::default(),
+            &mut Session::new(false),
+        )
+        .unwrap();
+        assert_eq!(outcome.state, NativeTurnState::Failed, "{transport}");
+        let rows = aishe::audit::ledger::read();
+        assert_eq!(rows.len(), before + 1, "{transport}: {rows:?}");
+        let row = rows.last().unwrap();
+        assert_eq!(row["outcome"], "error");
+        assert_eq!(row["requests"], 1);
+        assert_eq!(row["reported_tokens_in"], 1000);
+        assert_eq!(row["reported_tokens_out"], 200);
+        assert_eq!(row["attributed_requests"], 1);
+        for forbidden in ["prompt", "response", "summary", "command", "error"] {
+            assert!(row.get(forbidden).is_none(), "{transport}: {row:?}");
+        }
+        assert!(aishe::modes::suggest::request_strict(
+            "Invalid suggest response must account for consumption",
+            provider.as_ref(),
+            &fixture.executor(),
+            &config,
+            Vec::new(),
+        )
+        .is_err());
+        let rows = aishe::audit::ledger::read();
+        assert_eq!(rows.len(), before + 2, "{transport}: {rows:?}");
+        assert_eq!(rows.last().unwrap()["outcome"], "error");
+        assert_eq!(rows.last().unwrap()["requests"], 1);
+        assert_eq!(provider.meter().snapshot(), Usage::reported(2000, 400, 2));
+        request.assert();
+    }
+}
+
+#[test]
+fn provider_error_without_consumption_does_not_fabricate_a_usage_ledger_row() {
+    let _lock = ENV.lock().unwrap();
+    let fixture = Fixture::new();
+    let mut provider = Script::new(vec![Err(ProviderError::Parse("no consumption".into()))]);
+    provider.omit_usage = true;
+    let outcome = run(
+        &fixture,
+        &provider,
+        &fixture.config(),
+        &AtomicBool::new(false),
+    );
+    assert_eq!(outcome.state, NativeTurnState::Failed);
+    assert!(aishe::audit::ledger::read().is_empty());
 }

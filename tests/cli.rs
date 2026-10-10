@@ -1638,8 +1638,8 @@ fn dash_c_propagates_exit_codes() {
 }
 
 #[test]
-fn piped_stdin_runs_each_line() {
-    // Non-tty stdin with no `-c`: each line runs like a one-shot command.
+fn piped_stdin_runs_one_conventional_script() {
+    // Compound syntax and variables must remain in a single real shell.
     let home = temp_config_home();
     Command::cargo_bin("aishe")
         .unwrap()
@@ -1647,11 +1647,26 @@ fn piped_stdin_runs_each_line() {
         .env("XDG_DATA_HOME", home.join("data"))
         .env("AISHE_CONFIG_DIR", &home)
         .env("AISHE_DATA_DIR", home.join("data"))
-        .write_stdin("!echo piped-a\n!echo piped-b\n")
+        .write_stdin("value=piped-a\nif true; then\necho \"$value\"\nfi\necho piped-b\n")
         .assert()
         .success()
         .stdout(contains("piped-a"))
         .stdout(contains("piped-b"));
+}
+
+#[test]
+fn explicit_agent_lines_preserves_the_per_line_protocol() {
+    let home = temp_config_home();
+    Command::cargo_bin("aishe")
+        .unwrap()
+        .env("AISHE_CONFIG_DIR", &home)
+        .env("AISHE_DATA_DIR", home.join("data"))
+        .arg("--agent-lines")
+        .write_stdin("!echo agent-line-a\n!echo agent-line-b\n")
+        .assert()
+        .success()
+        .stdout(contains("agent-line-a"))
+        .stdout(contains("agent-line-b"));
 }
 
 #[test]
@@ -1756,7 +1771,12 @@ fn primary_commands_and_live_status_are_discoverable() {
     let data = home.join("data");
     let usage = home.join("usage.tsv");
     let status = home.join("status.tsv");
-    std::fs::write(&usage, "1000\t250\t2\tclaude-x\n").unwrap();
+    // Current tallies establish both reported usage and its billing model.
+    std::fs::write(
+        &usage,
+        "v3\t1000\t250\t2\tclaude-sonnet\tanthropic\t0\t1000\t250\t2\t1000\t250\n",
+    )
+    .unwrap();
     std::fs::write(
         &status,
         "task\ttask abc123\nelapsed\tlast 4.2s\ncontext\tcontext 1,000 tok\n",
@@ -1803,7 +1823,26 @@ fn primary_commands_and_live_status_are_discoverable() {
                 .and(contains(r#""enabled": false"#))
                 .and(contains("audit.jsonl"))
                 .and(contains("aishe session: 1,000 in · 250 out · 2 reqs"))
+                .and(contains("cost n/a").not())
                 .and(contains("task abc123")),
+        );
+
+    // Older tallies retain request counts, but cannot establish zero usage or
+    // a price estimate even when their recorded model has a configured price.
+    std::fs::write(&usage, "v2\t1000\t250\t2\tclaude-sonnet\tanthropic\n").unwrap();
+    Command::cargo_bin("aishe")
+        .unwrap()
+        .env("AISHE_CONFIG_DIR", &home)
+        .env("AISHE_DATA_DIR", &data)
+        .env("AISHE_USAGE_FILE", &usage)
+        .env("AISHE_STATUS_FILE", &status)
+        .args(["status", "--json"])
+        .assert()
+        .success()
+        .stdout(
+            contains("aishe session: tokens n/a · 2 reqs · cost n/a")
+                .and(contains("task abc123"))
+                .and(contains("~$").not()),
         );
 
     std::fs::remove_dir_all(home).ok();
@@ -2261,7 +2300,60 @@ fn log_and_usage_read_the_audit_log() {
         .stdout(contains("apt-get install nginx").and(contains("gpt-4o")));
     std::fs::remove_dir_all(slash_home).ok();
 
-    // `aishe usage` totals tokens and estimates cost (gpt-4o known price).
+    // Legacy audit counters lack coverage, even for a model with a known price.
+    Command::cargo_bin("aishe")
+        .unwrap()
+        .env("AISHE_CONFIG_DIR", dir.join("config"))
+        .env("AISHE_DATA_DIR", dir.join("data"))
+        .env("AISHE_LOG_FILE", &log)
+        .arg("usage")
+        .assert()
+        .success()
+        .stdout(
+            contains("tokens n/a")
+                .and(contains("cost n/a"))
+                .and(contains("~$").not())
+                .and(contains("TOTAL")),
+        );
+
+    let legacy_usage = Command::cargo_bin("aishe")
+        .unwrap()
+        .env("AISHE_CONFIG_DIR", dir.join("config"))
+        .env("AISHE_DATA_DIR", dir.join("data"))
+        .env("AISHE_LOG_FILE", &log)
+        .args(["usage", "--json"])
+        .output()
+        .unwrap();
+    assert!(legacy_usage.status.success());
+    let legacy_usage: serde_json::Value = serde_json::from_slice(&legacy_usage.stdout).unwrap();
+    assert_eq!(legacy_usage["total"]["tokens_in"], 1050);
+    assert_eq!(legacy_usage["total"]["requests"], 2);
+    assert_eq!(legacy_usage["total"]["unreported_requests"], 2);
+    assert_eq!(legacy_usage["total"]["cost_coverage"], "unknown");
+    assert!(legacy_usage["total"]["cost_usd"].is_null());
+
+    // Current audit events explicitly preserve provider usage and attribution.
+    // The same historical counters can then establish an estimated subtotal.
+    let current_log = std::fs::read_to_string(&log)
+        .unwrap()
+        .lines()
+        .map(|line| {
+            let mut event: serde_json::Value = serde_json::from_str(line).unwrap();
+            if event["kind"] == "ai_response" {
+                event["schema_version"] = serde_json::json!(1);
+                event["requests"] = serde_json::json!(1);
+                event["unreported_requests"] = serde_json::json!(0);
+                event["reported_tokens_in"] = event["tokens_in"].clone();
+                event["reported_tokens_out"] = event["tokens_out"].clone();
+                event["attributed_requests"] = serde_json::json!(1);
+                event["attributed_tokens_in"] = event["tokens_in"].clone();
+                event["attributed_tokens_out"] = event["tokens_out"].clone();
+            }
+            event.to_string()
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    std::fs::write(&log, format!("{current_log}\n")).unwrap();
     Command::cargo_bin("aishe")
         .unwrap()
         .env("AISHE_CONFIG_DIR", dir.join("config"))
@@ -2272,7 +2364,9 @@ fn log_and_usage_read_the_audit_log() {
         .success()
         .stdout(
             contains("1,050 in")
-                .and(contains("~$"))
+                .and(contains("210 out"))
+                .and(contains("~$0.0047"))
+                .and(contains("cost n/a").not())
                 .and(contains("TOTAL")),
         );
 
@@ -2350,7 +2444,7 @@ fn runbook_generates_script_and_markdown() {
 }
 
 #[test]
-fn missing_config_in_non_tty_mode_is_actionable_and_does_not_write_defaults() {
+fn missing_config_keeps_shell_usable_and_ai_setup_actionable() {
     let dir = temp_root("missing-config");
     Command::cargo_bin("aishe")
         .unwrap()
@@ -2359,8 +2453,19 @@ fn missing_config_in_non_tty_mode_is_actionable_and_does_not_write_defaults() {
         .arg("-c")
         .arg("!true")
         .assert()
-        .failure()
-        .stderr(contains("aishe setup --non-interactive"));
+        .success();
+    assert!(!dir.join("aishe").join("config.toml").exists());
+    Command::cargo_bin("aishe")
+        .unwrap()
+        .env("AISHE_CONFIG_DIR", &dir)
+        .env("AISHE_DATA_DIR", dir.join("data"))
+        .env_remove("ANTHROPIC_API_KEY")
+        .env_remove("AISHE_FAKE_LLM")
+        .args(["-c", "? Explain the current project"])
+        .assert()
+        .code(1)
+        .stderr(contains("auth.unavailable"))
+        .stderr(contains("/setup"));
     assert!(!dir.join("aishe").join("config.toml").exists());
     std::fs::remove_dir_all(dir).ok();
 }

@@ -10,10 +10,11 @@ on:
       version:
         description: "Version to release, without the leading v (e.g. 0.1.1)"
         required: true
-        default: "0.1.1"
+        default: "1.1.0"
 
 permissions:
   contents: write
+  actions: read
   id-token: write
   attestations: write
 
@@ -21,11 +22,45 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  qualification:
+    name: require exact-source release qualification
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.sha }}
+      - name: Validate completed CI, candidate identity, and release dispositions
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT_NAME: ${{ github.event_name }}
+          REF_NAME: ${{ github.ref_name }}
+          REQUESTED_VERSION: ${{ inputs.version }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+            version="$REQUESTED_VERSION"
+          else
+            version="${REF_NAME#v}"
+          fi
+          python3 tests/release_gate.py --repository "$GITHUB_REPOSITORY" \
+            --commit "$GITHUB_SHA" --version "$version" \
+            --record "docs/releases/v${version}.qualification.json" \
+            --output test-results/release-gate.json
+      - name: Retain exact-source release decision
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: release-qualification
+          path: test-results/release-gate.json
+          if-no-files-found: ignore
+
   # Create (or reuse) the release and tag ONCE, before any uploads. Doing this in
   # a single upstream job avoids the race where multiple concurrent build jobs
   # each try to create the same release and end up with a duplicate/draft.
   create_release:
     name: create release
+    needs: qualification
     runs-on: ubuntu-latest
     outputs:
       version: ${{ steps.ver.outputs.version }}
@@ -75,6 +110,7 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.ver.outputs.tag }}
+          target_commitish: ${{ github.sha }}
           name: ${{ steps.ver.outputs.tag }}
           draft: true
           append_body: false
@@ -310,9 +346,21 @@ jobs:
 
   publish:
     name: publish complete release
-    needs: [create_release, build, package, runtime_supply_chain]
+    needs: [qualification, create_release, build, package, runtime_supply_chain]
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.sha }}
+      - name: Recheck exact-source qualification before publication
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.create_release.outputs.version }}
+        run: |
+          python3 tests/release_gate.py --repository "$GITHUB_REPOSITORY" \
+            --commit "$GITHUB_SHA" --version "$VERSION" \
+            --record "docs/releases/v${VERSION}.qualification.json" \
+            --output test-results/release-gate-publish.json
       - name: Publish only after every artifact is uploaded
         env:
           GH_TOKEN: ${{ github.token }}

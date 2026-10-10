@@ -1,25 +1,36 @@
 # Front-ends
 
 aishe runs as your real zsh with an AI layered on top. There is one interactive
-front-end (the zsh-PTY wrapper), plus a hook you can add to your own shell, plus
-the non-interactive paths (`-c` and piped stdin).
+front-end (the zsh-PTY wrapper), a reduced Bash integration, a compatibility
+hook you can add to your own shell, and non-interactive command/script paths.
+An AI account is optional for ordinary shell use.
 
 ## zsh-PTY front-end (the interactive shell)
 
-Running `aishe` (or `aishe zsh`) launches interactive zsh inside a
-pseudo-terminal with the native agent runtime. The shell profile is independent
-of the agent engine:
+Running `aishe` (or the historical `aishe zsh` launch alias) opens your saved
+interactive shell experience. The full native frontend uses a real zsh inside a
+pseudo-terminal. The shell profile is independent of the agent engine:
 
 ```sh
-aishe                              # clean, isolated zsh configuration
-AISHE_ZSH_PROFILE=personal aishe    # your zsh configuration and plugins
+aishe                              # saved shell experience
+AISHE_ZSH_PROFILE=clean aishe       # temporary clean zsh override
+AISHE_ZSH_PROFILE=personal aishe    # temporary personal zsh override
 ```
 
-The default `clean` profile skips personal and global interactive rc files.
+Choose Keep my zsh, Clean AIShe, or Bash integration in Setup or Settings. The
+saved `[aishe] shell_profile` preference applies to new shells. A fresh account
+starts with personal zsh when available; existing configuration without this
+field keeps its previous clean behavior. Bash integration has the documented
+[reduced compatibility tier](bash-compatibility.md).
+
+The `clean` profile skips personal and global interactive rc files.
 The `personal` profile uses normal `zsh -i` startup and sources your `.zshenv`
 and `.zshrc` from the real `ZDOTDIR` (or home), including a `ZDOTDIR` changed by
 `.zshenv`. This does not enable OpenCode. Job control, pipelines, history
 expansion, emacs/vi editing, and shell commands remain zsh's responsibility.
+Explicit `aishe -l -i` enables native zsh login startup, including personal
+`.zprofile`/`.zlogin`/`.zlogout`. This is separate from changing the system login
+shell; reversible terminal activation is described in [Commands](commands.md).
 
 AIShe wraps Enter and slash completion while chaining the existing Enter/Tab
 widgets for each emacs, vi insert, and vi command keymap. Personal custom
@@ -42,9 +53,9 @@ into AIShe's history policy instead. The clean profile uses AIShe's timestamped
 history log, so Up-arrow and `Ctrl-R` persist across sessions and binary
 upgrades. With `share_history = true`, clean-profile shells exchange entries.
 
-**It requires zsh.** If zsh is not installed, aishe tells you to install it
-(rather than falling back to a lesser editor). Without zsh you can still use the
-non-interactive paths (`aishe -c …`, piped stdin) and the bash hook below.
+**The full native experience requires zsh.** Fresh account-free launch selects
+Bash integration when zsh is absent. Its reduced tier is described below;
+ordinary non-interactive commands and piped shell programs also work with Bash.
 
 Natural-language input is routed to the already-running native parent; ordinary
 commands stay in the child zsh. No OpenCode supervisor starts on this path.
@@ -56,11 +67,11 @@ Workspace grants remain tied to the accepted canonical directory.
 The clean profile supplies a bounded mode/scope prompt and configurable right
 status. The personal profile preserves both `PROMPT` and `RPROMPT`. AIShe
 refreshes `AISHE_MODE_INDICATOR` and `AISHE_BACKGROUND_INDICATOR` for a theme
-to display, or you can opt into a mode/scope and background-work suffix on the
-right prompt with `AISHE_PERSONAL_INDICATOR=1`:
+to display. A quiet mode/scope and background-work suffix appears on the right
+prompt by default. Hide that suffix with `AISHE_PERSONAL_INDICATOR=0`:
 
 ```sh
-AISHE_ZSH_PROFILE=personal AISHE_PERSONAL_INDICATOR=1 aishe
+AISHE_ZSH_PROFILE=personal AISHE_PERSONAL_INDICATOR=0 aishe
 ```
 
 Use `AISHE_PTY_PROMPT=force` to request AIShe's full prompt in the personal
@@ -82,9 +93,11 @@ without submitting or replacing it.
 
 The branded prompt also has a configurable live status chip in zsh's native
 right prompt; `off` hides it. Choose its ordered fields during setup or in
-`aishe settings`. Fields include model, mode, backend, scope,
-network, sandbox, task, elapsed time, latest context tokens, call/session
-tokens/cost, budget, and request count.
+`aishe settings`: `model`, `connection`, `task`, `elapsed`, `last_tokens`,
+`last_cost`, `session_tokens`, `session_cost`, and `requests`. Missing values
+are omitted. Mode and scope stay in the live left indicator. Context,
+backend/network/sandbox and budget prompt fields belong to the historical
+compatibility integration.
 
 The router recognizes a conservative set of full-line question forms beginning
 with collision-prone commands such as `what`, `where`, and `who`. Ambiguous
@@ -145,7 +158,7 @@ been seen. It counts work across all projects: for example, `2 running · 1 read
 marks failed, interrupted, or stopped work; `ready` marks an unseen result.
 `queued` counts workflow stages waiting for dependencies or a worker slot.
 Empty activity has no badge. Requests stay visible until you respond, while
-reviewed results stay quiet across shell sessions.
+seen or explicitly reviewed results stay quiet across shell sessions.
 
 Press **Ctrl-X b** to open the task browser, inspect a task, and return to the
 same editable buffer and cursor position. An existing binding in the personal
@@ -173,9 +186,10 @@ start, list, tail, review, and lifecycle commands remain available. Tasks that
 run in the source directory still offer confirmed stop, resume, and rework
 controls. Changes, review, and apply require an isolated git worktree.
 
-Opening finished details marks exactly that result reviewed across shells;
-listing tasks does not. The task and its changes stay available, and a later
-attempt or result appears in the counts again. Choose rename, pin, or archive
+Opening finished details marks exactly that result Seen across shells;
+Reviewed is a separate explicit task action. Listing tasks does neither. The
+task and its changes stay available, and a later attempt or result appears in
+the counts again. Choose rename, pin, or archive
 in Task actions; **n**, **i**, and **h** provide the same controls directly from
 details. Names are display labels; the original objective stays intact. Archiving
 keeps results and workspaces available in Archived history. Running tasks and
@@ -234,8 +248,8 @@ earlier checks stale; the original result remains visible. This records task
 activity rather than monitoring every change made by another process.
 
 Personal prompts keep their `RPROMPT` by default. Themes can display
-`AISHE_BACKGROUND_INDICATOR`, or `AISHE_PERSONAL_INDICATOR=1` adds the optional
-AIShe suffix. Activity uses a bounded local cache and shell FIFO updates;
+`AISHE_BACKGROUND_INDICATOR`. The quiet AIShe suffix appears by default;
+`AISHE_PERSONAL_INDICATOR=0` hides it. Activity uses a bounded local cache and shell FIFO updates;
 the parent checks it every two seconds and redraws only when the counts change.
 This does local work, while individual keystrokes do not launch a task-scanning
 process. `AISHE_BACKGROUND_INDICATOR_ENABLED=0` hides the badge and clears the
@@ -285,11 +299,18 @@ in [Native Bash hook compatibility](bash-compatibility.md).
 
 ## Non-interactive
 
-`aishe -c '<line>'` runs a single line and exits, and piped stdin (`echo … |
-aishe`) runs each line like a `-c` invocation. These use aishe's in-process
-executor and dispatcher (zsh, falling back to bash), so they work without an
-interactive terminal and without zsh present. Natural-language lines are answered
-or, in ask mode, printed as a proposed command. Explicit autonomous work uses
+`aishe -c '<line>'` routes a single AIShe command or request and exits. Ordinary
+command-shaped input stays local. Piped stdin and explicitly supplied script
+files run as complete shell programs, preserving multiline control flow and
+positional arguments; they never route script lines to AI. Use `aishe -s -- ARG`
+for a stdin program or `aishe SCRIPT ARG` for a file. `aishe -lc 'PROGRAM' NAME ARG`
+executes an explicit login-shell program. Non-interactive commands and scripts
+use Bash when the saved shell profile selects Bash; otherwise they prefer zsh
+and fall back to Bash when zsh is unavailable.
+
+For the former line-by-line AIShe request protocol, use `aishe --agent-lines`
+explicitly. Natural-language requests are answered or, in Ask mode, printed as
+a proposed command. Explicit autonomous work uses
 `aishe agent 'objective'` or `aishe task start 'objective'`. An agent mode saved
 in configuration alone does not grant an unattended natural-language turn
 authority to run tools. Direct shell lines never start a model or backend.

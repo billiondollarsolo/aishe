@@ -83,10 +83,12 @@ pub(crate) fn run_with_terminal(
     // A disabled journal can still run a foreground turn, but cannot offer a
     // transferable checkpoint. Durable turns always fence parallel resumes.
     let mut lease = if crate::tasks::load(task.id()).is_ok() {
-        Some(crate::agent::native::handoff::Lease::acquire(
-            task.id(),
-            !config.aishe.yolo_dry_run,
-        )?)
+        Some(
+            crate::agent::native::handoff::Lease::acquire(task.id(), !config.aishe.yolo_dry_run)
+                .map_err(|error| {
+                    crate::agent::native::NativeTaskFailure::attach(task.id(), error)
+                })?,
+        )
     } else {
         None
     };
@@ -159,7 +161,9 @@ pub(crate) fn run_with_terminal(
     );
     // The detached continuation must not race this process's checkpoint lock.
     drop(lease);
+    let task_id = outcome.task_id.clone();
     complete_handoff(config, executor, outcome)
+        .map_err(|error| crate::agent::native::NativeTaskFailure::attach(&task_id, error))
 }
 
 /// A reversible yolo session: the loop runs against `staging` (a copy of the
@@ -362,6 +366,9 @@ fn run_loop(
             &budget,
         );
     }
+    if budget.requires_cost_accounting() && !config.aishe.provider_fallback.is_empty() {
+        return finish_turn(task, NativeTurnState::Failed, Some("An explicit task cost limit requires one fixed priced provider/model; disable automatic provider fallbacks before starting this task. No provider work was started.".into()), &history, provider, &budget);
+    }
     if budget.requires_cost_accounting()
         && crate::usage::budget_price_for(config.active_model(), &config.pricing).is_none_or(
             |price| {
@@ -373,6 +380,16 @@ fn run_loop(
         )
     {
         return finish_turn(task, NativeTurnState::Failed, Some("An explicit task cost limit requires an exact model price in [pricing]; no provider work was started.".into()), &history, provider, &budget);
+    }
+    if let Some(reason) = super::session_budget_failure(provider, config) {
+        return finish_turn(
+            task,
+            NativeTurnState::BudgetExhausted,
+            Some(reason),
+            &history,
+            provider,
+            &budget,
+        );
     }
     let ctx = context::build(executor, config);
     // Effective confirmation tier (resolves `yolo_confirm` and the legacy
@@ -476,7 +493,10 @@ fn run_loop(
         }
         task.checkpoint_execution(budget.counters());
         task.ensure_persisted()?;
-        let before = provider.meter().snapshot();
+        let before = (
+            provider.meter().snapshot(),
+            provider.meter().unreported_requests(),
+        );
         let plan = plan_first(input, &ctx, provider, config);
         record_provider_cost(&mut budget, provider, config, before);
         task.checkpoint_execution(budget.counters());
@@ -569,12 +589,12 @@ fn run_loop(
             return Ok(outcome);
         }
         // Stop before the next model call if the session budget is spent.
-        if super::budget_reached(provider, config) {
+        if let Some(reason) = super::session_budget_failure(provider, config) {
             renderer.clear_status();
             return finish_turn(
                 task,
                 NativeTurnState::BudgetExhausted,
-                Some("Session cost budget is exhausted.".into()),
+                Some(reason),
                 &messages,
                 provider,
                 &budget,
@@ -596,7 +616,10 @@ fn run_loop(
 
         // Stream the assistant's prose live when streaming is on; otherwise wait
         // for the whole turn. `streamed` tracks whether any text was printed.
-        let before = provider.meter().snapshot();
+        let before = (
+            provider.meter().snapshot(),
+            provider.meter().unreported_requests(),
+        );
         let mut streamed = false;
         renderer.render(&AgentEvent::ReasoningStarted);
         let result = if config.aishe.stream && effective_density(config) == "detailed" {
@@ -611,6 +634,20 @@ fn run_loop(
             provider.complete_with_tools(&system, &messages, &tools)
         };
         record_provider_cost(&mut budget, provider, config, before);
+        match &result {
+            Ok(completion) => crate::audit::ai_response_with_usage(
+                "yolo",
+                config,
+                &completion_summary(completion),
+                provider.meter().snapshot().delta_since(before.0),
+            ),
+            Err(error) => crate::audit::ai_error_with_usage(
+                "yolo",
+                config,
+                &error.to_string(),
+                provider.meter().snapshot().delta_since(before.0),
+            ),
+        }
         task.checkpoint_execution(budget.counters());
         // A blocked provider call may finish after Ctrl-C. Never print its
         // result or admit a tool after that turn has been cancelled.
@@ -636,12 +673,12 @@ fn run_loop(
                 &budget,
             );
         }
-        if super::budget_reached(provider, config) {
+        if let Some(reason) = super::session_budget_failure(provider, config) {
             renderer.clear_status();
             return finish_turn(
                 task,
                 NativeTurnState::BudgetExhausted,
-                Some("Session cost budget is exhausted.".into()),
+                Some(reason),
                 &messages,
                 provider,
                 &budget,
@@ -653,7 +690,6 @@ fn run_loop(
                 if streamed {
                     println!();
                 }
-                crate::audit::ai_error("yolo", config.active_model(), &e.to_string());
                 renderer.render(&AgentEvent::Failed {
                     error: UserFacingError {
                         code: "provider.error".into(),
@@ -677,14 +713,6 @@ fn run_loop(
                 );
             }
         };
-        let after = provider.meter().snapshot();
-        crate::audit::ai_response(
-            "yolo",
-            config.active_model(),
-            &completion_summary(&completion),
-            after.input.saturating_sub(before.input),
-            after.output.saturating_sub(before.output),
-        );
 
         // No tool calls → final answer.
         if completion.tool_calls.is_empty() {
@@ -1684,18 +1712,27 @@ fn record_provider_cost(
     budget: &mut NativeBudget,
     provider: &dyn Provider,
     config: &Config,
-    before: crate::usage::Usage,
+    before: (crate::usage::Usage, u64),
 ) {
     let after = provider.meter().snapshot();
-    if let Some(price) = crate::usage::budget_price_for(config.active_model(), &config.pricing) {
-        budget.record_cost(crate::usage::cost(
-            crate::usage::Usage {
-                input: after.input.saturating_sub(before.input),
-                output: after.output.saturating_sub(before.output),
-                requests: after.requests.saturating_sub(before.requests),
-            },
-            price,
-        ));
+    if let Some(price) = crate::usage::budget_price_for(config.active_model(), &config.pricing)
+        .filter(|_| config.aishe.provider_fallback.is_empty())
+        .filter(|price| {
+            price.input.is_finite()
+                && price.output.is_finite()
+                && price.input >= 0.0
+                && price.output >= 0.0
+        })
+        .filter(|_| {
+            after.requests > before.0.requests
+                && provider.meter().unreported_requests() == before.1
+                && after
+                    .attributed_requests
+                    .saturating_sub(before.0.attributed_requests)
+                    == after.requests.saturating_sub(before.0.requests)
+        })
+    {
+        budget.record_cost(crate::usage::cost(after.delta_since(before.0), price));
     }
 }
 
@@ -2181,18 +2218,34 @@ const PLAN_SYSTEM: &str = "You are about to run an agentic shell task. First, \
     a short numbered list (commands or file edits at a high level). Be specific \
     but concise; do not actually run or simulate anything, just describe the plan.";
 
+fn request_plan(
+    input: &str,
+    ctx: &str,
+    provider: &dyn Provider,
+) -> std::result::Result<String, crate::providers::ProviderError> {
+    let messages = vec![Msg::User(format!("{ctx}\nUser request: {input}"))];
+    provider.complete_uncached(PLAN_SYSTEM, &messages, &ResponseFormat::Text)
+}
+
 /// Ask the model for its intended steps, print them, and get the user's approval
 /// before the agentic loop runs. The planning call is a plain (no-tool)
 /// completion; its tokens are metered and the turn is audit-logged.
 fn plan_first(input: &str, ctx: &str, provider: &dyn Provider, config: &Config) -> PlanOutcome {
     println!("  {}", "planning…".dim());
-    let messages = vec![Msg::User(format!("{ctx}\nUser request: {input}"))];
     crate::audit::ai_request("yolo-plan", config.active_model(), input);
-    let before = provider.meter().snapshot();
-    let plan = match provider.complete(PLAN_SYSTEM, &messages, &ResponseFormat::Text) {
+    let before = (
+        provider.meter().snapshot(),
+        provider.meter().unreported_requests(),
+    );
+    let plan = match request_plan(input, ctx, provider) {
         Ok(p) => p,
         Err(e) => {
-            crate::audit::ai_error("yolo-plan", config.active_model(), &e.to_string());
+            crate::audit::ai_error_with_usage(
+                "yolo-plan",
+                config,
+                &e.to_string(),
+                provider.meter().snapshot().delta_since(before.0),
+            );
             eprintln!(
                 "{}",
                 format!(
@@ -2205,13 +2258,7 @@ fn plan_first(input: &str, ctx: &str, provider: &dyn Provider, config: &Config) 
         }
     };
     let after = provider.meter().snapshot();
-    crate::audit::ai_response(
-        "yolo-plan",
-        config.active_model(),
-        &plan,
-        after.input.saturating_sub(before.input),
-        after.output.saturating_sub(before.output),
-    );
+    crate::audit::ai_response_with_usage("yolo-plan", config, &plan, after.delta_since(before.0));
     if plan.trim().is_empty() {
         return PlanOutcome::Skip;
     }
@@ -2252,6 +2299,114 @@ fn confirm_plan() -> bool {
     }
     let a = line.trim();
     a.is_empty() || a.eq_ignore_ascii_case("y") || a.eq_ignore_ascii_case("yes")
+}
+
+#[cfg(test)]
+mod planning_cache_tests {
+    use super::*;
+    use std::sync::atomic::AtomicUsize;
+    use std::sync::Arc;
+
+    struct PlanningProvider {
+        calls: AtomicUsize,
+        meter: Arc<crate::usage::UsageMeter>,
+    }
+
+    impl Provider for PlanningProvider {
+        fn complete(
+            &self,
+            _system: &str,
+            _messages: &[Msg],
+            _format: &ResponseFormat,
+        ) -> std::result::Result<String, crate::providers::ProviderError> {
+            let request = self.calls.fetch_add(1, Ordering::SeqCst) + 1;
+            self.meter.record(10, 5);
+            Ok(format!("Plan response {request}"))
+        }
+
+        fn complete_with_tools(
+            &self,
+            _system: &str,
+            _messages: &[Msg],
+            _tools: &[ToolDef],
+        ) -> std::result::Result<Completion, crate::providers::ProviderError> {
+            panic!("the planning pre-pass must not request tools")
+        }
+
+        fn meter(&self) -> Arc<crate::usage::UsageMeter> {
+            Arc::clone(&self.meter)
+        }
+    }
+
+    #[test]
+    fn repeated_native_plans_bypass_warm_cache_and_keep_cost_coverage_complete() {
+        let inner = Arc::new(PlanningProvider {
+            calls: AtomicUsize::new(0),
+            meter: Arc::new(crate::usage::UsageMeter::default()),
+        });
+        let mut config = Config::default();
+        let model = config.active_model().to_string();
+        let price = crate::usage::Price {
+            input: 1.0,
+            output: 2.0,
+        };
+        config.pricing.insert(model.clone(), price);
+        // Nested decorators ensure the explicit bypass reaches the real
+        // provider even if another wrapper has already populated its cache.
+        let provider = crate::cache::CachingProvider::new(
+            Arc::new(crate::cache::CachingProvider::new(
+                inner.clone(),
+                60,
+                model.clone(),
+            )),
+            60,
+            model,
+        );
+        let input = "Inspect this project";
+        let ctx = "cwd: /project";
+        let messages = vec![Msg::User(format!("{ctx}\nUser request: {input}"))];
+        let cached = provider
+            .complete(PLAN_SYSTEM, &messages, &ResponseFormat::Text)
+            .unwrap();
+        assert_eq!(cached, "Plan response 1");
+        let mut budget = NativeBudget::new(
+            NativeLimits {
+                cost_usd: Some(1.0),
+                ..NativeLimits::default()
+            },
+            crate::tasks::ExecutionCounters::default(),
+        );
+
+        for request in 2..=3 {
+            budget.admit_provider().unwrap();
+            let before = (
+                provider.meter().snapshot(),
+                provider.meter().unreported_requests(),
+            );
+            assert_eq!(
+                request_plan(input, ctx, &provider).unwrap(),
+                format!("Plan response {request}")
+            );
+            let actual = provider.meter().snapshot().delta_since(before.0);
+            assert_eq!(actual, crate::usage::Usage::reported(10, 5, 1));
+            record_provider_cost(&mut budget, &provider, &config, before);
+            assert!(budget.counters().cost_is_complete());
+            assert!(budget.exhausted().is_none());
+        }
+        assert_eq!(inner.calls.load(Ordering::SeqCst), 3);
+        assert_eq!(budget.counters().provider_turns, 2);
+        assert_eq!(budget.counters().costed_provider_turns, Some(2));
+        let expected = 2.0 * crate::usage::cost(crate::usage::Usage::reported(10, 5, 1), price);
+        assert!((budget.counters().cost_usd - expected).abs() < f64::EPSILON);
+        // Suggest completions keep their existing free-hit behavior.
+        assert_eq!(
+            provider
+                .complete(PLAN_SYSTEM, &messages, &ResponseFormat::Text)
+                .unwrap(),
+            cached
+        );
+        assert_eq!(inner.calls.load(Ordering::SeqCst), 3);
+    }
 }
 
 /// A concise summary of one assistant turn for the audit log: the final answer

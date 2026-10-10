@@ -192,6 +192,11 @@ impl Default for UiConfig {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AisheConfig {
+    /// Persistent interactive shell choice: `personal` keeps the user's zsh,
+    /// `clean` uses AIShe's isolated zsh, and `bash` loads the Bash integration.
+    /// Existing configurations retain the isolated clean behavior.
+    #[serde(default = "default_shell_profile")]
+    pub shell_profile: String,
     /// Named bundle of mode/safety settings. Existing pre-profile configs load as
     /// `custom`, preserving every old value instead of applying new defaults.
     #[serde(default = "default_safety_profile")]
@@ -691,6 +696,9 @@ fn default_config_schema_version() -> u32 {
 fn default_safety_profile() -> String {
     "custom".to_string()
 }
+fn default_shell_profile() -> String {
+    "clean".to_string()
+}
 fn default_mode() -> String {
     "suggest".to_string()
 }
@@ -805,6 +813,7 @@ fn default_openai() -> ProviderConfig {
 impl Default for AisheConfig {
     fn default() -> Self {
         Self {
+            shell_profile: default_shell_profile(),
             safety_profile: default_safety_profile(),
             mode: default_mode(),
             provider: default_provider(),
@@ -1016,7 +1025,24 @@ impl Config {
             .join("config.toml")
     }
 
-    /// Load config, running the first-run wizard if the file is missing.
+    /// Defaults for an immediately usable shell without an AI account.
+    /// Provider configuration remains available for a later explicit setup.
+    pub fn shell_defaults() -> Self {
+        let mut config = Self::default();
+        config.backend.engine = "native".into();
+        config.aishe.shell_profile = if crate::executor::which("zsh").is_some() {
+            "personal"
+        } else {
+            "bash"
+        }
+        .into();
+        crate::profiles::apply(&mut config, crate::profiles::Profile::Conservative);
+        config
+    }
+
+    /// Load configuration or open a usable shell with account-free defaults.
+    /// Interactive first use saves those defaults; pipes and direct shell
+    /// commands never create a configuration merely to execute a command.
     /// On a malformed file, offers to back it up and recreate.
     pub fn load_or_init() -> Result<Self> {
         let path = Self::path();
@@ -1025,40 +1051,22 @@ impl Config {
             if let Some(cfg) = Self::migrate_legacy(&path)? {
                 return Ok(cfg);
             }
-            // Only prompt when attached to a terminal. Hooks, pipes, and CI must
-            // never materialize an unverified default configuration as a side
-            // effect of trying to run another command.
+            let config = Self::shell_defaults();
             if std::io::stdin().is_terminal() {
-                // The caller is about to launch the shell, so the epilogue must
-                // not print "Run: aishe"; pausing is a normal answer, not a
-                // broken configuration.
-                let outcome = crate::setup::run(crate::setup::Options {
-                    launch_follows: true,
-                    ..crate::setup::Options::default()
-                })?;
-                if !outcome.applied {
-                    return Err(crate::user_error::UserFacing::new(
-                        crate::user_error::ErrorNamespace::Config,
-                        "setup_incomplete",
-                        "Setup was paused before a configuration was saved.",
-                        "Run `aishe setup --resume` to continue, or `aishe setup --restart` to start over.",
-                    ));
-                }
-                if outcome.requires_legacy_shell {
-                    // Choosing subscription OAuth in first-run setup explicitly
-                    // opts into its managed transport for this launch.
-                    std::env::set_var("AISHE_LEGACY_OPENCODE", "1");
-                }
-                return Self::load_quiet()?.context("setup did not create a configuration");
-            } else {
-                anyhow::bail!(
-                    "no config at {} and no interactive terminal; run `aishe setup` \
-                     in a terminal or use `aishe setup --non-interactive`",
-                    path.display()
-                );
+                config.save()?;
             }
+            return Ok(config);
         }
         Self::load_from(&path)
+    }
+
+    /// Command execution can adopt a real legacy configuration, but must not
+    /// start onboarding or save fresh defaults to run an ordinary command.
+    pub fn load_for_shell_command() -> Result<Self> {
+        if let Some(config) = Self::load_quiet()? {
+            return Ok(config);
+        }
+        Ok(Self::migrate_legacy(&Self::path())?.unwrap_or_default())
     }
 
     /// If a legacy `~/.config/llmsh/config.toml` exists (and no aishe config
@@ -1490,9 +1498,10 @@ impl Config {
     ///
     /// Tiered trust: *safe* keys (cosmetic/behavioral, and per-provider `model`)
     /// always apply; *sensitive* keys (provider switch, endpoints/keys, MCP
-    /// servers, audit logging, and the safety toggles - plus `mode = "yolo"`)
-    /// apply only when the file is trusted (`aishe trust`). Untrusted sensitive
-    /// keys are reported as `deferred`, not applied.
+    /// servers, audit logging, shell selection, and the safety toggles - plus
+    /// Agent mode (`agent` / `yolo`)) apply only when the file is trusted
+    /// (`aishe trust`). Untrusted sensitive keys are reported as `deferred`,
+    /// not applied.
     pub fn apply_project_overlay(&mut self, start: &Path) -> Option<OverlayOutcome> {
         let path = Self::find_project_config(start)?;
         let text = std::fs::read_to_string(&path).ok()?;
@@ -1816,13 +1825,15 @@ pub struct OverlayOutcome {
 }
 
 /// Sensitive `[aishe]` keys that a project file may set only when trusted.
-/// Everything else (cosmetic/behavioral) is safe and always applies. `mode` is
-/// safe for `suggest`/`auto` but sensitive for `yolo` (a cloned repo must not
-/// silently put you in autonomous-run mode). New security-relevant keys must be
-/// added here.
+/// Everything else (cosmetic/behavioral) is safe and always applies. Agent mode
+/// (`agent` / `yolo`) requires trust so a cloned repo cannot silently select
+/// autonomous work. Ask/Allow (`suggest` / `auto`) retain their existing overlay
+/// behavior; selecting a mode does not grant native shell execution authority.
+/// New security-relevant keys must be added here.
 fn aishe_key_is_sensitive(key: &str, value: &toml::Value) -> bool {
     match key {
         "provider"
+        | "shell_profile"
         | "provider_fallback"
         | "connection"
         | "connection_fallback"
@@ -1834,7 +1845,9 @@ fn aishe_key_is_sensitive(key: &str, value: &toml::Value) -> bool {
         | "hook_timeout_secs"
         | "semantic_history"
         | "embedding_provider" => true,
-        "mode" => value.as_str() == Some("yolo"),
+        "mode" => {
+            value.as_str().and_then(crate::agent::Mode::parse) == Some(crate::agent::Mode::Yolo)
+        }
         _ => false,
     }
 }
@@ -1973,6 +1986,20 @@ mod tests {
         assert_eq!(parsed.aishe.max_yolo_iterations, 10);
         assert_eq!(parsed.aishe.hook_timeout_secs, 60);
         assert_eq!(parsed.backend.output, "focus");
+    }
+
+    #[test]
+    fn old_configs_keep_the_clean_shell_and_new_shell_defaults_start_in_ask() {
+        let old: Config = toml::from_str("[aishe]\nmode = 'auto'\n").unwrap();
+        assert_eq!(old.aishe.shell_profile, "clean");
+        assert_eq!(old.aishe.mode, "auto");
+        let fresh = Config::shell_defaults();
+        assert_eq!(fresh.backend.engine, "native");
+        assert_eq!(fresh.aishe.safety_profile, "conservative");
+        assert_eq!(
+            crate::lean::LeanMode::parse(&fresh.aishe.mode),
+            crate::lean::LeanMode::Ask
+        );
     }
 
     #[test]
@@ -2300,6 +2327,52 @@ mod tests {
     }
 
     #[test]
+    fn project_overlay_cannot_change_shell_profile_without_explicit_trust() {
+        for profile in ["personal", "bash"] {
+            let mut config = Config::default();
+            let table = proj(&format!("[aishe]\nshell_profile = '{profile}'\n"));
+            let (applied, deferred) = config.merge_project_table(&table, false);
+            assert_eq!(config.aishe.shell_profile, "clean");
+            assert!(applied.is_empty());
+            assert_eq!(deferred, ["shell_profile"]);
+            let (applied, deferred) = config.merge_project_table(&table, true);
+            assert_eq!(config.aishe.shell_profile, profile);
+            assert_eq!(applied, ["shell_profile"]);
+            assert!(deferred.is_empty());
+        }
+    }
+
+    #[test]
+    fn project_overlay_agent_mode_requires_trust_for_canonical_and_legacy_names() {
+        for mode in ["agent", "yolo", "AGENT", " YOLO "] {
+            let mut config = Config::default();
+            let table = proj(&format!("[aishe]\nmode = '{mode}'\n"));
+            let (applied, deferred) = config.merge_project_table(&table, false);
+            assert_eq!(config.aishe.mode, "suggest", "untrusted mode {mode}");
+            assert!(applied.is_empty());
+            assert_eq!(deferred, ["mode"]);
+
+            let (applied, deferred) = config.merge_project_table(&table, true);
+            assert_eq!(config.aishe.mode, mode, "trusted mode {mode}");
+            assert_eq!(applied, ["mode"]);
+            assert!(deferred.is_empty());
+        }
+    }
+
+    #[test]
+    fn project_overlay_ask_and_allow_modes_keep_existing_untrusted_behavior() {
+        // Mode selection does not replace the native Allow/Agent session grant.
+        for mode in ["ask", "allow", "suggest", "auto"] {
+            let mut config = Config::default();
+            let table = proj(&format!("[aishe]\nmode = '{mode}'\n"));
+            let (applied, deferred) = config.merge_project_table(&table, false);
+            assert_eq!(config.aishe.mode, mode);
+            assert_eq!(applied, ["mode"]);
+            assert!(deferred.is_empty());
+        }
+    }
+
+    #[test]
     fn project_overlay_can_narrow_named_model_but_never_auth_or_endpoint() {
         let mut config = Config::default();
         let table = proj(
@@ -2532,8 +2605,10 @@ mod tests {
 
     #[test]
     fn aishe_key_sensitivity() {
+        let agent = toml::Value::String("agent".into());
         let yolo = toml::Value::String("yolo".into());
         let auto = toml::Value::String("auto".into());
+        assert!(aishe_key_is_sensitive("mode", &agent));
         assert!(aishe_key_is_sensitive("mode", &yolo));
         assert!(!aishe_key_is_sensitive("mode", &auto));
         assert!(aishe_key_is_sensitive("provider", &auto));

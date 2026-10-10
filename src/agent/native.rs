@@ -32,6 +32,30 @@ pub enum NativeTurnState {
     HandedOff,
 }
 
+/// Typed error context for a turn admitted with a real task checkpoint.
+/// Preserve the original error text and cause while carrying its exact task ID.
+#[derive(Debug)]
+pub(crate) struct NativeTaskFailure {
+    pub task_id: String,
+    detail: String,
+}
+
+impl std::fmt::Display for NativeTaskFailure {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(&self.detail)
+    }
+}
+
+impl NativeTaskFailure {
+    pub(crate) fn attach(task_id: &str, error: anyhow::Error) -> anyhow::Error {
+        let detail = error.to_string();
+        error.context(Self {
+            task_id: task_id.to_string(),
+            detail,
+        })
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct NativeTurnOutcome {
     pub task_id: String,
@@ -273,6 +297,9 @@ impl NativeBudget {
 
     pub fn record_cost(&mut self, cost_usd: f64) {
         self.counters.cost_usd += cost_usd.max(0.0);
+        if let Some(turns) = self.counters.costed_provider_turns.as_mut() {
+            *turns = turns.saturating_add(1).min(self.counters.provider_turns);
+        }
     }
 
     pub fn requires_cost_accounting(&self) -> bool {
@@ -298,6 +325,12 @@ impl NativeBudget {
             .is_some_and(|max| self.counters.cost_usd >= max)
         {
             return Some("task cost budget is exhausted".into());
+        }
+        if self.requires_cost_accounting() && !self.counters.cost_is_complete() {
+            return Some(
+                "task cost coverage is incomplete; remaining cost allowance cannot be verified"
+                    .into(),
+            );
         }
         None
     }
@@ -393,6 +426,27 @@ mod tests {
             name: name.into(),
             arguments: args,
         }
+    }
+
+    #[test]
+    fn admitted_task_error_retains_checkpoint_identity_and_public_error_code() {
+        let error = crate::user_error::UserFacing::new(
+            crate::user_error::ErrorNamespace::Auth,
+            "not_connected",
+            "Account is unavailable.",
+            "Connect an account.",
+        );
+        let wrapped = NativeTaskFailure::attach("recorded-task-id", error);
+        assert_eq!(wrapped.to_string(), "Account is unavailable.");
+        assert_eq!(
+            wrapped.downcast_ref::<NativeTaskFailure>().unwrap().task_id,
+            "recorded-task-id"
+        );
+        let original = wrapped
+            .downcast_ref::<crate::user_error::UserFacing>()
+            .unwrap();
+        assert_eq!(original.namespace, crate::user_error::ErrorNamespace::Auth);
+        assert_eq!(original.name, "not_connected");
     }
 
     #[test]
@@ -504,12 +558,38 @@ mod tests {
             network_calls: 3,
             elapsed_ms: 2000,
             cost_usd: 0.4,
+            costed_provider_turns: Some(4),
         };
         let mut budget = NativeBudget::new(limits, counters);
         assert!(budget.admit_provider().is_err());
         assert!(budget.admit_tool(&call("write_file", json!({}))).is_err());
         assert!(budget.counters().elapsed_ms >= 2000);
         assert_eq!(budget.counters().cost_usd, 0.4);
+    }
+
+    #[test]
+    fn an_unpriced_or_interrupted_provider_turn_cannot_replenish_a_cost_cap() {
+        let limits = NativeLimits {
+            cost_usd: Some(1.0),
+            ..NativeLimits::default()
+        };
+        let mut budget = NativeBudget::new(limits.clone(), ExecutionCounters::default());
+        assert!(budget.admit_provider().is_ok());
+        let interrupted = budget.counters();
+        assert!(!interrupted.cost_is_complete());
+        assert!(NativeBudget::new(limits.clone(), interrupted)
+            .admit_provider()
+            .is_err());
+        assert!(budget.admit_tool(&call("write_file", json!({}))).is_err());
+        budget.record_cost(0.0);
+        assert!(budget.counters().cost_is_complete());
+        assert!(budget.admit_tool(&call("write_file", json!({}))).is_ok());
+        let legacy = ExecutionCounters {
+            provider_turns: 1,
+            costed_provider_turns: None,
+            ..ExecutionCounters::default()
+        };
+        assert!(NativeBudget::new(limits, legacy).admit_provider().is_err());
     }
 
     #[test]

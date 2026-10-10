@@ -9,6 +9,7 @@ smaller deterministic smoke count.
 
 import argparse
 import datetime
+import hashlib
 import json
 import os
 import pathlib
@@ -18,7 +19,7 @@ import subprocess
 import tempfile
 import time
 
-from harness_identity import require_current_binary
+from harness_identity import parse_binary_identity, require_current_binary
 
 
 def percentile(values, rank):
@@ -174,11 +175,31 @@ def main():
     aishe_p95 = percentile(aishe_samples, 95)
     regression = max(0.0, aishe_p95 - raw_p95)
     allowed = max(10.0, raw_p95 * 0.10)
+    identity = parse_binary_identity(
+        subprocess.check_output([str(binary), "--version"], text=True, timeout=10)
+    )
+    source = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=pathlib.Path(__file__).resolve().parent.parent,
+        capture_output=True, text=True, timeout=10, check=False,
+    )
+    source_commit = source.stdout.strip() if source.returncode == 0 else None
+    if source_commit and not source_commit.startswith(identity["commit"]):
+        source_commit = None
+    source_status = subprocess.run(
+        ["git", "status", "--porcelain"],
+        cwd=pathlib.Path(__file__).resolve().parent.parent,
+        capture_output=True, text=True, timeout=10, check=False,
+    )
     report = {
         "schema_version": 1,
         "kind": "aishe_direct_shell_performance",
         "generated_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
         "binary": str(binary),
+        "binary_identity": identity,
+        "binary_sha256": hashlib.sha256(binary.read_bytes()).hexdigest(),
+        "source_commit": source_commit,
+        "source_dirty": source_status.returncode != 0 or bool(source_status.stdout),
         "commands": args.commands,
         "warmup": args.warmup,
         "raw_zsh": {

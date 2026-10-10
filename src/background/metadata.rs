@@ -29,6 +29,12 @@ pub struct TaskMetadata {
     pub archived_revision: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reviewed_revision: Option<String>,
+    /// Older releases used Reviewed for an implicit details visit. Preserve
+    /// their quiet status as Seen without claiming an explicit review.
+    #[serde(default)]
+    pub reviewed_explicit: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub seen_revision: Option<String>,
     #[serde(default)]
     pub revision: u64,
 }
@@ -42,6 +48,8 @@ impl Default for TaskMetadata {
             archived: false,
             archived_revision: None,
             reviewed_revision: None,
+            reviewed_explicit: false,
+            seen_revision: None,
             revision: 0,
         }
     }
@@ -68,7 +76,18 @@ pub fn archive_task(id: &str, archived: bool) -> Result<()> {
     })
 }
 
-/// Marks only the result the user actually inspected. A concurrent new result
+/// Quiet only the result the user opened; seeing a result is not a review.
+pub fn mark_task_seen(entry: &TaskEntry) -> Result<()> {
+    if !is_terminal(entry.state) || entry.result_revision.is_empty() {
+        return Ok(());
+    }
+    mutate(&entry.id, |record, metadata| {
+        see_exact(record, metadata, entry);
+        Ok(())
+    })
+}
+
+/// Marks only the result the user explicitly reviewed. A concurrent new result
 /// remains unread, even when a details view for the previous result is open.
 pub fn mark_task_reviewed(entry: &TaskEntry) -> Result<()> {
     if !is_terminal(entry.state) || entry.result_revision.is_empty() {
@@ -98,7 +117,15 @@ fn set_archived(record: &Record, metadata: &mut TaskMetadata, archived: bool) ->
 
 fn review_exact(record: &Record, metadata: &mut TaskMetadata, entry: &TaskEntry) {
     if !entry.result_revision.is_empty() && result_revision(record) == entry.result_revision {
+        metadata.seen_revision = Some(entry.result_revision.clone());
         metadata.reviewed_revision = Some(entry.result_revision.clone());
+        metadata.reviewed_explicit = true;
+    }
+}
+
+fn see_exact(record: &Record, metadata: &mut TaskMetadata, entry: &TaskEntry) {
+    if !entry.result_revision.is_empty() && result_revision(record) == entry.result_revision {
+        metadata.seen_revision = Some(entry.result_revision.clone());
     }
 }
 
@@ -159,12 +186,14 @@ fn read_at(dir: &Path) -> Result<TaskMetadata> {
         .map(validated_name)
         .transpose()?
         .flatten();
-    if [&metadata.reviewed_revision, &metadata.archived_revision]
-        .into_iter()
-        .flatten()
-        .any(|revision| {
-            revision.len() != 64 || !revision.bytes().all(|byte| byte.is_ascii_hexdigit())
-        })
+    if [
+        &metadata.reviewed_revision,
+        &metadata.seen_revision,
+        &metadata.archived_revision,
+    ]
+    .into_iter()
+    .flatten()
+    .any(|revision| revision.len() != 64 || !revision.bytes().all(|byte| byte.is_ascii_hexdigit()))
     {
         anyhow::bail!("invalid reviewed task revision");
     }
@@ -398,6 +427,66 @@ mod tests {
             read_at(&dir.0).unwrap().reviewed_revision.as_deref(),
             Some(result_revision(&record).as_str())
         );
+    }
+
+    #[test]
+    fn opening_details_persists_seen_without_reviewing_or_hiding_a_new_result() {
+        let (dir, mut record) = fixture();
+        let entry = TaskEntry::with_metadata(&record, TaskMetadata::default());
+        mutate_at(&dir.0, &record.id, |record, metadata| {
+            see_exact(record, metadata, &entry);
+            Ok(())
+        })
+        .unwrap();
+        let metadata = read_at(&dir.0).unwrap();
+        assert!(metadata.reviewed_revision.is_none());
+        let reopened = TaskEntry::with_metadata(&record, metadata);
+        assert!(reopened.seen);
+        assert!(!reopened.reviewed);
+        assert!(super::super::SeenTasks::default().is_seen(&reopened));
+        record.result_revision += 1;
+        fs::write(
+            dir.0.join("record.json"),
+            serde_json::to_vec(&record).unwrap(),
+        )
+        .unwrap();
+        mutate_at(&dir.0, &record.id, |record, metadata| {
+            see_exact(record, metadata, &entry);
+            review_exact(record, metadata, &entry);
+            Ok(())
+        })
+        .unwrap();
+        let later = TaskEntry::with_metadata(&record, read_at(&dir.0).unwrap());
+        assert!(!later.seen);
+        assert!(!later.reviewed);
+    }
+
+    #[test]
+    fn old_implicit_review_flags_migrate_to_seen_and_explicit_review_is_preserved() {
+        let (dir, record) = fixture();
+        let stamp = result_revision(&record);
+        fs::write(
+            dir.0.join("metadata.json"),
+            serde_json::json!({
+                "schema_version": 1, "reviewed_revision": stamp,
+                "title": "Old task name", "pinned": true
+            })
+            .to_string(),
+        )
+        .unwrap();
+        let legacy = TaskEntry::with_metadata(&record, read_at(&dir.0).unwrap());
+        assert!(legacy.seen);
+        assert!(!legacy.reviewed);
+        assert!(legacy.pinned);
+        assert_eq!(legacy.title, "Old task name");
+        mutate_at(&dir.0, &record.id, |record, metadata| {
+            review_exact(record, metadata, &legacy);
+            Ok(())
+        })
+        .unwrap();
+        let explicitly_reviewed = TaskEntry::with_metadata(&record, read_at(&dir.0).unwrap());
+        assert!(explicitly_reviewed.reviewed);
+        assert!(explicitly_reviewed.seen);
     }
 
     #[test]

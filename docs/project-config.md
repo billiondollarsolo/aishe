@@ -37,19 +37,23 @@ let an untrusted file change anything security-relevant. Keys fall into two
 tiers:
 
 **Safe (always applied).** Cosmetic and behavioral keys, and a per-provider
-`model`: `mode` (for `suggest`/`auto`), `stream`, `structured`, `memory`,
+`model`: `mode` (for `ask`/`allow`, also named `suggest`/`auto`), `stream`, `structured`, `memory`,
 `cache`/`cache_ttl_secs`, `budget_usd`, `max_yolo_iterations`, `yolo_plan`,
 `yolo_verbose`, `file_tools`, `web_tool`, `auto_pushd`, `cdpath`,
 `share_history`, `pty_prompt`, `project_context`, `[named_dirs]`, `[pricing]`,
 and `[providers.<name>].model`.
 
 **Sensitive (applied only when you trust the file).** Anything that could
-exfiltrate prompts, run code, or weaken safety: `provider`, a
+exfiltrate prompts, run code, or weaken safety: `provider`, `shell_profile`, a
 `[providers.<name>]` `base_url`/`api_key_env`, `[mcp_servers]` (which can launch
 arbitrary commands), `[logging]`, `redact_secrets`, `yolo_sandbox`,
 `yolo_confirm`/`yolo_confirm_dangerous`, `hook_timeout_secs`, and
-`mode = "yolo"` (a repo must not silently put you into autonomous
+`mode = "agent"` (also named `yolo`; a repo must not silently put you into autonomous
 command-running or extend a prompt-blocking wait).
+
+Trust permits those configuration choices; it does not grant execution
+authority. Native Allow and Agent still require explicit grants in the live
+shell.
 
 Until you trust a file, its sensitive keys are reported but **not** applied:
 

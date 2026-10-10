@@ -42,17 +42,41 @@ pub fn history_paths(config: &Config) -> (std::path::PathBuf, std::path::PathBuf
 
 /// History destination for the direct `-c` fast path. A parent AIShe PTY
 /// exports the exact active file; standalone invocations preserve the existing
-/// first-run, migration, malformed-config, and `share_history=false` contracts.
+/// malformed-config and `share_history=false` contracts. A fresh shell command
+/// needs neither credentials nor a saved configuration.
 /// No provider, plugin, MCP registry, or managed backend is constructed.
 pub fn fast_history_log() -> Result<std::path::PathBuf> {
-    if let Some(path) = std::env::var_os("AISHE_HISTFILE").filter(|path| !path.is_empty()) {
-        return Ok(path.into());
+    fast_shell_context().map(|(history, _)| history)
+}
+
+/// Resolve history and backing shell together. A parent shell supplies both
+/// exact values, avoiding another configuration read for ordinary commands.
+pub fn fast_shell_context() -> Result<(std::path::PathBuf, String)> {
+    let inherited_history = std::env::var_os("AISHE_HISTFILE").filter(|path| !path.is_empty());
+    let inherited_profile = std::env::var("AISHE_ZSH_PROFILE").ok();
+    if let (Some(path), Some(profile)) = (&inherited_history, &inherited_profile) {
+        validate_shell_profile(profile)?;
+        return Ok((path.into(), profile.clone()));
     }
-    let mut config = Config::load_or_init()?;
+    let mut config = Config::load_for_shell_command()?;
     let _project_overlay = std::env::current_dir()
         .ok()
         .and_then(|cwd| config.apply_project_overlay(&cwd));
-    Ok(history_paths(&config).1)
+    let profile = inherited_profile.unwrap_or(config.aishe.shell_profile.clone());
+    validate_shell_profile(&profile)?;
+    Ok((
+        inherited_history
+            .map(Into::into)
+            .unwrap_or_else(|| history_paths(&config).1),
+        profile,
+    ))
+}
+
+fn validate_shell_profile(profile: &str) -> Result<()> {
+    if !matches!(profile, "clean" | "personal" | "bash") {
+        anyhow::bail!("invalid shell profile {profile:?}; choose clean, personal, or bash");
+    }
+    Ok(())
 }
 
 /// The on-disk semantic-history vector store.
@@ -484,7 +508,12 @@ fn ledger_entries() -> Vec<crate::audit::Entry> {
             crate::audit::Entry {
                 ts_ms: number("ts_ms").unwrap_or(0),
                 session: string("session").unwrap_or_default(),
-                kind: "ai_response".to_string(),
+                kind: if string("outcome").as_deref() == Some("error") {
+                    "ai_error"
+                } else {
+                    "ai_response"
+                }
+                .to_string(),
                 model: string("model"),
                 connection_id: string("connection_id"),
                 provider: string("provider"),
@@ -492,6 +521,13 @@ fn ledger_entries() -> Vec<crate::audit::Entry> {
                 mode: string("mode"),
                 tokens_in: number("tokens_in"),
                 tokens_out: number("tokens_out"),
+                requests: number("requests"),
+                unreported_requests: number("unreported_requests"),
+                reported_tokens_in: number("reported_tokens_in"),
+                reported_tokens_out: number("reported_tokens_out"),
+                attributed_requests: number("attributed_requests"),
+                attributed_tokens_in: number("attributed_tokens_in"),
+                attributed_tokens_out: number("attributed_tokens_out"),
                 cache_read_tokens: number("cache_read_tokens"),
                 cache_write_tokens: number("cache_write_tokens"),
                 reasoning_tokens: number("reasoning_tokens"),
@@ -534,25 +570,46 @@ struct UsageAgg {
     cache_write: u64,
     reasoning: u64,
     reqs: u64,
+    unreported: u64,
+    reported_tin: u64,
+    reported_tout: u64,
+    attributed_reqs: u64,
+    attributed_tin: u64,
+    attributed_tout: u64,
     errors: u64,
     duration_ms: u64,
     cost: f64,
     unpriced: u64,
+    known_cost_reqs: u64,
+    unknown_cost_reqs: u64,
+    subscription_reqs: u64,
     basis: Option<CostBasis>,
 }
 
 impl UsageAgg {
     fn add(&mut self, other: &UsageSample) {
-        self.tin += other.tin;
-        self.tout += other.tout;
+        self.tin += other.usage.input;
+        self.tout += other.usage.output;
+        self.reported_tin += other.usage.reported_input;
+        self.reported_tout += other.usage.reported_output;
+        self.attributed_reqs += other.usage.attributed_requests;
+        self.attributed_tin += other.usage.attributed_input;
+        self.attributed_tout += other.usage.attributed_output;
+        self.unreported += other.usage.unreported_requests;
         self.cache_read += other.cache_read;
         self.cache_write += other.cache_write;
         self.reasoning += other.reasoning;
-        self.reqs += 1;
+        self.reqs += other.usage.requests;
         self.duration_ms += other.duration_ms;
-        self.cost += other.cost;
+        self.cost += other.cost.subtotal;
+        self.known_cost_reqs += other.cost.known_requests;
+        if other.basis == CostBasis::Subscription {
+            self.subscription_reqs += other.usage.requests;
+        } else {
+            self.unknown_cost_reqs += other.cost.unknown_requests;
+        }
         if other.basis == CostBasis::Unpriced {
-            self.unpriced += 1;
+            self.unpriced += other.usage.requests;
         }
         self.basis = Some(match self.basis {
             Some(existing) => existing.merge(other.basis),
@@ -568,26 +625,96 @@ impl UsageAgg {
     }
 
     fn cost_label(&self) -> String {
-        match self.basis.unwrap_or_default() {
-            CostBasis::Priced => format!("~${:.4}", self.cost),
-            CostBasis::Unpriced if self.cost > 0.0 => {
-                format!("~${:.4} (+{} unpriced)", self.cost, self.unpriced)
-            }
-            CostBasis::Unpriced => "no price set".to_string(),
-            CostBasis::Subscription => "plan".to_string(),
+        if self.basis == Some(CostBasis::Subscription) {
+            return "plan".to_string();
         }
+        if self.known_cost_reqs == 0 && self.reqs > 0 {
+            return if self.unpriced > 0 {
+                "cost n/a (no price set)".into()
+            } else {
+                "cost n/a".into()
+            };
+        }
+        let unknown = self.unknown_cost_reqs + self.subscription_reqs;
+        if unknown > 0 {
+            format!("~${:.4} (partial; {unknown} unknown)", self.cost)
+        } else {
+            format!("~${:.4}", self.cost)
+        }
+    }
+
+    fn tokens_label(&self) -> String {
+        if self.reqs > 0 && self.unreported == self.reqs {
+            return "tokens n/a".into();
+        }
+        format!(
+            "{} in · {} out{}",
+            tokens(self.reported_tin),
+            tokens(self.reported_tout),
+            if self.unreported > 0 {
+                " (partial)"
+            } else {
+                ""
+            }
+        )
+    }
+
+    fn cost_coverage(&self) -> &'static str {
+        if self.reqs == 0 {
+            "empty"
+        } else if self.basis == Some(CostBasis::Subscription) {
+            "subscription"
+        } else if self.known_cost_reqs == 0 {
+            "unknown"
+        } else if self.unknown_cost_reqs > 0 || self.subscription_reqs > 0 {
+            "partial"
+        } else {
+            "complete"
+        }
+    }
+
+    fn cost_usd(&self) -> Option<f64> {
+        (self.cost_coverage() == "complete").then_some(self.cost)
     }
 }
 
 struct UsageSample {
-    tin: u64,
-    tout: u64,
+    usage: crate::usage::Usage,
     cache_read: u64,
     cache_write: u64,
     reasoning: u64,
     duration_ms: u64,
-    cost: f64,
+    cost: crate::usage::CostTally,
     basis: CostBasis,
+}
+
+fn usage_sample(entry: &crate::audit::Entry, config: &Config) -> UsageSample {
+    let usage = entry.usage();
+    let price = crate::usage::price_for(entry.model.as_deref().unwrap_or("?"), &config.pricing)
+        .filter(|price| {
+            price.input.is_finite()
+                && price.output.is_finite()
+                && price.input >= 0.0
+                && price.output >= 0.0
+        });
+    let basis = if price.is_some() {
+        CostBasis::Priced
+    } else if entry.auth_type.as_deref() == Some("oauth") {
+        CostBasis::Subscription
+    } else {
+        CostBasis::Unpriced
+    };
+    let mut cost = crate::usage::CostTally::default();
+    cost.add(usage, price);
+    UsageSample {
+        usage,
+        cache_read: entry.cache_read_tokens.unwrap_or(0),
+        cache_write: entry.cache_write_tokens.unwrap_or(0),
+        reasoning: entry.reasoning_tokens.unwrap_or(0),
+        duration_ms: entry.duration_ms.unwrap_or(0),
+        cost,
+        basis,
+    }
 }
 
 /// `aishe usage`: what this shell, today, and the whole audit log have spent.
@@ -600,7 +727,6 @@ pub fn usage(
     connection: Option<&str>,
     json: bool,
 ) -> u8 {
-    use crate::usage::{self, Usage};
     // The ledger is content-free and always written; the audit log is opt-in and
     // carries prompts. Prefer the ledger, and fall back so history recorded
     // before the ledger existed still counts.
@@ -652,42 +778,17 @@ pub fn usage(
         }
         if e.kind == "ai_error" {
             errors += 1;
+            // Legacy error events carry no measured usage. A failed native
+            // response with counters still belongs in token/cost totals.
+            if e.requests.unwrap_or(0) == 0 {
+                continue;
+            }
+        }
+        if e.kind != "ai_response" && e.kind != "ai_error" {
             continue;
         }
-        if e.kind != "ai_response" {
-            continue;
-        }
-        let tin = e.tokens_in.unwrap_or(0);
-        let tout = e.tokens_out.unwrap_or(0);
         let model = e.model.as_deref().unwrap_or("?");
-        // A subscription reports no per-token price, so an absent price there is
-        // correct rather than missing configuration.
-        let subscription = e.auth_type.as_deref() == Some("oauth");
-        let (cost, basis) = match usage::price_for(model, &config.pricing) {
-            Some(price) => (
-                usage::cost(
-                    Usage {
-                        input: tin,
-                        output: tout,
-                        requests: 1,
-                    },
-                    price,
-                ),
-                CostBasis::Priced,
-            ),
-            None if subscription => (e.cost_usd.unwrap_or(0.0), CostBasis::Subscription),
-            None => (0.0, CostBasis::Unpriced),
-        };
-        let sample = UsageSample {
-            tin,
-            tout,
-            cache_read: e.cache_read_tokens.unwrap_or(0),
-            cache_write: e.cache_write_tokens.unwrap_or(0),
-            reasoning: e.reasoning_tokens.unwrap_or(0),
-            duration_ms: e.duration_ms.unwrap_or(0),
-            cost,
-            basis,
-        };
+        let sample = usage_sample(e, config);
         let key = match by {
             "connection" => e
                 .connection_id
@@ -773,9 +874,8 @@ fn print_usage_report(
             continue;
         }
         let mut line = format!(
-            "  {label:<11} {} in · {} out · {} turns · {}",
-            tokens(agg.tin),
-            tokens(agg.tout),
+            "  {label:<11} {} · {} turns · {}",
+            agg.tokens_label(),
             agg.reqs,
             agg.cost_label()
         );
@@ -817,14 +917,43 @@ fn print_usage_row(label: &str, agg: &UsageAgg) {
         None => String::new(),
     };
     println!(
-        "  {:<28} {:>9} in {:>9} out {:>4} req  {:<22} {}",
+        "  {:<28} {:<28} {:>4} req  {:<22} {}",
         label,
-        tokens(agg.tin),
-        tokens(agg.tout),
+        agg.tokens_label(),
         agg.reqs,
         agg.cost_label(),
         cache
     );
+}
+
+fn describe_usage(agg: &UsageAgg) -> serde_json::Value {
+    serde_json::json!({
+        "tokens_in": agg.tin,
+        "tokens_out": agg.tout,
+        "cache_read_tokens": agg.cache_read,
+        "cache_write_tokens": agg.cache_write,
+        "reasoning_tokens": agg.reasoning,
+        "requests": agg.reqs,
+        "duration_ms": agg.duration_ms,
+        "cost_usd": agg.cost_usd(),
+        "known_cost_subtotal_usd": agg.cost,
+        "cost_coverage": agg.cost_coverage(),
+        "known_cost_requests": agg.known_cost_reqs,
+        "unknown_cost_requests": agg.unknown_cost_reqs,
+        "subscription_requests": agg.subscription_reqs,
+        "unreported_requests": agg.unreported,
+        "reported_tokens_in": agg.reported_tin,
+        "reported_tokens_out": agg.reported_tout,
+        "attributed_requests": agg.attributed_reqs,
+        "attributed_tokens_in": agg.attributed_tin,
+        "attributed_tokens_out": agg.attributed_tout,
+        "cost_basis": match agg.basis.unwrap_or_default() {
+            CostBasis::Priced => "priced",
+            CostBasis::Subscription => "subscription",
+            CostBasis::Unpriced => "unpriced",
+        },
+        "cache_hit_percent": agg.cache_hit_rate(),
+    })
 }
 
 fn usage_json(
@@ -836,36 +965,18 @@ fn usage_json(
     session: &UsageAgg,
     plan: Option<&str>,
 ) -> u8 {
-    let describe = |agg: &UsageAgg| {
-        serde_json::json!({
-            "tokens_in": agg.tin,
-            "tokens_out": agg.tout,
-            "cache_read_tokens": agg.cache_read,
-            "cache_write_tokens": agg.cache_write,
-            "reasoning_tokens": agg.reasoning,
-            "requests": agg.reqs,
-            "duration_ms": agg.duration_ms,
-            "cost_usd": agg.cost,
-            "cost_basis": match agg.basis.unwrap_or_default() {
-                CostBasis::Priced => "priced",
-                CostBasis::Subscription => "subscription",
-                CostBasis::Unpriced => "unpriced",
-            },
-            "cache_hit_percent": agg.cache_hit_rate(),
-        })
-    };
     let document = serde_json::json!({
         "schema_version": 1,
         "group_by": by,
         "connection": config.active_connection_id(),
-        "session": describe(session),
-        "today": describe(today),
-        "total": describe(total),
+        "session": describe_usage(session),
+        "today": describe_usage(today),
+        "total": describe_usage(total),
         "errors": total.errors,
         "plan": plan,
         "groups": groups
             .iter()
-            .map(|(key, agg)| serde_json::json!({"key": key, "usage": describe(agg)}))
+            .map(|(key, agg)| serde_json::json!({"key": key, "usage": describe_usage(agg)}))
             .collect::<Vec<_>>(),
     });
     match crate::cli::json_contract::print_object(&document) {
@@ -1066,6 +1177,104 @@ pub fn init_audit(config: &Config) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn priced_entry(usage: Option<crate::usage::Usage>) -> crate::audit::Entry {
+        let mut entry = crate::audit::Entry {
+            model: Some("gpt-4o".into()),
+            tokens_in: Some(0),
+            tokens_out: Some(0),
+            ..Default::default()
+        };
+        if let Some(usage) = usage {
+            entry.tokens_in = Some(usage.input);
+            entry.tokens_out = Some(usage.output);
+            entry.requests = Some(usage.requests);
+            entry.unreported_requests = Some(usage.unreported_requests);
+            entry.reported_tokens_in = Some(usage.reported_input);
+            entry.reported_tokens_out = Some(usage.reported_output);
+            entry.attributed_requests = Some(usage.attributed_requests);
+            entry.attributed_tokens_in = Some(usage.attributed_input);
+            entry.attributed_tokens_out = Some(usage.attributed_output);
+        }
+        entry
+    }
+
+    #[test]
+    fn historical_missing_usage_is_unknown_while_reported_zero_is_known() {
+        let config = Config::default();
+        for entry in [
+            priced_entry(None),
+            priced_entry(Some(crate::usage::Usage::unknown(0, 0, 1))),
+        ] {
+            let mut agg = UsageAgg::default();
+            agg.add(&usage_sample(&entry, &config));
+            assert_eq!(agg.cost_label(), "cost n/a");
+            assert_eq!(agg.tokens_label(), "tokens n/a");
+            let value = describe_usage(&agg);
+            assert!(value["cost_usd"].is_null());
+            assert_eq!(value["cost_coverage"], "unknown");
+            assert_eq!(value["unreported_requests"], 1);
+        }
+        let mut zero = UsageAgg::default();
+        zero.add(&usage_sample(
+            &priced_entry(Some(crate::usage::Usage::reported(0, 0, 1))),
+            &config,
+        ));
+        assert_eq!(zero.cost_label(), "~$0.0000");
+        assert_eq!(describe_usage(&zero)["cost_usd"], 0.0);
+        assert_eq!(describe_usage(&zero)["cost_coverage"], "complete");
+    }
+
+    #[test]
+    fn historical_mixed_results_show_only_the_known_subtotal() {
+        let config = Config::default();
+        let mut usage = crate::usage::Usage::reported(1000, 200, 1);
+        usage.add(crate::usage::Usage::unknown(9000, 0, 1));
+        let mut agg = UsageAgg::default();
+        agg.add(&usage_sample(&priced_entry(Some(usage)), &config));
+        assert_eq!(agg.cost_label(), "~$0.0045 (partial; 1 unknown)");
+        assert_eq!(agg.tokens_label(), "1,000 in · 200 out (partial)");
+        let value = describe_usage(&agg);
+        assert!(value["cost_usd"].is_null());
+        assert!((value["known_cost_subtotal_usd"].as_f64().unwrap() - 0.0045).abs() < 1e-10);
+        assert_eq!(value["cost_coverage"], "partial");
+        assert_eq!(value["tokens_in"], 10000);
+        assert_eq!(value["reported_tokens_in"], 1000);
+        assert_eq!(value["requests"], 2);
+    }
+
+    #[test]
+    fn historical_known_zero_remains_a_partial_subtotal_with_unknown_calls() {
+        let config = Config::default();
+        let mut agg = UsageAgg::default();
+        agg.add(&usage_sample(
+            &priced_entry(Some(crate::usage::Usage::reported(0, 0, 1))),
+            &config,
+        ));
+        agg.add(&usage_sample(&priced_entry(None), &config));
+        assert_eq!(agg.cost_label(), "~$0.0000 (partial; 1 unknown)");
+        assert!(describe_usage(&agg)["cost_usd"].is_null());
+        assert_eq!(describe_usage(&agg)["known_cost_subtotal_usd"], 0.0);
+    }
+
+    #[test]
+    fn historical_unattributed_usage_preserves_tokens_without_claiming_cost() {
+        let mut agg = UsageAgg::default();
+        agg.add(&usage_sample(
+            &priced_entry(Some(
+                crate::usage::Usage::reported(1000, 200, 1).without_attribution(),
+            )),
+            &Config::default(),
+        ));
+        assert_eq!(agg.tokens_label(), "1,000 in · 200 out");
+        assert_eq!(agg.cost_label(), "cost n/a");
+        let value = describe_usage(&agg);
+        assert_eq!(value["unreported_requests"], 0);
+        assert_eq!(value["reported_tokens_in"], 1000);
+        assert_eq!(value["attributed_requests"], 0);
+        assert_eq!(value["cost_coverage"], "unknown");
+        assert!(value["cost_usd"].is_null());
+    }
 
     #[test]
     fn audit_precedence_env_over_file() {

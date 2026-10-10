@@ -5,23 +5,30 @@ the same way regardless of mode.
 
 | Mode      | Glyph | Behavior                                                                    |
 |-----------|:-----:|-----------------------------------------------------------------------------|
-| `suggest` |  `❯`  | Default and least privileged. The model answers or proposes one command; agent tools are unavailable. |
-| `auto`    |  `»`  | Approval-gated agent. Safe actions run; risky or unresolved actions stop and ask. |
-| `yolo`    |  `*`  | Autonomous agent loop after one workspace/host scope grant for the shell. |
+| `ask` | `❯` | Default and least privileged. The model answers or proposes one command; agent tools are unavailable. |
+| `allow` | `»` | Approval-gated agent. Safe actions run; risky or unresolved actions stop and ask. |
+| `agent` | `*` | Autonomous agent loop after one workspace/host scope grant for the shell. |
+
+The compatibility names `suggest`, `auto`, and `yolo` remain aliases for Ask,
+Allow, and Agent. The native shell is the default; managed OpenCode transport is
+an explicit choice for OAuth and compatibility workflows. Ordinary commands
+need no AI account and never start that runtime.
 
 Switch at any time:
 
 ```sh
-aishe mode auto
+aishe mode allow
 ```
 
 Or set the mode for a single session:
 
 ```sh
-aishe --mode yolo
+aishe --mode agent
 ```
 
 ## suggest
+
+This is Ask mode; `suggest` is its compatibility name.
 
 The model returns a single command and a short explanation. aishe shows it and
 waits:
@@ -37,7 +44,9 @@ instead of proposing a command.
 
 ## auto
 
-The managed agent can inspect and work iteratively, but AIShe retains per-action
+This is Allow mode; `auto` is its compatibility name.
+
+The agent can inspect and work iteratively, but AIShe retains per-action
 approval control. Actions that are read-only or clearly safe can run immediately;
 writes, destructive commands, broader paths, network use, or anything AIShe
 cannot resolve stop and ask. The deterministic gate still has three outcomes:
@@ -53,6 +62,10 @@ This keeps the convenience of an iterative agent while preserving a human gate
 around consequential actions. See [Safety gate](safety.md#three-outcomes).
 
 ## yolo
+
+This is Agent mode; `yolo` is its compatibility name. Native API-key and local
+model connections use AIShe's native agent. The managed-engine details below
+apply only when managed OpenCode transport is selected.
 
 Yolo uses AIShe's managed OpenCode engine to plan, call tools, inspect results,
 compact context, create subagents where appropriate, and continue until the task
@@ -107,10 +120,10 @@ Doctor run a functional namespace test; merely finding the executable is not
 enough. macOS is clearly labeled policy-only. `aishe dry-run` and legacy
 `yolo_dry_run` remain available for throwaway-copy previews.
 
-Every provider turn is authorized against AIShe's exact price/budget before the
-request. Usage is accepted once per provider message, including child sessions,
-and updates the statusline. An exhausted budget denies the next turn without
-destroying the conversation.
+Provider turns are checked against the applicable request, token, and money
+limits. Usage is recorded once and updates the status display. Money limits
+require known pricing coverage: unknown historical spend is not silently treated
+as zero. An exhausted budget denies further work while retaining its records.
 
 Every tool call is durably journaled before execution. A duplicate completed
 call replays its result; a call interrupted after start is marked

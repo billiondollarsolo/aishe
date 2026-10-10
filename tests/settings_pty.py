@@ -2,7 +2,10 @@
 """Settings drafts, direct edits, navigation, review, and terminal policy."""
 
 from pathlib import Path
+import fcntl
+import struct
 import tempfile
+import termios
 import tomllib
 
 # Reuse the real-PTY transport; each scenario owns isolated configuration.
@@ -112,6 +115,60 @@ def cancel_provider_transaction():
     print("  ok   cancelled provider candidate leaves default/endpoint/model unchanged")
 
 
+def prompt_preview_stays_visible_on_short_terminals():
+    for profile in ("clean", "personal", "bash"):
+        with tempfile.TemporaryDirectory(prefix="aishe-preview-%s-" % profile) as root:
+            env, config = fixture(root)
+            config.write_text(config.read_text().replace(
+                'mode = "suggest"', 'mode = "suggest"\nshell_profile = "%s"' % profile,
+            ))
+            if profile == "clean":
+                config.write_text(config.read_text().replace(
+                    'model = "work-model"',
+                    'model = "' + 'qualifying-model-with-long-label-' * 4 + '"',
+                ))
+            before = config.read_bytes()
+            shell = Pty([BINARY, "settings"], env, cols=32)
+            try:
+                fcntl.ioctl(shell.master, termios.TIOCSWINSZ, struct.pack("HHHH", 18, 32, 0, 0))
+                choose(shell, "Choose a section", 2)
+                choose(shell, "Terminal & history", 2)
+                choose(shell, "Prompt & status", 4)
+                shell.expect("Prompt preview (illustrative)")
+                shell.expect("Enter/Esc Back")
+                shell.drain()
+                preview = shell.transcript.rsplit("Prompt preview (illustrative)", 1)[1]
+                assert "Prompt & status" not in preview, preview
+                if profile == "bash":
+                    assert "Prompt:" in preview, preview
+                else:
+                    assert "Left:" in preview and "Right:" in preview, preview
+                assert all(len(line) <= 31 for line in preview.replace("\r", "").splitlines()), preview
+                assert len(preview.replace("\r", "").splitlines()) <= 17, preview
+                idle = shell.transcript
+                shell.drain(0.35)
+                assert shell.transcript == idle, "read-only preview redraws while idle"
+                assert shell.proc.poll() is None, "preview closed without an explicit Back"
+                if profile == "clean":
+                    assert "Up/Down scroll" in preview, preview
+                    shell.send("\x1b[F")  # End reveals the remaining illustrative explanation.
+                    shell.expect("scope stay visible.")
+                    shell.expect("Enter/Esc Back")
+                    shell.send("\x1b[H")
+                    shell.expect("Left:")
+                    shell.expect("Enter/Esc Back")
+                shell.send("\r" if profile == "clean" else "\x1b")
+                choose(shell, "Prompt & status", 5)
+                choose(shell, "Terminal & history", 9)
+                choose(shell, "Choose a section", 9)
+                finish(shell)
+                assert config.read_bytes() == before, "read-only preview changed saved settings"
+                assert "\x1b[" not in shell.transcript, "static preview emits cursor repaint sequences"
+            finally:
+                shell.close()
+    print("  ok   32x18 previews retain actual prompt content, scroll, and wait for explicit Back")
+
+
 def direct_model_and_persistent_sections():
     with tempfile.TemporaryDirectory(prefix="aishe-settings-apply-") as root:
         env, config = fixture(root)
@@ -131,7 +188,7 @@ def direct_model_and_persistent_sections():
             shell.line("75")
             choose(shell, "Terminal & history", 3)
             choose(shell, "Agent transcript density", 3)
-            choose(shell, "Terminal & history", 8)
+            choose(shell, "Terminal & history", 9)
             choose(shell, "Choose a section", 5)
             choose(shell, "Usage & logging", 2)
             shell.expect("Session budget USD")
@@ -288,6 +345,7 @@ def managed_defaults_are_explicit_in_review():
 
 if __name__ == "__main__":
     clean_exit_and_narrow()
+    prompt_preview_stays_visible_on_short_terminals()
     cancel_provider_transaction()
     direct_model_and_persistent_sections()
     declined_review_preserves_draft()

@@ -104,8 +104,9 @@ def main():
                                  capture_output=True, check=True, timeout=15)
         assert not version.stderr
         identity = parse_binary_identity(version.stdout.decode())
-        # Mirror init_session_rc and Executor::configure_shell_command exactly,
-        # including the zsh-specific alias builtin and absent user rc files.
+        # Retain the persistent Executor bootstrap as a comparison with the
+        # standalone in-memory bootstrap. Neither diagnostic replaces the
+        # unchanged strict end-to-end direct-shell benchmark.
         rc = root / "session.zsh"
         rc.write_text(
             "# aishe session rc (generated)\n"
@@ -119,7 +120,10 @@ def main():
         command = "printf 'direct-shell-component\\n'"
         expected = b"direct-shell-component\n"
         rc_env = dict(env, AISHE_CMD=command)
-        active_history = dict(env, AISHE_HISTFILE=str(root / "active-history.ext"))
+        # A native parent exports its history destination and selected shell
+        # experience together, so the child can retain both without a config read.
+        active_history = dict(env, AISHE_HISTFILE=str(root / "active-history.ext"),
+                              AISHE_ZSH_PROFILE="clean")
         cases = [
             ("aishe_version", [binary, "--version"], env, version.stdout),
             ("raw_zsh", [zsh, "-c", command], env, expected),
@@ -129,6 +133,9 @@ def main():
             ("aishe_direct_default", [binary, "-c", command], env, expected),
             ("aishe_direct_active_history", [binary, "-c", command],
              active_history, expected),
+            ("raw_zsh_inline_rc", [zsh, "-c",
+             '{\n' + rc.read_text() + '} 2>/dev/null; eval "$AISHE_CMD"'],
+             rc_env, expected),
         ]
         samples = {name: [] for name, *_ in cases}
         rows = {name: [] for name, *_ in cases}
