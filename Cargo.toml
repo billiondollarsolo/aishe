@@ -77,6 +77,8 @@ syntect = { version = "5", default-features = false, features = [
 assert_cmd = "2"
 mockito = "1"
 predicates = "3"
+# Inspect the existing transport's typed certificate errors in native TLS tests.
+rustls = { version = "=0.23.45", default-features = false, features = ["std"] }
 
 [build-dependencies]
 sha2 = "0.10"

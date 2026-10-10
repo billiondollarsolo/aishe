@@ -79,18 +79,78 @@ mod macos {
     }
 }
 
+#[cfg(test)]
+mod certificate_rejection {
+    use std::io::{Error, ErrorKind};
+
+    pub(super) fn is_certificate_rejection(error: &ureq::Error) -> bool {
+        let tls_error = match error {
+            ureq::Error::Rustls(error) => Some(error),
+            // rustls complete_io stores its typed handshake failure in an
+            // InvalidData IO error; ureq's stream transport preserves it.
+            ureq::Error::Io(error) if error.kind() == ErrorKind::InvalidData => error
+                .get_ref()
+                .and_then(|error| error.downcast_ref::<rustls::Error>()),
+            _ => None,
+        };
+        matches!(tls_error, Some(rustls::Error::InvalidCertificate(_)))
+    }
+
+    fn invalid_certificate() -> rustls::Error {
+        rustls::Error::InvalidCertificate(rustls::CertificateError::UnknownIssuer)
+    }
+
+    #[test]
+    fn accepts_direct_and_io_wrapped_invalid_certificate() {
+        assert!(is_certificate_rejection(&ureq::Error::Rustls(
+            invalid_certificate()
+        )));
+        assert!(is_certificate_rejection(&ureq::Error::Io(Error::new(
+            ErrorKind::InvalidData,
+            invalid_certificate()
+        ))));
+    }
+
+    #[test]
+    fn rejects_network_failures_and_certificate_text() {
+        for error in [
+            ureq::Error::Timeout(ureq::Timeout::Global),
+            ureq::Error::Io(Error::new(ErrorKind::TimedOut, "certificate timeout")),
+            ureq::Error::Io(Error::new(ErrorKind::ConnectionReset, "certificate reset")),
+            ureq::Error::Io(Error::new(
+                ErrorKind::InvalidData,
+                "invalid peer certificate: certificate is not trusted",
+            )),
+            ureq::Error::Tls("invalid peer certificate"),
+        ] {
+            assert!(!is_certificate_rejection(&error), "accepted {error}");
+        }
+    }
+
+    #[test]
+    fn rejects_noncertificate_tls_errors_and_wrong_io_kind() {
+        for error in [
+            ureq::Error::Rustls(rustls::Error::General("certificate failure".to_string())),
+            ureq::Error::Io(Error::new(
+                ErrorKind::InvalidData,
+                rustls::Error::General("certificate failure".to_string()),
+            )),
+            ureq::Error::Io(Error::other(invalid_certificate())),
+        ] {
+            assert!(!is_certificate_rejection(&error), "accepted {error}");
+        }
+    }
+}
+
 #[cfg(all(test, target_os = "macos"))]
 mod tests {
     use std::sync::{Arc, Barrier};
     use std::time::Duration;
 
     fn assert_certificate_rejected(error: ureq::Error) {
-        let ureq::Error::Rustls(error) = error else {
-            panic!("expected certificate TLS error, got {error}");
-        };
         assert!(
-            error.to_string().contains("certificate"),
-            "expected certificate rejection, got {error}"
+            super::certificate_rejection::is_certificate_rejection(&error),
+            "expected typed invalid-certificate rejection, got {error}"
         );
     }
 

@@ -3,7 +3,7 @@
   "version": "1.1.0",
   "decision": "hold",
   "release_owner": "billiondollarsolo",
-  "production_source_sha256": "75da75ba9caacaca5a0ba936eeec434937d323e98802bb5de2e20cb6bb1db4c8",
+  "production_source_sha256": "7842f7250ab539a6ce6c09320dfbad1bf0760257856e74edd7ee962101dfacfc",
   "qualification_profile_revision": "2026-10-10.1",
   "prepared_at": "2026-10-10",
   "published": false,
@@ -11,7 +11,7 @@
     "state": "not_run",
     "source_commit": null,
     "ci_run_id": null,
-    "reason": "P4 original macOS native/legacy linking and strict Clippy failed before startup or TLS proof; its local native qualification was intentionally withdrawn. P5 narrow outliner-policy and copied() corrections require fresh clean local qualification, actual native TLS evidence and exact-main maintained CI. Original negative history and P3 corrected AD-24 visual evidence remain retained."
+    "reason": "P5 both original startup gates passed, but its macOS native TLS fixture failed typed certificate-error classification and the second test was not run. P6 test-only typed certificate classification and dev-only dependency corrections require new committed-source local, native TLS and exact-main CI qualification. All original failures and scoped local/visual passes remain retained."
   },
   "dispositions": {
     "live_providers": {
@@ -405,6 +405,278 @@
           }
         },
         "scope": "Completed local core and intentionally withdrawn partial native collection; no full native or overall release pass."
+      }
+    },
+    {
+      "branch_commit": "95747f1f45c503d8e36d2c01303b04998dd75695",
+      "tested_commit": "95747f1f45c503d8e36d2c01303b04998dd75695",
+      "source_tree": "abca78ff7dc91c602bd00866278d4aa39b89f7b1",
+      "production_source_sha256": "75da75ba9caacaca5a0ba936eeec434937d323e98802bb5de2e20cb6bb1db4c8",
+      "ci_run_id": 38032617702,
+      "ci_url": "https://github.com/billiondollarsolo/aishe/actions/runs/38032617702",
+      "ci_event": "push",
+      "state": "fail",
+      "linux_added_p95_ms": 1.612,
+      "macos_added_p95_ms": 8.495,
+      "reason": "Ten of eleven original maintained jobs passed. Both original startup gates passed, but the macOS native TLS contract failed its first exact test at platform_tls.rs:89: certificate rejection arrived as an IO InvalidData wrapper around rustls InvalidCertificate, while the fixture required direct ureq::Error::Rustls. The first test exited 101 with zero passed and one failed; the driver never ran the second HTTPS-proxy test or recorded request counters. P6 corrects only typed test classification and requires fresh qualification; no startup or local/UI pass replaces the failed TLS contract.",
+      "hosted_evidence": {
+        "state": "fail",
+        "required_jobs_passed": 10,
+        "required_jobs_total": 11,
+        "run_attempt": 1,
+        "summary_file": "hosted-performance-summary.json",
+        "summary_sha256": "113f33480123b4d893001e406d8802011b181fd836f8ed5855a8633c403d6845",
+        "performance_pass": true,
+        "ci_pass": false,
+        "release_qualified": false,
+        "original_uploaded_artifacts": {
+          "macOS": {
+            "artifact_id": 11662378649,
+            "url": "https://github.com/billiondollarsolo/aishe/actions/runs/38032617702/artifacts/11662378649",
+            "archive_sha256": "c4e7db553be566b76b514160e20f6440ce869f7663292f419ff636517bf413ff",
+            "release_identity_manifest_present": true,
+            "binary_identity": {
+              "version": "1.1.0",
+              "commit": "95747f1",
+              "date": "2026-10-10"
+            },
+            "binary_sha256": "c4f0d487f7121664bf56ee2c810ad3dd64c683f59cf64287be226be37d8d5fa8",
+            "benchmark_file": "direct-shell-benchmark-20261010T065932Z.json",
+            "benchmark_sha256": "0cba23386f4b731c6f0a848e8a75adb502878376ce5ce8fb8e368962b51fe46d"
+          },
+          "Linux": {
+            "artifact_id": 11662747674,
+            "url": "https://github.com/billiondollarsolo/aishe/actions/runs/38032617702/artifacts/11662747674",
+            "archive_sha256": "7661b789ed06333a01e95073a6014d63bd145bc9670daac0453bd0c48990df76",
+            "release_identity_manifest_present": true,
+            "binary_identity": {
+              "version": "1.1.0",
+              "commit": "95747f1",
+              "date": "2026-10-10"
+            },
+            "binary_sha256": "a48bd6bb885b10aaacb5559495ff5c7072042ec211bd3df720b05ea529108ce2",
+            "benchmark_file": "direct-shell-benchmark-20261010T065837Z.json",
+            "benchmark_sha256": "7f95374ed6b0654309b30b1699cbcc62ad31c025e5975ee0995dd2394a309a4b"
+          }
+        },
+        "completed_job_logs": {
+          "manifest_file": "completed-job-log-manifest.json",
+          "manifest_sha256": "470dfdc638d8e85f6cf1a3d7078c82665e2a99db5577cd418027c4265bec2d3b",
+          "all_11_full_completed_logs_preserved": true
+        },
+        "strict_sample": {
+          "commands": 100,
+          "warmup": 10,
+          "backend_started": false,
+          "allowed_added_p95_ms": 10.0
+        },
+        "linux_original_raw_zsh_p95_ms": 1.921,
+        "linux_original_aishe_p95_ms": 3.533,
+        "macos_original_raw_zsh_p95_ms": 10.73,
+        "macos_original_aishe_p95_ms": 19.224,
+        "immutable_build_inputs": {
+          "report_file": "immutable-build-inputs.json",
+          "report_sha256": "d9b3365cd506c46c6a54e05bd009c438becd720c5bc569c9b69e60c69c311389",
+          "build_inputs": [
+            {
+              "path": ".cargo/config.toml",
+              "sha256": "ab0c41e246148061849a4ddbe0bde897094ba968210eb359ff1e347043972bab",
+              "bytes": 529
+            },
+            {
+              "path": "build.rs",
+              "sha256": "b271b15fbb8722de38c2f7ba28c3a73e1afcc23c5855e0a5cc08149722f28806",
+              "bytes": 2296
+            },
+            {
+              "path": "build_support/apple_link.rs",
+              "sha256": "4f7b27aba3ee6f351645acdcb545c39e64b033de63b8596c7481df8f5f11502b",
+              "bytes": 14045
+            }
+          ]
+        },
+        "scope": "Original attempt 1 artifacts and all completed job logs; strict performance passed but CI and release qualification failed."
+      },
+      "local_qualification": {
+        "state": "pass",
+        "source_commit": "95747f1f45c503d8e36d2c01303b04998dd75695",
+        "core_commands": 11,
+        "rust_tests": 1129,
+        "rust_targets": 38,
+        "native_commands": 37,
+        "core_manifest_file": "core-validation.json",
+        "core_manifest_sha256": "0e514e1706d2655a464124120c3d52fdc74dfce5fd1fea3d900b5d27bfc7affd",
+        "native_manifest_file": "native-validation.json",
+        "native_manifest_sha256": "ecd9e4e3531ca247f9f3ca7c463f43f463c018456353c634181a5d4a478f6242",
+        "binary_sha256": "cf8efd71c0aea049044545c94e2d57c4d8ac59dfb57c8d9f7e4b876f998531b9",
+        "scope": "Completed same-source local core/native qualification; does not establish hosted native TLS or overall release pass."
+      },
+      "native_tls_activation": {
+        "state": "fail",
+        "report_file": "native-tls-activation-macOS.json",
+        "report_sha256": "f90ceb85d31779e711c1a8a11041dfb0ff92864f11b7ea402556738d0721893c",
+        "verification_file": "native-tls-activation-verification.json",
+        "verification_sha256": "ff4b7d5fe5317ed985b44117abd25e76f9f0ff9aae6ec2a8f40e62c3b7f45e37",
+        "original_artifact_id": 11662378649,
+        "companion_file_hashes_verified": true,
+        "two_exact_fresh_passing_tests_verified": false,
+        "product_binary_sha256": "c4f0d487f7121664bf56ee2c810ad3dd64c683f59cf64287be226be37d8d5fa8",
+        "product_binary_bytes": 8172656,
+        "test_executable_sha256": "c042abf8279e343f530b70213072cd2db6c5b47cbcd0cafd1ba67d8d2eb17cf9",
+        "test_executable_bytes": 9464944,
+        "actual_test_results": {
+          "platform_tls::tests::native_first_concurrent_https_and_untrusted_rejection": {
+            "executed": true,
+            "returncode": 101,
+            "bounded_failure": null,
+            "log_sha256": "6e50b57be303db6ebd15f995ca89feeb6a2d2dc88044fc55b799d15a2cea16ee",
+            "result": {
+              "status": "FAILED",
+              "passed": 0,
+              "failed": 1,
+              "ignored": 0,
+              "measured": 0
+            }
+          },
+          "platform_tls::tests::native_https_proxy_activates_for_http_target": {
+            "executed": false,
+            "returncode": null,
+            "bounded_failure": null,
+            "log_sha256": null,
+            "result": null
+          }
+        },
+        "untrusted_http_requests": null,
+        "http_redirect_requests": null,
+        "observed_error": "ureq::Error::Io with InvalidData wrapping rustls::Error::InvalidCertificate; expected direct ureq::Error::Rustls. Display: invalid peer certificate: localhost certificate is not trusted (-67843).",
+        "actual_link_modes": {
+          "product_and_test_independently_reparsed": true,
+          "minimum_macos": 720896,
+          "frameworks": [
+            "CoreFoundation",
+            "Security"
+          ],
+          "every_framework_edge_delayed": true,
+          "chain_pointer_formats": [
+            2
+          ]
+        },
+        "scope": "Genuine failed first test and absent second execution/counters; retained executable and companion identity verification is not a TLS pass.",
+        "first_test_compiled_link_record": {
+          "schema_version": 1,
+          "source_commit": "95747f1f45c503d8e36d2c01303b04998dd75695",
+          "target": "aarch64-apple-darwin",
+          "baseline_min_os": 720896,
+          "probe_opt_level": "z",
+          "machine_outliner_disabled": true,
+          "delayed_frameworks": true,
+          "chained_fixups": true,
+          "flags": [
+            "-Wl,-delay_framework,CoreFoundation",
+            "-Wl,-delay_framework,Security",
+            "-Wl,-fixup_chains"
+          ],
+          "delayed_status": "verified",
+          "chained_status": "verified"
+        },
+        "first_test_compiled_link_record_source": "Original first exact test stdout; driver stopped before storing compiled_link_records.",
+        "driver_compiled_link_records": null
+      },
+      "native_startup_attribution": {
+        "state": "recorded",
+        "qualification_substitute": false,
+        "diagnostic_report_file": "native-startup-diagnostic-macOS.json",
+        "diagnostic_report_sha256": "45b9c47ca12f19e760c7526275dcaf5ee5af2b07951bb7dfb34ae1cbc0da389b",
+        "verification_file": "native-startup-diagnostic-verification.json",
+        "verification_sha256": "60931662316407689df7a506347086d6633b7b5293459f8c24b1e3661dd00ac8",
+        "verified_raw_rows": 700,
+        "case_count": 7,
+        "probe_count": 3,
+        "loader_log_count": 5,
+        "scope": "Whole linked-image/runtime attribution retained separately from original strict gates and failed TLS qualification."
+      },
+      "corrected_ad24_visual_review": {
+        "state": "pass",
+        "inspection": {
+          "reviewer": "/root",
+          "personally_viewed": true,
+          "observations": "Personally inspected fresh P5 workflow55 and background08 renders. Both show No recorded checks, the conditional task-workspace evidence caveat and an unresolved no-check notice. No affirmative claim that checks ran appears. Workflow55 shows zero selected hunks and Back to task selected. The completed source-bound workflow scenario separately verified the actual empty API checks list, zero summary total, default no and only the explicitly selected file applied."
+        },
+        "zero_check_review": {
+          "checks": [],
+          "check_summary": {
+            "total": 0
+          },
+          "evidence_caveat": "Any recorded check evidence belongs to the task workspace. A selected subset has not been checked separately; freshness covers recorded task effects."
+        },
+        "capture": {
+          "file": "workflows-ui-captures.json",
+          "sha256": "faab6c6afc8f2ec19e95954338aae8d884009707090ec37e0950270bcac8f618",
+          "label": "Selective review with untested changes visible",
+          "transcript_sha256": "a8eb38e80f25673c13f36ad7f29afe425326edf66a037b67b317ac10a2547179",
+          "fresh_frame": {
+            "start_byte": 921,
+            "end_byte": 1455,
+            "sha256": "8daa4896a250e1d330eebf91c75946af2ff6836186d91b89ff149a1d88c0ad2e"
+          }
+        },
+        "rendered_view": {
+          "file": "task-background-ui-review/rendered/55.png",
+          "sha256": "32fffcb9693d47a24fe11029c836d45a816124e263d499be5e039a2c7af76164",
+          "transcript_sha256": "a8eb38e80f25673c13f36ad7f29afe425326edf66a037b67b317ac10a2547179"
+        },
+        "scope": "Actual clean-source local PTY development review and scenario assertions; separate from named graphical-terminal manual qualification.",
+        "source_commit": "95747f1f45c503d8e36d2c01303b04998dd75695",
+        "source_tree": "abca78ff7dc91c602bd00866278d4aa39b89f7b1",
+        "production_source_sha256": "75da75ba9caacaca5a0ba936eeec434937d323e98802bb5de2e20cb6bb1db4c8",
+        "binary_sha256": "cf8efd71c0aea049044545c94e2d57c4d8ac59dfb57c8d9f7e4b876f998531b9",
+        "report_name": "ad24-zero-check-visual-review.json",
+        "report_sha256": "48536042882fe6c76d6b19e7a6fa02318fafd6d0376514a117a4651d56a2c3b9"
+      },
+      "visual_review": {
+        "state": "completed_no_material_findings",
+        "source_commit": "95747f1f45c503d8e36d2c01303b04998dd75695",
+        "reviewer": "/root/activity_qualification",
+        "report_file": "task-background-ui-review/review-report.json",
+        "report_sha256": "6ed2f47c81da603ab65f26c174f69cd4aa24669b8c37a9e82a193eeca2cf08c1",
+        "index_file": "task-background-ui-review/review-index.json",
+        "index_sha256": "592eccd262bf61e9bf691dba16231a1f4843eb818494cd4c6f36ffd42c6773ab",
+        "personally_viewed_captures": 63,
+        "unique_rendered_views": 55,
+        "narrow_views": 26,
+        "columns_32_views": 14,
+        "material_findings": [],
+        "cosmetic_observations": [
+          {
+            "severity": "non-blocking cosmetic",
+            "indices": [
+              14
+            ],
+            "columns": 32,
+            "field": "Task details header trailing more-below marker",
+            "observed_text": "  Task details | 1-16/73 | m...",
+            "impact": "The 1-16/73 range remains visible; the trailing more-below text is ellipsized. Saved authority, task identity and navigation remain inspectable in the wrapped body and footer.",
+            "possible_polish": "Put the range and overflow cue before the title or on their own short header line at narrow widths."
+          },
+          {
+            "severity": "non-blocking cosmetic",
+            "indices": [
+              25,
+              32,
+              34,
+              35,
+              37,
+              39,
+              40
+            ],
+            "columns": 32,
+            "field": "Review exact action header end/total range",
+            "observed_text": "  Review exact action | 26-3...",
+            "impact": "The range end/total is ellipsized as 26-3.... Complete action command and JSON, including the tail marker and reason, remain visible at End; initial views31/36 display complete wrapped task/request identity, action and scope. Live/static navigation and Leave for later defaults remain readable.",
+            "possible_polish": "Put the full range before the title or on a separate short line at narrow widths."
+          }
+        ],
+        "scope": "Actual completed local PTY renders inspected by the independent review agent; root separately inspected AD-24 views. No named-emulator manual, paid-provider or long-soak pass."
       }
     }
   ]

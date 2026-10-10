@@ -37,6 +37,7 @@ dependencies = [
  "predicates",
  "rand",
  "regex",
+ "rustls",
  "serde",
  "serde_json",
  "sha2",

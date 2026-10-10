@@ -684,3 +684,63 @@ exact-main native/link/TLS evidence before any pass or performance claim.
 The plan remains Active with all 38 A–F items unchecked, R1–R4 open, decision
 Hold, unpublished and external qualification groups not_run. All P4 partial
 local results and original hosted failures remain immutable history.
+
+
+### P5 original startup passes, failed TLS contract and pending P6
+
+Main `95747f1f45c503d8e36d2c01303b04998dd75695`, tree
+`abca78ff7dc91c602bd00866278d4aa39b89f7b1`, passed all eleven local core
+commands, 1,129 Rust tests across 38 targets and all 37 local native commands.
+Fresh independent review inspected 63 actual background/task/workflow renders,
+55 distinct images, including 26 narrow views and fourteen at 32 columns. It
+found no new material visual issue; cosmetic range/header truncation remains
+recorded. Root separately inspected the corrected zero-check views. Their
+source-bound AD-24 report retains empty checks, zero total and truthful
+conditional evidence wording. These local passes remain scoped to P5.
+
+Original exact-main [CI 38032617702](https://github.com/billiondollarsolo/aishe/actions/runs/38032617702)
+completed with ten of eleven jobs passing. Original Linux startup passed at
+1.612 ms added p95, raw zsh 1.921 ms and AIShe 3.533 ms. Original macOS startup
+passed at 8.495 ms added p95, raw zsh 10.730 ms and AIShe 19.224 ms. Both used
+100 measured commands, ten warmups and no backend start on the clean source.
+The original [Linux artifact](https://github.com/billiondollarsolo/aishe/actions/runs/38032617702/artifacts/11662747674)
+and [macOS artifact](https://github.com/billiondollarsolo/aishe/actions/runs/38032617702/artifacts/11662378649)
+retain exact binary/benchmark identities and matching release identity
+manifests. These are actual startup passes, not overall release qualification
+or evidence assigning the improvement to one loader change.
+
+The macOS native job failed its final TLS enforcer. The first exact test reached
+the local self-signed rejection assertion, where the transport reported an
+`InvalidData` IO error wrapping a typed rustls `InvalidCertificate`. The fixture
+accepted only a direct `ureq::Error::Rustls` variant and panicked at
+`platform_tls.rs:89` despite the reported certificate rejection. It exited 101,
+with zero tests passed and one failed. The driver stopped there: the separate
+fresh HTTPS-proxy test did not run, request counters were not recorded and no
+complete native TLS pass exists. Startup passes, verified artifact hashes and
+successful earlier request steps do not erase that failed contract.
+
+The original macOS artifact retains the actual 8,172,656-byte product and
+9,464,944-byte library test executable, both rehashed and independently parsed.
+Both have delayed CoreFoundation/Security edges, the macOS 11 deployment floor
+and generic 64-bit chained pointers (format 2). The actual first test's compiled
+record has optimization level z, effective machine-outliner disablement and
+both selected link capabilities. The separate attribution report preserves
+700 raw rows and its control/loader companions; it remains diagnostic evidence.
+The [qualification history](../releases/v1.1.0.qualification.json) retains the
+failed TLS report, absent second result/counters, original ZIP/log hashes,
+startup passes, local and visual evidence without changing any earlier entry.
+
+P6 corrects only the test's certificate classification. A portable test-only
+helper accepts a typed rustls `InvalidCertificate` directly or as the payload
+of an `InvalidData` IO wrapper. It uses typed downcasting rather than display
+text. Regression cases reject timeout/reset, certificate-looking strings,
+noncertificate TLS failures and a certificate payload in the wrong IO kind.
+A dev-only dependency names the already locked rustls version with default
+features disabled; production connector, verifier and activation code remain
+unchanged. The actual native requests, concurrency, redirect, proxy, counters
+and once-only assertions remain required. P6 needs fresh committed-source core,
+native and exact-main CI proof; the P5 artifact cannot become a corrected pass.
+
+The plan remains Active with all 38 A–F items unchecked, R1–R4 open, decision
+Hold, unpublished and external qualification groups not_run. The completed
+P5 performance evidence and its failed native TLS result remain immutable.
