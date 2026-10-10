@@ -83,7 +83,7 @@ sha2 = "0.10"
 
 [profile.release]
 # Keep ordinary shell launches small while retaining full LTO and unwinding.
-opt-level = "s"
+opt-level = "z"
 lto = "fat"
 codegen-units = 1
 strip = true

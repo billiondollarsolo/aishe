@@ -31,6 +31,10 @@ evidence, and the publication hold.
   source-bound release dispositions before draft/tag creation and publication.
 
 ### Changed
+- Ordinary `-c` shell commands use a minimal entry path, static builtin evidence
+  and targeted executable checks instead of constructing the interactive command
+  cache. Release builds optimize footprint with full LTO; history still records
+  completed commands and repairs private-file permissions when needed.
 - Native provider requests reuse HTTP connections across completions, streams,
   embeddings, and retries instead of constructing a new transport per request.
 - Lean local commands (`/help`, `/commands`, `/skills`, `/status`, and custom

@@ -1,7 +1,7 @@
 //! Decide whether an input line is a shell command or a natural-language
 //! request, and maintain the command cache that backs that decision.
 
-use std::collections::HashSet;
+use std::collections::{BTreeSet, HashSet};
 use std::fmt;
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
@@ -510,17 +510,9 @@ impl CommandCache {
         });
     }
 
-    /// Seed only the command names needed to classify one input line.
-    ///
-    /// This is the conservative `aishe -c` fast path: it avoids walking every
-    /// directory in `$PATH`, starting shell-discovery threads, or constructing
-    /// any AI/backend state. Builtins are known locally; every other candidate
-    /// must resolve to an executable regular file on the current `$PATH`.
-    ///
-    /// The caller may use the result only when [`dispatch`] returns
-    /// [`Dispatch::Shell`]. A builtin or natural-language result is deliberately
-    /// inconclusive because an alias/function discovered from `.aishrc` may
-    /// still change full dispatch.
+    // Retain the original one-shot seeding as an independent equivalence-test
+    // reference; production one-shot routing uses OneShotCommands below.
+    #[cfg(test)]
     fn seed_for_line(&self, line: &str) {
         {
             let mut commands = self.write();
@@ -702,6 +694,53 @@ fn common_natural_language_head(head: &str) -> bool {
     )
 }
 
+/// One line needs static builtin evidence and only its verified external heads.
+/// Avoid constructing a shared hash cache, copying every builtin name, or
+/// seeding RandomState just to classify one command. A tree also keeps large
+/// compound lines from making command membership quadratic.
+struct OneShotCommands {
+    verified_heads: BTreeSet<String>,
+}
+
+impl OneShotCommands {
+    fn for_line(line: &str) -> Self {
+        let mut commands = Self {
+            verified_heads: BTreeSet::new(),
+        };
+        for segment in split_top_level(line) {
+            let EffectiveHead::Token(head) = effective_command_token(&tokenize(&segment)) else {
+                continue;
+            };
+            if !commands.contains(&head) && path_executable_exists(&head) {
+                commands.verified_heads.insert(head);
+            }
+        }
+        commands
+    }
+
+    fn contains(&self, token: &str) -> bool {
+        FALLBACK_BUILTINS.contains(&token)
+            || INTERCEPTED.contains(&token)
+            || self.verified_heads.contains(token)
+    }
+}
+
+/// Both entry points use the same routing grammar and diagnostic evidence.
+#[derive(Clone, Copy)]
+enum CommandEvidence<'a> {
+    Shared(&'a CommandCache),
+    OneShot(&'a OneShotCommands),
+}
+
+impl CommandEvidence<'_> {
+    fn contains(self, token: &str) -> bool {
+        match self {
+            Self::Shared(cache) => cache.contains(token),
+            Self::OneShot(commands) => commands.contains(token),
+        }
+    }
+}
+
 /// Return a delegated shell line only when it can be proven without loading
 /// user configuration, providers, plugins, MCP servers, or the managed backend.
 ///
@@ -724,9 +763,8 @@ pub fn fast_shell_line(line: &str) -> Option<String> {
             return None;
         }
     }
-    let cache = CommandCache::new();
-    cache.seed_for_line(trimmed);
-    match route(trimmed, &cache).into_dispatch() {
+    let commands = OneShotCommands::for_line(trimmed);
+    match route_with_evidence(trimmed, CommandEvidence::OneShot(&commands)).into_dispatch() {
         Dispatch::Shell(command) => Some(command),
         Dispatch::NaturalLanguage(_) | Dispatch::Builtin(_) => None,
     }
@@ -737,6 +775,10 @@ pub fn fast_shell_line(line: &str) -> Option<String> {
 /// This is the canonical Rust routing contract. It performs no configuration,
 /// provider, network, or managed-backend work.
 pub fn route(line: &str, cache: &CommandCache) -> RouteDecision {
+    route_with_evidence(line, CommandEvidence::Shared(cache))
+}
+
+fn route_with_evidence(line: &str, cache: CommandEvidence<'_>) -> RouteDecision {
     let trimmed = line.trim();
 
     if trimmed.is_empty() {
@@ -914,7 +956,11 @@ pub fn dispatch(line: &str, cache: &CommandCache) -> Dispatch {
     route(line, cache).into_dispatch()
 }
 
-fn shell_decision(normalized: &str, reason: RouteReason, cache: &CommandCache) -> RouteDecision {
+fn shell_decision(
+    normalized: &str,
+    reason: RouteReason,
+    cache: CommandEvidence<'_>,
+) -> RouteDecision {
     let normalized = normalized.to_string();
     decision(
         RouteKind::Shell,
@@ -931,7 +977,7 @@ fn decision(
     normalized: String,
     reason: RouteReason,
     source: RouteSource,
-    cache: &CommandCache,
+    cache: CommandEvidence<'_>,
     dispatch: Dispatch,
 ) -> RouteDecision {
     let head = match effective_command_token(&tokenize(&normalized)) {
@@ -1814,6 +1860,176 @@ mod tests {
         assert_eq!(
             fast_shell_line("/bin/sh -c 'exit 0'").as_deref(),
             Some("/bin/sh -c 'exit 0'")
+        );
+    }
+
+    #[test]
+    fn one_shot_builtin_evidence_needs_no_owned_command_set() {
+        let commands = OneShotCommands::for_line("printf '%s\\n' ready; true");
+        assert!(commands.verified_heads.is_empty());
+        for builtin in FALLBACK_BUILTINS.iter().chain(INTERCEPTED) {
+            assert!(
+                commands.contains(builtin),
+                "missing static builtin {builtin}"
+            );
+        }
+        assert!(!commands.contains("aishe-no-such-one-shot-command"));
+    }
+
+    #[test]
+    fn one_shot_evidence_matches_original_shared_cache_routes() {
+        let mut lines = vec![
+            "",
+            "  printf '%s\\n' ready  ",
+            "!unknown-but-forced",
+            "?printf hello",
+            "#printf hello",
+            "/help quoted arguments",
+            "/echo-args hello",
+            "/bin/sh -c 'exit 0'",
+            "cd /tmp",
+            "NAME=value",
+            "NAME=value printf hello",
+            "x=$(printf hello); printf '%s' \"$x\"",
+            "greet() { printf hello; }",
+            "while true; do printf hello; done",
+            "printf ''; exit 23",
+            "printf 'a|b;c&&d'",
+            "printf '%s' \"$(printf 'a;b')\"",
+            "printf '%s' $((7 | 8))",
+            "printf hello >| output; true",
+            "printf hello | aishe-no-such-one-shot-command",
+            "what is the capital of France",
+            "where is the ssh config",
+            "who am i logged in as",
+            "who -u",
+            "find . -name foo?",
+            "env printf hello",
+            "please explain this directory",
+        ]
+        .into_iter()
+        .map(str::to_string)
+        .collect::<Vec<_>>();
+        lines.extend(
+            FALLBACK_BUILTINS
+                .iter()
+                .chain(INTERCEPTED)
+                .map(|builtin| format!("{builtin} sample arguments")),
+        );
+        for line in lines {
+            let original = CommandCache::new();
+            original.seed_for_line(&line);
+            let commands = OneShotCommands::for_line(&line);
+            assert_eq!(
+                route_with_evidence(&line, CommandEvidence::OneShot(&commands)),
+                route(&line, &original),
+                "route evidence changed for {line:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn one_shot_filesystem_admission_preserves_absolute_path_semantics() {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static NEXT: AtomicU64 = AtomicU64::new(0);
+        struct Fixture(std::path::PathBuf);
+        impl Drop for Fixture {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_dir_all(&self.0);
+            }
+        }
+        let fixture = Fixture(std::env::temp_dir().join(format!(
+            "aishe-one-shot-admission-{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        )));
+        std::fs::create_dir_all(&fixture.0).unwrap();
+        let executable = fixture.0.join("executable-command");
+        let non_executable = fixture.0.join("non-executable-command");
+        let directory = fixture.0.join("executable-directory");
+        std::fs::write(&executable, "#!/bin/sh\nexit 0\n").unwrap();
+        std::fs::write(&non_executable, "ordinary file\n").unwrap();
+        std::fs::create_dir(&directory).unwrap();
+        std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o700)).unwrap();
+        std::fs::set_permissions(&non_executable, std::fs::Permissions::from_mode(0o600)).unwrap();
+        std::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o700)).unwrap();
+
+        let executable_line = format!("{} sample", executable.display());
+        let non_executable_line = non_executable.display().to_string();
+        let directory_line = directory.display().to_string();
+        let missing_line = fixture.0.join("missing-command").display().to_string();
+        let compound = format!("{executable_line} | aishe-unverified-command");
+        let trailing_path = format!("printf ready | {}", executable.display());
+        for line in [
+            &executable_line,
+            &non_executable_line,
+            &directory_line,
+            &missing_line,
+            &compound,
+            &trailing_path,
+        ] {
+            let original = CommandCache::new();
+            original.seed_for_line(line);
+            let commands = OneShotCommands::for_line(line);
+            assert_eq!(
+                route_with_evidence(line, CommandEvidence::OneShot(&commands)),
+                route(line, &original),
+                "filesystem-backed route changed for {line:?}"
+            );
+        }
+        assert_eq!(
+            fast_shell_line(&executable_line).as_deref(),
+            Some(executable_line.as_str())
+        );
+        assert_eq!(
+            fast_shell_line(&compound).as_deref(),
+            Some(compound.as_str())
+        );
+        assert!(fast_shell_line(&non_executable_line).is_none());
+        assert!(fast_shell_line(&directory_line).is_none());
+        assert!(fast_shell_line(&missing_line).is_none());
+        assert!(fast_shell_line(&trailing_path).is_none());
+        assert!(fast_shell_line("/aishe-custom-one-shot-command sample").is_none());
+    }
+
+    #[test]
+    fn one_shot_verified_heads_preserve_large_compound_and_unknown_routes() {
+        let mut commands = OneShotCommands::for_line("");
+        let original = CommandCache::new();
+        original.seed_for_line("");
+        let heads = (0..128)
+            .map(|index| format!("aishe-verified-command-{index:03}"))
+            .collect::<Vec<_>>();
+        {
+            let mut cached = original.write();
+            for head in &heads {
+                commands.verified_heads.insert(head.clone());
+                cached.insert(head.clone());
+            }
+        }
+        let compound = heads.join(" | ");
+        for line in [
+            compound.clone(),
+            format!("{compound}; printf done"),
+            format!("{compound} | aishe-unverified-command"),
+        ] {
+            assert_eq!(
+                route_with_evidence(&line, CommandEvidence::OneShot(&commands)),
+                route(&line, &original),
+                "compound route evidence changed"
+            );
+        }
+        assert_eq!(
+            route_with_evidence(&compound, CommandEvidence::OneShot(&commands)).kind,
+            RouteKind::Shell
+        );
+        assert_eq!(
+            route_with_evidence(
+                &format!("{compound} | aishe-unverified-command"),
+                CommandEvidence::OneShot(&commands)
+            )
+            .kind,
+            RouteKind::NaturalLanguage
         );
     }
 

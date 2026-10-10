@@ -22,6 +22,7 @@ import traceback
 from agentic_workflows import (isolated_start, project, review, save_workflow, stage,
                                run_workflow, workflow_record, finished_workflow)
 from native_task_interactions import BINARY, input_text, response, tool, worker_alive
+from pty_helper import CSI
 from task_interactions_pty import UiFixture, close_drawer
 from background_tasks_pty import capture, probe, shown, wait_until
 
@@ -85,14 +86,18 @@ def selective_review_defaults_to_no_and_applies_only_chosen_file():
         shown(shell, "second.txt")
         shown(shell, "No recorded checks")
         capture(shell, "Selective review with untested changes visible")
+        cancel_start = len(shell.transcript)
         shell.send("\x1b")
-        shell.drain(.2)
+        wait_until(shell, lambda: "Task details" in CSI.sub('', shell.transcript[cancel_start:]),
+                   "task details returned after cancelling change review", timeout=5)
         assert (fixture.work / "first.txt").read_text() == "first original\n"
         assert (fixture.work / "second.txt").read_text() == "second original\n"
         # The first file choice is independently reviewable. The confirmation
         # remains an explicit action after returning from the selection frame.
+        review_start = len(shell.transcript)
         shell.send("a")
-        shown(shell, "Review task changes")
+        wait_until(shell, lambda: "Review task changes" in CSI.sub('', shell.transcript[review_start:]),
+                   "freshly reopened change review", timeout=5)
         shell.send("\x1b[H\r")
         shown(shell, "File changes")
         shell.send("\x1b[F\x1b[A\r")

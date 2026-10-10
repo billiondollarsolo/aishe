@@ -427,3 +427,72 @@ Candidate `a98a3bc270520ff771de98b57bbe4140e7d38a45` also retains its
 earlier compile failure in CI run `38022690647`: the Settings path accessed
 `glyphs` as a field rather than calling `glyphs()`. Compilation stopped before
 startup measurement; that candidate has no recorded startup pass.
+
+
+### Initial main qualification and cancellation synchronization
+
+The corrected `4effe3b0360d3b5f73d9045d90b6f20f3162fa70` candidate
+passed all local core checks (1,116 Rust tests across 37 targets) and all 37
+local native commands. Its original Linux startup gate passed at 1.487 ms
+added p95. The actual release binary measured 11,736,304 bytes, compared with
+15,586,544 bytes on `9388e7e`, a 24.7% reduction; this is measured footprint
+improvement, not a claim that every local startup sample became faster.
+Source-bound review of 104 actual release PTY views confirmed setup, discovery,
+long results, Needs you, follow-ups, recorded checks, and live/plain exact-action
+review at narrow sizes. Paid-provider, named graphical-terminal and long-soak
+qualification remain separate.
+
+PR CI [38024672010](https://github.com/billiondollarsolo/aishe/actions/runs/38024672010)
+passed all eleven maintained jobs. Its synthetic merge
+`222834898e23634b7b0e12e8f5990b0e9d6ad411` has the exact candidate tree.
+The unchanged original startup gates passed at 1.448 ms added p95 on Linux
+and 4.649 ms on macOS, with matching retained original artifacts and binary
+identities. [PR #10](https://github.com/billiondollarsolo/aishe/pull/10)
+then merged as main `1ee03ab8ca3bd3417e517e80a66c49290d065df3`.
+
+That initial main passed all local core and 37 native commands, including
+its original Linux startup gate at 3.554 ms added p95. Its exact push
+[CI 38025678719](https://github.com/billiondollarsolo/aishe/actions/runs/38025678719)
+retains a Linux picker-fixture failure despite a passing original Linux
+startup result of 1.091 ms. The fixture's fixed 300 ms wait equaled the
+picker's Escape ambiguity timeout, which starts when the child reads the
+byte; under load the next command's first byte arrived before cancellation.
+The correction waits for a fresh standalone cancellation receipt and uses
+PID-only stop/continue to deliberately stall the outer input relay, with
+bounded stop acknowledgement and guaranteed continuation. It preserves
+selection, concurrent-shell isolation, durable defaults and no-runtime
+assertions. The preliminary corrected fixture passed against the retained
+matching main binary. This is a concrete synchronization correction; neither
+a successful local run nor an unchanged retry erases the hosted failure.
+The same focused audit also closed a stale-screen observation in selective
+change review: cancellation must produce a fresh Task details frame, and
+reopening must produce a fresh review frame before selection continues.
+Settings and Tour cancellation checks now wait for their actual exit receipts
+instead of a timed pause. Application input handling remains unchanged.
+The corrected committed source requires fresh main qualification.
+
+The same exact main CI completed with nine of eleven jobs passing. Its
+original macOS startup result was 13.745 ms added p95, against the unchanged
+10 ms limit; all macOS functional checks passed. The later diagnostic
+recorded 5.273 ms of additional child CPU and only 0.226 ms saved by the
+inherited-history/config bypass. These diagnostic timings do not replace
+the original failed gate. No macOS release identity manifest was produced.
+
+The next source correction removes unnecessary per-process hash state from
+one-shot command classification. The direct path currently constructs an
+interactive `CommandCache`, allocating builtin names and `Arc`/`RwLock`
+state and initializing `RandomState`; on Apple platforms the first random
+seed calls the system CSPRNG. Use static builtin membership and bounded
+non-hashing evidence for filesystem-verified external command heads, while
+sharing the existing route parser and preserving the interactive cache.
+This removes concrete startup work, but no recorded timing attributes the
+macOS failure to that work. Saved-config TOML parsing also uses random hash
+state, so removing classifier hashing does not make that full path free of
+random-seed initialization. A preliminary `opt-level = "z"` release build
+measured 10,945,776 bytes against 11,736,304 bytes for the retained
+`opt-level = "s"` binary, a 6.7% footprint reduction. Retain that setting,
+preserving full LTO, one code-generation unit, native TLS, unwinding and
+single-file delivery. The preliminary binary is not final-source
+qualification and has no startup timing claim. Require routing-equivalence coverage, clean
+source-bound local checks, and a new exact main push with both original
+startup gates before claiming qualification or a measured speed gain.

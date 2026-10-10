@@ -3,7 +3,7 @@
   "version": "1.1.0",
   "decision": "hold",
   "release_owner": "billiondollarsolo",
-  "production_source_sha256": "f89f7835f4cc63cf176f5eb0ee06841227a09c4de3845652a896e4860ba8dfac",
+  "production_source_sha256": "7f7f14f155a0dd93307ecb89be9a4ff75b1207b19070d12250fd6ca52a6b68a2",
   "qualification_profile_revision": "2026-10-10.1",
   "prepared_at": "2026-10-10",
   "published": false,
@@ -11,7 +11,7 @@
     "state": "not_run",
     "source_commit": null,
     "ci_run_id": null,
-    "reason": "Final candidate source must be committed and pass the exact-source maintained CI gates."
+    "reason": "One-shot classifier optimization and receipt-based cancellation fixtures require a new clean main commit with exact-source maintained push CI. Both failures on the initial merged main remain recorded."
   },
   "dispositions": {
     "live_providers": {
@@ -90,6 +90,26 @@
       "linux_added_p95_ms": 1.616,
       "macos_added_p95_ms": 10.319,
       "reason": "All functional jobs passed but original macOS startup SLO failed. A focused actual32x18approval probe also showed the exact command outside the decision viewport. Corrected action review and size-optimized production source require new qualification; no unchanged retry replaces either failure."
+    },
+    {
+      "branch_commit": "4effe3b0360d3b5f73d9045d90b6f20f3162fa70",
+      "tested_commit": "222834898e23634b7b0e12e8f5990b0e9d6ad411",
+      "ci_run_id": 38024672010,
+      "ci_event": "pull_request",
+      "state": "pass",
+      "linux_added_p95_ms": 1.448,
+      "macos_added_p95_ms": 4.649,
+      "reason": "All eleven maintained PR jobs and both original startup gates passed; tested tree equals branch head. This is PR candidate evidence, separate from actual main push qualification."
+    },
+    {
+      "branch_commit": "1ee03ab8ca3bd3417e517e80a66c49290d065df3",
+      "tested_commit": "1ee03ab8ca3bd3417e517e80a66c49290d065df3",
+      "ci_run_id": 38025678719,
+      "ci_event": "push",
+      "state": "fail",
+      "linux_added_p95_ms": 1.091,
+      "macos_added_p95_ms": 13.745,
+      "reason": "Nine of eleven maintained jobs passed. Linux native qualification failed because the picker fixture sent the next command after a fixed 300 ms wait without observing cancellation; the corrected fixture waits for a fresh receipt and deliberately stalls the relay. All macOS functional checks passed, but its original startup SLO failed at 13.745 ms. Later diagnostics do not replace either original failure; new source requires fresh exact main qualification."
     }
   ]
 }

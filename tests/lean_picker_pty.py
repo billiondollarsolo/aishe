@@ -4,8 +4,51 @@ import os
 from pathlib import Path
 import re
 import shutil
+import signal
 import tempfile
-from pty_helper import Pty,environment
+import time
+from pty_helper import CSI,Pty,environment
+
+
+def has_cancelled_receipt(shell, start):
+    return 'cancelled' in CSI.sub('', shell.transcript[start:]).replace('\r', '').splitlines()
+
+
+def wait_cancelled_receipt(shell, start, timeout=5):
+    deadline = time.monotonic() + timeout
+    while not has_cancelled_receipt(shell, start) and time.monotonic() < deadline:
+        shell.drain(.1)
+    assert has_cancelled_receipt(shell, start), shell.plain()[-2000:]
+
+
+def cancel_after_paused_relay(shell):
+    start = len(shell.transcript)
+    relay_pid = shell.proc.pid
+    try:
+        # Stop only the outer relay. Its stdin pump cannot deliver Escape to
+        # the inner picker until resumed; the inner shell keeps its own state.
+        os.kill(relay_pid, signal.SIGSTOP)
+        deadline = time.monotonic() + 5
+        while True:
+            stopped_pid, status = os.waitpid(relay_pid, os.WUNTRACED | os.WNOHANG)
+            if stopped_pid:
+                assert os.WIFSTOPPED(status), 'relay exited instead of stopping'
+                break
+            assert time.monotonic() < deadline, 'relay did not acknowledge SIGSTOP'
+            shell.drain(.05)
+        shell.send('\x1b')
+        # Inject a scheduling delay longer than the old 300 ms fixture wait.
+        # This is a controlled stall, not the cancellation synchronization.
+        shell.drain(.4)
+        assert not has_cancelled_receipt(shell, start), 'paused relay delivered Escape'
+    finally:
+        try:
+            os.kill(relay_pid, signal.SIGCONT)
+        except ProcessLookupError:
+            pass
+    # The parser's ambiguity timer starts when the child reads Escape, which
+    # can be arbitrarily later than the fixture's write under runner load.
+    wait_cancelled_receipt(shell, start)
 
 
 def identity(shell, marker):
@@ -61,7 +104,7 @@ engine = "native"
         first.send('/model\r');assert first.expect('Select a model',3)
         first.drain(.2);first.send('\x1b[B');first.drain(.2)
         assert 'cancelled' not in first.plain(),'arrow cancelled picker'
-        first.send('\x1b');first.drain(.3)
+        cancel_after_paused_relay(first)
         assert identity(first,'CANCELLED')=='personal:personal-model'
         first.send('/model alternate-model\r');first.drain(.3)
         first.send('/model\r');first.drain(.3);first.send('alternate');first.drain(.2);first.send('\r')
@@ -74,7 +117,7 @@ engine = "native"
         assert not spy.exists(),'local picker started OpenCode'
         assert '\x1b[38;' not in first.transcript,'NO_COLOR picker contains colors'
         assert first.transcript.isascii(),'ASCII picker contains generated Unicode'
-        print('PASS: lean searchable pickers, arrows/Esc, shell handoff, concurrent isolation, defaults, no runtime')
+        print('PASS: lean searchable pickers, arrows/Esc with delayed-relay cancellation receipt, shell handoff, concurrent isolation, defaults, no runtime')
     finally:
         first.close();second.close();shutil.rmtree(home,ignore_errors=True)
 
