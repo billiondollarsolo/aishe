@@ -1278,7 +1278,7 @@ fn print_status_preview(config: &Config) -> Result<()> {
         if frame != previous_frame || (columns, rows) != previous_size {
             if capabilities.motion == crate::ui::Motion::Static {
                 for line in &frame {
-                    let line = crate::ui::truncate_cells_with(line, width, capabilities.glyphs);
+                    let line = crate::ui::truncate_cells_with(line, width, capabilities.glyphs());
                     write!(std::io::stdout(), "{line}\r\n")?;
                 }
             } else {
