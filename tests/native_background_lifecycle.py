@@ -383,6 +383,8 @@ def mcp_discovery_follows_checkpoint_and_network_admission():
     calls = []
     errors = []
 
+    # This HTTP/1.0 fixture closes after each response. Announce that closure
+    # so the client pool cannot reuse a socket while the peer's FIN is in flight.
     class Mcp(http.server.BaseHTTPRequestHandler):
         def do_POST(self):
             message = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
@@ -397,12 +399,14 @@ def mcp_discovery_follows_checkpoint_and_network_admission():
                     assert checkpoint["id"] == active[0]["native_task_id"], checkpoint
                 except Exception as error:
                     errors.append(str(error))
-                result = {"protocolVersion": "2024-11-05", "capabilities": {"tools": {}},
+                result = {"protocolVersion": "2025-06-18", "capabilities": {"tools": {}},
                           "serverInfo": {"name": "private-lifecycle-fixture", "version": "1"}}
             elif method == "tools/list":
                 result = {"tools": []}
             elif method == "notifications/initialized":
-                self.send_response(204)
+                self.send_response(202)
+                self.send_header("Content-Length", "0")
+                self.send_header("Connection", "close")
                 self.end_headers()
                 return
             else:
@@ -412,6 +416,7 @@ def mcp_discovery_follows_checkpoint_and_network_admission():
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
             self.send_header("Content-Length", str(len(body)))
+            self.send_header("Connection", "close")
             self.end_headers()
             self.wfile.write(body)
 
@@ -436,6 +441,21 @@ def mcp_discovery_follows_checkpoint_and_network_admission():
         assert denied.returncode != 0 and "network" in (denied.stdout + denied.stderr).lower(), denied
         assert not calls, "policy-refused host admission initialized an MCP server: " + repr(calls)
         print("  ok   MCP initializes after durable linkage and policy-refused host admission performs no handshake")
+    except AssertionError as error:
+        # Preserve worker diagnostics before the private temporary tree is
+        # removed, while keeping failure output bounded to each log's tail.
+        diagnostics = []
+        for task_id in fixture.task_ids:
+            log = fixture.data / "aishe/background-tasks" / task_id / "activity.log"
+            try:
+                with log.open("rb") as file:
+                    file.seek(0, os.SEEK_END)
+                    file.seek(max(0, file.tell() - 16_384))
+                    tail = file.read(16_384).decode("utf-8", errors="replace")
+            except OSError as log_error:
+                tail = "activity log unavailable: " + str(log_error)
+            diagnostics.append(f"worker {task_id} activity.log tail:\n{tail}")
+        raise AssertionError(str(error) + "\n" + "\n".join(diagnostics)) from error
     finally:
         server.shutdown()
         server.server_close()

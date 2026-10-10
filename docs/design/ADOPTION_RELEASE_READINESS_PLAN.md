@@ -744,3 +744,68 @@ native and exact-main CI proof; the P5 artifact cannot become a corrected pass.
 The plan remains Active with all 38 A–F items unchecked, R1–R4 open, decision
 Hold, unpublished and external qualification groups not_run. The completed
 P5 performance evidence and its failed native TLS result remain immutable.
+
+### P6 native TLS passes, retained MCP lifecycle failure and pending P7
+
+Main `2493d403b67c9a96fd71a15926507938630a0e4e`, tree
+`0ebf36a801a9216b19ec71aa2c9361a4a4f6ab35`, passed all eleven local core
+commands, 1,132 Rust tests across 38 targets and all 37 local native commands.
+The fresh source-bound review personally inspected 63 actual native
+background/task/workflow PNGs, 55 distinct images, including 26 narrow views
+and fourteen at 32 columns. The full inspection is attributed to the review
+agent; root separately inspected views 08 and 55 for the zero-check caveat.
+No material visual finding was recorded. Cosmetic clipping observations and
+actual report/index, collection, image and completed-manifest hashes remain
+recorded. These are local PTY results, not external manual-terminal qualification.
+
+Original exact-main [CI 38034431629](https://github.com/billiondollarsolo/aishe/actions/runs/38034431629)
+completed on attempt one with ten of eleven jobs passing. Original Linux startup
+passed at 1.074 ms added p95, raw zsh 1.296 ms and AIShe 2.369 ms. Original macOS
+startup passed at 9.376 ms added p95, raw zsh 11.564 ms and AIShe 20.940 ms.
+Both retained the unchanged 100-command, ten-warmup, no-backend, clean-source
+contract and 10 ms allowance. The original
+[Linux artifact](https://github.com/billiondollarsolo/aishe/actions/runs/38034431629/artifacts/11663780051)
+has its verified release identity manifest. The original
+[macOS artifact](https://github.com/billiondollarsolo/aishe/actions/runs/38034431629/artifacts/11664276325)
+retains actual benchmark, product/test executable, native TLS and diagnostic
+bytes, but its release identity manifest was not produced after functional
+failure. No manifest is synthesized from those scoped passes.
+
+Both actual fresh native TLS tests passed: each recorded one passed, zero failed
+and zero ignored. The local untrusted server received zero HTTP requests, and
+the redirect fixture received one. Default trust stores were unchanged and no
+paid provider was used. Both exact executable copies and compiled link records
+were source/hash verified; delayed framework edges, macOS 11 minimum and generic
+64-bit chained format 2 were independently parsed. The attribution companion
+retains 700 rows, seven cases, three controls and five loader logs, separately
+from the original strict gates. These actual P6 passes do not erase prior
+failures or establish overall maintained qualification.
+
+The sole failed job was macOS Durable native task interruption and resume.
+`mcp_discovery_follows_checkpoint_and_network_admission` failed at
+`tests/native_background_lifecycle.py:431`: after the completed task the fixture
+recorded `initialize` and `notifications/initialized`, without the required
+`tools/list`. Fixture cleanup did not retain the exact transport error; none
+is claimed as observed. The original missing-method assertion and all eleven
+completed job logs remain preserved.
+
+Source review identifies a bounded test-fixture problem: HTTP/1.0 responses
+relied on implicit closure, including a bodyless 204 notification response.
+The client could reuse a pooled socket while closure was in flight. The fixture
+also returned the stale `2024-11-05` MCP protocol. This is a source-derived
+diagnosis, not a retained error receipt from the failed run.
+
+P7 changes only the MCP fixture: acknowledge initialized notifications with
+202 and `Content-Length: 0`, explicitly announce `Connection: close` on responses,
+return the production client's current `2025-06-18` protocol, and print retained
+task activity when discovery fails. The fixture still requires checkpoint-first
+admission, `tools/list` and denial before network activity. There are no added
+sleeps, retries or weakened assertions; production transport is unchanged.
+P7 requires new committed-source local/native checks, fresh source-bound visual
+proof and exact-main CI with both original startup gates and native TLS tests.
+No performance improvement or passing P7 qualification is claimed.
+
+The plan remains Active with all 38 A–F items unchecked, R1–R4 open, decision
+Hold, unpublished and external qualification groups not_run. The thirteen
+historical entries retain P6's failed CI alongside its scoped startup/TLS/local/UI
+passes, and leave all earlier evidence unchanged.
