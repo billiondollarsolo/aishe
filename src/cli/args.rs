@@ -397,7 +397,7 @@ pub(crate) enum Cmd {
         yes: bool,
     },
     /// Trust the current project's `.aishe/config.toml` so its sensitive keys
-    /// (provider/endpoint, MCP servers, audit logging, safety toggles, `yolo`)
+    /// (provider/endpoint, shell profile, MCP servers, audit logging, safety toggles, `agent`/`yolo`)
     /// apply. Safe cosmetic keys apply without trust.
     Trust {
         /// List every trusted file instead of trusting one.
