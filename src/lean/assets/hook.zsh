@@ -1574,8 +1574,15 @@ zle -N aishe-show-route
   # This is the actual presentation boundary. Merely spawning zsh must not
   # consume the persisted first-launch hint, because user startup can abort.
   if [[ "${AISHE_COMMAND_HINT_SHOWN:-0}" != 1 ]]; then
-    local _aishe_launch_hint='AIShe: /help | ? ask | Shift-Tab mode'
-    (( ${COLUMNS:-80} < 40 )) && _aishe_launch_hint='/help | ? ask | Shift-Tab mode'
+    local -a _aishe_hint_binding
+    _aishe_hint_binding=(${(z)$(bindkey -M main '^[[Z' 2>/dev/null)})
+    local _aishe_mode_hint='/mode'
+    if [[ "${AISHE_MODE_KEY:-^[[Z}" == '^[[Z' &&
+          "${_aishe_hint_binding[2]:-}" == aishe-cycle-mode ]]; then
+      _aishe_mode_hint='Shift-Tab mode'
+    fi
+    local _aishe_launch_hint="/help | ? ask | $_aishe_mode_hint"
+    (( ${COLUMNS:-80} >= 40 )) && _aishe_launch_hint="AIShe: $_aishe_launch_hint"
     if print -r -- "$_aishe_launch_hint"; then
       typeset -gx AISHE_COMMAND_HINT_SHOWN=1
       if [[ -n "$_AISHE_LAUNCH_HINT_ACK" ]]; then

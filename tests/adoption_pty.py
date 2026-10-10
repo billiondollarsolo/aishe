@@ -108,6 +108,20 @@ def persistent_shell_profiles():
     print("  ok   reviewed Connect later saves and launches all three shell experiences")
 
 
+def fresh_settings_without_account():
+    with tempfile.TemporaryDirectory(prefix="aishe-fresh-settings-") as directory:
+        root = Path(directory)
+        shell = Pty([BINARY, "settings"], environment(root), cols=32)
+        try:
+            shell.expect("Choose a section")
+            shell.menu(9)  # Done; inspecting defaults is read-only
+            assert shell.finish() == 0, shell.transcript
+            assert not config_path(root).exists()
+        finally:
+            shell.close()
+    print("  ok   fresh Settings opens without an account and exits without state writes")
+
+
 def preserve_existing_connection_and_credentials():
     with tempfile.TemporaryDirectory(prefix="aishe-profile-preserve-") as directory:
         root = Path(directory)
@@ -221,6 +235,7 @@ def actual_reversible_activation():
 if __name__ == "__main__":
     account_free_commands_and_startup()
     persistent_shell_profiles()
+    fresh_settings_without_account()
     preserve_existing_connection_and_credentials()
     personal_login_and_bash_refusal()
     actual_reversible_activation()

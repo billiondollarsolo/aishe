@@ -257,6 +257,7 @@ def live_followup_shows_queued_then_received():
         assert entry["status"] == "received" and entry.get("received_at_ms"), finished
         assert finished_effect.exists()
         shown(shell, "received", timeout=8)
+        shell.send("\x1b[F")
         shown(shell, "LIVE_UI_RESULT_PROOF", timeout=8)
         capture(shell, "Live follow-up received after safe boundary")
         shell.send("\x03")

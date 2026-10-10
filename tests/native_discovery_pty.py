@@ -92,7 +92,30 @@ def main():
     finally:
         shell.close()
         shutil.rmtree(home, ignore_errors=True)
-    print('PASS: native launch hints, narrow width, persistent once-state, disabled/aborted presentation')
+    # Large personal startup output does not lose the hint acknowledgment, and
+    # preserving a custom Shift-Tab must also change the advertised shortcut.
+    personal_rc = """for startup_line in {1..250}; do print -r -- 'personal startup output'; done
+_personal_shift_tab() { zle beep; }
+zle -N _personal_shift_tab
+bindkey -M emacs '^[[Z' _personal_shift_tab
+PROMPT='PERSONAL> '
+"""
+    home, env = environment('native-discovery-personal-keys', zshrc=personal_rc, mode='ask', extra={
+        'AISHE_ZSH_PROFILE': 'personal', 'AISHE_LEAN': '1',
+        'NO_COLOR': '1', 'AISHE_UNICODE': 'ascii',
+    }, config_extra='discovery_hints = true')
+    env.pop('AISHE_COMMAND_HINT_SHOWN', None)
+    root = Path(home)
+    shell = Pty(env, cols=32, rows=18)
+    try:
+        assert shell.ready(), shell.plain()[-4000:]
+        assert '/help | ? ask | /mode' in shell.plain(), 'hint advertised a preserved custom shortcut'
+        assert HINT not in shell.plain(), 'custom Shift-Tab was advertised as a mode shortcut'
+        wait_seen(shell, root)
+    finally:
+        shell.close()
+        shutil.rmtree(home, ignore_errors=True)
+    print('PASS: native hints, once-state, narrow widths, noisy/custom startup, disabled/aborted presentation')
 
 
 if __name__ == '__main__':

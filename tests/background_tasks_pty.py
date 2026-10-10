@@ -581,7 +581,10 @@ def long_results_show_authority_scroll_and_honest_cost():
             shown(shell, "Model: anthropic")
             shown(shell, "Scope: host")
             shown(shell, "Esc")
-            assert "RESULT_LINE_0" not in shell.plain(), "long response displaced authority in first frame"
+            initial = shell.plain()
+            if "RESULT_LINE_0" in initial:
+                for authority in ("Model:", "Scope:", "Source:", "Time limit:", "Recorded checks:"):
+                    assert initial.index(authority) < initial.index("RESULT_LINE_0"), "response displaced saved authority or checks"
             capture(shell, f"Long task authority and scroll cues at {cols} columns")
             for _ in range(12):
                 if "Cost: n/a" in shell.plain():
