@@ -648,7 +648,9 @@ def task_token_reports_are_distinct_from_missing_usage_and_pricing():
             snapshot = fixture.cli("task", "browse", task_id).stdout
             assert expected.replace(" · ", " | ") in snapshot, snapshot
             assert "Cost: n/a" in snapshot, snapshot
-            saved_details = fixture.cli("task", "show", row["id"]).stdout
+            # The durable native checkpoint is inspected with session show;
+            # task show addresses its separately linked background record.
+            saved_details = fixture.cli("session", "show", row["id"]).stdout
             assert expected.replace("Usage: ", "usage: ") in saved_details, saved_details
             if label in ("missing", "legacy"):
                 assert "Usage: 0 input" not in snapshot, snapshot

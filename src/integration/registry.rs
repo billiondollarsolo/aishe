@@ -84,9 +84,16 @@ pub(super) fn render_question_grammar() -> String {
     )
 }
 
-fn cli_words(spec: &crate::command_surface::CommandSpec) -> Option<String> {
+fn cli_executable(shell: HookShell) -> &'static str {
+    match shell {
+        HookShell::Zsh => "command aishe",
+        HookShell::Bash => "command \"$_AISHE_CLI_BIN\"",
+    }
+}
+
+fn cli_words(spec: &crate::command_surface::CommandSpec, shell: HookShell) -> Option<String> {
     let invocation = spec.cli?;
-    let mut words = format!("command aishe {}", invocation.command);
+    let mut words = format!("{} {}", cli_executable(shell), invocation.command);
     for arg in invocation.prefix_args {
         words.push(' ');
         words.push_str(arg);
@@ -121,7 +128,7 @@ fn interactive_redirect(shell: HookShell) -> &'static str {
 }
 
 fn render_cli_hook(spec: &crate::command_surface::CommandSpec, shell: HookShell) -> String {
-    let command = cli_words(spec).expect("validated CLI-backed hook command");
+    let command = cli_words(spec, shell).expect("validated CLI-backed hook command");
     let redirect = interactive_redirect(shell);
     match spec.arguments {
         ArgumentPolicy::None => format!(
@@ -136,7 +143,8 @@ fn render_cli_hook(spec: &crate::command_surface::CommandSpec, shell: HookShell)
                 "      if [[ -n \"$_aishe_arg\" ]]; then\n        local -a _aishe_args\n        _aishe_args=(\"${{(Q@)${{(z)_aishe_arg}}}}\") 2>/dev/null || {{ printf 'aishe: invalid slash-command arguments\\n' >&2; return 2; }}\n        {command} \"${{_aishe_args[@]}}\"{redirect}\n      else\n        {command}{redirect}\n      fi\n"
             ),
             HookShell::Bash => format!(
-                "      command aishe --hook-cli {} \"$_aishe_arg\"{redirect}\n",
+                "      {} --hook-cli {} \"$_aishe_arg\"{redirect}\n",
+                cli_executable(shell),
                 shell_single_quote(spec.id)
             ),
         },
@@ -147,16 +155,23 @@ fn render_hook_action(spec: &crate::command_surface::CommandSpec, shell: HookShe
     match spec.hook_action() {
         ShellHookAction::Cli => render_cli_hook(spec, shell),
         ShellHookAction::OneShot => format!(
-            "{}        command aishe -c \"$_aishe_line\"{}\n{}",
+            "{}        {} -c \"$_aishe_line\"{}\n{}",
             no_argument_guard(),
+            cli_executable(shell),
             interactive_redirect(shell),
             close_no_argument_guard()
         ),
-        ShellHookAction::AuthStatus => format!(
-            "{}        _aishe_show_auth\n{}",
-            no_argument_guard(),
-            close_no_argument_guard()
-        ),
+        ShellHookAction::AuthStatus => {
+            let helper = match shell {
+                HookShell::Zsh => "_aishe_show_auth",
+                HookShell::Bash => "__aishe_show_auth",
+            };
+            format!(
+                "{}        {helper}\n{}",
+                no_argument_guard(),
+                close_no_argument_guard()
+            )
+        }
         ShellHookAction::ToggleDetails => {
             let action = match shell {
                 HookShell::Zsh => {
@@ -198,7 +213,7 @@ fn render_hook_action(spec: &crate::command_surface::CommandSpec, shell: HookShe
       elif [[ "$_aishe_arg" == *--default* ]]; then
         local -a _aishe_mode_args
         read -ra _aishe_mode_args <<< "$_aishe_arg"
-        command aishe mode "${_aishe_mode_args[@]}" < /dev/tty > /dev/tty 2>&1
+        command "$_AISHE_CLI_BIN" mode "${_aishe_mode_args[@]}" < /dev/tty > /dev/tty 2>&1
       else
         printf 'mode\n%s\n' "$_aishe_arg" > "$AISHE_PENDING_FILE"
       fi
@@ -261,7 +276,7 @@ _aishe_apply_session_mode() {
   case "$_aishe_mode" in
     suggest|auto) ;;
     yolo)
-      if ! command aishe --accept-yolo__AISHE_INTERACTIVE_REDIRECT__; then
+      if ! __AISHE_CLI_EXECUTABLE__ --accept-yolo__AISHE_INTERACTIVE_REDIRECT__; then
         return 1
       fi
       ;;
@@ -303,4 +318,5 @@ _aishe_dispatch_slash() {
         "__AISHE_INTERACTIVE_REDIRECT__",
         interactive_redirect(shell),
     )
+    .replace("__AISHE_CLI_EXECUTABLE__", cli_executable(shell))
 }

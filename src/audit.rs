@@ -812,13 +812,19 @@ mod tests {
     #[test]
     fn native_usage_identity_tracks_the_current_connection() {
         let mut config = crate::config::Config::default();
+        let previous =
+            response_usage_fields("ask", &config, crate::usage::Usage::reported(0, 0, 1));
         let mut connection = config.connections["openai"].clone();
         connection.label = "Current work".into();
         connection.settings.model = "current-work-model".into();
         config.connections.insert("work-current".into(), connection);
-        config.aishe.connection = "work-current".into();
+        // Exercise the same connection switch as the CLI. Directly changing
+        // only the ID leaves the legacy provider selection on Anthropic.
+        config.select_connection("work-current").unwrap();
         let fields = response_usage_fields("ask", &config, crate::usage::Usage::reported(0, 0, 1));
+        assert_eq!(previous["connection_id"], "anthropic");
         assert_eq!(fields["connection_id"], "work-current");
+        assert_eq!(fields["provider"], "openai");
         assert_eq!(fields["connection_label"], "Current work");
         assert_eq!(fields["model"], "current-work-model");
     }

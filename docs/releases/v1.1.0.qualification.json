@@ -3,7 +3,7 @@
   "version": "1.1.0",
   "decision": "hold",
   "release_owner": "billiondollarsolo",
-  "production_source_sha256": "f51f0a812d300fbee55ee28c439eae9d1fd432a34e1aad9fdcd471678e40a3be",
+  "production_source_sha256": "378e18681f0f07efe8a501e4bbd4d143a267e922d88a48e92ad453ef77b8e114",
   "qualification_profile_revision": "2026-10-10.1",
   "prepared_at": "2026-10-10",
   "published": false,
@@ -45,6 +45,15 @@
       "linux_added_p95_ms": 1.673,
       "macos_added_p95_ms": 12.628,
       "reason": "Original macOS startup SLO and unit/legacy/admin regressions failed; corrected source requires new qualification."
+    },
+    {
+      "branch_commit": "620caea86bb7436724c4d9cf5f8b0b5afb1c31da",
+      "tested_commit": "d1ee69047ba9ca71154b2da4adc6da9ef9357a0f",
+      "ci_run_id": 38019521259,
+      "state": "fail",
+      "linux_added_p95_ms": 1.717,
+      "macos_added_p95_ms": 5.702,
+      "reason": "Original startup SLO passed on both platforms; integration fixtures and macOS login-exit qualification require corrected-source validation."
     }
   ]
 }

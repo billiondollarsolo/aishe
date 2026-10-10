@@ -2190,8 +2190,14 @@ mod tests {
                 &pty,
                 "NL\task\t/tmp\tsecond call",
             );
-            assert_eq!(second, "STREAM_END");
+            // This response consumes the last dollar of the shell allowance;
+            // the shared post-response guard holds before any returned action.
+            assert!(
+                second.starts_with("ERROR\tsession budget reached"),
+                "{second}"
+            );
             let baseline = provider.as_ref().unwrap().meter().snapshot();
+            assert_eq!(baseline, crate::usage::Usage::reported(1_000_000, 0, 1));
             warm.record_usage(
                 baseline,
                 config.active_model(),

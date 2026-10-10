@@ -3,6 +3,7 @@
 
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import tempfile
 import tomllib
@@ -232,6 +233,78 @@ def actual_reversible_activation():
     print("  ok   actual zsh activation loads one native shell and removes exactly")
 
 
+def internal_controls_outside_path():
+    for profile in ("clean", "personal", "bash"):
+        with tempfile.TemporaryDirectory(prefix="aishe-outside-path-%s-" % profile) as directory:
+            root = Path(directory)
+            env = environment(root)
+            tools = root / "tools"
+            tools.mkdir()
+            # System utilities remain available without exposing any installed
+            # aishe executable through PATH, including on packaged CI machines.
+            for name in (
+                "zsh", "bash", "sh", "dash", "uname", "env", "mktemp",
+                "mkdir", "chmod", "rm", "rmdir", "cat", "sed", "grep",
+                "awk", "tr", "cut", "head", "tail", "date", "wc", "sleep",
+                "find", "readlink", "dirname", "basename", "sort", "cp",
+                "stty", "tput", "mv", "od", "getent",
+            ):
+                path = shutil.which(name)
+                if path:
+                    (tools / name).symlink_to(path)
+            env["PATH"] = str(tools)
+            env["AISHE_MOTION"] = "static"
+            assert shutil.which("aishe", path=env["PATH"]) is None
+            installed = root / "installed application/aishe"
+            installed.parent.mkdir()
+            shutil.copy2(BINARY, installed)
+            config_path(root).parent.mkdir(parents=True)
+            config_path(root).write_text(
+                'version = 7\n[aishe]\nshell_profile = "%s"\n[backend]\nengine = "native"\n' % profile
+            )
+            before = config_path(root).read_bytes()
+            function = "aishe() { printf 'USER_CLI_%s\\n' FUNCTION; }\n"
+            (root / ".zshrc").write_text("PROMPT='OUTSIDE_ZSH> '\n" + function)
+            (root / ".bashrc").write_text("PS1='OUTSIDE_BASH> '\n" + function)
+            (root / ".aishe").mkdir()
+            (root / ".aishe/leanrc").write_text(function)
+            shell = Pty([str(installed), "-i"], env, cols=58)
+            try:
+                shell.line("printf 'OUTSIDE_PATH_%s\\n' READY")
+                shell.expect("OUTSIDE_PATH_READY")
+                shell.line("export AISHE_CLI_BIN=/missing-cli-after-startup")
+                shell.line("aishe preserved")
+                shell.expect("USER_CLI_FUNCTION")
+                if profile != "bash":
+                    # Setup is a native zsh slash control. Bash's declared
+                    # reduced slash surface offers Settings instead.
+                    shell.line("/setup")
+                    shell.expect("Continue setup")
+                    shell.line()
+                    shell.expect("Shell experience")
+                    shell.send("\x03")
+                    shell.expect("Setup paused")
+                shell.line("/settings")
+                shell.expect("Choose a section")
+                shell.menu(9)
+                shell.expect("No settings changed.")
+                shell.line("/context --json")
+                shell.expect('"total_estimated_tokens"')
+                if profile == "bash":
+                    shell.line("/auth")
+                    shell.expect("selected: none")
+                shell.line("printf 'OUTSIDE_PATH_%s\\n' COMPLETE")
+                shell.expect("OUTSIDE_PATH_COMPLETE")
+                shell.line("exit")
+                assert shell.finish() == 0, shell.transcript
+            finally:
+                shell.close()
+            assert config_path(root).read_bytes() == before
+            assert not (root / "config/aishe/credentials.toml").exists()
+            assert not (root / "managed-start-spy").exists()
+    print("  ok   absolute launch controls work outside PATH and preserve user aishe functions")
+
+
 if __name__ == "__main__":
     account_free_commands_and_startup()
     persistent_shell_profiles()
@@ -239,4 +312,5 @@ if __name__ == "__main__":
     preserve_existing_connection_and_credentials()
     personal_login_and_bash_refusal()
     actual_reversible_activation()
+    internal_controls_outside_path()
     print("PASS: shell adoption and account-free onboarding")

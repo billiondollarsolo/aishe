@@ -51,6 +51,7 @@ The adoption review found the following concrete problems:
 | AD-17 | Missing provider token reports still appear as zero cost in native session prompts and historical usage | Task details alone cannot establish trustworthy spending or budget enforcement |
 | AD-18 | Untrusted project overlays can switch shell profiles or use the canonical autonomous mode alias | A cloned project can change the user's interpreter/startup expectations without an explicit trust decision |
 | AD-19 | Last-command fix/explain helpers are omitted from noninteractive classification | An interactive shortcut can capture a nested shell instead of a correction |
+| AD-20 | Absolute-path installer launch leaves internal shell controls dependent on PATH | `/setup` can silently fail before the new executable directory is configured |
 
 ### Existing evidence and its limits
 
@@ -201,7 +202,8 @@ The checkbox status will be reconciled with actual candidate evidence.
 - [ ] A5 Simplify first setup screen and retain detailed diagnostics on demand.
 - [ ] A6 Add inspectable reversible native activation and conflict/duplicate handling.
 - [ ] A7 Qualify isolated fresh-home shell launch, providerless direct commands,
-  personal startup preservation, Bash selection, reconnect/setup, and settings persistence.
+  personal startup preservation, Bash selection, reconnect/setup, settings persistence,
+  and internal controls when the executable is outside PATH.
 
 ### B. Native discovery and prompt consistency
 
@@ -249,6 +251,24 @@ The checkbox status will be reconciled with actual candidate evidence.
 - [ ] F5 Review the final diff for permission regressions, stale claims, migrations, and startup behavior.
 - [ ] F6 Open reviewable PR work and qualify the resulting main commit after authorized merging.
 - [ ] F7 Leave public release publication pending with a concrete qualification record.
+
+### Implementation and evidence map
+
+| Work | Main implementation | Required evidence |
+| --- | --- | --- |
+| Fresh shell, profile, setup and settings | `src/config.rs`, `src/setup.rs`, `src/settings.rs`, `src/pty.rs` | `tests/adoption_pty.py`, `tests/setup_pty.py`, `tests/settings_pty.py`, `tests/native_zsh_profile_pty.py` |
+| Discovery, slash picker and prompt fields | `src/lean/assets/hook.zsh`, `src/lean/slash.rs`, `src/usagelog.rs`, `src/cli/hints.rs` | `tests/native_discovery_pty.py`, picker/mode/prompt PTYs, real narrow-screen captures |
+| Task presentation and interaction truth | `src/cli/taskui.rs`, `src/background/presentation.rs`, `src/background/interactions.rs`, `src/tasks.rs` | Background/interactions/workflow PTYs, saved-revision review and recorded-check regressions |
+| Usage and budget provenance | `src/usage.rs`, `src/usagelog.rs`, `src/audit.rs`, `src/lean/nl.rs`, `src/agent/native.rs`, provider transports | Rust budget/coverage/error tests, `tests/native_runtime.rs`, HTTP-backed prompt/task usage scenarios, managed-runtime contracts |
+| Scripts and activation | `src/cli/args.rs`, `src/activation.rs`, command dispatch and executor | `tests/shell_adoption.py`, `tests/direct_shell_startup_test.py`, CLI and signal contracts |
+| Installer and publication boundary | `install.sh`, release workflow, `tests/release_gate.py`, `tests/release_evidence.py` | Transaction/fault fixtures; source-bound CI, artifact identity, dispositions and gate regression tests |
+| Startup hot path | executor one-shot route and `src/histlog.rs` | Original `tests/direct_shell_benchmark.py` on both platforms, launcher contracts, history permission/concurrency checks |
+
+The exact source commit, clean tree, executable version and SHA-256 must be
+recorded with candidate evidence. Local diagnostics and earlier candidate
+passes remain labeled with their original source; they are never substituted
+for final hosted gates. Named graphical terminals, paid-provider behavior and
+long-soak operation are separate publication qualifications.
 
 ## Delivery sequence and ownership
 
@@ -299,3 +319,15 @@ The next candidate adds a measured history hot-path optimization: assemble one
 append record, avoid unnecessary permission writes, and reuse opened-file
 metadata while retaining permission repair and trimming. The original macOS
 startup requirement must pass on that new source.
+
+Branch candidate `620caea86bb7436724c4d9cf5f8b0b5afb1c31da` was exercised
+as synthetic merge `d1ee69047ba9ca71154b2da4adc6da9ef9357a0f`, with equal
+trees, in CI run `38019521259`. The original startup tests passed on Linux
+(1.717 ms added p95) and macOS (5.702 ms added p95), using the unchanged
+100 commands and ten warmups with no managed backend start. This establishes
+measured improvement, but the run remains failed functional evidence.
+Integration exposed outdated connection-switch and post-response-budget test
+expectations, a managed usage-log reader that did not understand v3 coverage,
+and a native-session fixture invoking the background-task inspector. Correct
+those contracts and qualify the complete next candidate; startup success alone
+does not approve release publication.

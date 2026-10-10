@@ -350,9 +350,11 @@ def native_prompt_and_session_usage_preserve_provider_coverage():
 
         fixture = UiFixture(f"usage-coverage-{cols}", choose)
         try:
+            status_order = ["session_cost", "last_cost", "requests"] if cols == 100 else ["last_cost", "session_cost", "requests"]
             fixture.config.write_text(fixture.config.read_text().replace(
-                'budget_usd = 0.0', 'budget_usd = 0.0\nstatus_line_items = ["last_cost", "session_cost", "requests"]')
-                + '\n[pricing."original-background-model"]\ninput = 1.0\noutput = 2.0\n')
+                'budget_usd = 0.0', 'budget_usd = 0.0\nstatus_line_items = ' + json.dumps(status_order))
+                .replace('"original-background-model"', '"cov"')
+                + '\n[pricing."cov"]\ninput = 1.0\noutput = 2.0\n')
             leanrc = Path(fixture.env["AISHE_LEANRC"])
             leanrc.write_text(leanrc.read_text() + '\nbuiltin printf "%s\\n%s\\n" "$AISHE_USAGE_FILE" "$AISHE_STATUS_FILE" > "$HOME/usage-paths"\n')
             shell = fixture.shell(cols)
@@ -376,7 +378,10 @@ def native_prompt_and_session_usage_preserve_provider_coverage():
                 elif index == 1:
                     assert fields["last_cost"] == "last ~$0.0000", fields
                     assert fields["session_cost"] == "session ~$0.0000 (partial; 1 unknown)", fields
-                    assert "partial" in prompt, prompt
+                    if cols == 100:
+                        assert "partial" in prompt, prompt
+                    else:
+                        assert "last ~$0.0000" in prompt, prompt
                 else:
                     assert fields["last_cost"] == "last ~$0.0001", fields
                     assert fields["session_cost"] == "session ~$0.0001 (partial; 1 unknown)", fields

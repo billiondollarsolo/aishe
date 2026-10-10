@@ -22,6 +22,9 @@ fi
 : ${AISHE_MODE:=ask}
 export AISHE_MODE
 export AISHE_LEAN=1
+# Parent-launched shells keep the exact running CLI. Standalone hook sourcing
+# can resolve the external command once without changing PATH or user aliases.
+(( ${+_AISHE_CLI_BIN} )) || readonly _AISHE_CLI_BIN="${AISHE_CLI_BIN:-${commands[aishe]:-aishe}}"
 # The parent selected these private controls. Later environment edits must not
 # redirect the producer or weaken credential filtering for an agent request.
 (( ${+_AISHE_STATE_CONTROL_FILE} )) || readonly _AISHE_STATE_CONTROL_FILE="${AISHE_EXECUTION_STATE_FILE:-}"
@@ -1076,11 +1079,11 @@ _aishe_lean_slash() {
         # Interactive prompts belong to the inner shell's real terminal, not
         # the parent FIFO worker. The selection handoff updates the next turn.
         if [[ "$_AISHE_LOCAL_NAME" == /model ]]; then
-          if [[ -n "$_AISHE_LOCAL_ARG" ]]; then command aishe model "$_AISHE_LOCAL_ARG" <&$_AISHE_INPUT_FD
-          else command aishe model <&$_AISHE_INPUT_FD; fi
+          if [[ -n "$_AISHE_LOCAL_ARG" ]]; then command "$_AISHE_CLI_BIN" model "$_AISHE_LOCAL_ARG" <&$_AISHE_INPUT_FD
+          else command "$_AISHE_CLI_BIN" model <&$_AISHE_INPUT_FD; fi
         else
-          if [[ -n "$_AISHE_LOCAL_ARG" ]]; then command aishe connection pick "$_AISHE_LOCAL_ARG" <&$_AISHE_INPUT_FD
-          else command aishe connection pick <&$_AISHE_INPUT_FD; fi
+          if [[ -n "$_AISHE_LOCAL_ARG" ]]; then command "$_AISHE_CLI_BIN" connection pick "$_AISHE_LOCAL_ARG" <&$_AISHE_INPUT_FD
+          else command "$_AISHE_CLI_BIN" connection pick <&$_AISHE_INPUT_FD; fi
         fi
       else
         local _AISHE_LOCAL_REPLY
@@ -1088,28 +1091,28 @@ _aishe_lean_slash() {
         _aishe_lean_handle_reply "$_AISHE_LOCAL_REPLY"
       fi
       ;;
-    /settings) command aishe settings "${(@)_AISHE_LOCAL_CLI_ARGS}" <&$_AISHE_INPUT_FD ;;
-    /setup) command aishe setup "${(@)_AISHE_LOCAL_CLI_ARGS}" <&$_AISHE_INPUT_FD ;;
-    /tour) command aishe tour "${(@)_AISHE_LOCAL_CLI_ARGS}" <&$_AISHE_INPUT_FD ;;
-    /context) command aishe context "${(@)_AISHE_LOCAL_CLI_ARGS}" <&$_AISHE_INPUT_FD ;;
-    /doctor) command aishe doctor "${(@)_AISHE_LOCAL_CLI_ARGS}" <&$_AISHE_INPUT_FD ;;
-    /inbox) command aishe inbox "${(@)_AISHE_LOCAL_CLI_ARGS}" <&$_AISHE_INPUT_FD ;;
+    /settings) command "$_AISHE_CLI_BIN" settings "${(@)_AISHE_LOCAL_CLI_ARGS}" <&$_AISHE_INPUT_FD ;;
+    /setup) command "$_AISHE_CLI_BIN" setup "${(@)_AISHE_LOCAL_CLI_ARGS}" <&$_AISHE_INPUT_FD ;;
+    /tour) command "$_AISHE_CLI_BIN" tour "${(@)_AISHE_LOCAL_CLI_ARGS}" <&$_AISHE_INPUT_FD ;;
+    /context) command "$_AISHE_CLI_BIN" context "${(@)_AISHE_LOCAL_CLI_ARGS}" <&$_AISHE_INPUT_FD ;;
+    /doctor) command "$_AISHE_CLI_BIN" doctor "${(@)_AISHE_LOCAL_CLI_ARGS}" <&$_AISHE_INPUT_FD ;;
+    /inbox) command "$_AISHE_CLI_BIN" inbox "${(@)_AISHE_LOCAL_CLI_ARGS}" <&$_AISHE_INPUT_FD ;;
     /workflow)
       if (( ${#_AISHE_LOCAL_CLI_ARGS} )); then
-        command aishe workflow "${(@)_AISHE_LOCAL_CLI_ARGS}" <&$_AISHE_INPUT_FD
+        command "$_AISHE_CLI_BIN" workflow "${(@)_AISHE_LOCAL_CLI_ARGS}" <&$_AISHE_INPUT_FD
       else
-        command aishe workflow browse <&$_AISHE_INPUT_FD
+        command "$_AISHE_CLI_BIN" workflow browse <&$_AISHE_INPUT_FD
       fi
       ;;
     /tasks)
       # The browser and any explicit action own the child terminal. Forward
       # tokenized arguments literally; model text never becomes shell syntax.
       if (( ${#_AISHE_LOCAL_CLI_ARGS} == 1 )) && [[ "${_AISHE_LOCAL_CLI_ARGS[1]}" == [[:xdigit:]]##-[[:xdigit:]]## ]]; then
-        command aishe task browse "${_AISHE_LOCAL_CLI_ARGS[1]}" <&$_AISHE_INPUT_FD
+        command "$_AISHE_CLI_BIN" task browse "${_AISHE_LOCAL_CLI_ARGS[1]}" <&$_AISHE_INPUT_FD
       elif (( ${#_AISHE_LOCAL_CLI_ARGS} )); then
-        command aishe task "${(@)_AISHE_LOCAL_CLI_ARGS}" <&$_AISHE_INPUT_FD
+        command "$_AISHE_CLI_BIN" task "${(@)_AISHE_LOCAL_CLI_ARGS}" <&$_AISHE_INPUT_FD
       else
-        command aishe task browse <&$_AISHE_INPUT_FD
+        command "$_AISHE_CLI_BIN" task browse <&$_AISHE_INPUT_FD
       fi
       ;;
     /help|/commands|/status|/reset|/undo|/usage|/details|/mcp|/skills|/sessions|/backend)
@@ -1161,7 +1164,7 @@ _aishe_capture_exit() {
       elapsed=${elapsed%.*}
     fi
     # Capsule write is local JSON only — not OpenCode. Backgrounded so prompts stay fast.
-    AISHE_LAST_EXIT="$AISHE_LAST_EXIT" AISHE_LAST_DURATION_MS="$elapsed" command aishe --record-failure "$AISHE_LAST_CMD" >/dev/null 2>&1 &!
+    AISHE_LAST_EXIT="$AISHE_LAST_EXIT" AISHE_LAST_DURATION_MS="$elapsed" command "$_AISHE_CLI_BIN" --record-failure "$AISHE_LAST_CMD" >/dev/null 2>&1 &!
     typeset -g _AISHE_FAILURE_ACTIVE=1
     if [[ "${AISHE_FAILURE_HINTS:-1}" == 1 ]]; then
       local hint="aishe: exit ${AISHE_LAST_EXIT} | ? explain | Ctrl-X Ctrl-F fix"
@@ -1175,7 +1178,7 @@ _aishe_capture_exit() {
       fi
     fi
   elif [[ "${_AISHE_FAILURE_ACTIVE:-0}" == 1 ]]; then
-    command aishe last clear >/dev/null 2>&1
+    command "$_AISHE_CLI_BIN" last clear >/dev/null 2>&1
     typeset -g _AISHE_FAILURE_ACTIVE=""
   fi
 }
@@ -1244,7 +1247,7 @@ aishe-background-tasks() {
   local _AISHE_BACKGROUND_LAST_EXIT="${AISHE_LAST_EXIT:-0}"
   zle -I
   {
-    command aishe task browse <&$_AISHE_INPUT_FD
+    command "$_AISHE_CLI_BIN" task browse <&$_AISHE_INPUT_FD
   } always {
     BUFFER="$_AISHE_BACKGROUND_BUFFER"
     CURSOR="$_AISHE_BACKGROUND_CURSOR"

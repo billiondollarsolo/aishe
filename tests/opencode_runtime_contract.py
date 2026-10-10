@@ -580,11 +580,28 @@ def assert_runtime_contract(binary, runtime_dir):
             parsed = [row.split("\t") for row in rows]
             usage_rows = []
             for row in parsed:
-                if len(row) == 6 and row[0] == "v2":
+                if row[0] == "v3":
+                    if len(row) != 12:
+                        raise AssertionError(f"malformed coverage-aware usage row: {row}")
+                    measured = tuple(int(value) for value in row[1:4])
+                    coverage = tuple(int(value) for value in row[6:])
+                    expected_coverage = (
+                        0, measured[0], measured[1],
+                        measured[2], measured[0], measured[1],
+                    )
+                    if coverage != expected_coverage:
+                        raise AssertionError(
+                            "managed usage lost complete provider counters or "
+                            f"billing attribution: {coverage}; row={row}"
+                        )
+                    usage_rows.append((*measured, row[4], row[5]))
+                elif row[0] == "v2":
+                    if len(row) != 6:
+                        raise AssertionError(f"malformed attributed usage row: {row}")
                     usage_rows.append(
                         (int(row[1]), int(row[2]), int(row[3]), row[4], row[5])
                     )
-                elif len(row) >= 4:
+                elif len(row) >= 4 and not row[0].startswith("v"):
                     # Keep the contract useful against a pre-attribution binary
                     # while the Rust reader separately proves old-file support.
                     usage_rows.append(

@@ -133,6 +133,13 @@ fn run_zsh_inner(
     let mut lean_files = crate::lean::LeanShellFiles::default();
 
     let mut cmd = CommandBuilder::new(&zsh);
+    // An installer can launch this executable by absolute path before its
+    // directory reaches PATH. Internal controls must re-enter this same CLI
+    // without changing the user's command resolution or aliases.
+    cmd.env(
+        "AISHE_CLI_BIN",
+        std::env::current_exe().context("locating the running AIShe executable")?,
+    );
     if bash {
         let bashrc = zdotdir.join("bashrc");
         let rc = format!(
