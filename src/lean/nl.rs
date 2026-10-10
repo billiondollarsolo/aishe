@@ -134,8 +134,11 @@ impl LeanWarm {
         provider: Option<&dyn Provider>,
     ) -> Result<Cow<'a, Config>> {
         let budget = config.aishe.budget_usd;
-        if budget <= 0.0 {
+        if budget == 0.0 {
             return Ok(Cow::Borrowed(config));
+        }
+        if !budget.is_finite() || budget < 0.0 {
+            anyhow::bail!("invalid session dollar budget: budget_usd must be zero or a finite positive amount");
         }
         if self.usage_coverage_untrusted {
             anyhow::bail!("cannot enforce the session dollar budget: usage history is unreadable, malformed, or incomplete; repair the tally, start a new session, or explicitly disable budget_usd");
@@ -203,8 +206,13 @@ impl LeanWarm {
     }
 
     fn budget_summary(&self, config: &Config) -> Option<String> {
-        if config.aishe.budget_usd <= 0.0 {
+        if config.aishe.budget_usd == 0.0 {
             return None;
+        }
+        if !config.aishe.budget_usd.is_finite() || config.aishe.budget_usd < 0.0 {
+            return Some(
+                "budget: invalid · set budget_usd to zero or a finite positive amount".into(),
+            );
         }
         let valid_price = |model: &str| {
             crate::usage::budget_price_for(model, &config.pricing).filter(|price| {
@@ -2303,7 +2311,10 @@ mod tests {
                 &pty,
                 "NL\tagent\t/tmp\tspend one remaining call",
             );
-            assert_eq!(reply, "ERROR\tSession cost budget is exhausted.");
+            assert!(
+                reply.starts_with("ERROR\tsession budget reached"),
+                "{reply}"
+            );
             let usage = provider.as_ref().unwrap().meter().snapshot();
             assert_eq!(usage.requests, 2, "agent exceeded the remaining allowance");
             assert_eq!(usage.input, 2_000_000);
@@ -2411,6 +2422,23 @@ mod tests {
             assert!(LeanWarm::default()
                 .budgeted_turn_config(&config, None)
                 .is_err());
+        }
+        config.pricing.insert(
+            "priced-exact".into(),
+            crate::usage::Price {
+                input: 1.0,
+                output: 2.0,
+            },
+        );
+        for cap in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY, -1.0] {
+            config.aishe.budget_usd = cap;
+            let error = LeanWarm::default()
+                .budgeted_turn_config(&config, None)
+                .unwrap_err();
+            assert!(
+                error.to_string().contains("invalid session dollar budget"),
+                "{error}"
+            );
         }
     }
 

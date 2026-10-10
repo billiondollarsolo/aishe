@@ -209,6 +209,8 @@ pub enum ProviderError {
     Api { status: u16, message: String },
     #[error("failed to parse provider response: {0}")]
     Parse(String),
+    #[error("{0}")]
+    Budget(String),
 }
 
 /// Stable classification used by Setup, Doctor, support bundles, and
@@ -245,6 +247,7 @@ impl ProviderError {
                 }
             }
             Self::Parse(_) => ErrorKind::MalformedResponse,
+            Self::Budget(_) => ErrorKind::Unknown,
             Self::Api { status, message } => classify_api_error(*status, message),
         }
     }
@@ -255,6 +258,13 @@ impl ProviderError {
 /// future front ends from offering contradictory codes or recovery actions.
 pub fn user_error(error: &ProviderError) -> crate::user_error::UserError {
     use crate::user_error::ErrorNamespace;
+
+    if let ProviderError::Budget(reason) = error {
+        return crate::user_error::UserError::classified(
+            ErrorNamespace::Policy, "budget", reason,
+            "Inspect `/usage`; configure exact valid pricing and a fixed provider, or explicitly disable `budget_usd`.",
+        ).expect("static budget error code is valid").with_source_chain(error);
+    }
 
     let (namespace, name, message, next, retryable) = match error.kind() {
         ErrorKind::MissingCredential => (
@@ -515,6 +525,18 @@ pub trait Provider: Send + Sync {
         messages: &[Msg],
         format: &ResponseFormat,
     ) -> Result<String, ProviderError>;
+
+    /// Completion that bypasses response-cache decorators. Agent planning
+    /// reserves a real provider turn and needs fresh metered usage for its
+    /// cost coverage. Providers without a cache use their ordinary completion.
+    fn complete_uncached(
+        &self,
+        system: &str,
+        messages: &[Msg],
+        format: &ResponseFormat,
+    ) -> Result<String, ProviderError> {
+        self.complete(system, messages, format)
+    }
 
     /// Streaming completion: invokes `sink` with text deltas as they arrive and
     /// returns the full concatenated text. The default implementation falls back

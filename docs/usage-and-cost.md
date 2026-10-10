@@ -3,29 +3,32 @@
 AIShe records provider usage when it is reported, so you can inspect session
 spend and configure a cap. A missing usage object is unknown, even for a priced
 model; numeric input and output counts of zero are a known zero.
+Failed responses retain any measured usage. An accepted stream that ends
+without a complete token report counts as a request with unknown usage.
 
 Background task details distinguish recorded cost from missing pricing. A
 fully priced task can show a known zero; unpriced work shows n/a, and partially
 priced work labels its recorded subtotal and missing coverage. Older task
 records without pricing provenance remain unknown. A money-limited task cannot
 resume by treating unknown historical spend as zero; token and request limits
-continue to apply independently. Provider responses without token usage remain
-unmetered even when the model has an exact price. Automatic provider fallbacks
+continue to apply independently. Provider responses without token usage still
+count as requests, with unknown tokens and cost even when the model has an exact price. Automatic provider fallbacks
 also leave task pricing coverage unknown; a positive task money cap requires a
 fixed provider/model with automatic fallbacks disabled.
 
 ## What you see
 
-The interactive shell keeps a live status chip in zsh's native right prompt.
-It shows the safe connection identity, mode, scope, active connection cost, and
-request count. You can turn it off and choose its ordered fields during setup or
-in `aishe settings`.
+The native zsh right prompt supports `model`, `connection`, `task`, `elapsed`,
+`last_tokens`, `last_cost`, `session_tokens`, `session_cost`, and `requests`.
+Mode and scope stay in the live left indicator. You can choose the right
+prompt's ordered fields or turn it off during setup or in `aishe settings`.
 
 ```
   436 in · 119 out · 1 req · ~$0.0001
 ```
 
-The compact `identity` field combines connection label/ID, provider/endpoint,
+The historical compatibility integration has a broader status catalogue.
+Its compact `identity` field combines connection label/ID, provider/endpoint,
 authentication label, model/reasoning, and shell-local/default state. Individual
 fields are `connection`, `provider`, `endpoint`, `auth`, `selection`, `model`,
 `reasoning`, `mode`, `backend`, `scope`, `task`, `elapsed`, `context`,
@@ -38,9 +41,10 @@ OpenAI work (openai-work) · openai@api.openai.com · OAuth work · gpt-5.6-luna
 last 1,697/374 tok · session cost ~$0.0112 · 2 reqs
 ```
 
-The display refreshes after each call. `off` hides it. `show_usage = false`
-disables usage output, while
-`status_line_position = "off"` hides only the live prompt line.
+The display refreshes after each call. `show_usage = false` disables usage
+output. Native `pty_rprompt_items = ["off"]` hides the right status;
+historical `status_line_position = "off"` hides that integration's live prompt
+line.
 
 ```toml
 [aishe]

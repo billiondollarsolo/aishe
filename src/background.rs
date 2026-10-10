@@ -2844,6 +2844,7 @@ mod tests {
             input: 100,
             output: 200,
             requests: 3,
+            ..crate::tasks::UsageSummary::default()
         };
         let messages = serde_json::to_value(&checkpoint.messages).unwrap();
         let counters = checkpoint.execution;

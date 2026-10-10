@@ -136,6 +136,12 @@ reports differ from explicit reported zero usage. Legacy session/ledger records
 keep their observed counts but do not acquire invented coverage. Positive
 native session money budgets require verifiable usage and pricing before
 admitting another request.
+Enforce that requirement within a turn before further provider/tool work as
+well as at turn admission. Reject invalid/nonfinite money caps. Accepted
+streaming attempts and metered provider failures stay in the content-free
+ledger; a parse or read error cannot erase consumption. Native planning
+bypasses the suggestion-response cache so reserved task turns retain actual
+usage provenance.
 
 An untrusted project overlay cannot change the saved shell profile or select
 autonomous Agent mode through either its canonical name or its legacy alias.

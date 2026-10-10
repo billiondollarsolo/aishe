@@ -210,7 +210,8 @@ class Fixture:
             "objective": row["objective"],
             "messages": [{"role": "user", "data": row["objective"]}],
             "completed_tools": [], "pending_tool": None,
-            "usage": {"input": 12, "output": 34, "requests": 1},
+            "usage": {"input": 12, "output": 34, "requests": 1,
+                      "reported_requests": 1, "reported_input": 12, "reported_output": 34},
             "execution": {"provider_turns": 1, "tool_calls": 0, "network_calls": 0,
                           "elapsed_ms": 4500, "cost_usd": 0},
             "native_state": "completed" if completed else "cancelled",
@@ -618,12 +619,67 @@ def long_results_show_authority_scroll_and_honest_cost():
         fixture.close()
 
 
+def task_token_reports_are_distinct_from_missing_usage_and_pricing():
+    fixture = Fixture("token-report-truth")
+    try:
+        cases = [
+            ("missing", {"input": 0, "output": 0, "requests": 1,
+                         "reported_requests": 0, "reported_input": 0, "reported_output": 0},
+             "Usage: tokens n/a · usage unavailable"),
+            ("zero", {"input": 0, "output": 0, "requests": 1,
+                      "reported_requests": 1, "reported_input": 0, "reported_output": 0},
+             "Usage: 0 input · 0 output tokens"),
+            ("partial", {"input": 910, "output": 205, "requests": 2,
+                         "reported_requests": 1, "reported_input": 10, "reported_output": 5},
+             "Usage: 10 input · 5 output tokens (partial subtotal; 1/2 requests reported)"),
+            ("legacy", {"input": 12, "output": 34, "requests": 1},
+             "Usage: tokens n/a · older usage unverified"),
+        ]
+        for label, usage, expected in cases:
+            task_id = "token-truth-" + label
+            fixture.record(task_id, "completed", "TOKEN_REPORT_TRUTH " + label)
+            checkpoint_path = fixture.checkpoint(task_id)
+            row = json.loads(checkpoint_path.read_text())
+            row["usage"] = usage
+            # Reported usage must remain known even when this model has no
+            # recorded price. Cost provenance is a separate checkpoint field.
+            row["model"] = "unpriced-model"
+            atomic_json(checkpoint_path, row)
+            snapshot = fixture.cli("task", "browse", task_id).stdout
+            assert expected.replace(" · ", " | ") in snapshot, snapshot
+            assert "Cost: n/a" in snapshot, snapshot
+            saved_details = fixture.cli("task", "show", row["id"]).stdout
+            assert expected.replace("Usage: ", "usage: ") in saved_details, saved_details
+            if label in ("missing", "legacy"):
+                assert "Usage: 0 input" not in snapshot, snapshot
+            if label == "partial":
+                assert "910 input" not in snapshot and "205 output" not in snapshot, snapshot
+                shell = fixture.shell(cols=58, browser=task_id)
+                shown(shell, "Task details")
+                for _ in range(8):
+                    if "Usage: 10 input" in shell.plain():
+                        break
+                    shell.send("\x1b[6~")
+                    shell.drain(.1)
+                shown(shell, "Usage: 10 input")
+                shown(shell, "partial subtotal")
+                shown(shell, "1/2")
+                capture(shell, "Partial verified token subtotal at 58 columns; unknown model price")
+                shell.send("\x03")
+                wait_until(shell, lambda: shell.proc.poll() is not None, "token report browser exits")
+        fixture.assert_quiet()
+        print("  ok   task usage distinguishes missing, reported zero, partial subtotals and historical totals without a model price")
+    finally:
+        fixture.close()
+
+
 def run():
     scenarios = [quiet_idle_and_live_badge, browser_views_and_acknowledgement,
                  confirmed_controls, narrow_ctrl_c_and_cli_fallback,
                  personal_theme_and_persistent_review, static_plain_browser,
                  standalone_reconcile_and_wrapped_end,
-                 long_results_show_authority_scroll_and_honest_cost]
+                 long_results_show_authority_scroll_and_honest_cost,
+                 task_token_reports_are_distinct_from_missing_usage_and_pricing]
     failed = []
     for scenario in scenarios:
         try:

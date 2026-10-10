@@ -254,8 +254,9 @@ pub fn command(config: &Config, command: &Action) -> Result<u8> {
                     crate::commands::display_safe(&record.cwd.display().to_string())
                 );
                 println!(
-                    "usage: {} in · {} out · {} reqs",
-                    record.usage.input, record.usage.output, record.usage.requests
+                    "usage: {} · {} reqs",
+                    record.usage.tokens_label(),
+                    record.usage.requests
                 );
                 println!("messages: {}", record.messages.len());
                 println!("completed tools: {}", record.completed_tools.len());

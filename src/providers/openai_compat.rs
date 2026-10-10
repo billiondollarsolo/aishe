@@ -407,7 +407,7 @@ impl OpenAiProvider {
 
         let mut streamed_text = String::new();
         let mut completed_response = None;
-        read_sse(response, |data| {
+        let stream_result = read_sse(response, |data| {
             let event: Value = match serde_json::from_str(data) {
                 Ok(event) => event,
                 Err(_) => return,
@@ -428,14 +428,23 @@ impl OpenAiProvider {
                 }
                 _ => {}
             }
-        })?;
+        });
 
+        // Once the provider accepted the stream, a read/parse failure still
+        // consumed a request. Keep complete final usage when available; an
+        // interrupted stream without it has unknown billing coverage.
+        let (input, output, reported) =
+            completed_response
+                .as_ref()
+                .map_or((0, 0, false), |response| {
+                    let (input, output) = usage_from_value(response);
+                    (input, output, usage_is_reported(response))
+                });
+        self.meter.record_reported(input, output, reported);
+        stream_result?;
         let response = completed_response.ok_or_else(|| {
             ProviderError::Parse("Responses stream ended without response.completed".into())
         })?;
-        let (input, output) = usage_from_value(&response);
-        self.meter
-            .record_reported(input, output, usage_is_reported(&response));
         let mut completion = Self::parse_responses_completion(&response)?;
         if completion.text.is_none() && !streamed_text.is_empty() {
             completion.text = Some(streamed_text);
@@ -736,7 +745,7 @@ impl Provider for OpenAiProvider {
         let mut calls: BTreeMap<u64, (String, String, String)> = BTreeMap::new();
         let (mut input, mut output) = (0u64, 0u64);
         let mut usage_reported = false;
-        read_sse(resp, |data| {
+        let stream_result = read_sse(resp, |data| {
             let v: Value = match serde_json::from_str(data) {
                 Ok(v) => v,
                 Err(_) => return,
@@ -788,8 +797,9 @@ impl Provider for OpenAiProvider {
                     }
                 }
             }
-        })?;
+        });
         self.meter.record_reported(input, output, usage_reported);
+        stream_result?;
 
         let tool_calls = calls
             .into_values()
@@ -868,7 +878,7 @@ impl Provider for OpenAiProvider {
         let mut full = String::new();
         let (mut input, mut output) = (0u64, 0u64);
         let mut usage_reported = false;
-        read_sse(resp, |data| {
+        let stream_result = read_sse(resp, |data| {
             if let Some(t) = Self::content_delta(data) {
                 full.push_str(&t);
                 sink(&t);
@@ -883,8 +893,9 @@ impl Provider for OpenAiProvider {
                     output = o;
                 }
             }
-        })?;
+        });
         self.meter.record_reported(input, output, usage_reported);
+        stream_result?;
         Ok(full)
     }
 
@@ -1167,6 +1178,42 @@ mod tests {
     use super::*;
     use crate::providers::AssistantMsg;
     use mockito::Matcher;
+
+    /// Accept a real provider request, then close a successful HTTP response
+    /// before its declared body ends. This exercises the transport read error
+    /// after the consumer has received SSE text and optional final usage.
+    fn truncated_http_stream(body: String) -> (String, std::thread::JoinHandle<()>) {
+        use std::io::{BufRead, Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            let mut reader = std::io::BufReader::new(stream.try_clone().unwrap());
+            let mut length = 0usize;
+            loop {
+                let mut header = String::new();
+                assert!(reader.read_line(&mut header).unwrap() > 0);
+                if header == "\r\n" {
+                    break;
+                }
+                if let Some(value) = header.to_ascii_lowercase().strip_prefix("content-length:") {
+                    length = value.trim().parse().unwrap();
+                }
+            }
+            let mut request = vec![0; length];
+            reader.read_exact(&mut request).unwrap();
+            assert_eq!(
+                serde_json::from_slice::<Value>(&request).unwrap()["stream"],
+                true
+            );
+            write!(stream, "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len() + 64).unwrap();
+            stream.flush().unwrap();
+        });
+        (url, server)
+    }
 
     #[test]
     fn system_is_first_message() {
@@ -1520,6 +1567,99 @@ mod tests {
         assert_eq!(completion.provider_items.len(), 2);
         assert_eq!(provider.meter().snapshot().output, 8);
         stream.assert();
+    }
+
+    #[test]
+    fn responses_stream_without_completion_records_unknown_request_before_parse_error() {
+        let mut server = mockito::Server::new();
+        let stream = server
+            .mock("POST", "/v1/responses")
+            .with_status(200)
+            .with_header("content-type", "text/event-stream")
+            .with_body("data: {\"type\":\"response.output_text.delta\",\"delta\":\"partial\"}\n\n")
+            .expect(1)
+            .create();
+        let provider = OpenAiProvider::with_transport(
+            server.url(),
+            "k".into(),
+            "stream-model".into(),
+            ApiTransport::Responses,
+        );
+        let mut text = String::new();
+        let error = provider
+            .complete_stream(
+                "SYS",
+                &[Msg::User("question".into())],
+                &ResponseFormat::Text,
+                &mut |delta| text.push_str(delta),
+            )
+            .unwrap_err();
+        assert!(matches!(error, ProviderError::Parse(_)));
+        assert_eq!(text, "partial");
+        let usage = provider.meter().snapshot();
+        assert_eq!(usage.requests, 1);
+        assert_eq!(usage.unreported_requests, 1);
+        assert_eq!(usage.attributed_requests, 0);
+        stream.assert();
+    }
+
+    #[test]
+    fn interrupted_http_streams_record_once_and_preserve_final_usage() {
+        for transport in [ApiTransport::ChatCompletions, ApiTransport::Responses] {
+            for final_usage in [false, true] {
+                for with_tools in [false, true] {
+                    let mut body = match transport {
+                        ApiTransport::ChatCompletions => "data: {\"choices\":[{\"delta\":{\"content\":\"partial\"}}]}\n\n".to_string(),
+                        ApiTransport::Responses => "data: {\"type\":\"response.output_text.delta\",\"delta\":\"partial\"}\n\n".to_string(),
+                    };
+                    if final_usage {
+                        let frame = match transport {
+                            ApiTransport::ChatCompletions => {
+                                json!({"choices":[], "usage":{"prompt_tokens":13,"completion_tokens":8}})
+                            }
+                            ApiTransport::Responses => {
+                                json!({"type":"response.completed", "response":{"output":[],"usage":{"input_tokens":13,"output_tokens":8}}})
+                            }
+                        };
+                        body.push_str(&format!("data: {frame}\n\n"));
+                    }
+                    let (url, server) = truncated_http_stream(body);
+                    let provider = OpenAiProvider::with_transport(
+                        url,
+                        "k".into(),
+                        "stream-model".into(),
+                        transport,
+                    );
+                    let mut text = String::new();
+                    let result = if with_tools {
+                        provider
+                            .complete_with_tools_stream(
+                                "SYS",
+                                &[Msg::User("question".into())],
+                                &[],
+                                &mut |delta| text.push_str(delta),
+                            )
+                            .map(|completion| completion.text.unwrap_or_default())
+                    } else {
+                        provider.complete_stream(
+                            "SYS",
+                            &[Msg::User("question".into())],
+                            &ResponseFormat::Text,
+                            &mut |delta| text.push_str(delta),
+                        )
+                    };
+                    server.join().unwrap();
+                    assert!(matches!(result, Err(ProviderError::Http(_))), "{result:?}");
+                    assert_eq!(text, "partial");
+                    let usage = provider.meter().snapshot();
+                    assert_eq!(usage.requests, 1);
+                    assert_eq!(usage.unreported_requests, u64::from(!final_usage));
+                    assert_eq!(usage.attributed_requests, u64::from(final_usage));
+                    assert_eq!(usage.reported_input, if final_usage { 13 } else { 0 });
+                    assert_eq!(usage.reported_output, if final_usage { 8 } else { 0 });
+                }
+            }
+        }
     }
 
     #[test]

@@ -210,7 +210,7 @@ impl Provider for AnthropicProvider {
         let mut blocks: BTreeMap<u64, (String, String, String)> = BTreeMap::new();
         let (mut input, mut output) = (0u64, 0u64);
         let (mut input_reported, mut output_reported) = (false, false);
-        read_sse(resp, |data| {
+        let stream_result = read_sse(resp, |data| {
             let v: Value = match serde_json::from_str(data) {
                 Ok(v) => v,
                 Err(_) => return,
@@ -275,9 +275,10 @@ impl Provider for AnthropicProvider {
                 }
                 _ => {}
             }
-        })?;
+        });
         self.meter
             .record_reported(input, output, input_reported && output_reported);
+        stream_result?;
 
         let tool_calls = blocks
             .into_values()
@@ -316,7 +317,7 @@ impl Provider for AnthropicProvider {
         let mut full = String::new();
         let (mut input, mut output) = (0u64, 0u64);
         let (mut input_reported, mut output_reported) = (false, false);
-        read_sse(resp, |data| {
+        let stream_result = read_sse(resp, |data| {
             if let Some(t) = Self::text_delta(data) {
                 full.push_str(&t);
                 sink(&t);
@@ -333,9 +334,10 @@ impl Provider for AnthropicProvider {
                     output_reported = true;
                 }
             }
-        })?;
+        });
         self.meter
             .record_reported(input, output, input_reported && output_reported);
+        stream_result?;
         Ok(full)
     }
 
@@ -461,6 +463,83 @@ fn extract_error_message(mut resp: HttpResponse) -> String {
 mod tests {
     use super::*;
     use crate::providers::AssistantMsg;
+
+    fn truncated_http_stream(body: String) -> (String, std::thread::JoinHandle<()>) {
+        use std::io::{BufRead, Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            let mut reader = std::io::BufReader::new(stream.try_clone().unwrap());
+            let mut length = 0usize;
+            loop {
+                let mut header = String::new();
+                assert!(reader.read_line(&mut header).unwrap() > 0);
+                if header == "\r\n" {
+                    break;
+                }
+                if let Some(value) = header.to_ascii_lowercase().strip_prefix("content-length:") {
+                    length = value.trim().parse().unwrap();
+                }
+            }
+            let mut request = vec![0; length];
+            reader.read_exact(&mut request).unwrap();
+            assert_eq!(
+                serde_json::from_slice::<Value>(&request).unwrap()["stream"],
+                true
+            );
+            write!(stream, "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len() + 64).unwrap();
+            stream.flush().unwrap();
+        });
+        (url, server)
+    }
+
+    #[test]
+    fn interrupted_http_streams_record_once_and_preserve_final_usage() {
+        for final_usage in [false, true] {
+            for with_tools in [false, true] {
+                let mut body = "data: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":13}}}\n\ndata: {\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\"partial\"}}\n\n".to_string();
+                if final_usage {
+                    body.push_str(
+                        "data: {\"type\":\"message_delta\",\"usage\":{\"output_tokens\":8}}\n\n",
+                    );
+                }
+                let (url, server) = truncated_http_stream(body);
+                let provider = AnthropicProvider::new(url, "k".into(), "claude-test".into());
+                let mut text = String::new();
+                let result = if with_tools {
+                    provider
+                        .complete_with_tools_stream(
+                            "SYS",
+                            &[Msg::User("question".into())],
+                            &[],
+                            &mut |delta| text.push_str(delta),
+                        )
+                        .map(|completion| completion.text.unwrap_or_default())
+                } else {
+                    provider.complete_stream(
+                        "SYS",
+                        &[Msg::User("question".into())],
+                        &ResponseFormat::Text,
+                        &mut |delta| text.push_str(delta),
+                    )
+                };
+                server.join().unwrap();
+                assert!(matches!(result, Err(ProviderError::Http(_))), "{result:?}");
+                assert_eq!(text, "partial");
+                let usage = provider.meter().snapshot();
+                assert_eq!(usage.requests, 1);
+                assert_eq!(usage.input, 13);
+                assert_eq!(usage.unreported_requests, u64::from(!final_usage));
+                assert_eq!(usage.attributed_requests, u64::from(final_usage));
+                assert_eq!(usage.reported_input, if final_usage { 13 } else { 0 });
+                assert_eq!(usage.reported_output, if final_usage { 8 } else { 0 });
+            }
+        }
+    }
 
     #[test]
     fn stream_usage_preserves_missing_fields_and_reported_zeroes() {

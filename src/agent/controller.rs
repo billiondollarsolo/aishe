@@ -681,8 +681,10 @@ fn audit_managed_events(
 }
 
 fn collect_usage(events: &[AgentEvent]) -> UsageDelta {
-    let mut total = UsageDelta::default();
-    total.reported = true;
+    let mut total = UsageDelta {
+        reported: true,
+        ..Default::default()
+    };
     let mut requests = 0u64;
     for usage in events.iter().filter_map(|event| match event {
         AgentEvent::Usage { usage } => Some(usage),

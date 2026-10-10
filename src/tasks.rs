@@ -51,6 +51,14 @@ pub struct UsageSummary {
     pub input: u64,
     pub output: u64,
     pub requests: u64,
+    /// Complete provider token reports. Missing on older checkpoints; raw
+    /// totals alone cannot establish whether a zero was reported or defaulted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reported_requests: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reported_input: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reported_output: Option<u64>,
 }
 
 impl From<Usage> for UsageSummary {
@@ -59,7 +67,48 @@ impl From<Usage> for UsageSummary {
             input: value.input,
             output: value.output,
             requests: value.requests,
+            reported_requests: Some(value.reported_requests()),
+            reported_input: Some(value.reported_input),
+            reported_output: Some(value.reported_output),
         }
+    }
+}
+
+impl UsageSummary {
+    fn reported_usage(&self) -> Option<(u64, u64, u64)> {
+        let (requests, input, output) = (
+            self.reported_requests?,
+            self.reported_input?,
+            self.reported_output?,
+        );
+        if requests > self.requests
+            || input > self.input
+            || output > self.output
+            || (requests == 0 && (input > 0 || output > 0))
+            || (requests == self.requests && (input != self.input || output != self.output))
+        {
+            return None;
+        }
+        Some((requests, input, output))
+    }
+
+    /// Display only complete provider token reports, independently of pricing.
+    pub fn tokens_label(&self) -> String {
+        let Some((requests, input, output)) = self.reported_usage() else {
+            return "tokens n/a · older usage unverified".into();
+        };
+        if requests == 0 && self.requests > 0 {
+            return "tokens n/a · usage unavailable".into();
+        }
+        let coverage = if requests < self.requests {
+            format!(
+                " (partial subtotal; {requests}/{} requests reported)",
+                self.requests
+            )
+        } else {
+            String::new()
+        };
+        format!("{input} input · {output} output tokens{coverage}")
     }
 }
 
@@ -235,7 +284,7 @@ impl Active {
             messages: Vec::new(),
             completed_tools: Vec::new(),
             pending_tool: None,
-            usage: UsageSummary::default(),
+            usage: Usage::default().into(),
             execution: ExecutionCounters::default(),
             execution_limits: None,
             steering_revision: 0,
@@ -256,7 +305,7 @@ impl Active {
         let mut active = Self {
             record,
             path,
-            usage_base: UsageSummary::default(),
+            usage_base: Usage::default().into(),
             usage_meter_start: Usage::default(),
         };
         timeline::push(
@@ -549,20 +598,22 @@ impl Active {
     }
 
     fn cumulative_usage(&self, usage: Usage) -> UsageSummary {
+        let delta = usage.delta_since(self.usage_meter_start);
+        // A historical checkpoint keeps its raw counts, but only newly
+        // observed complete reports may contribute to the verified subtotal.
+        let baseline = self.usage_base.reported_usage();
+        let (reported_requests, reported_input, reported_output) = baseline.unwrap_or((0, 0, 0));
+        let has_coverage = baseline.is_some() || delta.requests > 0;
         UsageSummary {
-            input: self
-                .usage_base
-                .input
-                .saturating_add(usage.input.saturating_sub(self.usage_meter_start.input)),
-            output: self
-                .usage_base
-                .output
-                .saturating_add(usage.output.saturating_sub(self.usage_meter_start.output)),
-            requests: self.usage_base.requests.saturating_add(
-                usage
-                    .requests
-                    .saturating_sub(self.usage_meter_start.requests),
-            ),
+            input: self.usage_base.input.saturating_add(delta.input),
+            output: self.usage_base.output.saturating_add(delta.output),
+            requests: self.usage_base.requests.saturating_add(delta.requests),
+            reported_requests: has_coverage
+                .then(|| reported_requests.saturating_add(delta.reported_requests())),
+            reported_input: has_coverage
+                .then(|| reported_input.saturating_add(delta.reported_input)),
+            reported_output: has_coverage
+                .then(|| reported_output.saturating_add(delta.reported_output)),
         }
     }
 
@@ -1181,6 +1232,64 @@ mod tests {
     use super::*;
 
     #[test]
+    fn token_reports_survive_checkpoints_without_requiring_a_model_price() {
+        let mut partial = Usage::reported(10, 5, 1);
+        partial.add(Usage::unknown(900, 200, 1));
+        let cases = [
+            (Usage::unknown(0, 0, 1), "tokens n/a · usage unavailable"),
+            (
+                Usage::reported(0, 0, 1).without_attribution(),
+                "0 input · 0 output tokens",
+            ),
+            (
+                partial.without_attribution(),
+                "10 input · 5 output tokens (partial subtotal; 1/2 requests reported)",
+            ),
+        ];
+        let mut task = Active::start(&Config::default(), Path::new("/tmp"), "usage reports");
+        let dir = std::env::temp_dir().join(format!("aishe-token-reports-{}", task.id()));
+        task.path = Some(dir.join("task.json"));
+        task.record.model = "unpriced-model".into();
+        for (usage, expected) in cases {
+            task.checkpoint_messages(&[], usage);
+            let saved = load_path(task.path.as_ref().unwrap()).unwrap();
+            assert_eq!(saved.model, "unpriced-model");
+            assert_eq!(saved.usage.tokens_label(), expected);
+            assert_eq!(
+                saved.usage.reported_requests,
+                Some(usage.reported_requests())
+            );
+            assert_eq!(saved.usage.reported_input, Some(usage.reported_input));
+            assert_eq!(saved.usage.reported_output, Some(usage.reported_output));
+        }
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn historical_token_totals_and_incomplete_coverage_remain_unverified() {
+        let legacy: UsageSummary = serde_json::from_value(serde_json::json!({
+            "input": 120, "output": 30, "requests": 2
+        }))
+        .unwrap();
+        assert_eq!(legacy.reported_requests, None);
+        assert_eq!(legacy.tokens_label(), "tokens n/a · older usage unverified");
+        let incomplete: UsageSummary = serde_json::from_value(serde_json::json!({
+            "input": 0, "output": 0, "requests": 1,
+            "reported_requests": 1, "reported_input": 0
+        }))
+        .unwrap();
+        assert!(incomplete.tokens_label().starts_with("tokens n/a"));
+        let task = Active::start(&Config::default(), Path::new("/tmp"), "old task");
+        let mut old = serde_json::to_value(task.record()).unwrap();
+        old.as_object_mut().unwrap().remove("usage");
+        let old: Record = serde_json::from_value(old).unwrap();
+        assert_eq!(
+            old.usage.tokens_label(),
+            "tokens n/a · older usage unverified"
+        );
+    }
+
+    #[test]
     fn legacy_and_partial_costs_never_appear_as_a_verified_zero() {
         let legacy: ExecutionCounters = serde_json::from_value(serde_json::json!({
             "provider_turns": 2, "tool_calls": 0, "network_calls": 0,
@@ -1475,6 +1584,7 @@ mod tests {
             input: 100,
             output: 20,
             requests: 2,
+            ..UsageSummary::default()
         };
         let mut resumed = Active {
             record: task.record.clone(),
@@ -1483,14 +1593,70 @@ mod tests {
             usage_meter_start: Usage::default(),
         };
         resumed.set_usage_baseline(Usage::reported(50, 10, 1));
+        resumed.checkpoint_messages(&[], Usage::reported(50, 10, 1));
+        assert_eq!(resumed.record.usage.reported_requests, None);
+        assert_eq!(
+            resumed.record.usage.tokens_label(),
+            "tokens n/a · older usage unverified"
+        );
         resumed.checkpoint_messages(&[], Usage::reported(80, 17, 2));
         assert_eq!(resumed.record.usage.input, 130);
         assert_eq!(resumed.record.usage.output, 27);
         assert_eq!(resumed.record.usage.requests, 3);
+        assert_eq!(resumed.record.usage.reported_requests, Some(1));
+        assert_eq!(resumed.record.usage.reported_input, Some(30));
+        assert_eq!(resumed.record.usage.reported_output, Some(7));
+        assert_eq!(
+            resumed.record.usage.tokens_label(),
+            "30 input · 7 output tokens (partial subtotal; 1/3 requests reported)"
+        );
         // Repeated checkpoints must not add the attempt twice.
         resumed.checkpoint_messages(&[], Usage::reported(90, 18, 3));
         assert_eq!(resumed.record.usage.input, 140);
         assert_eq!(resumed.record.usage.requests, 4);
+        assert_eq!(resumed.record.usage.reported_requests, Some(2));
+        assert_eq!(resumed.record.usage.reported_input, Some(40));
+        assert_eq!(resumed.record.usage.reported_output, Some(8));
+        assert!(resumed
+            .record
+            .usage
+            .tokens_label()
+            .contains("2/4 requests reported"));
+    }
+
+    #[test]
+    fn resumed_token_reports_preserve_verified_subtotals_and_exclude_prior_session_work() {
+        let mut prior_attempt = Usage::reported(100, 20, 1).without_attribution();
+        prior_attempt.add(Usage::unknown(50, 10, 1));
+        let mut task = Active::start(&Config::default(), Path::new("/tmp"), "continue reports");
+        task.path = None;
+        task.checkpoint_messages(&[], prior_attempt);
+        let saved: Record =
+            serde_json::from_slice(&serde_json::to_vec(task.record()).unwrap()).unwrap();
+        let mut resumed = Active {
+            usage_base: saved.usage.clone(),
+            record: saved,
+            path: None,
+            usage_meter_start: Usage::default(),
+        };
+        let baseline = Usage::reported(1000, 500, 10);
+        resumed.set_usage_baseline(baseline);
+        let mut meter = baseline;
+        meter.add(Usage::reported(20, 5, 1).without_attribution());
+        meter.add(Usage::unknown(900, 100, 1));
+        for _ in 0..2 {
+            resumed.checkpoint_messages(&[], meter);
+            assert_eq!(resumed.record.usage.input, 1070);
+            assert_eq!(resumed.record.usage.output, 135);
+            assert_eq!(resumed.record.usage.requests, 4);
+            assert_eq!(resumed.record.usage.reported_requests, Some(2));
+            assert_eq!(resumed.record.usage.reported_input, Some(120));
+            assert_eq!(resumed.record.usage.reported_output, Some(25));
+            assert_eq!(
+                resumed.record.usage.tokens_label(),
+                "120 input · 25 output tokens (partial subtotal; 2/4 requests reported)"
+            );
+        }
     }
 
     #[test]

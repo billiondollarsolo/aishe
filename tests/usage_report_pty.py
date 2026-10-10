@@ -179,6 +179,14 @@ def coverage_reports(env, ledger):
         assert total["attributed_requests"] == 0 and total["cost_usd"] is None, total
         assert "1,000 in · 200 out" in text and "(partial)" not in text and "cost n/a" in text, text
 
+    # A malformed response can fail after authoritative counters were metered.
+    # Failed calls remain consumption; their outcome is not a successful reply.
+    total, text = report([dict(known, outcome="error")])
+    assert total["requests"] == 1 and total["reported_tokens_in"] == 1000, total
+    assert total["cost_usd"] == total["known_cost_subtotal_usd"], total
+    assert abs(total["cost_usd"] - 0.0045) < 1e-10, total
+    assert "1 failed turn(s)" in text and "~$0.0045" in text, text
+
 
 if __name__ == "__main__":
     main()

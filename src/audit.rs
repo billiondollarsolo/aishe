@@ -328,11 +328,32 @@ pub fn ai_response_with_usage(
     usage: crate::usage::Usage,
 ) {
     let mut fields = response_usage_fields(mode, config, usage);
-    ledger::record(fields.clone());
+    fields["outcome"] = json!("success");
+    if !usage.is_empty() {
+        ledger::record(fields.clone());
+    }
     if let Some(object) = fields.as_object_mut() {
         object.insert("summary".into(), Value::String(field(summary)));
     }
     event("ai_response", fields);
+}
+
+/// A response can consume tokens before its content fails validation or its
+/// stream ends with an error. Record those counters once without labelling the
+/// failed call a successful response or persisting its error text in the ledger.
+pub fn ai_error_with_usage(
+    mode: &str,
+    config: &crate::config::Config,
+    error: &str,
+    usage: crate::usage::Usage,
+) {
+    let mut fields = response_usage_fields(mode, config, usage);
+    fields["outcome"] = json!("error");
+    if !usage.is_empty() {
+        ledger::record(fields.clone());
+    }
+    fields["error"] = Value::String(field(error));
+    event("ai_error", fields);
 }
 
 fn response_usage_fields(

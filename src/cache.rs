@@ -1,8 +1,8 @@
 //! A small in-memory, TTL'd cache for model responses, and a [`Provider`]
 //! decorator that serves repeat completions from it. Only the non-streaming
-//! `complete` path (suggest mode) is cached; streaming and the agentic tool loop
-//! always reach the real provider. A cache hit records no token usage, so an
-//! identical repeat costs nothing and returns instantly.
+//! `complete` path (suggest mode) is cached; uncached planning, streaming, and
+//! the agentic tool loop always reach the real provider. A cache hit records no
+//! token usage, so an identical repeat costs nothing and returns instantly.
 //!
 //! The cache key is the `(model, system prompt, current request, response
 //! format)` tuple. The "current request" is the last message — for suggest mode
@@ -147,6 +147,15 @@ impl Provider for CachingProvider {
         let value = self.inner.complete(system, messages, format)?;
         self.cache.put(key, value.clone());
         Ok(value)
+    }
+
+    fn complete_uncached(
+        &self,
+        system: &str,
+        messages: &[Msg],
+        format: &ResponseFormat,
+    ) -> Result<String, ProviderError> {
+        self.inner.complete_uncached(system, messages, format)
     }
 
     fn complete_stream(

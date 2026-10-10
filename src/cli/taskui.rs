@@ -994,10 +994,7 @@ fn detail_lines(details: &TaskDetails, notice: Option<&str>) -> Vec<String> {
                 execution.provider_turns, execution.tool_calls, execution.network_calls
             )
         });
-        lines.push(format!(
-            "Usage: {} input · {} output tokens",
-            checkpoint.usage.input, checkpoint.usage.output
-        ));
+        lines.push(format!("Usage: {}", checkpoint.usage.tokens_label()));
         lines.push(format!("Cost: {}", execution.cost_label()));
         if matches!(
             record.state,

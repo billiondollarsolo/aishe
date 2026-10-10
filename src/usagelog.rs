@@ -102,6 +102,11 @@ pub fn parse_entries(text: &str) -> Vec<Entry> {
         let Ok(requests) = requests.trim().parse::<u64>() else {
             continue;
         };
+        // Writers omit empty usage. A nonempty history row with no requests
+        // cannot be silently dropped from positive-budget admission.
+        if requests == 0 {
+            continue;
+        }
         let mut usage = Usage::unknown(input, output, requests);
         if parts.first() == Some(&"v3") {
             let (Ok(unreported), Ok(reported_input), Ok(reported_output)) = (
@@ -549,6 +554,8 @@ mod tests {
             "v3\t0\t0\t1\tgpt-4o\twork\t2\t0\t0",
             "v3\t5\t0\t1\tgpt-4o\twork\t0\t0\t0",
             "v3\t5\t0\t1\tgpt-4o\twork\t1\t5\t0",
+            "v2\t1000\t500\t0\tgpt-4o\twork",
+            "v3\t0\t0\t0\tgpt-4o\twork\t0\t0\t0\t0\t0\t0",
         ] {
             assert!(parse_entries(line).is_empty(), "{line}");
         }

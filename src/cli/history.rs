@@ -508,7 +508,12 @@ fn ledger_entries() -> Vec<crate::audit::Entry> {
             crate::audit::Entry {
                 ts_ms: number("ts_ms").unwrap_or(0),
                 session: string("session").unwrap_or_default(),
-                kind: "ai_response".to_string(),
+                kind: if string("outcome").as_deref() == Some("error") {
+                    "ai_error"
+                } else {
+                    "ai_response"
+                }
+                .to_string(),
                 model: string("model"),
                 connection_id: string("connection_id"),
                 provider: string("provider"),
@@ -773,9 +778,13 @@ pub fn usage(
         }
         if e.kind == "ai_error" {
             errors += 1;
-            continue;
+            // Legacy error events carry no measured usage. A failed native
+            // response with counters still belongs in token/cost totals.
+            if e.requests.unwrap_or(0) == 0 {
+                continue;
+            }
         }
-        if e.kind != "ai_response" {
+        if e.kind != "ai_response" && e.kind != "ai_error" {
             continue;
         }
         let model = e.model.as_deref().unwrap_or("?");
