@@ -52,6 +52,8 @@ The adoption review found the following concrete problems:
 | AD-18 | Untrusted project overlays can switch shell profiles or use the canonical autonomous mode alias | A cloned project can change the user's interpreter/startup expectations without an explicit trust decision |
 | AD-19 | Last-command fix/explain helpers are omitted from noninteractive classification | An interactive shortcut can capture a nested shell instead of a correction |
 | AD-20 | Absolute-path installer launch leaves internal shell controls dependent on PATH | `/setup` can silently fail before the new executable directory is configured |
+| AD-21 | Setup's saved next-step examples use fixed aligned columns | At 32 columns, explanations split into isolated letters and unreadable fragments |
+| AD-22 | Settings immediately redraws its menu after showing a prompt preview | On an 18-row terminal, the preview scrolls away before the user can inspect it |
 
 ### Existing evidence and its limits
 
@@ -204,6 +206,7 @@ The checkbox status will be reconciled with actual candidate evidence.
 - [ ] A7 Qualify isolated fresh-home shell launch, providerless direct commands,
   personal startup preservation, Bash selection, reconnect/setup, settings persistence,
   and internal controls when the executable is outside PATH.
+- [ ] A8 Wrap saved setup examples by terminal width while keeping commands and their meaning readable.
 
 ### B. Native discovery and prompt consistency
 
@@ -212,6 +215,7 @@ The checkbox status will be reconciled with actual candidate evidence.
 - [ ] B3 Preserve staged input, cancellation, prefix/path/argument completion, and concurrent-shell isolation.
 - [ ] B4 Align actual prompt fields and Settings previews; indicate unknown usage honestly.
 - [ ] B5 Capture real PTY behavior at normal, narrow, and short viewports.
+- [ ] B6 Keep prompt previews visible until the user explicitly returns to Settings.
 
 ### C. Honest and usable task results
 
@@ -341,3 +345,31 @@ default task directory. Activation owns a versioned public JSON contract.
 Current-format usage fixtures prove verified subtotals, and legacy fixtures
 separately prove unavailable coverage. UI qualification reads plain-text
 offsets and explicitly scrolls beyond authority fields to reach long results.
+
+The clean local `8a7df84b56abd77a9890c4b3d77283f1ae57a40a` candidate
+passed all twelve core gates, including 1,114 Rust tests across 37 targets.
+Its original Linux startup gate passed at 1.841 ms added p95. Actual short-screen
+captures then exposed AD-21 and AD-22; those observations require production
+UI corrections and new-source qualification. The native run also stopped at a
+local harness arrangement error: its copied binary lacked the adjacent release
+library needed to compile prompt fixtures. Retain that failed manifest; the
+next immutable test profile includes the matching library and dependencies.
+These intermediate passes do not qualify the final release source.
+
+The subsequent hosted `a09c705` source retained a macOS startup failure:
+11.145 ms added p95 against 10.000 ms, using the original sample and threshold.
+Its diagnostic child CPU cost for direct-command overhead (3.936 ms) nearly
+equaled executable startup via `--version` (3.962 ms); inheriting active history
+and avoiding a config read saved only 0.165 ms. This supports a further
+production build change: full link-time optimization and one code-generation
+unit, retaining unwinding and platform TLS trust. Measure the resulting binary
+size and qualify its original platform startup gates; do not assume a gain or
+replace failed evidence with a quieter diagnostic run.
+The `--version` diagnostic also constructs the CLI parser; it is not a pure
+loader measurement and does not establish a loader-only cost or cause.
+Inspection of the actual `8a7df84` Linux release assembly also found an
+11,896-byte rich-orchestration stack frame and two page probes allocated before
+ordinary-command admission. Keep the same admission logic in a small entry
+function and call the rich orchestration only after a miss, preventing that
+unnecessary allocation. This is observed instruction-level work removed, not
+a claim about its macOS wall-time gain; the unchanged end-to-end gate decides.

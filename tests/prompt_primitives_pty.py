@@ -64,9 +64,9 @@ def compile_fixture(binary: pathlib.Path, directory: pathlib.Path) -> pathlib.Pa
     source = directory / "prompt_fixture.rs"
     source.write_text(FIXTURE, encoding="utf-8")
     fixture = directory / "prompt_fixture"
-    # Release archives contain ThinLTO bitcode and must be linked by rustc's
+    # Release archives contain LTO bitcode and must be linked by rustc's
     # matching LTO pipeline instead of being passed directly to the system ld.
-    profile_flags = ["-C", "lto=thin", "-C", "opt-level=3"] if binary.parent.name == "release" else []
+    profile_flags = ["-C", "lto=fat", "-C", "opt-level=3"] if binary.parent.name == "release" else []
     subprocess.run(
         [compiler, "--edition=2021", *profile_flags, str(source), "--extern", "aishe=" + str(library),
          "-L", "dependency=" + str(binary.parent / "deps"), "-o", str(fixture)],

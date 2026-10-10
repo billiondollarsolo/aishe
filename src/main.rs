@@ -32,7 +32,7 @@ fn main() -> ExitCode {
     unsafe {
         libc::signal(libc::SIGPIPE, libc::SIG_DFL);
     }
-    match run() {
+    match run_entry() {
         Ok(code) => ExitCode::from(code),
         Err(error) => {
             let public = aishe::user_error::UserError::from_error(error.as_ref());
@@ -51,10 +51,16 @@ fn main() -> ExitCode {
     }
 }
 
-fn run() -> Result<u8> {
+// Ordinary commands should not allocate the rich orchestration stack frame.
+fn run_entry() -> Result<u8> {
     if let Some((command, forced)) = args::fast_shell_command(std::env::args_os()) {
         return run_fast_shell_command(&command, forced);
     }
+    run()
+}
+
+#[inline(never)]
+fn run() -> Result<u8> {
     let args = Args::parse();
     aishe::ui::set_machine_output(args.machine_output());
 

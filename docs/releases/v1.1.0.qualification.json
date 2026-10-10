@@ -3,7 +3,7 @@
   "version": "1.1.0",
   "decision": "hold",
   "release_owner": "billiondollarsolo",
-  "production_source_sha256": "5cf55cc6cddf20d5b72de64816bdf8fe638c5f2ccca2ceb084166d708b134ee2",
+  "production_source_sha256": "76e1fbe48f6166a20854d853988e39292cf10c2ed1422fe7632bd7baf7cf04ab",
   "qualification_profile_revision": "2026-10-10.1",
   "prepared_at": "2026-10-10",
   "published": false,
@@ -63,6 +63,15 @@
       "linux_added_p95_ms": 1.585,
       "macos_added_p95_ms": 6.748,
       "reason": "Original startup, adoption, managed-runtime and legacy gates passed; explicit piped-agent fixture and task-UI observation contracts needed correction."
+    },
+    {
+      "branch_commit": "a09c7050512a49f67305a8c44588ff7854e5512e",
+      "tested_commit": "f94b7165da4d321a8a8a40e522d765b917410ad8",
+      "ci_run_id": 38021294912,
+      "state": "fail",
+      "linux_added_p95_ms": 1.187,
+      "macos_added_p95_ms": 11.145,
+      "reason": "Original macOS startup SLO failed; generated Trust help was stale on both native jobs, and managed runtime toolchain download timed out before tests. New source includes help/UI corrections and full LTO with one code-generation unit; retained diagnostic passes do not replace this failure."
     }
   ]
 }

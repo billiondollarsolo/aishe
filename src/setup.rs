@@ -266,17 +266,44 @@ pub fn next_action_for(code: u8) -> &'static str {
 }
 
 pub fn completion_next_steps(launch_follows: bool) -> String {
+    completion_next_steps_at_width(launch_follows, crate::promptui::terminal_size().0)
+}
+
+fn completion_next_steps_at_width(launch_follows: bool, width: usize) -> String {
     let mut out = String::from("\n");
+    let mut paragraph = |indent: usize, text: &str| {
+        let available = width.saturating_sub(indent).max(1);
+        let lines = if crate::ui::cell_width(text) <= available {
+            vec![text.to_string()]
+        } else {
+            crate::ui::wrap_cells(text, available)
+        };
+        for line in lines {
+            out.push_str(&" ".repeat(indent));
+            out.push_str(&line);
+            out.push('\n');
+        }
+    };
     if launch_follows {
-        out.push_str("  Starting your shell…\n");
+        paragraph(2, "Starting your shell…");
     } else {
-        out.push_str("  Run: aishe\n");
+        paragraph(2, "Run: aishe");
     }
-    out.push_str("  Inside AIShe:\n");
-    out.push_str("    git status                 runs in zsh\n");
-    out.push_str("    explain this repository    asks the agent\n");
-    out.push_str("    ? install kubectl please   asks the agent, not /usr/bin/install\n");
-    out.push_str("\n  Run `aishe tour` when you are ready.\n");
+    paragraph(2, "Inside AIShe:");
+    for (command, description) in [
+        ("git status", "runs in your shell"),
+        ("explain this repository", "asks the agent"),
+        ("? install kubectl please", "? forces AI routing"),
+    ] {
+        if width >= 72 {
+            paragraph(4, &format!("{command:<27}{description}"));
+        } else {
+            paragraph(4, command);
+            paragraph(6, description);
+        }
+    }
+    paragraph(0, "");
+    paragraph(2, "Run `aishe tour` when you are ready.");
     out
 }
 

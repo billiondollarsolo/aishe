@@ -2,7 +2,7 @@
 //! All edits happen against a draft and are written only after final review.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::io::IsTerminal;
+use std::io::{IsTerminal, Write};
 use std::path::PathBuf;
 
 use anyhow::{Context, Result};
@@ -970,7 +970,7 @@ fn prompt_section(config: &mut Config) -> Result<()> {
             MenuResult::Selected(0) => config.aishe.pty_prompt = !config.aishe.pty_prompt,
             MenuResult::Selected(1) => choose_status_position(config)?,
             MenuResult::Selected(2) => choose_status_items(config)?,
-            MenuResult::Selected(3) => print_status_preview(config),
+            MenuResult::Selected(3) => print_status_preview(config)?,
             MenuResult::Selected(4) | MenuResult::Back | MenuResult::Cancel => return Ok(()),
             MenuResult::Selected(_) => {}
         }
@@ -1073,7 +1073,7 @@ fn choose_status_position(config: &mut Config) -> Result<()> {
     )? {
         config.aishe.status_line = index == 0;
         config.aishe.status_line_position = ["right", "off"][index].into();
-        print_status_preview(config);
+        print_status_preview(config)?;
     }
     Ok(())
 }
@@ -1169,31 +1169,44 @@ fn choose_status_items(config: &mut Config) -> Result<()> {
         }
         _ => return Ok(()),
     }
-    print_status_preview(config);
+    print_status_preview(config)?;
     Ok(())
 }
 
-fn print_status_preview(config: &Config) {
-    promptui::section("Prompt preview (illustrative)");
+fn status_preview_lines(config: &Config, width: usize) -> Vec<String> {
+    let mut lines = Vec::new();
+    let mut paragraph = |label: &str, value: &str| {
+        let value = crate::commands::display_safe(value);
+        let text = if label.is_empty() {
+            value
+        } else {
+            format!("{label}: {value}")
+        };
+        lines.extend(crate::ui::wrap_cells(&text, width.max(1)));
+    };
     if config.aishe.shell_profile == "bash" {
-        promptui::key_value("Prompt", "Your Bash prompt and Readline are retained");
-        promptui::note("Bash uses the lighter shell integration. Native right-side task and usage indicators require a zsh shell experience.");
-        return;
+        paragraph("Prompt", "Your Bash prompt and Readline are retained");
+        paragraph("", "Bash uses the lighter shell integration. Native right-side task and usage indicators require a zsh shell experience.");
+        return lines;
     }
     if config.aishe.shell_profile == "personal" {
-        promptui::key_value("Left", "Your zsh prompt is retained");
-        promptui::key_value(
+        let separator = crate::ui::TerminalCapabilities::detect_stdout()
+            .glyphs()
+            .separator();
+        paragraph("Left", "Your zsh prompt is retained");
+        paragraph(
             "Right",
             &format!(
-                "Your right prompt · {} · <background work>",
+                "Your right prompt {separator} {} {separator} <background work>",
                 mode_label(config)
             ),
         );
-        promptui::note("Mode and background indicators are added beside your existing right prompt. Model and usage fields belong to the Clean AIShe prompt.");
-        return;
+        paragraph("", "Mode and background indicators are added beside your existing right prompt. Model and usage fields belong to the Clean AIShe prompt.");
+        return lines;
     }
     if !config.aishe.pty_prompt {
-        promptui::note(
+        paragraph(
+            "",
             "Your own shell prompt is retained. AIShe's mode indicator requires the AIShe prompt.",
         );
     } else {
@@ -1202,14 +1215,14 @@ fn print_status_preview(config: &Config) {
         } else {
             " [grant needed]"
         };
-        promptui::key_value(
+        paragraph(
             "Left",
             &format!("project {}{} >", mode_label(config), grant),
         );
     }
     if !config.aishe.status_line {
-        promptui::key_value("Right", "off");
-        return;
+        paragraph("Right", "off");
+        return lines;
     }
     let mut values: Vec<String> = vec![
         config.active_model().into(),
@@ -1230,8 +1243,65 @@ fn print_status_preview(config: &Config) {
             values.push(example.into());
         }
     }
-    promptui::key_value("Right", &values.join(" / "));
-    promptui::note("Placeholders show where real activity appears. Metadata shrinks on narrow terminals and yields to a long command; mode and scope stay visible.");
+    paragraph("Right", &values.join(" / "));
+    paragraph("", "Placeholders show where real activity appears. Metadata shrinks on narrow terminals and yields to a long command; mode and scope stay visible.");
+    lines
+}
+
+fn print_status_preview(config: &Config) -> Result<()> {
+    use promptui::PickerKey;
+
+    let capabilities = crate::ui::TerminalCapabilities::detect_stdout();
+    let mut keys = promptui::PickerInput::open()?;
+    let guard = promptui::RawGuard::enter()?;
+    let mut drawn_rows = 0;
+    let mut offset = 0_usize;
+    let mut previous_frame = Vec::new();
+    let mut previous_size = (0, 0);
+    loop {
+        let (columns, rows) = promptui::terminal_size();
+        let width = columns.saturating_sub(1).max(1);
+        let body = status_preview_lines(config, width);
+        let available = rows.saturating_sub(5).max(1);
+        let maximum = body.len().saturating_sub(available);
+        offset = offset.min(maximum);
+        let end = (offset + available).min(body.len());
+        let mut frame = vec!["Prompt preview (illustrative)".into(), String::new()];
+        frame.extend(body[offset..end].iter().cloned());
+        if maximum > 0 {
+            frame.push(format!("Lines {}-{} of {}", offset + 1, end, body.len()));
+            frame.push("Up/Down scroll | Enter/Esc Back".into());
+        } else {
+            frame.push(String::new());
+            frame.push("Enter/Esc Back".into());
+        }
+        if frame != previous_frame || (columns, rows) != previous_size {
+            if capabilities.motion == crate::ui::Motion::Static {
+                for line in &frame {
+                    let line = crate::ui::truncate_cells_with(line, width, capabilities.glyphs);
+                    write!(std::io::stdout(), "{line}\r\n")?;
+                }
+            } else {
+                promptui::draw_raw_frame(&frame, &mut drawn_rows, &capabilities);
+            }
+            std::io::stdout().flush()?;
+            previous_frame = frame;
+            previous_size = (columns, rows);
+        }
+        match keys.read_live_key(100)? {
+            Some(PickerKey::Enter | PickerKey::Cancel | PickerKey::Interrupt)
+            | Some(PickerKey::Character('b' | 'q')) => break,
+            Some(PickerKey::Up) => offset = offset.saturating_sub(1),
+            Some(PickerKey::Down) => offset = (offset + 1).min(maximum),
+            Some(PickerKey::PageUp) => offset = offset.saturating_sub(available),
+            Some(PickerKey::PageDown) => offset = (offset + available).min(maximum),
+            Some(PickerKey::Home) => offset = 0,
+            Some(PickerKey::End) => offset = maximum,
+            _ => {}
+        }
+    }
+    drop(guard);
+    Ok(())
 }
 
 fn safety_section(config: &mut Config) -> Result<()> {

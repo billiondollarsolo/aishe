@@ -3,6 +3,7 @@
 
 import os
 from pathlib import Path
+import re
 import shutil
 import subprocess
 import tempfile
@@ -51,6 +52,12 @@ def run_setup_later(root, profile, existing=False):
         shell.line()
         shell.expect("Shell ready")
         assert shell.finish() == 0, shell.transcript
+        next_steps = shell.transcript.split("Inside AIShe:", 1)[1]
+        next_steps = re.sub(r"\x1b\[[0-?]*[ -/]*[@-~]", "", next_steps).replace("\r", "")
+        assert all(len(line) <= 32 for line in next_steps.splitlines()), next_steps
+        assert "? install kubectl please" in next_steps, next_steps
+        assert "runs in your shell" in next_steps, next_steps
+        assert "asks the agent" in next_steps, next_steps
         assert "Available models" not in shell.transcript, shell.transcript
         assert not (root / "managed-start-spy").exists()
         return tomllib.loads(config_path(root).read_text())
