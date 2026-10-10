@@ -6,7 +6,7 @@ use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::{FileTypeExt, MetadataExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 
 use anyhow::{anyhow, Context, Result};
@@ -153,10 +153,100 @@ pub struct IpcGuard {
     pub rep_path: PathBuf,
     pub busy: Arc<AtomicBool>,
     pub cancelled: Arc<AtomicBool>,
-    stop: Arc<AtomicBool>,
+    pub(crate) control: Arc<RequestControl>,
     thread: Option<JoinHandle<()>>,
     background_thread: Option<JoinHandle<()>>,
     background_events: Option<PathBuf>,
+}
+
+#[derive(Clone, Copy, Default)]
+enum RequestPhase {
+    #[default]
+    Idle,
+    Active,
+    Publishing,
+}
+
+/// Own a request from initial preparation through its complete postlude.
+/// Lock order is control -> display; IPC producers only take the display lock.
+/// Provider/tool calls and FIFO publication never hold the control mutex.
+pub(crate) struct RequestControl {
+    phase: Mutex<RequestPhase>,
+    busy: Arc<AtomicBool>,
+    cancelled: Arc<AtomicBool>,
+    stop: Arc<AtomicBool>,
+}
+
+impl RequestControl {
+    fn new(busy: Arc<AtomicBool>, cancelled: Arc<AtomicBool>, stop: Arc<AtomicBool>) -> Self {
+        Self {
+            phase: Mutex::new(RequestPhase::Idle),
+            busy,
+            cancelled,
+            stop,
+        }
+    }
+
+    fn begin(&self, interrupted: &AtomicBool) -> bool {
+        let mut phase = self.phase.lock().unwrap_or_else(|error| error.into_inner());
+        if self.stop.load(Ordering::SeqCst) {
+            return false;
+        }
+        self.cancelled.store(false, Ordering::SeqCst);
+        interrupted.store(false, Ordering::SeqCst);
+        self.busy.store(true, Ordering::SeqCst);
+        *phase = RequestPhase::Active;
+        true
+    }
+
+    pub(crate) fn is_busy(&self) -> bool {
+        self.busy.load(Ordering::SeqCst)
+    }
+
+    /// Return whether Ctrl-C belongs to this request, rather than the child
+    /// shell. A published reply is immutable: consume late Ctrl-C without
+    /// claiming cancellation or interrupting the shell's FIFO read.
+    pub(crate) fn cancel(&self, display: &PtyOut, interrupted: &AtomicBool) -> bool {
+        let phase = self.phase.lock().unwrap_or_else(|error| error.into_inner());
+        match *phase {
+            RequestPhase::Idle => false,
+            RequestPhase::Publishing => true,
+            RequestPhase::Active => {
+                if !self.cancelled.swap(true, Ordering::SeqCst) {
+                    interrupted.store(true, Ordering::SeqCst);
+                    display.write_user_line("\naishe: cancelling; waiting for current operation");
+                }
+                true
+            }
+        }
+    }
+
+    fn finish(&self, rep: &mut impl Write, reply: &str) -> std::io::Result<()> {
+        let committed = {
+            let mut phase = self.phase.lock().unwrap_or_else(|error| error.into_inner());
+            let committed = if self.cancelled.load(Ordering::SeqCst) {
+                "CANCELLED"
+            } else {
+                reply
+            };
+            *phase = RequestPhase::Publishing;
+            committed
+        };
+        // The child may temporarily stop reading. Keep control responsive
+        // while publishing the already-committed, single outstanding reply.
+        let result = writeln!(rep, "{committed}").and_then(|()| rep.flush());
+        let mut phase = self.phase.lock().unwrap_or_else(|error| error.into_inner());
+        *phase = RequestPhase::Idle;
+        self.busy.store(false, Ordering::SeqCst);
+        result
+    }
+
+    fn stop(&self, interrupted: &AtomicBool) {
+        let _phase = self.phase.lock().unwrap_or_else(|error| error.into_inner());
+        self.stop.store(true, Ordering::SeqCst);
+        self.cancelled.store(true, Ordering::SeqCst);
+        interrupted.store(true, Ordering::SeqCst);
+    }
 }
 
 /// Poll the shared task index independently of the foreground agent. Only a
@@ -211,7 +301,7 @@ fn spawn_background_watcher(
                             }
                         }
                     }
-                    std::thread::park_timeout(std::time::Duration::from_secs(2));
+                    std::thread::park_timeout(std::time::Duration::from_secs(5));
                 }
             })?,
     ))
@@ -249,10 +339,16 @@ pub fn spawn_ipc_with_files(
     let stop = Arc::new(AtomicBool::new(false));
     let busy = Arc::new(AtomicBool::new(false));
     let cancelled = Arc::new(AtomicBool::new(false));
+    let control = Arc::new(RequestControl::new(
+        Arc::clone(&busy),
+        Arc::clone(&cancelled),
+        Arc::clone(&stop),
+    ));
     let background_thread = spawn_background_watcher(&files, &stop)?;
     let background_events = files.background_events.clone();
-    let busy_thread = Arc::clone(&busy);
+    let control_thread = Arc::clone(&control);
     let cancelled_thread = Arc::clone(&cancelled);
+    let pty = pty.with_cancel_flag(Arc::clone(&cancelled));
     let stop_thread = Arc::clone(&stop);
     let req_path_thread = req_path.clone();
     let cwd = std::env::current_dir()
@@ -295,6 +391,9 @@ pub fn spawn_ipc_with_files(
                 if raw == "STOP" {
                     break;
                 }
+                if !control_thread.begin(&crate::agent::controller::INTERRUPTED) {
+                    break;
+                }
                 let operation = raw.split('\t').next().unwrap_or("");
                 if matches!(operation, "NL" | "FIX" | "CONFIRM_YES" | "SLASH") {
                     if let Some(path) = &files.execution_state {
@@ -304,8 +403,7 @@ pub fn spawn_ipc_with_files(
                                 executor.replace_agent_environment(environment, &denied);
                             }
                             Err(error) => {
-                                let _ = writeln!(rep, "ERROR\t{error}");
-                                let _ = rep.flush();
+                                let _ = control_thread.finish(&mut rep, &format!("ERROR\t{error}"));
                                 continue;
                             }
                         }
@@ -315,12 +413,13 @@ pub fn spawn_ipc_with_files(
                     Ok(true) => provider = None,
                     Ok(false) => {}
                     Err(error) => {
-                        let _ = writeln!(
-                            rep,
-                            "ERROR\t{}",
-                            crate::commands::display_safe(&error.to_string())
+                        let _ = control_thread.finish(
+                            &mut rep,
+                            &format!(
+                                "ERROR\t{}",
+                                crate::commands::display_safe(&error.to_string())
+                            ),
                         );
-                        let _ = rep.flush();
                         continue;
                     }
                 }
@@ -353,26 +452,24 @@ pub fn spawn_ipc_with_files(
                     .unwrap_or_default();
                 let call_model = config.active_model().to_string();
                 let call_connection = config.active_connection_id().to_string();
-                cancelled_thread.store(false, Ordering::SeqCst);
-                crate::agent::controller::INTERRUPTED.store(false, Ordering::SeqCst);
-                busy_thread.store(true, Ordering::SeqCst);
                 let _handoff_control = files
                     .handoff_control
                     .as_deref()
                     .map(crate::agent::native::handoff::ControlGuard::set);
-                let mut reply = crate::lean::handle_ipc_line(
-                    &mut config,
-                    &mut provider,
-                    &mut executor,
-                    &mut session,
-                    &mut store,
-                    &mut warm,
-                    &pty,
-                    raw,
-                );
-                if cancelled_thread.load(Ordering::SeqCst) {
-                    reply = "CANCELLED".into();
-                }
+                let reply = if cancelled_thread.load(Ordering::SeqCst) {
+                    "CANCELLED".into()
+                } else {
+                    crate::lean::handle_ipc_line(
+                        &mut config,
+                        &mut provider,
+                        &mut executor,
+                        &mut session,
+                        &mut store,
+                        &mut warm,
+                        &pty,
+                        raw,
+                    )
+                };
                 let after = provider
                     .as_ref()
                     .map(|p| p.meter().snapshot())
@@ -409,9 +506,7 @@ pub fn spawn_ipc_with_files(
                         .get(config.active_connection_id())
                         .map(|(usage, model)| (*usage, model.as_str())),
                 );
-                let _ = writeln!(rep, "{reply}");
-                let _ = rep.flush();
-                busy_thread.store(false, Ordering::SeqCst);
+                let _ = control_thread.finish(&mut rep, &reply);
             }
             let _ = std::fs::remove_file(req_path_thread);
         })?;
@@ -421,7 +516,7 @@ pub fn spawn_ipc_with_files(
         rep_path,
         busy,
         cancelled,
-        stop,
+        control,
         thread: Some(thread),
         background_thread,
         background_events,
@@ -430,9 +525,7 @@ pub fn spawn_ipc_with_files(
 
 impl Drop for IpcGuard {
     fn drop(&mut self) {
-        self.cancelled.store(true, Ordering::SeqCst);
-        crate::agent::controller::INTERRUPTED.store(true, Ordering::SeqCst);
-        self.stop.store(true, Ordering::SeqCst);
+        self.control.stop(&crate::agent::controller::INTERRUPTED);
         if let Some(thread) = self.background_thread.take() {
             thread.thread().unpark();
             let _ = thread.join();
@@ -468,6 +561,204 @@ fn mkfifo(path: &Path) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    fn request_control() -> Arc<RequestControl> {
+        Arc::new(RequestControl::new(
+            Arc::new(AtomicBool::new(false)),
+            Arc::new(AtomicBool::new(false)),
+            Arc::new(AtomicBool::new(false)),
+        ))
+    }
+
+    #[test]
+    fn late_postlude_cancellation_overrides_grant_reply_and_does_not_poison_next_request() {
+        for reply in [
+            "ACCEPTED",
+            "MODE_OK\task\thost\t",
+            "ERROR\tselection",
+            "STREAM_END",
+        ] {
+            let control = request_control();
+            let interrupted = AtomicBool::new(false);
+            let display = PtyOut::capture();
+            let producer = display.with_cancel_flag(Arc::clone(&control.cancelled));
+            assert!(control.begin(&interrupted));
+            let (postlude_entered, postlude_ready) = mpsc::channel();
+            let (resume, resumed) = mpsc::channel();
+            let worker_control = Arc::clone(&control);
+            let worker = std::thread::spawn(move || {
+                // The handler has returned; final shell/usage sync has not.
+                postlude_entered.send(()).unwrap();
+                resumed.recv_timeout(Duration::from_secs(5)).unwrap();
+                let mut bytes = Vec::new();
+                worker_control.finish(&mut bytes, reply).unwrap();
+                bytes
+            });
+            postlude_ready.recv_timeout(Duration::from_secs(5)).unwrap();
+            assert!(control.cancel(&display, &interrupted));
+            assert!(control.cancel(&display, &interrupted));
+            producer.write_user_line("forbidden post-ACK answer");
+            assert!(interrupted.load(Ordering::SeqCst));
+            let output = display.take_capture();
+            assert_eq!(output.matches("cancelling;").count(), 1);
+            assert!(!output.contains("forbidden"));
+            resume.send(()).unwrap();
+            assert_eq!(worker.join().unwrap(), b"CANCELLED\n");
+            assert!(!control.is_busy());
+            assert!(!control.cancel(&display, &interrupted));
+
+            // This is a new user request, with a fresh cancellation boundary.
+            assert!(control.begin(&interrupted));
+            assert!(!control.cancelled.load(Ordering::SeqCst));
+            assert!(!interrupted.load(Ordering::SeqCst));
+            producer.write_user_line("new request answer");
+            assert_eq!(display.take_capture(), "new request answer\r\n");
+            let mut bytes = Vec::new();
+            control.finish(&mut bytes, "OK").unwrap();
+            assert_eq!(bytes, b"OK\n");
+        }
+    }
+
+    struct PublishingWriter {
+        entered: Option<mpsc::Sender<()>>,
+        resume: mpsc::Receiver<()>,
+        bytes: Vec<u8>,
+    }
+
+    impl Write for PublishingWriter {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            if let Some(entered) = self.entered.take() {
+                entered.send(()).unwrap();
+                self.resume
+                    .recv_timeout(Duration::from_secs(5))
+                    .map_err(std::io::Error::other)?;
+            }
+            self.bytes.extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn publishing_consumes_ctrl_c_without_ack_and_releases_control_during_fifo_io() {
+        let control = request_control();
+        let interrupted = AtomicBool::new(false);
+        let display = PtyOut::capture();
+        assert!(control.begin(&interrupted));
+        let (entered, ready) = mpsc::channel();
+        let (resume, resumed) = mpsc::channel();
+        let worker_control = Arc::clone(&control);
+        let worker = std::thread::spawn(move || {
+            let mut writer = PublishingWriter {
+                entered: Some(entered),
+                resume: resumed,
+                bytes: Vec::new(),
+            };
+            worker_control
+                .finish(&mut writer, "MODE_OK\task\thost\t")
+                .unwrap();
+            writer.bytes
+        });
+        ready.recv_timeout(Duration::from_secs(5)).unwrap();
+        assert!(control.is_busy());
+        assert!(control.cancel(&display, &interrupted));
+        assert!(display.take_capture().is_empty());
+        assert!(!control.cancelled.load(Ordering::SeqCst));
+        assert!(!interrupted.load(Ordering::SeqCst));
+        resume.send(()).unwrap();
+        assert_eq!(worker.join().unwrap(), b"MODE_OK\task\thost\t\n");
+        assert!(!control.is_busy());
+        assert!(!control.cancel(&display, &interrupted));
+    }
+
+    #[test]
+    fn failed_publication_releases_ownership_and_shutdown_prevents_new_admission() {
+        struct BrokenReply;
+        impl Write for BrokenReply {
+            fn write(&mut self, _: &[u8]) -> std::io::Result<usize> {
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::BrokenPipe,
+                    "closed reader",
+                ))
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        let control = request_control();
+        let interrupted = AtomicBool::new(false);
+        assert!(control.begin(&interrupted));
+        assert!(control.finish(&mut BrokenReply, "ERROR\tsetup").is_err());
+        assert!(!control.is_busy());
+        control.stop(&interrupted);
+        assert!(!control.begin(&interrupted));
+        assert!(control.cancelled.load(Ordering::SeqCst));
+        assert!(interrupted.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn cancelled_grant_preludes_never_submit_the_original_nl_request() {
+        if crate::executor::which("zsh").is_none() {
+            return;
+        }
+        let hook = include_str!("assets/hook.zsh");
+        let grant_start = hook.find("_aishe_lean_take_grant() {").unwrap();
+        let grant_end = hook[grant_start..]
+            .find("# `aishe mode ...`")
+            .map(|offset| grant_start + offset)
+            .unwrap();
+        let nl_start = hook.find("_aishe_lean_nl() {").unwrap();
+        let nl_end = hook[nl_start..]
+            .find("_aishe_lean_slash() {")
+            .map(|offset| nl_start + offset)
+            .unwrap();
+        for cancelled_operation in ["MODE_CHECK", "MODE_ACCEPT"] {
+            let root =
+                std::env::temp_dir().join(format!("aishe-cancel-grant-{}", rand::random::<u64>()));
+            std::fs::create_dir_all(&root).unwrap();
+            let calls = root.join("calls");
+            let script = format!(
+                r#"
+{}
+{}
+_aishe_lean_grant_word() {{ print -r -- ask }}
+_aishe_lean_flatten() {{ print -r -- "$1" }}
+_aishe_lean_send() {{
+  local operation="${{1%%$'\t'*}}"
+  print -r -- "$operation" >> "$CALLS_FILE"
+  if [[ "$operation" == "$CANCEL_OPERATION" ]]; then
+    print -r -- CANCELLED
+  elif [[ "$operation" == MODE_CHECK ]]; then
+    print -r -- ACCEPTED
+  else
+    print -r -- FORBIDDEN_NL
+  fi
+}}
+_aishe_lean_nl 'original request must stop'
+"#,
+                &hook[grant_start..grant_end],
+                &hook[nl_start..nl_end]
+            );
+            let result = std::process::Command::new("zsh")
+                .args(["-f", "-c", &script])
+                .env("CALLS_FILE", &calls)
+                .env("CANCEL_OPERATION", cancelled_operation)
+                .output()
+                .unwrap();
+            let recorded = std::fs::read_to_string(&calls).unwrap();
+            let stdout = String::from_utf8_lossy(&result.stdout);
+            assert!(result.status.success(), "{result:?}");
+            assert_eq!(stdout.trim(), "cancelled");
+            assert!(!recorded.lines().any(|operation| operation == "NL"));
+            assert_eq!(recorded.lines().last(), Some(cancelled_operation));
+            std::fs::remove_dir_all(root).unwrap();
+        }
+    }
 
     #[test]
     fn explicit_shell_files_sync_selection_and_apply_cli_changes() {

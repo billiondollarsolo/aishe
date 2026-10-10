@@ -809,3 +809,77 @@ The plan remains Active with all 38 A–F items unchecked, R1–R4 open, decisio
 Hold, unpublished and external qualification groups not_run. The thirteen
 historical entries retain P6's failed CI alongside its scoped startup/TLS/local/UI
 passes, and leave all earlier evidence unchanged.
+
+### P7 acknowledged cancellation failure and pending P8
+
+Main `d49cc03c7c212d384c8026e92d2c8cb4e6876417`, tree
+`e59627d5deb638a43b1af98dd9f0992991eca9d2`, passed all eleven local core
+commands, 1,132 Rust tests across 38 targets and all 37 local native commands.
+Its original local Linux startup gate passed at 2.748 ms added p95. All 63
+actual local background/task/workflow captures remain retained, but they were
+intentionally not rendered or personally reviewed after the hosted failure.
+There is no P7 visual-pass claim; earlier reviewed views remain source-scoped.
+
+Original exact-main [CI
+38036480016](https://github.com/billiondollarsolo/aishe/actions/runs/38036480016)
+completed on attempt one with ten of eleven jobs passing. Original macOS startup
+passed at 4.500 ms added p95, raw zsh 5.990 ms and AIShe 10.490 ms. Original
+Linux startup passed at 1.316 ms added p95, raw zsh 1.476 ms and AIShe 2.792 ms,
+using the unchanged 100-command, ten-warmup, no-backend, clean-source contract
+and 10 ms allowance. The original [Linux
+artifact](https://github.com/billiondollarsolo/aishe/actions/runs/38036480016/artifacts/11663428609)
+retains the benchmark and passing pre-UI adoption report. Its release identity
+manifest and later suites were genuinely absent or skipped after functional
+failure. The original [macOS
+artifact](https://github.com/billiondollarsolo/aishe/actions/runs/38036480016/artifacts/11664630274)
+has its verified identity manifest. Both actual fresh native TLS tests passed
+with one passed, zero failed and zero ignored each, untrusted HTTP requests zero
+and redirect requests one. The actual product/test copies and
+opt-z/outliner-disabled/delayed/chained records were hash/source verified; their
+unchanged macOS 11 minimum and delayed CoreFoundation/Security edges with
+generic64 format 2 were independently parsed. Its diagnostic retains 700 rows,
+seven cases, three controls and five loader logs. The corrected macOS MCP
+lifecycle receipt passed. The qualification history retains the original ZIP and
+completed-log hashes; no missing identity manifest is synthesized and no failure
+is replaced by a retry.
+
+The original Linux cancellation PTY failed at `tests/lean_cancel_pty.py:76`.
+After Ctrl-C, the transcript showed
+`aishe: cancelling; waiting for current operation`, then the answer header and
+the forbidden `CANCELLED_ANSWER_MUST_NOT_APPEAR`. The final cancelled receipt
+was absent. This is a concrete product cancellation boundary failure. A longer
+fixture wait or a weaker assertion would not resolve acknowledged cancellation
+followed by the answer it was meant to suppress.
+
+Source review found cancellation checks before the usage/file-sync postlude and
+FIFO reply publication; a subsequent MODE/NL request could reset the shared
+flag, losing an acknowledged preparatory cancellation. This is the source-derived
+diagnosis, separately recorded from the actual ACK/answer transcript.
+
+P8 synchronizes ownership of each IPC request through Active, Publishing and
+Idle states. Cancellation remains admissible during Active preparation and the
+usage/status postlude until a short locked decision commits an immutable reply.
+Publishing writes that reply outside the control mutex and consumes Ctrl-C
+without a cancellation ACK or a next-request latch, preserving the FIFO reader.
+Idle forwards normal shell Ctrl-C. All early-error replies share request
+ownership. Explicit CANCELLED replies from MODE_CHECK or MODE_ACCEPT stop the
+queued NL. A key arriving after a MODE reply commits can still be followed by
+NL; this boundary does not promise cancellation of an already committed grant.
+
+The IPC-only producer output clone checks cancellation while holding the shared
+output mutex; ACK and relay output retain unrestricted clones. The intended
+guarantee is no lost acknowledged cancellation and no post-ACK answer/transcript
+producer output through that guarded PtyOut sink, across preparation, postlude
+and reply publication. Existing stderr cancellation/error, MCP and fallback
+diagnostics are outside that sink and remain allowed. The six added behavioral
+tests cover ownership/barriers, actual hook cancellation policy and sink behavior;
+their bounded channel waits do not add fixture sleeps or relax assertions.
+These tests and the full candidate still require actual qualification; no
+passing P8 result is claimed here. The original PTY assertion remains unchanged.
+
+P8 needs new committed-source local/native gates, fresh source-bound personally
+reviewed UI evidence, and exact-main CI with both unchanged original startup
+gates and actual native TLS proof. The plan remains Active with all 38 A–F
+items unchecked, R1–R4 open, Hold, unpublished and external groups not_run.
+All thirteen earlier history entries remain unchanged; the fourteenth retains
+P7's completed original negative evidence alongside its scoped passes.

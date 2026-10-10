@@ -493,9 +493,7 @@ fn run_zsh_inner(
     // stdin -> pty
     {
         let done = Arc::clone(&done);
-        let activity = _ipc
-            .as_ref()
-            .map(|ipc| (Arc::clone(&ipc.busy), Arc::clone(&ipc.cancelled)));
+        let activity = _ipc.as_ref().map(|ipc| Arc::clone(&ipc.control));
         let display = pty_out.clone();
         let handoff_control = lean_files.handoff_control.clone();
         std::thread::spawn(move || {
@@ -509,7 +507,7 @@ fn run_zsh_inner(
                     Ok(n) => {
                         let mut filtered = Vec::new();
                         for &byte in &buf[..n] {
-                            if let Some((busy, cancelled)) = &activity {
+                            if let Some(control) = &activity {
                                 if handoff_prefix {
                                     handoff_prefix = false;
                                     if byte == b'd' {
@@ -519,7 +517,7 @@ fn run_zsh_inner(
                                                     crate::agent::native::handoff::Direction::Background,
                                                 ) {
                                                     Ok(_) => display.write_user_line("\naishe: background handoff queued; finishing the current operation"),
-                                                    Err(error) if busy.load(Ordering::SeqCst) => display.write_user_line(&format!("\naishe: {error}")),
+                                                    Err(error) if control.is_busy() => display.write_user_line(&format!("\naishe: {error}")),
                                                     Err(_) => {
                                                         filtered.extend_from_slice(&[24, byte]);
                                                     }
@@ -532,15 +530,10 @@ fn run_zsh_inner(
                                     handoff_prefix = true;
                                     continue;
                                 }
-                                if byte == 3 && busy.load(Ordering::SeqCst) {
-                                    if !cancelled.swap(true, Ordering::SeqCst) {
-                                        crate::agent::controller::INTERRUPTED
-                                            .store(true, Ordering::SeqCst);
-                                        display.write_user_line(
-                                            "\naishe: cancelling; waiting for current operation",
-                                        );
-                                    }
-                                } else {
+                                if byte != 3
+                                    || !control
+                                        .cancel(&display, &crate::agent::controller::INTERRUPTED)
+                                {
                                     filtered.push(byte);
                                 }
                             } else {

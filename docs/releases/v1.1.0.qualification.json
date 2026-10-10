@@ -3,7 +3,7 @@
   "version": "1.1.0",
   "decision": "hold",
   "release_owner": "billiondollarsolo",
-  "production_source_sha256": "3a0689783ebca5fce2bc5f4facb2ae45a3a35a1e38d30479371b092918543029",
+  "production_source_sha256": "f416d5a35250229cdad4b338709491b524755429725790c4d6a0939061c29b38",
   "qualification_profile_revision": "2026-10-10.1",
   "prepared_at": "2026-10-10",
   "published": false,
@@ -11,7 +11,7 @@
     "state": "not_run",
     "source_commit": null,
     "ci_run_id": null,
-    "reason": "P6 original startup gates, both exact native TLS tests and local/fresh visual checks passed, but its exact-main macOS MCP lifecycle assertion failed; Mac release identity manifest was not produced. P7 changes only MCP test-fixture HTTP framing/current protocol and retained failure activity, and requires fresh committed-source local/native/exact-main CI qualification. All original failures and scoped passes remain retained."
+    "reason": "P7 startup, native TLS and corrected macOS MCP checks passed, but original Linux cancellation acknowledged Ctrl-C then printed the forbidden answer without a final cancelled receipt. P8 changes production request ownership, reply publication, guarded answer/transcript output and CANCELLED grant handling; it requires fresh committed-source local/native/UI/exact-main CI proof. All original failed candidates and scoped passes remain retained."
   },
   "dispositions": {
     "live_providers": {
@@ -1922,6 +1922,267 @@
         "scope": "Current-source completed local native PTY captures personally inspected by the attributed agent; root AD-24 inspection remains separate. No named graphical-terminal, paid-provider or long-soak qualification is claimed.",
         "verification_file": "current-native-ui-review-verification.json",
         "verification_sha256": "edbec2d6ccf3be58ffd133d27526a639df8cb2a35e326f2defeedf730dc049a5"
+      }
+    },
+    {
+      "branch_commit": "d49cc03c7c212d384c8026e92d2c8cb4e6876417",
+      "tested_commit": "d49cc03c7c212d384c8026e92d2c8cb4e6876417",
+      "source_tree": "e59627d5deb638a43b1af98dd9f0992991eca9d2",
+      "production_source_sha256": "3a0689783ebca5fce2bc5f4facb2ae45a3a35a1e38d30479371b092918543029",
+      "ci_run_id": 38036480016,
+      "ci_url": "https://github.com/billiondollarsolo/aishe/actions/runs/38036480016",
+      "ci_event": "push",
+      "state": "fail",
+      "linux_added_p95_ms": 1.316,
+      "macos_added_p95_ms": 4.5,
+      "reason": "Ten of eleven original maintained jobs passed. Both original startup gates and both fresh native TLS tests passed; corrected MCP lifecycle passed on macOS. Linux native cancellation acknowledged Ctrl-C then printed an answer header and forbidden CANCELLED_ANSWER_MUST_NOT_APPEAR, without the final cancelled receipt. This is a product cancellation boundary race, not a fixture timing failure. Linux later suites and release identity manifest were absent/skipped. All local core/native checks passed; 63 captures were retained but intentionally not rendered or personally reviewed. P8 requires a production request/publication synchronization correction and new qualification; no retry replaces this failure.",
+      "hosted_evidence": {
+        "state": "fail",
+        "required_jobs_passed": 10,
+        "required_jobs_total": 11,
+        "run_attempt": 1,
+        "summary_file": "hosted-performance-summary.json",
+        "summary_sha256": "316ac4a5db3f0c2b27bf6001ed3a0e71896832177a6ed2bd9db62e7461eabe49",
+        "performance_pass": true,
+        "ci_pass": false,
+        "release_qualified": false,
+        "original_uploaded_artifacts": {
+          "macOS": {
+            "artifact_id": 11664630274,
+            "url": "https://github.com/billiondollarsolo/aishe/actions/runs/38036480016/artifacts/11664630274",
+            "archive_sha256": "f2e6c4200ae28cc2a05bcac741a52a1a25cde67712997b50d01d460b10b3e451",
+            "release_identity_manifest_present": true,
+            "binary_identity": {
+              "version": "1.1.0",
+              "commit": "d49cc03",
+              "date": "2026-10-10"
+            },
+            "binary_sha256": "cc76596833dff0148510fa2e886646b96f7eb2e58b3cc651c0be56efb923562d",
+            "benchmark_file": "direct-shell-benchmark-20261010T080452Z.json",
+            "benchmark_sha256": "68f804216f21b243db1cc545402d818e0d6fabb4dae9a12cfcd33eb4d475cc4c"
+          },
+          "Linux": {
+            "artifact_id": 11663428609,
+            "url": "https://github.com/billiondollarsolo/aishe/actions/runs/38036480016/artifacts/11663428609",
+            "archive_sha256": "b8dba9eeb4adffd913dbb0002af8617b6687d350435b6edffe2380ce3fd469bf",
+            "release_identity_manifest_present": false,
+            "binary_identity": {
+              "version": "1.1.0",
+              "commit": "d49cc03",
+              "date": "2026-10-10"
+            },
+            "binary_sha256": "477aa8cfa70d7a210739bc092f223dc6a7adc5e633e0ba4753ffbc88ac2c042e",
+            "benchmark_file": "direct-shell-benchmark-20261010T080513Z.json",
+            "benchmark_sha256": "3f5ff46fe1123f0cffea82eccb99062702d0162335e811af3eb4f88c91838741"
+          }
+        },
+        "completed_job_logs": {
+          "manifest_file": "completed-job-log-manifest.json",
+          "manifest_sha256": "b82ec37a33967cedcbbc022a5db1be502ed7dc64092f0b0b5de2dbcca0394ec1",
+          "all_11_full_completed_logs_preserved": true
+        },
+        "strict_sample": {
+          "commands": 100,
+          "warmup": 10,
+          "backend_started": false,
+          "allowed_added_p95_ms": 10.0
+        },
+        "actual_main_negative_validation": {
+          "file": "actual-main-negative-validation.json",
+          "sha256": "2c0f7444185ff54fdfd02ac161b74dd4e61ec22c55a915986eace3772be65bd4",
+          "passed": false,
+          "problems": [
+            "exact-source CI did not complete successfully",
+            "required CI job missing or unsuccessful: Native shell (ubuntu-latest)",
+            "Linux: one candidate identity manifest is required"
+          ]
+        },
+        "scope": "Original attempt 1 completed evidence. Mac manifest verified; Linux manifest genuinely absent after cancellation failure. Strict startup/TLS passes do not establish overall qualification.",
+        "linux_original_raw_zsh_p95_ms": 1.476,
+        "linux_original_aishe_p95_ms": 2.792,
+        "macos_original_raw_zsh_p95_ms": 5.99,
+        "macos_original_aishe_p95_ms": 10.49
+      },
+      "cancellation_failure": {
+        "platform": "Linux",
+        "job": "Native shell (ubuntu-latest)",
+        "stage": "Native display, mode grants, and cancellation",
+        "file": "tests/lean_cancel_pty.py",
+        "line": 76,
+        "assertion_line": 16,
+        "error": "wait_new could not find final cancelled receipt",
+        "observed_cancellation_ack": "aishe: cancelling; waiting for current operation",
+        "observed_forbidden_answer": "CANCELLED_ANSWER_MUST_NOT_APPEAR",
+        "original_failure_preserved": true,
+        "failure_kind": "product cancellation boundary race",
+        "observed_acknowledgement": "aishe: cancelling; waiting for current operation",
+        "observed_answer_header": "AIShe \u00b7 answer",
+        "forbidden_answer": "CANCELLED_ANSWER_MUST_NOT_APPEAR",
+        "forbidden_answer_observed": true,
+        "final_cancelled_receipt_observed": false,
+        "source_derived_diagnosis": "Cancellation check preceded usage/file-sync postlude and FIFO reply publication; a subsequent MODE/NL reset could lose acknowledged preparatory cancellation.",
+        "scope": "Observed original ACK/answer/missing-receipt failure; source-derived diagnosis recorded separately."
+      },
+      "local_qualification": {
+        "state": "pass",
+        "source_commit": "d49cc03c7c212d384c8026e92d2c8cb4e6876417",
+        "core_commands": 11,
+        "rust_tests": 1132,
+        "rust_targets": 38,
+        "native_commands": 37,
+        "core_manifest": {
+          "file": "core-validation.json",
+          "sha256": "344d0e86b5371f4a95545858e313895f57b92c27e872521cd587ca770887d943"
+        },
+        "native_manifest": {
+          "file": "native-validation.json",
+          "sha256": "59a18bccc999650da663f57470093afa4681c6e0f2ffe89001290274f760885b"
+        },
+        "binary_sha256": "eb724b6771ec75a73b0a6434aa9ec5cd579ee3f2beff46f719b08524718a7415",
+        "strict_startup": {
+          "file": "strict-startup.json",
+          "sha256": "2e5db4f4c8139a3b84ccfb0c1df5bdf3c46e2ca5a8e2642be0ebe67e87a787a5",
+          "added_p95_ms": 2.748,
+          "commands": 100,
+          "warmup": 10,
+          "backend_started": false
+        },
+        "scope": "Actual completed same-source local gates; original hosted cancellation still failed."
+      },
+      "native_tls_activation": {
+        "state": "pass",
+        "report_file": "native-tls-activation-macOS.json",
+        "report_sha256": "e930bf1219cfe8c4887b065385a9f76d7817cded2dbff4df5b0c2e766f6c0313",
+        "verification_file": "native-tls-activation-verification.json",
+        "verification_sha256": "9f8b1aad0b0ca7933a82c663648374cc615764f2d41c74a70ee5a37fe50c674b",
+        "original_artifact_id": 11664630274,
+        "two_exact_fresh_passing_tests_verified": true,
+        "companion_file_hashes_verified": true,
+        "actual_test_results": {
+          "platform_tls::tests::native_first_concurrent_https_and_untrusted_rejection": {
+            "executed": true,
+            "returncode": 0,
+            "bounded_failure": null,
+            "log_sha256": "ae8369af931ed78c0903daceb2ac1053b74da49e657d9bf96d0a1666064d8890",
+            "result": {
+              "status": "ok",
+              "passed": 1,
+              "failed": 0,
+              "ignored": 0,
+              "measured": 0
+            }
+          },
+          "platform_tls::tests::native_https_proxy_activates_for_http_target": {
+            "executed": true,
+            "returncode": 0,
+            "bounded_failure": null,
+            "log_sha256": "ec73eff22730dcc3c5c3a3889eee436e3602835fd61135693a2233c575885a12",
+            "result": {
+              "status": "ok",
+              "passed": 1,
+              "failed": 0,
+              "ignored": 0,
+              "measured": 0
+            }
+          }
+        },
+        "compiled_link_records": [
+          {
+            "schema_version": 1,
+            "source_commit": "d49cc03c7c212d384c8026e92d2c8cb4e6876417",
+            "target": "aarch64-apple-darwin",
+            "baseline_min_os": 720896,
+            "probe_opt_level": "z",
+            "machine_outliner_disabled": true,
+            "delayed_frameworks": true,
+            "chained_fixups": true,
+            "flags": [
+              "-Wl,-delay_framework,CoreFoundation",
+              "-Wl,-delay_framework,Security",
+              "-Wl,-fixup_chains"
+            ],
+            "delayed_status": "verified",
+            "chained_status": "verified"
+          },
+          {
+            "schema_version": 1,
+            "source_commit": "d49cc03c7c212d384c8026e92d2c8cb4e6876417",
+            "target": "aarch64-apple-darwin",
+            "baseline_min_os": 720896,
+            "probe_opt_level": "z",
+            "machine_outliner_disabled": true,
+            "delayed_frameworks": true,
+            "chained_fixups": true,
+            "flags": [
+              "-Wl,-delay_framework,CoreFoundation",
+              "-Wl,-delay_framework,Security",
+              "-Wl,-fixup_chains"
+            ],
+            "delayed_status": "verified",
+            "chained_status": "verified"
+          }
+        ],
+        "product_binary_sha256": "cc76596833dff0148510fa2e886646b96f7eb2e58b3cc651c0be56efb923562d",
+        "product_binary_bytes": 8172656,
+        "test_executable_sha256": "4eacceb113176872763ae24b36ef1c681c5dac1b000887415fb89f2b4a696064",
+        "test_executable_bytes": 9464944,
+        "untrusted_http_requests": 0,
+        "http_redirect_requests": 1,
+        "trust_store_modified": false,
+        "paid_provider_used": false,
+        "scope": "Actual two-test native TLS pass, not overall CI/release or older-OS execution proof."
+      },
+      "native_startup_attribution": {
+        "state": "recorded",
+        "qualification_substitute": false,
+        "report_file": "native-startup-diagnostic-macOS.json",
+        "report_sha256": "11c54233f6316f20b0567065adb4c197049c01d4ae399398c7860957e7d3c80a",
+        "verification_file": "native-startup-diagnostic-verification.json",
+        "verification_sha256": "467fb45264c18982227367aeb50bfcea355842d172ca50fada00935eaf13a86a",
+        "verified_raw_rows": 700,
+        "case_count": 7,
+        "probe_count": 3,
+        "loader_log_count": 5
+      },
+      "corrected_mcp_lifecycle": {
+        "state": "pass",
+        "scope": "Original macOS lifecycle receipt after P7 fixture correction; Linux later lifecycle gate skipped.",
+        "receipts": [
+          {
+            "platform": "macOS",
+            "source_commit": "d49cc03c7c212d384c8026e92d2c8cb4e6876417",
+            "job_id": 114167847032,
+            "suite": "native_background_lifecycle.py",
+            "receipt": "ok   MCP initializes after durable linkage and policy-refused host admission performs no handshake",
+            "passed": true,
+            "original_completed_log_sha256": "3880f68cb0229fd5b9272fad527ed1916a81a476d8f63c76fd37f36d9313d3f6",
+            "original_completed_log_file": "native-macos-job-114167847032.log"
+          }
+        ]
+      },
+      "visual_review": {
+        "state": "not_run",
+        "captured_views": 63,
+        "rendered_views": 0,
+        "personally_viewed_views": 0,
+        "capture_collections": [
+          {
+            "file": "background-ui-captures.json",
+            "sha256": "d64dabc8bce31877965810b3b0988376b2581e9be8a6df97e8a06f2c95ea7378",
+            "capture_count": 16
+          },
+          {
+            "file": "task-interactions-ui-captures.json",
+            "sha256": "084ca598c3ac4c819219d0e0fd092c577f3d4cfdf051af2e6ba6ecd85f4e1214",
+            "capture_count": 37
+          },
+          {
+            "file": "workflows-ui-captures.json",
+            "sha256": "d596595ebc38189f276a14965655fdeca0378fac8931a364bdd622077b7f0748",
+            "capture_count": 10
+          }
+        ],
+        "scope": "Actual local captures retained; intentionally not rendered or personally reviewed. No P7 visual pass or external manual qualification."
       }
     }
   ]

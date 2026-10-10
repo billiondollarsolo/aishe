@@ -856,6 +856,7 @@ _aishe_lean_take_grant() {
   reply="$(_aishe_lean_send $'MODE_CHECK\t'"$want"$'\t'"$PWD")" || return 1
   case "$reply" in
     ACCEPTED) ;;
+    CANCELLED) print -r -- "cancelled"; return 1 ;;
     GRANT_REQUIRED)
       _aishe_lean_mark_mode_interaction
       print
@@ -889,6 +890,10 @@ _aishe_lean_take_grant() {
     *) print -u2 -r -- "aishe: mode check failed"; return 1 ;;
   esac
   reply="$(_aishe_lean_send $'MODE_ACCEPT\t'"$want"$'\t'"$PWD")" || return 1
+  if [[ "$reply" == CANCELLED ]]; then
+    print -r -- "cancelled"
+    return 1
+  fi
   if [[ "$reply" != MODE_OK$'\t'* ]]; then
     print -u2 -r -- "aishe: ${reply#*$'\t'}"
     return 1
