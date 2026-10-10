@@ -732,6 +732,12 @@ fn missing_http_usage_cannot_make_a_priced_native_task_appear_free() {
         );
         assert!(!fixture.root.join("must-not-exist").exists());
         assert_eq!(provider.meter().unreported_requests(), 1);
+        let unreported = provider.meter().snapshot();
+        assert_eq!(unreported.unreported_requests, 1, "{transport}");
+        assert_eq!(unreported.reported_requests(), 0, "{transport}");
+        let text = aishe::usage::summary(unreported, config.active_model(), &config.pricing);
+        assert!(text.contains("cost n/a"), "{transport}: {text}");
+        assert!(!text.contains("$0.0000"), "{transport}: {text}");
         let saved = aishe::tasks::load(&outcome.task_id).unwrap();
         assert!(saved.execution.cost_label().starts_with("n/a"));
         assert_eq!(saved.execution.tool_calls, 0);
@@ -778,6 +784,14 @@ fn missing_http_usage_cannot_make_a_priced_native_task_appear_free() {
             1,
             "reported zero was treated as missing usage"
         );
+        let zero_delta = provider.meter().snapshot().delta_since(unreported);
+        assert_eq!(
+            zero_delta,
+            aishe::usage::Usage::reported(0, 0, 1),
+            "{transport}"
+        );
+        let text = aishe::usage::summary(zero_delta, config.active_model(), &config.pricing);
+        assert!(text.contains("~$0.0000"), "{transport}: {text}");
         zero_request.assert();
     }
 }

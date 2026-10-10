@@ -35,6 +35,10 @@ pub struct DiffView {
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct UsageDelta {
+    /// True only when both provider token counts were present. Older events
+    /// deserialize as unknown rather than claiming zero usage.
+    #[serde(default)]
+    pub reported: bool,
     pub input_tokens: u64,
     pub output_tokens: u64,
     pub reasoning_tokens: u64,

@@ -40,10 +40,14 @@ aishe activate zsh --remove     # remove only the AIShe block
 ```
 
 Activation uses `.zshrc` (respecting `ZDOTDIR`) or `.bashrc`. The block runs only
-in an interactive terminal and skips the inner AIShe shell. Existing startup
-code runs in that inner shell. Backups are private, applying twice is safe,
+in an interactive terminal and skips the inner AIShe shell. AIShe starts your
+saved experience: matching personal zsh or Bash profiles load that shell's
+startup code; Clean AIShe keeps its isolated startup files. The activation
+target alone does not change the saved profile. Backups are private, applying twice is safe,
 and removal preserves changes you make outside the block. For a custom startup
 file, use the same `--rcfile PATH` when previewing, applying, and removing.
+That path selects the outer startup file containing the block; the saved
+profile determines which startup files AIShe's inner shell loads.
 Symlinks are preserved: inspect their destination and pass the real file with
 `--rcfile`. Incomplete or duplicated AIShe markers require manual review.
 `--json` returns the target, block, whether it changed, and backup path.
@@ -120,9 +124,10 @@ retains it queued; `aishe task resume` delivers it through the saved transcript.
 
 Renaming does not change the objective. Pinning affects browser order. Archive
 hides finished work while keeping its result and workspace; running or waiting
-tasks cannot be archived. Opening finished details, or `task reviewed`, marks
-that exact result reviewed across shells. A subsequent result becomes unseen
-again. `--needs-you` and `--archived` select separate views and cannot be combined.
+tasks cannot be archived. Opening finished details marks that exact result Seen
+across shells. Press **v** or run `task reviewed` to explicitly mark it Reviewed.
+A subsequent result becomes unseen again. `--needs-you` and `--archived` select
+separate views and cannot be combined.
 
 Task details include the native journal's recorded-check summary and unresolved
 items. Press **e** for actual commands, exit statuses, durations, and bounded
@@ -147,7 +152,7 @@ aishe update ...       Check, apply, or roll back the AIShe binary itself
 aishe completions      Print a shell completion script for `aishe` itself (bash/zsh/fish/...)
 aishe man              Print a roff man page for `aishe` (e.g. `aishe man > /usr/share/man/man1/aishe.1`)
 aishe uninstall        Remove AIShe components by category; user state is preserved by default
-aishe trust            Trust the current project's `.aishe/config.toml` so its sensitive keys (provider/endpoint, MCP servers, audit logging, safety toggles, `yolo`) apply. Safe cosmetic keys apply without trust
+aishe trust            Trust the current project's `.aishe/config.toml` so its sensitive keys (provider/endpoint, shell profile, MCP servers, audit logging, safety toggles, `agent`/`yolo`) apply. Safe cosmetic keys apply without trust
 aishe untrust          Drop trust for the current project's `.aishe/config.toml`, or for a specific project file
 aishe mode             Show or set the interaction mode for this shell; `--default` also saves it
 aishe scope            Show or set the agent execution scope for future turns

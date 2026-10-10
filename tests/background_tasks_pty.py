@@ -204,7 +204,7 @@ class Fixture:
             "schema_version": 1, "id": native_id, "name": None,
             "created_at_ms": row["created_at_ms"], "updated_at_ms": row["updated_at_ms"],
             "status": "completed" if completed else "interrupted", "mode": "yolo", "provider": "anthropic",
-            "model": "menu-model", "connection_id": "anthropic",
+            "model": "menu-model", "connection_id": row["connection_id"],
             "execution_scope": "host", "network_policy": "allow",
             "workspace_root": row["run_cwd"], "cwd": row["run_cwd"],
             "objective": row["objective"],
@@ -574,16 +574,19 @@ def long_results_show_authority_scroll_and_honest_cost():
         for cols in (100, 58, 32):
             task_id = "long-truth-" + str(cols)
             fixture.record(task_id, "completed", "LONG_RESULT_TRUTH task")
+            fixture.update(task_id, connection_id="review-account")
             checkpoint_path = fixture.checkpoint(task_id, result="\n".join(
                 "RESULT_LINE_" + str(index) for index in range(40)))
             shell = fixture.shell(cols=cols, browser=task_id)
             shown(shell, "Task details")
+            shown(shell, "Connection: review-account")
             shown(shell, "Model: anthropic")
             shown(shell, "Scope: host")
             shown(shell, "Esc")
             initial = shell.plain()
+            assert initial.index("Connection: review-account") < initial.index("Model:"), initial
             if "RESULT_LINE_0" in initial:
-                for authority in ("Model:", "Scope:", "Source:", "Time limit:", "No recorded checks"):
+                for authority in ("Connection:", "Model:", "Scope:", "Source:", "Time limit:", "No recorded checks"):
                     assert initial.index(authority) < initial.index("RESULT_LINE_0"), "response displaced saved authority or checks"
             capture(shell, f"Long task authority and scroll cues at {cols} columns")
             for _ in range(12):
@@ -603,6 +606,8 @@ def long_results_show_authority_scroll_and_honest_cost():
             atomic_json(checkpoint_path, row)
             snapshot = fixture.cli("task", "browse", task_id).stdout
             assert "partial $0.0250" in snapshot and "1/2 turns priced" in snapshot, snapshot
+            assert "Connection: review-account" in snapshot, snapshot
+            assert snapshot.index("Connection:") < snapshot.index("Model:"), snapshot
             assert snapshot.index("Model:") < snapshot.index("Latest response"), snapshot
             assert snapshot.index("Scope:") < snapshot.index("Latest response"), snapshot
             assert snapshot.index("Time limit:") < snapshot.index("Latest response"), snapshot

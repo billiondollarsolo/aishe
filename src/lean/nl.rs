@@ -42,11 +42,29 @@ pub struct LeanWarm {
     // Per-shell accounting survives provider replacement and conversation
     // resets. Attribute each delta to the connection and model that billed it.
     usage: BTreeMap<(String, String), crate::usage::Usage>,
+    // Display can tolerate malformed history; budget admission must hold.
+    usage_coverage_untrusted: bool,
     // Native task metadata is local and scoped to the connection that ran it.
     recent_tasks: BTreeMap<String, (String, u64)>,
 }
 
 impl LeanWarm {
+    fn record_task_activity(&mut self, task_id: &str, elapsed_ms: u64) {
+        let Ok(record) = crate::tasks::load(task_id) else {
+            return;
+        };
+        // Read identity from the checkpoint itself, including on failure; an
+        // error never turns an unpersisted ID into an observed task result.
+        if record.connection_id.is_empty() {
+            return;
+        }
+        let label = record
+            .name
+            .unwrap_or_else(|| record.id.chars().take(12).collect());
+        self.recent_tasks
+            .insert(record.connection_id, (label, elapsed_ms));
+    }
+
     pub(crate) fn recent_status(&self, connection_id: &str) -> Vec<(&'static str, String)> {
         self.recent_tasks
             .get(connection_id)
@@ -72,19 +90,27 @@ impl LeanWarm {
             .usage
             .entry((connection_id.to_string(), model.to_string()))
             .or_default();
-        total.input = total.input.saturating_add(usage.input);
-        total.output = total.output.saturating_add(usage.output);
-        total.requests = total.requests.saturating_add(usage.requests);
+        total.add(usage);
     }
 
     /// Include recorded standalone CLI calls made inside this shell when usage
     /// is explicitly inspected. An unreadable tally leaves memory intact.
     pub fn replace_usage_from_log(&mut self, path: &Path) {
-        let Ok(text) = std::fs::read_to_string(path) else {
-            return;
+        let text = match std::fs::read_to_string(path) {
+            Ok(text) => text,
+            Err(error) => {
+                if error.kind() != std::io::ErrorKind::NotFound {
+                    self.usage_coverage_untrusted = true;
+                }
+                return;
+            }
         };
+        let entries = crate::usagelog::parse_entries(&text);
+        self.usage_coverage_untrusted = entries.len()
+            != text.lines().filter(|line| !line.trim().is_empty()).count()
+            || (!text.is_empty() && !text.ends_with('\n'));
         self.usage.clear();
-        for entry in crate::usagelog::parse_entries(&text) {
+        for entry in entries {
             self.record_usage(
                 entry.usage,
                 &entry.model,
@@ -111,7 +137,40 @@ impl LeanWarm {
         if budget <= 0.0 {
             return Ok(Cow::Borrowed(config));
         }
-        let current_price = crate::usage::budget_price_for(config.active_model(), &config.pricing);
+        if self.usage_coverage_untrusted {
+            anyhow::bail!("cannot enforce the session dollar budget: usage history is unreadable, malformed, or incomplete; repair the tally, start a new session, or explicitly disable budget_usd");
+        }
+        let missing_usage = self
+            .usage
+            .values()
+            .any(|usage| usage.attributed_requests < usage.requests)
+            || provider.is_some_and(|provider| {
+                let usage = provider.meter().snapshot();
+                usage.attributed_requests < usage.requests
+            });
+        if missing_usage {
+            anyhow::bail!("cannot enforce the session dollar budget: recorded usage coverage is unknown; start a new session or explicitly disable budget_usd to continue");
+        }
+        if !config.aishe.provider_fallback.is_empty() {
+            anyhow::bail!("cannot enforce the session dollar budget with automatic provider fallbacks: select one fixed provider/model or explicitly disable budget_usd");
+        }
+        let valid_price = |model: &str| {
+            crate::usage::budget_price_for(model, &config.pricing).filter(|price| {
+                price.input.is_finite()
+                    && price.output.is_finite()
+                    && price.input >= 0.0
+                    && price.output >= 0.0
+            })
+        };
+        let current_price = valid_price(config.active_model());
+        if current_price.is_none()
+            || self
+                .usage
+                .iter()
+                .any(|((_, model), usage)| !usage.is_empty() && valid_price(model).is_none())
+        {
+            anyhow::bail!("cannot enforce the session dollar budget: configure exact valid pricing for every used provider/model or explicitly disable budget_usd");
+        }
         let current_cost = current_price
             .zip(provider.map(|provider| provider.meter().snapshot()))
             .map(|(price, usage)| crate::usage::cost(usage, price))
@@ -139,10 +198,6 @@ impl LeanWarm {
             // display-price substring resolver from changing this threshold.
             turn.pricing.insert(config.active_model().into(), price);
             turn.aishe.budget_usd = current_cost + remaining;
-        } else {
-            // Unknown-price calls retain the existing unenforced behavior.
-            // Their limitation is disclosed next to the configured budget.
-            turn.aishe.budget_usd = 0.0;
         }
         Ok(Cow::Owned(turn))
     }
@@ -151,16 +206,34 @@ impl LeanWarm {
         if config.aishe.budget_usd <= 0.0 {
             return None;
         }
-        let unknown =
-            crate::usage::budget_price_for(config.active_model(), &config.pricing).is_none()
-                || self.usage.keys().any(|(_, model)| {
-                    crate::usage::budget_price_for(model, &config.pricing).is_none()
-                });
+        let valid_price = |model: &str| {
+            crate::usage::budget_price_for(model, &config.pricing).filter(|price| {
+                price.input.is_finite()
+                    && price.output.is_finite()
+                    && price.input >= 0.0
+                    && price.output >= 0.0
+            })
+        };
+        let unknown = valid_price(config.active_model()).is_none()
+            || self
+                .usage
+                .keys()
+                .any(|(_, model)| valid_price(model).is_none());
+        let missing_usage = self
+            .usage
+            .values()
+            .any(|usage| usage.attributed_requests < usage.requests);
         Some(format!(
             "budget: ${:.2}{}",
             config.aishe.budget_usd,
-            if unknown {
-                " · unknown model prices cannot be enforced"
+            if self.usage_coverage_untrusted {
+                " · unreadable or incomplete history blocks further AI work"
+            } else if missing_usage {
+                " · incomplete usage blocks further AI work"
+            } else if !config.aishe.provider_fallback.is_empty() {
+                " · automatic fallbacks block budgeted AI work"
+            } else if unknown {
+                " · exact pricing required before further AI work"
             } else {
                 ""
             },
@@ -173,40 +246,23 @@ impl LeanWarm {
         connection_id: Option<&str>,
     ) -> Option<String> {
         let mut total = crate::usage::Usage::default();
-        let mut total_cost = 0.0;
-        let mut unpriced = 0u64;
+        let mut costs = crate::usage::CostTally::default();
         for ((connection, model), usage) in &self.usage {
             if connection_id.is_some_and(|id| id != connection) {
                 continue;
             }
-            total.input = total.input.saturating_add(usage.input);
-            total.output = total.output.saturating_add(usage.output);
-            total.requests = total.requests.saturating_add(usage.requests);
-            match crate::usage::price_for(model, &config.pricing) {
-                Some(price) => total_cost += crate::usage::cost(*usage, price),
-                None => unpriced = unpriced.saturating_add(usage.requests),
-            }
+            total.add(*usage);
+            costs.add(*usage, crate::usage::price_for(model, &config.pricing));
         }
         if total.is_empty() {
             return None;
         }
-        let unpriced_requests = format!(
-            "{unpriced} unpriced req{}",
-            if unpriced == 1 { "" } else { "s" },
-        );
-        let cost = if unpriced == 0 {
-            format!("~${total_cost:.4}")
-        } else if total_cost > 0.0 {
-            format!("~${total_cost:.4} (+{unpriced_requests})")
-        } else {
-            format!("cost n/a ({unpriced_requests})")
-        };
         Some(format!(
-            "{} in · {} out · {} req{} · {cost}",
-            crate::usage::group(total.input),
-            crate::usage::group(total.output),
+            "{} · {} req{} · {}",
+            total.tokens_label(),
             total.requests,
-            if total.requests == 1 { "" } else { "s" }
+            if total.requests == 1 { "" } else { "s" },
+            costs.label()
         ))
     }
 
@@ -930,18 +986,10 @@ fn agent_reply(
         capabilities,
     ) {
         Ok(outcome) => {
-            if let Ok(record) = crate::tasks::load(&outcome.task_id) {
-                let label = record
-                    .name
-                    .unwrap_or_else(|| record.id.chars().take(12).collect());
-                warm.recent_tasks.insert(
-                    config.active_connection_id().to_string(),
-                    (
-                        label,
-                        started.elapsed().as_millis().min(u128::from(u64::MAX)) as u64,
-                    ),
-                );
-            }
+            warm.record_task_activity(
+                &outcome.task_id,
+                started.elapsed().as_millis().min(u128::from(u64::MAX)) as u64,
+            );
             match outcome.state {
                 crate::agent::native::NativeTurnState::Completed => "RAN".into(),
                 crate::agent::native::NativeTurnState::Cancelled => "CANCELLED".into(),
@@ -964,7 +1012,15 @@ fn agent_reply(
                 ),
             }
         }
-        Err(error) => format!("ERROR\t{}", one_line(&error.to_string())),
+        Err(error) => {
+            if let Some(failure) = error.downcast_ref::<crate::agent::native::NativeTaskFailure>() {
+                warm.record_task_activity(
+                    &failure.task_id,
+                    started.elapsed().as_millis().min(u128::from(u64::MAX)) as u64,
+                );
+            }
+            format!("ERROR\t{}", one_line(&error.to_string()))
+        }
     }
 }
 
@@ -1943,11 +1999,7 @@ mod tests {
         with_store(|store| {
             let mut warm = LeanWarm::default();
             warm.record_usage(
-                crate::usage::Usage {
-                    input: 1_000_000,
-                    output: 1_000_000,
-                    requests: 1,
-                },
+                crate::usage::Usage::reported(1_000_000, 1_000_000, 1),
                 "metered-a",
                 &original_connection,
             );
@@ -1965,11 +2017,7 @@ mod tests {
                 assert_eq!(reply, "OK", "{slash}: {reply}");
             }
             warm.record_usage(
-                crate::usage::Usage {
-                    input: 2_000_000,
-                    output: 0,
-                    requests: 1,
-                },
+                crate::usage::Usage::reported(2_000_000, 0, 1),
                 "metered-b",
                 config.active_connection_id(),
             );
@@ -2012,26 +2060,14 @@ mod tests {
         config.set_active_model("unknown".into());
         let mut warm = LeanWarm::default();
         warm.record_usage(
-            crate::usage::Usage {
-                input: 1_000_000,
-                output: 0,
-                requests: 1,
-            },
+            crate::usage::Usage::reported(1_000_000, 0, 1),
             "priced",
             "work",
         );
-        warm.record_usage(
-            crate::usage::Usage {
-                input: 50,
-                output: 5,
-                requests: 3,
-            },
-            "unknown",
-            "work",
-        );
+        warm.record_usage(crate::usage::Usage::reported(50, 5, 3), "unknown", "work");
         let summary = warm.usage_summary(&config).expect("usage recorded");
         assert!(
-            summary.contains("4 reqs · ~$2.0000 (+3 unpriced reqs)"),
+            summary.contains("4 reqs · ~$2.0000 (partial; 3 unknown)"),
             "{summary}"
         );
         assert!(summary.contains("1,000,050 in · 5 out"), "{summary}");
@@ -2054,11 +2090,7 @@ mod tests {
                 .accept(LeanMode::Agent, true, executor.cwd())
                 .expect("host grant");
             warm.record_usage(
-                crate::usage::Usage {
-                    input: 10,
-                    output: 5,
-                    requests: 1,
-                },
+                crate::usage::Usage::reported(10, 5, 1),
                 "unknown",
                 "previous-connection",
             );
@@ -2197,7 +2229,7 @@ mod tests {
                 "NL\task\t/tmp\tunknown model bypass",
             );
             assert!(
-                blocked.starts_with("ERROR\tsession budget reached"),
+                blocked.starts_with("ERROR\tcannot enforce the session dollar budget"),
                 "{blocked}"
             );
             assert!(provider.as_ref().unwrap().meter().snapshot().is_empty());
@@ -2238,25 +2270,21 @@ mod tests {
                 "AISHE_DATA_DIR",
                 std::env::var_os("AISHE_LEAN_SESSIONS").unwrap(),
             );
+            let tasks_dir =
+                std::path::PathBuf::from(std::env::var_os("AISHE_LEAN_SESSIONS").unwrap())
+                    .join("native-tasks");
+            std::env::set_var("AISHE_TASKS_DIR", &tasks_dir);
             let mut warm = LeanWarm::default();
             warm.grants
                 .accept(LeanMode::Agent, true, executor.cwd())
                 .unwrap();
             warm.record_usage(
-                crate::usage::Usage {
-                    input: 8_000_000,
-                    output: 0,
-                    requests: 8,
-                },
+                crate::usage::Usage::reported(8_000_000, 0, 8),
                 "budget-previous",
                 "previous",
             );
             warm.record_usage(
-                crate::usage::Usage {
-                    input: 1_000_000,
-                    output: 0,
-                    requests: 1,
-                },
+                crate::usage::Usage::reported(1_000_000, 0, 1),
                 "budget-current",
                 config.active_connection_id(),
             );
@@ -2293,6 +2321,14 @@ mod tests {
             }));
             assert!(recent.iter().any(|(field, _)| *field == "elapsed"));
             assert!(warm.recent_status("unrelated-connection").is_empty());
+            let record = crate::tasks::list()
+                .into_iter()
+                .find(|record| record.objective == "spend one remaining call")
+                .expect("budget exit must retain its actual checkpoint");
+            assert!(record.id.starts_with(task_label));
+            assert_eq!(record.native_state.as_deref(), Some("budget_exhausted"));
+            assert_eq!(record.connection_id, config.active_connection_id());
+            std::env::remove_var("AISHE_TASKS_DIR");
             std::env::remove_var("AISHE_DATA_DIR");
         });
         std::env::remove_var("AISHE_FAKE_LLM");
@@ -2307,13 +2343,108 @@ mod tests {
         config.set_active_model("custom-claude-sonnet".into());
         assert!(crate::usage::price_for(config.active_model(), &config.pricing).is_some());
         let warm = LeanWarm::default();
-        let turn = warm.budgeted_turn_config(&config, None).unwrap();
-        assert_eq!(turn.aishe.budget_usd, 0.0);
+        let error = warm.budgeted_turn_config(&config, None).unwrap_err();
+        assert!(
+            error.to_string().contains("configure exact valid pricing"),
+            "{error}"
+        );
         assert!(warm
             .budget_summary(&config)
             .unwrap()
-            .contains("unknown model prices cannot be enforced"));
+            .contains("exact pricing required"));
         assert_eq!(config.aishe.budget_usd, 1.0);
+    }
+
+    #[test]
+    fn session_budget_requires_complete_prior_usage_and_fixed_model_attribution() {
+        let mut config = test_config();
+        config.aishe.budget_usd = 1.0;
+        config.set_active_model("priced-exact".into());
+        config.pricing.insert(
+            "priced-exact".into(),
+            crate::usage::Price {
+                input: 1.0,
+                output: 2.0,
+            },
+        );
+        let mut warm = LeanWarm::default();
+        warm.record_usage(
+            crate::usage::Usage::reported(0, 0, 1),
+            "priced-exact",
+            "openai",
+        );
+        assert!(
+            warm.budgeted_turn_config(&config, None).is_ok(),
+            "explicit provider zero must remain priced"
+        );
+        config.aishe.provider_fallback.push("other".into());
+        assert!(warm
+            .budgeted_turn_config(&config, None)
+            .unwrap_err()
+            .to_string()
+            .contains("automatic provider fallbacks"));
+        config.aishe.provider_fallback.clear();
+        warm.record_usage(
+            crate::usage::Usage::unknown(0, 0, 1),
+            "priced-exact",
+            "openai",
+        );
+        assert!(warm
+            .budgeted_turn_config(&config, None)
+            .unwrap_err()
+            .to_string()
+            .contains("recorded usage coverage is unknown"));
+        config.aishe.budget_usd = 0.0;
+        assert!(warm.budgeted_turn_config(&config, None).is_ok());
+    }
+
+    #[test]
+    fn invalid_exact_price_cannot_admit_native_budgeted_work() {
+        let mut config = test_config();
+        config.aishe.budget_usd = 1.0;
+        config.set_active_model("priced-exact".into());
+        for input in [f64::NAN, f64::INFINITY, -1.0] {
+            config.pricing.insert(
+                "priced-exact".into(),
+                crate::usage::Price { input, output: 1.0 },
+            );
+            assert!(LeanWarm::default()
+                .budgeted_turn_config(&config, None)
+                .is_err());
+        }
+    }
+
+    #[test]
+    fn corrupt_or_unreadable_tally_cannot_disappear_from_budget_admission() {
+        let mut config = test_config();
+        config.aishe.budget_usd = 1.0;
+        config.set_active_model("gpt-4o".into());
+        let directory =
+            std::env::temp_dir().join(format!("aishe-corrupt-tally-{}", std::process::id()));
+        std::fs::create_dir_all(&directory).unwrap();
+        let path = directory.join("usage");
+        let mut warm = LeanWarm::default();
+        for text in [
+            "garbled usage row\n",
+            "v3\t0\t0\t1\tgpt-4o\twork\t2\t0\t0\t0\t0\t0\n",
+            "v3\t0\t0\t1\tgpt-4o\twork\t0\t0\t0\t1\t0\t0",
+        ] {
+            std::fs::write(&path, text).unwrap();
+            warm.replace_usage_from_log(&path);
+            let error = warm.budgeted_turn_config(&config, None).unwrap_err();
+            assert!(
+                error
+                    .to_string()
+                    .contains("usage history is unreadable, malformed, or incomplete"),
+                "{error}"
+            );
+        }
+        warm.replace_usage_from_log(&directory);
+        assert!(warm.budgeted_turn_config(&config, None).is_err());
+        std::fs::write(&path, "v3\t0\t0\t1\tgpt-4o\twork\t0\t0\t0\t1\t0\t0\n").unwrap();
+        warm.replace_usage_from_log(&path);
+        assert!(warm.budgeted_turn_config(&config, None).is_ok());
+        std::fs::remove_dir_all(&directory).unwrap();
     }
 
     #[test]
@@ -2344,11 +2475,7 @@ mod tests {
             crate::failure::record_from_env("false").expect("failure fixture");
             let mut warm = LeanWarm::default();
             warm.record_usage(
-                crate::usage::Usage {
-                    input: 1_000_000,
-                    output: 0,
-                    requests: 1,
-                },
+                crate::usage::Usage::reported(1_000_000, 0, 1),
                 config.active_model(),
                 config.active_connection_id(),
             );
@@ -2405,15 +2532,7 @@ mod tests {
                 .as_nanos(),
         ));
         let mut warm = LeanWarm::default();
-        warm.record_usage(
-            crate::usage::Usage {
-                input: 12,
-                output: 4,
-                requests: 1,
-            },
-            "unknown",
-            "openai",
-        );
+        warm.record_usage(crate::usage::Usage::reported(12, 4, 1), "unknown", "openai");
         std::fs::write(
             &path,
             "v2\t12\t4\t1\tunknown\topenai\n10\t2\t1\tlegacy-model\n",
@@ -2422,12 +2541,15 @@ mod tests {
         warm.replace_usage_from_log(&path);
         warm.replace_usage_from_log(&path);
         let summary = warm.usage_summary(&config).expect("usage imported");
-        assert!(summary.contains("22 in · 6 out · 2 reqs"), "{summary}");
+        assert!(
+            summary.contains("tokens n/a · 2 reqs · cost n/a"),
+            "{summary}"
+        );
         assert!(warm.used_multiple_connections());
         let active = warm
             .usage_summary_for_connection(&config, Some("openai"))
             .unwrap();
-        assert!(active.contains("12 in · 4 out · 1 req"), "{active}");
+        assert!(active.contains("tokens n/a · 1 req · cost n/a"), "{active}");
         std::fs::remove_file(&path).unwrap();
         warm.replace_usage_from_log(&path);
         assert_eq!(warm.usage_summary(&config), Some(summary));

@@ -43,6 +43,7 @@ def qualify(binary: pathlib.Path) -> dict:
                 cwd=root,
                 env=custom_env or env,
                 input=text,
+                stdin=subprocess.DEVNULL if text is None else None,
                 capture_output=True,
                 text=True,
                 timeout=15,
@@ -131,6 +132,28 @@ def qualify(binary: pathlib.Path) -> dict:
         assert config_file.read_text() == "invalid AI configuration = [\n"
         config_file.unlink()
 
+        # The recovery helpers own captured text output even when launched
+        # from a live shell widget. They must never start a nested PTY shell.
+        fix_command = "printf '%s\\n' reviewed > fix-must-not-execute"
+        recovery_env = {
+            **env,
+            "AISHE_SHELL_ID": "shell-adoption-recovery",
+            "AISHE_LAST_EXIT": "1",
+            "AISHE_LEAN": "0",
+            "AISHE_LEGACY_OPENCODE": "1",
+            "AISHE_FAKE_LLM": json.dumps({"type": "command", "command": fix_command,
+                                           "explanation": "Review this correction"}),
+        }
+        run("last-failure-capsule-for-recovery", ["--record-failure", "false"],
+            output="", custom_env=recovery_env)
+        run("last-fix-is-captured-command-not-a-pty", ["last", "fix"],
+            output=fix_command + "\n", custom_env=recovery_env)
+        assert not (root / "fix-must-not-execute").exists(), "last fix executed its correction"
+        run("last-explain-is-captured-answer-not-a-pty", ["last", "explain"],
+            output="The recorded command returned a failure.\n",
+            custom_env={**recovery_env,
+                        "AISHE_FAKE_LLM": "The recorded command returned a failure."})
+
         rcfile = home / ".zshrc"
         original = "alias keep_alias='printf preserved'\nexport KEEP_STARTUP=1"
         rcfile.write_text(original)
@@ -174,6 +197,20 @@ def qualify(binary: pathlib.Path) -> dict:
         assert malformed.returncode != 0
         assert rcfile.read_text() == original + "\n# >>> AIShe native shell >>>\n"
         cases.append(dict(name="malformed-activation-is-preserved", status="pass"))
+        malformed_start = (original + "\n# >>> AIShe native shell >>> keep this note\n"
+                           "export KEEP_INSIDE_MARKERS=1\n# <<< AIShe native shell <<<\n")
+        rcfile.write_text(malformed_start)
+        backups_before = set(home.glob("*.aishe-backup-*"))
+        for operation in ("--apply", "--remove"):
+            malformed = subprocess.run([str(binary), "activate", "zsh", operation],
+                                       cwd=root, env=env, capture_output=True, text=True,
+                                       timeout=10, check=False)
+            assert malformed.returncode != 0, (operation, malformed)
+            assert "start marker contains extra text" in malformed.stderr
+            assert rcfile.read_text() == malformed_start
+            assert set(home.glob("*.aishe-backup-*")) == backups_before
+            cases.append(dict(name="annotated-start-marker-is-preserved-" + operation[2:],
+                              status="pass"))
         rcfile.unlink()
         target = home / "real-rc"
         target.write_text(original)

@@ -510,11 +510,7 @@ impl Bridge {
             let cost = report.cost_usd.or_else(|| {
                 lease.registration.price.map(|price| {
                     crate::usage::cost(
-                        crate::usage::Usage {
-                            input: report.input_tokens,
-                            output: report.output_tokens,
-                            requests: 1,
-                        },
+                        crate::usage::Usage::reported(report.input_tokens, report.output_tokens, 1),
                         price,
                     )
                 })
@@ -531,11 +527,7 @@ impl Bridge {
             let cost = report.cost_usd.or_else(|| {
                 lease.price.map(|price| {
                     crate::usage::cost(
-                        crate::usage::Usage {
-                            input: report.input_tokens,
-                            output: report.output_tokens,
-                            requests: 1,
-                        },
+                        crate::usage::Usage::reported(report.input_tokens, report.output_tokens, 1),
                         price,
                     )
                 })

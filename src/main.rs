@@ -955,7 +955,8 @@ fn run() -> Result<u8> {
     }
 
     // Tell an interactive user what a project config did (and how to trust it).
-    let interactive_entry = args.command.is_none()
+    let interactive_entry = matches!(args.cmd, None | Some(Cmd::Zsh))
+        && args.command.is_none()
         && args.suggest_line.is_none()
         && args.yolo_line.is_none()
         && args.auto_line.is_none()
@@ -986,7 +987,14 @@ fn run() -> Result<u8> {
         || args.accept_yolo
         || matches!(
             args.cmd,
-            Some(Cmd::Suggest { .. } | Cmd::Ask { .. } | Cmd::Agent(_))
+            Some(
+                Cmd::Suggest { .. }
+                    | Cmd::Ask { .. }
+                    | Cmd::Agent(_)
+                    | Cmd::Last {
+                        cmd: LastCmd::Explain | LastCmd::Fix
+                    }
+            )
         );
 
     // The interactive shell is the zsh-PTY front-end: it drives the user's real

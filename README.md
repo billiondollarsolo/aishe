@@ -357,11 +357,15 @@ CLI commands and the legacy shell surface are described in
 
 ## Front-ends
 
-1. **Native zsh-PTY** — `aishe` launches a clean zsh; opt into your full
-   `.zshenv`/`.zshrc` with `AISHE_ZSH_PROFILE=personal`. Both use the native agent.
+1. **Native zsh-PTY** — a fresh `aishe` keeps your personal zsh startup files.
+   Setup and Settings offer Keep my zsh, Clean AIShe, and Bash integration.
+   Existing configs without this preference keep clean zsh. Both zsh profiles
+   use the native agent; Bash has its documented reduced integration tier.
 2. **Standalone hook** — `eval "$(aishe init zsh)"` (or `bash`) keeps *your*
    existing session and its compatibility integration.
-3. **Non-interactive** — `aishe -c '…'` and pipes.
+3. **Non-interactive** — `aishe -c '…'` classifies one command or request;
+   piped input and script files run as whole shell programs. `--agent-lines`
+   explicitly enables the per-line request protocol.
 
 `aishe agent '…'` is an explicit autonomous task request. Selecting agent mode
 in configuration alone does not authorize an unattended natural-language turn.

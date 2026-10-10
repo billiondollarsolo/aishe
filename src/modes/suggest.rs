@@ -178,13 +178,7 @@ fn run_stream(
         }
     };
     let after = provider.meter().snapshot();
-    crate::audit::ai_response(
-        mode,
-        model,
-        &full,
-        after.input.saturating_sub(before.input),
-        after.output.saturating_sub(before.output),
-    );
+    crate::audit::ai_response_with_usage(mode, config, &full, after.delta_since(before));
 
     if streamer.finish(&mut out) {
         // The model committed to a command; nothing was streamed to the screen.
@@ -412,12 +406,11 @@ pub fn request_strict(
         Ok(text) => {
             let after = provider.meter().snapshot();
             let s = parse_suggestion(&text);
-            crate::audit::ai_response(
+            crate::audit::ai_response_with_usage(
                 mode,
-                model,
+                config,
                 &suggestion_summary(&s),
-                after.input.saturating_sub(before.input),
-                after.output.saturating_sub(before.output),
+                after.delta_since(before),
             );
             Ok(s)
         }
@@ -500,12 +493,11 @@ pub fn request_streamed<W: std::io::Write>(
             explanation: full.trim().to_string(),
         }
     };
-    crate::audit::ai_response(
+    crate::audit::ai_response_with_usage(
         mode,
-        model,
+        config,
         &suggestion_summary(&suggestion),
-        after.input.saturating_sub(before.input),
-        after.output.saturating_sub(before.output),
+        after.delta_since(before),
     );
     Ok(suggestion)
 }

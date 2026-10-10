@@ -1498,9 +1498,10 @@ impl Config {
     ///
     /// Tiered trust: *safe* keys (cosmetic/behavioral, and per-provider `model`)
     /// always apply; *sensitive* keys (provider switch, endpoints/keys, MCP
-    /// servers, audit logging, and the safety toggles - plus `mode = "yolo"`)
-    /// apply only when the file is trusted (`aishe trust`). Untrusted sensitive
-    /// keys are reported as `deferred`, not applied.
+    /// servers, audit logging, shell selection, and the safety toggles - plus
+    /// Agent mode (`agent` / `yolo`)) apply only when the file is trusted
+    /// (`aishe trust`). Untrusted sensitive keys are reported as `deferred`,
+    /// not applied.
     pub fn apply_project_overlay(&mut self, start: &Path) -> Option<OverlayOutcome> {
         let path = Self::find_project_config(start)?;
         let text = std::fs::read_to_string(&path).ok()?;
@@ -1824,13 +1825,15 @@ pub struct OverlayOutcome {
 }
 
 /// Sensitive `[aishe]` keys that a project file may set only when trusted.
-/// Everything else (cosmetic/behavioral) is safe and always applies. `mode` is
-/// safe for `suggest`/`auto` but sensitive for `yolo` (a cloned repo must not
-/// silently put you in autonomous-run mode). New security-relevant keys must be
-/// added here.
+/// Everything else (cosmetic/behavioral) is safe and always applies. Agent mode
+/// (`agent` / `yolo`) requires trust so a cloned repo cannot silently select
+/// autonomous work. Ask/Allow (`suggest` / `auto`) retain their existing overlay
+/// behavior; selecting a mode does not grant native shell execution authority.
+/// New security-relevant keys must be added here.
 fn aishe_key_is_sensitive(key: &str, value: &toml::Value) -> bool {
     match key {
         "provider"
+        | "shell_profile"
         | "provider_fallback"
         | "connection"
         | "connection_fallback"
@@ -1842,7 +1845,9 @@ fn aishe_key_is_sensitive(key: &str, value: &toml::Value) -> bool {
         | "hook_timeout_secs"
         | "semantic_history"
         | "embedding_provider" => true,
-        "mode" => value.as_str() == Some("yolo"),
+        "mode" => {
+            value.as_str().and_then(crate::agent::Mode::parse) == Some(crate::agent::Mode::Yolo)
+        }
         _ => false,
     }
 }
@@ -2322,6 +2327,52 @@ mod tests {
     }
 
     #[test]
+    fn project_overlay_cannot_change_shell_profile_without_explicit_trust() {
+        for profile in ["personal", "bash"] {
+            let mut config = Config::default();
+            let table = proj(&format!("[aishe]\nshell_profile = '{profile}'\n"));
+            let (applied, deferred) = config.merge_project_table(&table, false);
+            assert_eq!(config.aishe.shell_profile, "clean");
+            assert!(applied.is_empty());
+            assert_eq!(deferred, ["shell_profile"]);
+            let (applied, deferred) = config.merge_project_table(&table, true);
+            assert_eq!(config.aishe.shell_profile, profile);
+            assert_eq!(applied, ["shell_profile"]);
+            assert!(deferred.is_empty());
+        }
+    }
+
+    #[test]
+    fn project_overlay_agent_mode_requires_trust_for_canonical_and_legacy_names() {
+        for mode in ["agent", "yolo", "AGENT", " YOLO "] {
+            let mut config = Config::default();
+            let table = proj(&format!("[aishe]\nmode = '{mode}'\n"));
+            let (applied, deferred) = config.merge_project_table(&table, false);
+            assert_eq!(config.aishe.mode, "suggest", "untrusted mode {mode}");
+            assert!(applied.is_empty());
+            assert_eq!(deferred, ["mode"]);
+
+            let (applied, deferred) = config.merge_project_table(&table, true);
+            assert_eq!(config.aishe.mode, mode, "trusted mode {mode}");
+            assert_eq!(applied, ["mode"]);
+            assert!(deferred.is_empty());
+        }
+    }
+
+    #[test]
+    fn project_overlay_ask_and_allow_modes_keep_existing_untrusted_behavior() {
+        // Mode selection does not replace the native Allow/Agent session grant.
+        for mode in ["ask", "allow", "suggest", "auto"] {
+            let mut config = Config::default();
+            let table = proj(&format!("[aishe]\nmode = '{mode}'\n"));
+            let (applied, deferred) = config.merge_project_table(&table, false);
+            assert_eq!(config.aishe.mode, mode);
+            assert_eq!(applied, ["mode"]);
+            assert!(deferred.is_empty());
+        }
+    }
+
+    #[test]
     fn project_overlay_can_narrow_named_model_but_never_auth_or_endpoint() {
         let mut config = Config::default();
         let table = proj(
@@ -2554,8 +2605,10 @@ mod tests {
 
     #[test]
     fn aishe_key_sensitivity() {
+        let agent = toml::Value::String("agent".into());
         let yolo = toml::Value::String("yolo".into());
         let auto = toml::Value::String("auto".into());
+        assert!(aishe_key_is_sensitive("mode", &agent));
         assert!(aishe_key_is_sensitive("mode", &yolo));
         assert!(!aishe_key_is_sensitive("mode", &auto));
         assert!(aishe_key_is_sensitive("provider", &auto));

@@ -32,6 +32,30 @@ pub enum NativeTurnState {
     HandedOff,
 }
 
+/// Typed error context for a turn admitted with a real task checkpoint.
+/// Preserve the original error text and cause while carrying its exact task ID.
+#[derive(Debug)]
+pub(crate) struct NativeTaskFailure {
+    pub task_id: String,
+    detail: String,
+}
+
+impl std::fmt::Display for NativeTaskFailure {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(&self.detail)
+    }
+}
+
+impl NativeTaskFailure {
+    pub(crate) fn attach(task_id: &str, error: anyhow::Error) -> anyhow::Error {
+        let detail = error.to_string();
+        error.context(Self {
+            task_id: task_id.to_string(),
+            detail,
+        })
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct NativeTurnOutcome {
     pub task_id: String,
@@ -402,6 +426,27 @@ mod tests {
             name: name.into(),
             arguments: args,
         }
+    }
+
+    #[test]
+    fn admitted_task_error_retains_checkpoint_identity_and_public_error_code() {
+        let error = crate::user_error::UserFacing::new(
+            crate::user_error::ErrorNamespace::Auth,
+            "not_connected",
+            "Account is unavailable.",
+            "Connect an account.",
+        );
+        let wrapped = NativeTaskFailure::attach("recorded-task-id", error);
+        assert_eq!(wrapped.to_string(), "Account is unavailable.");
+        assert_eq!(
+            wrapped.downcast_ref::<NativeTaskFailure>().unwrap().task_id,
+            "recorded-task-id"
+        );
+        let original = wrapped
+            .downcast_ref::<crate::user_error::UserFacing>()
+            .unwrap();
+        assert_eq!(original.namespace, crate::user_error::ErrorNamespace::Auth);
+        assert_eq!(original.name, "not_connected");
     }
 
     #[test]

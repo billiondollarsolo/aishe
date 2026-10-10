@@ -821,6 +821,14 @@ fn detail_lines(details: &TaskDetails, notice: Option<&str>) -> Vec<String> {
         ));
     }
     lines.extend([
+        format!(
+            "Connection: {}",
+            if record.connection_id.is_empty() {
+                "unknown (older task)".into()
+            } else {
+                safe(&record.connection_id)
+            }
+        ),
         format!("Model: {} / {}", record.provider, record.model),
         format!(
             "Scope: {} · network {} · {}",

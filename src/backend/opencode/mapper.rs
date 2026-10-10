@@ -527,6 +527,8 @@ fn map_questions(properties: &Value) -> Vec<AgentEvent> {
 fn usage_from(value: &Value) -> UsageDelta {
     let tokens = value.get("tokens").unwrap_or(&Value::Null);
     UsageDelta {
+        reported: tokens.get("input").is_some_and(|v| v.as_u64().is_some())
+            && tokens.get("output").is_some_and(|v| v.as_u64().is_some()),
         input_tokens: number_u64(tokens.get("input")),
         output_tokens: number_u64(tokens.get("output")),
         reasoning_tokens: number_u64(tokens.get("reasoning")),

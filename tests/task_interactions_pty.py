@@ -335,12 +335,117 @@ def naming_pinning_archive_and_persistent_review_are_unobtrusive():
         fixture.close()
 
 
+def native_prompt_and_session_usage_preserve_provider_coverage():
+    """Real HTTP responses establish absence, explicit zero, and known subtotal."""
+    for cols in (100, 58):
+        def choose(index, payload):
+            answer = response(text=json.dumps({"type": "answer", "explanation": f"COVERAGE_{index}_PROOF"}))
+            if index == 0:
+                answer.pop("usage")
+            elif index == 1:
+                answer["usage"] = {"input_tokens": 0, "output_tokens": 0}
+            else:
+                assert index == 2, index
+            return answer
+
+        fixture = UiFixture(f"usage-coverage-{cols}", choose)
+        try:
+            fixture.config.write_text(fixture.config.read_text().replace(
+                'budget_usd = 0.0', 'budget_usd = 0.0\nstatus_line_items = ["last_cost", "session_cost", "requests"]')
+                + '\n[pricing."original-background-model"]\ninput = 1.0\noutput = 2.0\n')
+            leanrc = Path(fixture.env["AISHE_LEANRC"])
+            leanrc.write_text(leanrc.read_text() + '\nbuiltin printf "%s\\n%s\\n" "$AISHE_USAGE_FILE" "$AISHE_STATUS_FILE" > "$HOME/usage-paths"\n')
+            shell = fixture.shell(cols)
+            assert shell.ready()
+            paths = (fixture.home / "usage-paths").read_text().splitlines()
+            assert len(paths) == 2 and all(paths), paths
+            tally, status = map(Path, paths)
+
+            for index in range(3):
+                shell.send(f"? report coverage case {index}\r")
+                wait_until(shell, lambda: tally.exists() and len(tally.read_text().splitlines()) == index + 1,
+                           f"recorded provider coverage {index}", 12)
+                wait_until(shell, lambda: status.exists() and f"{index + 1} req" in status.read_text(),
+                           f"refreshed prompt usage {index}", 5)
+                fields = dict(line.split("\t", 1) for line in status.read_text().splitlines())
+                prompt = probe(shell, fixture.home)[2]
+                if index == 0:
+                    assert fields["last_cost"] == "last cost n/a", fields
+                    assert fields["session_cost"] == "session cost n/a", fields
+                    assert "cost n/a" in prompt and "$0.0000" not in prompt, prompt
+                elif index == 1:
+                    assert fields["last_cost"] == "last ~$0.0000", fields
+                    assert fields["session_cost"] == "session ~$0.0000 (partial; 1 unknown)", fields
+                    assert "partial" in prompt, prompt
+                else:
+                    assert fields["last_cost"] == "last ~$0.0001", fields
+                    assert fields["session_cost"] == "session ~$0.0001 (partial; 1 unknown)", fields
+                capture(shell, f"Native prompt truthful coverage {index} at {cols} columns")
+            rows = [row.split("\t") for row in tally.read_text().splitlines()]
+            assert all(row[0] == "v3" for row in rows), rows
+            assert [row[6:] for row in rows] == [["1", "0", "0", "0", "0", "0"], ["0", "0", "0", "1", "0", "0"], ["0", "20", "30", "1", "20", "30"]], rows
+            start = len(shell.transcript)
+            shell.send("/usage\r")
+            shown(shell, "20 in · 30 out (partial) · 3 reqs · ~$0.0001 (partial; 1 unknown)", start, 8)
+            document = json.loads(fixture.cli("usage", "--json").stdout)
+            assert document["total"]["cost_usd"] is None, document
+            assert abs(document["total"]["known_cost_subtotal_usd"] - .00008) < 1e-12, document
+            assert len(fixture.loopback.calls) == 3, fixture.loopback.calls
+            fixture.loopback.assert_ok()
+        finally:
+            fixture.close()
+    print("  ok   native prompt/session/ledger preserve missing usage, explicit zero, and partial subtotal via real HTTP", flush=True)
+
+
+def native_session_budget_blocks_missing_or_legacy_usage_before_more_http():
+    for legacy in (False, True):
+        def choose(index, payload):
+            assert not legacy and index == 0, (legacy, index)
+            answer = response(text=json.dumps({"type": "answer", "explanation": "BUDGET_UNKNOWN_USAGE_PROOF"}))
+            answer.pop("usage")
+            return answer
+
+        fixture = UiFixture(f"budget-coverage-{legacy}", choose)
+        try:
+            fixture.config.write_text(fixture.config.read_text().replace('budget_usd = 0.0', 'budget_usd = 10.0')
+                + '\n[pricing."original-background-model"]\ninput = 1.0\noutput = 2.0\n')
+            leanrc = Path(fixture.env["AISHE_LEANRC"])
+            leanrc.write_text(leanrc.read_text() + '\nbuiltin print -r -- "$AISHE_USAGE_FILE" > "$HOME/budget-usage-path"\n')
+            shell = fixture.shell()
+            assert shell.ready()
+            tally = Path((fixture.home / "budget-usage-path").read_text().strip())
+            if legacy:
+                tally.write_text("v2\t0\t0\t1\toriginal-background-model\topenai\n")
+                start = len(shell.transcript)
+                shell.send("/usage\r")
+                shown(shell, "tokens n/a", start)
+            else:
+                shell.send("? produce one unreported usage response\r")
+                wait_until(shell, lambda: tally.exists() and len(tally.read_text().splitlines()) == 1,
+                           "unreported usage checkpoint", 12)
+            start = len(shell.transcript)
+            shell.send("? this request must not reach the provider\r")
+            shown(shell, "recorded usage coverage is unknown", start, 8)
+            shell.drain(.2)
+            assert len(fixture.loopback.calls) == (0 if legacy else 1), fixture.loopback.calls
+            start = len(shell.transcript)
+            shell.send("/status\r")
+            shown(shell, "incomplete usage blocks further AI work", start, 8)
+            capture(shell, "Native budget rejects unknown " + ("legacy" if legacy else "provider") + " usage")
+            fixture.loopback.assert_ok()
+        finally:
+            fixture.close()
+    print("  ok   native session budgets reject missing and legacy usage before another HTTP request; local status works", flush=True)
+
+
 def main():
     scenarios = [question_inbox_answer_preserves_the_editing_draft,
                  action_approval_is_specific_and_defaults_to_no,
                  recorded_results_show_checks_and_unresolved_work,
                  live_followup_shows_queued_then_received,
-                 naming_pinning_archive_and_persistent_review_are_unobtrusive]
+                 naming_pinning_archive_and_persistent_review_are_unobtrusive,
+                 native_prompt_and_session_usage_preserve_provider_coverage,
+                 native_session_budget_blocks_missing_or_legacy_usage_before_more_http]
     failed = []
     for scenario in scenarios:
         print("  run  " + scenario.__name__, flush=True)

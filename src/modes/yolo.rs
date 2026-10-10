@@ -83,10 +83,12 @@ pub(crate) fn run_with_terminal(
     // A disabled journal can still run a foreground turn, but cannot offer a
     // transferable checkpoint. Durable turns always fence parallel resumes.
     let mut lease = if crate::tasks::load(task.id()).is_ok() {
-        Some(crate::agent::native::handoff::Lease::acquire(
-            task.id(),
-            !config.aishe.yolo_dry_run,
-        )?)
+        Some(
+            crate::agent::native::handoff::Lease::acquire(task.id(), !config.aishe.yolo_dry_run)
+                .map_err(|error| {
+                    crate::agent::native::NativeTaskFailure::attach(task.id(), error)
+                })?,
+        )
     } else {
         None
     };
@@ -159,7 +161,9 @@ pub(crate) fn run_with_terminal(
     );
     // The detached continuation must not race this process's checkpoint lock.
     drop(lease);
+    let task_id = outcome.task_id.clone();
     complete_handoff(config, executor, outcome)
+        .map_err(|error| crate::agent::native::NativeTaskFailure::attach(&task_id, error))
 }
 
 /// A reversible yolo session: the loop runs against `staging` (a copy of the
@@ -687,12 +691,11 @@ fn run_loop(
             }
         };
         let after = provider.meter().snapshot();
-        crate::audit::ai_response(
+        crate::audit::ai_response_with_usage(
             "yolo",
-            config.active_model(),
+            config,
             &completion_summary(&completion),
-            after.input.saturating_sub(before.0.input),
-            after.output.saturating_sub(before.0.output),
+            after.delta_since(before.0),
         );
 
         // No tool calls → final answer.
@@ -1708,14 +1711,7 @@ fn record_provider_cost(
             after.requests > before.0.requests && provider.meter().unreported_requests() == before.1
         })
     {
-        budget.record_cost(crate::usage::cost(
-            crate::usage::Usage {
-                input: after.input.saturating_sub(before.0.input),
-                output: after.output.saturating_sub(before.0.output),
-                requests: after.requests.saturating_sub(before.0.requests),
-            },
-            price,
-        ));
+        budget.record_cost(crate::usage::cost(after.delta_since(before.0), price));
     }
 }
 
@@ -2228,13 +2224,7 @@ fn plan_first(input: &str, ctx: &str, provider: &dyn Provider, config: &Config) 
         }
     };
     let after = provider.meter().snapshot();
-    crate::audit::ai_response(
-        "yolo-plan",
-        config.active_model(),
-        &plan,
-        after.input.saturating_sub(before.0.input),
-        after.output.saturating_sub(before.0.output),
-    );
+    crate::audit::ai_response_with_usage("yolo-plan", config, &plan, after.delta_since(before.0));
     if plan.trim().is_empty() {
         return PlanOutcome::Skip;
     }

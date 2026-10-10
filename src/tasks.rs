@@ -1482,31 +1482,13 @@ mod tests {
             usage_base: task.record.usage.clone(),
             usage_meter_start: Usage::default(),
         };
-        resumed.set_usage_baseline(Usage {
-            input: 50,
-            output: 10,
-            requests: 1,
-        });
-        resumed.checkpoint_messages(
-            &[],
-            Usage {
-                input: 80,
-                output: 17,
-                requests: 2,
-            },
-        );
+        resumed.set_usage_baseline(Usage::reported(50, 10, 1));
+        resumed.checkpoint_messages(&[], Usage::reported(80, 17, 2));
         assert_eq!(resumed.record.usage.input, 130);
         assert_eq!(resumed.record.usage.output, 27);
         assert_eq!(resumed.record.usage.requests, 3);
         // Repeated checkpoints must not add the attempt twice.
-        resumed.checkpoint_messages(
-            &[],
-            Usage {
-                input: 90,
-                output: 18,
-                requests: 3,
-            },
-        );
+        resumed.checkpoint_messages(&[], Usage::reported(90, 18, 3));
         assert_eq!(resumed.record.usage.input, 140);
         assert_eq!(resumed.record.usage.requests, 4);
     }

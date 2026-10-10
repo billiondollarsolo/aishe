@@ -33,11 +33,22 @@ pub fn append(path: &Path, command: &str) {
     let flat = command.replace('\n', " ");
     // Ensure the data dir exists; a fresh install may not have created it yet.
     if let Some(parent) = path.parent() {
-        let _ = std::fs::create_dir_all(parent);
+        let metadata = std::fs::metadata(parent).ok();
+        if !metadata.as_ref().is_some_and(|metadata| metadata.is_dir()) {
+            let _ = std::fs::create_dir_all(parent);
+        }
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            let _ = std::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o700));
+            // Warm commands already have a private history directory. Avoid
+            // rewriting its inode permissions on every append, while still
+            // repairing an existing directory with broader permissions.
+            if metadata
+                .as_ref()
+                .is_none_or(|metadata| metadata.permissions().mode() & 0o7777 != 0o700)
+            {
+                let _ = std::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o700));
+            }
         }
     }
     let mut options = std::fs::OpenOptions::new();
@@ -47,24 +58,39 @@ pub fn append(path: &Path, command: &str) {
         use std::os::unix::fs::OpenOptionsExt;
         options.mode(0o600);
     }
+    let mut recorded_size = None;
     if let Ok(mut f) = options.open(path) {
-        let _ = writeln!(f, ": {}:0;{}", now(), flat);
+        // Formatting directly into File issues a write for each formatting
+        // fragment. Assemble the record so a normal append is one write,
+        // rather than independently appended timestamp/command fragments.
+        let entry = format!(": {}:0;{}\n", now(), flat);
+        let _ = f.write_all(entry.as_bytes());
+        let metadata = f.metadata().ok();
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
+            if metadata
+                .as_ref()
+                .is_none_or(|metadata| metadata.permissions().mode() & 0o7777 != 0o600)
+            {
+                // Repair the file we actually appended to, even if another
+                // shell replaces the pathname while we hold it open.
+                let _ = f.set_permissions(std::fs::Permissions::from_mode(0o600));
+            }
         }
+        recorded_size = metadata.map(|metadata| metadata.len());
     }
-    maybe_trim(path);
+    maybe_trim(path, recorded_size);
 }
 
 /// Trim the log to the most recent [`KEEP_LINES`] entries when it exceeds
 /// [`MAX_BYTES`]. Gated on a cheap size check so the O(n) rewrite happens rarely
 /// (only when over the cap). Best-effort and atomic; a lost concurrent append is
 /// acceptable for a history log.
-fn maybe_trim(path: &Path) {
-    let over = std::fs::metadata(path)
-        .map(|m| m.len() > MAX_BYTES)
+fn maybe_trim(path: &Path, recorded_size: Option<u64>) {
+    let over = recorded_size
+        .or_else(|| std::fs::metadata(path).ok().map(|metadata| metadata.len()))
+        .map(|size| size > MAX_BYTES)
         .unwrap_or(false);
     if !over {
         return;
@@ -161,10 +187,25 @@ fn civil_from_days(z: i64) -> (i64, u32, u32) {
 mod tests {
     use super::*;
 
+    fn temporary_history(label: &str) -> std::path::PathBuf {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static NEXT: AtomicU64 = AtomicU64::new(0);
+        let directory = std::env::temp_dir().join(format!(
+            "aishe-histlog-{label}-{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        ));
+        std::fs::create_dir_all(&directory).unwrap();
+        directory.join("history.ext")
+    }
+
+    fn remove_history(path: &Path) {
+        std::fs::remove_dir_all(path.parent().unwrap()).ok();
+    }
+
     #[test]
     fn append_trims_when_over_the_byte_cap() {
-        let path =
-            std::env::temp_dir().join(format!("aishe-histlog-trim-{}.ext", std::process::id()));
+        let path = temporary_history("trim");
         // Seed a log already past MAX_BYTES with more than KEEP_LINES entries.
         let pad = "x".repeat(400);
         let mut seed = String::new();
@@ -178,13 +219,12 @@ mod tests {
         let entries = read(&path);
         assert!(entries.len() <= KEEP_LINES + 1, "got {}", entries.len());
         assert_eq!(entries.last().unwrap().1, "final marker");
-        std::fs::remove_file(&path).ok();
+        remove_history(&path);
     }
 
     #[test]
     fn append_and_read_roundtrip() {
-        let path = std::env::temp_dir().join(format!("aishe-histlog-{}.ext", std::process::id()));
-        std::fs::remove_file(&path).ok();
+        let path = temporary_history("roundtrip");
         append(&path, "echo one");
         append(&path, "git status\nstray"); // newline flattened
         let entries = read(&path);
@@ -192,19 +232,82 @@ mod tests {
         assert_eq!(entries[0].1, "echo one");
         assert_eq!(entries[1].1, "git status stray");
         assert!(entries[0].0 > 0, "timestamp recorded");
-        std::fs::remove_file(&path).ok();
+        remove_history(&path);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn append_repairs_private_permissions_and_preserves_entries() {
+        use std::os::unix::fs::PermissionsExt;
+        let path = temporary_history("permissions");
+        let parent = path.parent().unwrap();
+        std::fs::write(&path, ": 1700000000:0;previous entry\n").unwrap();
+        std::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o755)).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+
+        append(&path, "first private entry");
+        append(&path, "second private entry");
+        assert_eq!(
+            std::fs::metadata(parent).unwrap().permissions().mode() & 0o7777,
+            0o700
+        );
+        assert_eq!(
+            std::fs::metadata(&path).unwrap().permissions().mode() & 0o7777,
+            0o600
+        );
+        let entries = read(&path);
+        assert_eq!(entries.len(), 3);
+        assert_eq!(entries[0].1, "previous entry");
+        assert_eq!(entries[2].1, "second private entry");
+        remove_history(&path);
+    }
+
+    #[test]
+    fn concurrent_appends_keep_complete_timestamped_entries() {
+        use std::collections::HashSet;
+        use std::sync::{Arc, Barrier};
+        const WORKERS: usize = 8;
+        const ENTRIES_PER_WORKER: usize = 100;
+        let path = temporary_history("concurrent");
+        append(&path, "warm-up");
+        let ready = Arc::new(Barrier::new(WORKERS));
+        let threads: Vec<_> = (0..WORKERS)
+            .map(|worker| {
+                let path = path.clone();
+                let ready = Arc::clone(&ready);
+                std::thread::spawn(move || {
+                    ready.wait();
+                    for entry in 0..ENTRIES_PER_WORKER {
+                        append(&path, &format!("worker-{worker}-entry-{entry}"));
+                    }
+                })
+            })
+            .collect();
+        for thread in threads {
+            thread.join().unwrap();
+        }
+        let entries = read(&path);
+        assert_eq!(entries.len(), 1 + WORKERS * ENTRIES_PER_WORKER);
+        assert!(entries.iter().all(|(epoch, _)| *epoch > 0));
+        let commands: HashSet<_> = entries.into_iter().map(|(_, command)| command).collect();
+        assert!(commands.contains("warm-up"));
+        for worker in 0..WORKERS {
+            for entry in 0..ENTRIES_PER_WORKER {
+                assert!(commands.contains(&format!("worker-{worker}-entry-{entry}")));
+            }
+        }
+        remove_history(&path);
     }
 
     #[test]
     fn read_tolerates_plain_lines() {
         let entries_text = ": 1700000000:0;extended cmd\nplain cmd\n";
-        let path =
-            std::env::temp_dir().join(format!("aishe-histlog-plain-{}.ext", std::process::id()));
+        let path = temporary_history("plain");
         std::fs::write(&path, entries_text).unwrap();
         let entries = read(&path);
         assert_eq!(entries[0], (1_700_000_000, "extended cmd".to_string()));
         assert_eq!(entries[1], (0, "plain cmd".to_string()));
-        std::fs::remove_file(&path).ok();
+        remove_history(&path);
     }
 
     #[test]

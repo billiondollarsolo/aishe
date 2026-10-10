@@ -3,7 +3,7 @@
   "version": "1.1.0",
   "decision": "hold",
   "release_owner": "billiondollarsolo",
-  "production_source_sha256": "35ebe9d12d28d6c892480e7bc33e1799fe5306797125752d36e4e7684f7944a2",
+  "production_source_sha256": "981dbe5a07b202a3aa09995824b0b685396a52d8c553c7e040f8d9aa187374d6",
   "qualification_profile_revision": "2026-10-10.1",
   "prepared_at": "2026-10-10",
   "published": false,
@@ -35,5 +35,16 @@
     "source_commit": "9219190b663c12b5a402aeab11f32c48e63d868c",
     "macos_startup_slo": "fail",
     "note": "Prior main review is historical evidence, not qualification of the 1.1.0 candidate."
-  }
+  },
+  "candidate_history": [
+    {
+      "branch_commit": "3253b914d9ef4a8e2e23a58f4cba925b52dfcd81",
+      "tested_commit": "e43176bfc7bdb524109900026fa1c487c880307f",
+      "ci_run_id": 38017643029,
+      "state": "fail",
+      "linux_added_p95_ms": 1.673,
+      "macos_added_p95_ms": 12.628,
+      "reason": "Original macOS startup SLO and unit/legacy/admin regressions failed; corrected source requires new qualification."
+    }
+  ]
 }

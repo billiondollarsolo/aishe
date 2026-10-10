@@ -1190,13 +1190,20 @@ def main():
     add("cli: -c '!true' exits 0", run([BIN, "-c", "!true"], env_local)[0] == 0)
     add("cli: -c 'exit 3' exits 3", run([BIN, "-c", "exit 3"], env_local)[0] == 3)
     add("cli: -c '!true | false' exits 1", run([BIN, "-c", "!true | false"], env_local)[0] == 1)
-    # Pipe/script mode: each piped line runs like a one-shot command.
-    p = subprocess.run([BIN], env=env_local, cwd=fixture,
+    # The explicit request protocol retains AIShe's per-line force-shell sigil.
+    p = subprocess.run([BIN, "--agent-lines"], env=env_local, cwd=fixture,
                        input="!echo piped-aa\n!echo piped-bb\n",
                        capture_output=True, text=True, timeout=30)
-    add("cli: pipe mode runs each line",
-        "piped-aa" in p.stdout and "piped-bb" in p.stdout,
+    add("cli: explicit agent-lines protocol runs each line",
+        p.returncode == 0 and "piped-aa" in p.stdout and "piped-bb" in p.stdout,
         f"→ {trunc(repr(p.stdout.strip()), 120)}")
+    # Plain stdin is one program: state and multiline syntax stay in the shell.
+    p = subprocess.run([BIN], env=env_local, cwd=fixture,
+                       input="total=0\nfor n in 1 2 3; do\n  total=$((total+n))\ndone\nprintf 'sum=%s\\n' \"$total\"\n",
+                       capture_output=True, text=True, timeout=30)
+    add("cli: piped multiline program preserves shell state",
+        p.returncode == 0 and p.stdout == "sum=6\n" and not p.stderr,
+        f"→ rc={p.returncode} {trunc(repr(p.stdout.strip()), 120)}")
 
     shutil.rmtree(full_root, ignore_errors=True)
 

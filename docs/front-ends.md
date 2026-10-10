@@ -53,9 +53,9 @@ into AIShe's history policy instead. The clean profile uses AIShe's timestamped
 history log, so Up-arrow and `Ctrl-R` persist across sessions and binary
 upgrades. With `share_history = true`, clean-profile shells exchange entries.
 
-**It requires zsh.** If zsh is not installed, aishe tells you to install it
-(rather than falling back to a lesser editor). Without zsh you can still use the
-non-interactive paths (`aishe -c …`, piped stdin) and the bash hook below.
+**The full native experience requires zsh.** Fresh account-free launch selects
+Bash integration when zsh is absent. Its reduced tier is described below;
+ordinary non-interactive commands and piped shell programs also work with Bash.
 
 Natural-language input is routed to the already-running native parent; ordinary
 commands stay in the child zsh. No OpenCode supervisor starts on this path.
@@ -67,11 +67,11 @@ Workspace grants remain tied to the accepted canonical directory.
 The clean profile supplies a bounded mode/scope prompt and configurable right
 status. The personal profile preserves both `PROMPT` and `RPROMPT`. AIShe
 refreshes `AISHE_MODE_INDICATOR` and `AISHE_BACKGROUND_INDICATOR` for a theme
-to display, or you can opt into a mode/scope and background-work suffix on the
-right prompt with `AISHE_PERSONAL_INDICATOR=1`:
+to display. A quiet mode/scope and background-work suffix appears on the right
+prompt by default. Hide that suffix with `AISHE_PERSONAL_INDICATOR=0`:
 
 ```sh
-AISHE_ZSH_PROFILE=personal AISHE_PERSONAL_INDICATOR=1 aishe
+AISHE_ZSH_PROFILE=personal AISHE_PERSONAL_INDICATOR=0 aishe
 ```
 
 Use `AISHE_PTY_PROMPT=force` to request AIShe's full prompt in the personal
@@ -93,9 +93,11 @@ without submitting or replacing it.
 
 The branded prompt also has a configurable live status chip in zsh's native
 right prompt; `off` hides it. Choose its ordered fields during setup or in
-`aishe settings`. Fields include model, mode, backend, scope,
-network, sandbox, task, elapsed time, latest context tokens, call/session
-tokens/cost, budget, and request count.
+`aishe settings`: `model`, `connection`, `task`, `elapsed`, `last_tokens`,
+`last_cost`, `session_tokens`, `session_cost`, and `requests`. Missing values
+are omitted. Mode and scope stay in the live left indicator. Context,
+backend/network/sandbox and budget prompt fields belong to the historical
+compatibility integration.
 
 The router recognizes a conservative set of full-line question forms beginning
 with collision-prone commands such as `what`, `where`, and `who`. Ambiguous
@@ -246,8 +248,8 @@ earlier checks stale; the original result remains visible. This records task
 activity rather than monitoring every change made by another process.
 
 Personal prompts keep their `RPROMPT` by default. Themes can display
-`AISHE_BACKGROUND_INDICATOR`, or `AISHE_PERSONAL_INDICATOR=1` adds the optional
-AIShe suffix. Activity uses a bounded local cache and shell FIFO updates;
+`AISHE_BACKGROUND_INDICATOR`. The quiet AIShe suffix appears by default;
+`AISHE_PERSONAL_INDICATOR=0` hides it. Activity uses a bounded local cache and shell FIFO updates;
 the parent checks it every two seconds and redraws only when the counts change.
 This does local work, while individual keystrokes do not launch a task-scanning
 process. `AISHE_BACKGROUND_INDICATOR_ENABLED=0` hides the badge and clears the
@@ -302,8 +304,9 @@ command-shaped input stays local. Piped stdin and explicitly supplied script
 files run as complete shell programs, preserving multiline control flow and
 positional arguments; they never route script lines to AI. Use `aishe -s -- ARG`
 for a stdin program or `aishe SCRIPT ARG` for a file. `aishe -lc 'PROGRAM' NAME ARG`
-executes an explicit login-shell program. The non-interactive shell prefers zsh
-and falls back to Bash when zsh is unavailable.
+executes an explicit login-shell program. Non-interactive commands and scripts
+use Bash when the saved shell profile selects Bash; otherwise they prefer zsh
+and fall back to Bash when zsh is unavailable.
 
 For the former line-by-line AIShe request protocol, use `aishe --agent-lines`
 explicitly. Natural-language requests are answered or, in Ask mode, printed as

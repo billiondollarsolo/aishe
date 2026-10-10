@@ -162,6 +162,12 @@ fn revised_startup(original: &str, block: &str, remove: bool) -> Result<String> 
                     "activation markers are embedded in other text; review the startup file"
                 );
             }
+            let after_start = start + START.len();
+            if after_start < original.len() && original.as_bytes()[after_start] != b'\n' {
+                anyhow::bail!(
+                    "activation start marker contains extra text; review the startup file"
+                );
+            }
             let after = end + END.len();
             if after < original.len() && original.as_bytes()[after] != b'\n' {
                 anyhow::bail!("activation end marker contains extra text; review the startup file");

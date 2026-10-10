@@ -10,11 +10,12 @@ choose that transport. Existing runtime versions are preserved during updates.
 
 - Rust 1.88 or newer (only to build from source; the prebuilt binaries need no
   toolchain). Install from [rustup.rs](https://rustup.rs).
-- **`zsh`** for the interactive shell: aishe drives your real zsh in a PTY. The
+- **`zsh`** for the full native interactive experience. AIShe drives real zsh in a PTY. The
   installer detects it and changes system packages only with authorization;
   on a manual install add it with your package manager
-  (`apt install zsh`, etc.). `bash` is enough for the non-interactive paths
-  (`aishe -c …` and piped input).
+  (`apt install zsh`, etc.). **`bash`** supports interactive Bash integration
+  with its documented reduced tier, as well as non-interactive commands and
+  shell programs. Fresh account-free launch selects Bash when zsh is absent.
 - **`bubblewrap`** is the supported Linux OS-isolation boundary for
   workspace-scoped agent actions and command previews. The core shell and
   suggest/chat paths work without it. Setup detects both presence and actual
@@ -55,10 +56,10 @@ working AIShe executable. An offline or failed runtime install leaves the old
 binary intact. Runtime versions live side by side. `AISHE_SKIP_BACKEND=1` remains
 a compatibility recovery override and wins over an opt-in.
 
-The script also ensures **zsh** is installed (best effort, via your system
-package manager), because aishe's interactive shell drives your real zsh in a
-PTY. Without zsh you can still use `aishe -c …`, piped input, and the bash hook
-(`aishe init bash`). The hook is qualified as Tier B on Bash 5.x and reduced
+The script offers **zsh** installation for the full native experience (best
+effort, via your system package manager with authorization). Without zsh,
+interactive Bash integration, `aishe -c …`, and piped shell programs remain
+available. Bash is qualified as Tier B on Bash 5.x and reduced
 Tier B- on Bash 3.2; see the [tested matrix](bash-compatibility.md). Opt out of
 the zsh step with `AISHE_SKIP_ZSH=1`.
 On Linux the non-interactive installer reports when **bubblewrap** is absent but
@@ -192,11 +193,13 @@ aishe activate zsh --apply      # private backup, then apply the reviewed block
 aishe activate zsh --remove     # remove only the marked block
 ```
 
-`--rcfile PATH` selects a custom startup file; symlinks resolve to their existing
-destination. `--json` reports the same plan for automation. The guarded launch
-prevents nested activation when AIShe loads your personal startup file. Removing
-it preserves surrounding user edits. Activation changes no `chsh` setting or
-`/etc/shells` entry; exiting returns to the parent shell.
+`--rcfile PATH` selects a custom startup file. AIShe preserves symlinks: inspect
+their destination and pass the real file with `--rcfile`. `--json` reports the
+same plan for automation. The guarded launch prevents nested activation when
+AIShe loads your personal startup file. Removing it preserves surrounding user
+edits. Activation changes no `chsh` setting or `/etc/shells` entry. The activation
+block replaces the startup shell, so exiting AIShe normally closes that terminal
+session. Launching `aishe` manually returns to the shell that launched it.
 
 ## Shell completions
 

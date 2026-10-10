@@ -48,6 +48,9 @@ The adoption review found the following concrete problems:
 | AD-14 | macOS ordinary-command startup exceeds the strict added-overhead SLO | The candidate fails an existing release requirement |
 | AD-15 | Release publication has no exact-source functional/performance qualification dependency | A packaged but unqualified commit can become public |
 | AD-16 | Public v1.0.0 predates the merged native/task work; package version remains 1.0.0 | Users download a different product from the one reviewed |
+| AD-17 | Missing provider token reports still appear as zero cost in native session prompts and historical usage | Task details alone cannot establish trustworthy spending or budget enforcement |
+| AD-18 | Untrusted project overlays can switch shell profiles or use the canonical autonomous mode alias | A cloned project can change the user's interpreter/startup expectations without an explicit trust decision |
+| AD-19 | Last-command fix/explain helpers are omitted from noninteractive classification | An interactive shortcut can capture a nested shell instead of a correction |
 
 ### Existing evidence and its limits
 
@@ -127,6 +130,16 @@ unknown. Unknown pricing is n/a; partial totals explicitly identify missing
 coverage. Migrate older records without manufacturing price provenance. A
 configured money budget cannot silently treat unverified historical spend as
 zero when resuming a task. Token/request limits remain independently enforced.
+Apply the same coverage distinction to native prompt totals, session tallies,
+the content-free usage ledger, and historical usage reports. Missing token
+reports differ from explicit reported zero usage. Legacy session/ledger records
+keep their observed counts but do not acquire invented coverage. Positive
+native session money budgets require verifiable usage and pricing before
+admitting another request.
+
+An untrusted project overlay cannot change the saved shell profile or select
+autonomous Agent mode through either its canonical name or its legacy alias.
+The existing explicit trust and per-shell grant checks remain separate.
 
 Opening a result acknowledges it as Seen and may quiet its notification.
 Reviewed is an explicit action. Preserve older acknowledged revisions as Seen
@@ -177,6 +190,7 @@ The checkbox status will be reconciled with actual candidate evidence.
 - [ ] A1 Remove provider setup from fresh ordinary launch and direct history logging.
 - [ ] A2 Add Connect later and an actionable disconnected-AI experience.
 - [ ] A3 Persist and expose Clean/Personal/Bash shell choice with temporary overrides.
+  Keep shell-profile project overrides behind explicit trust.
 - [ ] A4 Align recommended first-use mode with Ask and existing grant boundaries.
 - [ ] A5 Simplify first setup screen and retain detailed diagnostics on demand.
 - [ ] A6 Add inspectable reversible native activation and conflict/duplicate handling.
@@ -194,6 +208,7 @@ The checkbox status will be reconciled with actual candidate evidence.
 ### C. Honest and usable task results
 
 - [ ] C1 Persist price coverage and migrate older task records without false zero-cost claims.
+  Cover provider reports, prompt/session tallies, the usage ledger and historical reports.
 - [ ] C2 Fail safely on unknown historical spend under a money budget.
 - [ ] C3 Show authority/context and recorded check status before long result prose.
 - [ ] C4 Add discoverable scrolling and continuation indicators at narrow sizes.
@@ -208,6 +223,7 @@ The checkbox status will be reconciled with actual candidate evidence.
 - [ ] D3 Preserve fast-path argument validation, cwd/env/rc, output/status, and signal contracts.
 - [ ] D4 Distinguish native frontend, Bash tier, and historical managed integration in documentation.
 - [ ] D5 Add meaningful multiline/control-flow/error/argv/no-AI regression checks.
+  Qualify last-command fix/explain helpers as noninteractive operations.
 
 ### E. Installation and release pipeline
 
@@ -253,3 +269,27 @@ a candidate-specific qualification record. Do not replace the baseline's
 failed evidence with a later pass. Mark this design Implemented only when its
 implementation has landed; separate implementation completion from approval
 to publish and from actual distribution availability.
+
+### Candidate review iterations
+
+Review work is available in [PR #10](https://github.com/billiondollarsolo/aishe/pull/10).
+The first hosted candidate, branch commit
+`3253b914d9ef4a8e2e23a58f4cba925b52dfcd81`, was tested as synthetic merge
+`e43176bfc7bdb524109900026fa1c487c880307f`; their trees matched exactly.
+CI run `38017643029` is failed evidence, not release qualification. Linux native
+startup passed with 1.673 ms added p95; macOS failed at 12.628 ms.
+The local compile attempt also exhausted generated debug-cache space before
+the Rust tests ran. Its manifest retains that failure. Generated caches were
+cleared and local debug-info/incremental storage bounded for the next build;
+hosted standard-toolchain checks remain mandatory.
+
+This iteration exposed a stale reviewed-wrapper fingerprint, a native task
+metadata fixture without its private journal, the nested last-command helper
+bug, and an obsolete admin pipe test using implicit per-line force-shell
+sigils. Each has a concrete source or contract correction. Further review
+closed missing session/ledger cost provenance, project-profile/mode trust,
+activation-marker preservation, and durable task connection display gaps.
+The next candidate adds a measured history hot-path optimization: assemble one
+append record, avoid unnecessary permission writes, and reuse opened-file
+metadata while retaining permission repair and trimming. The original macOS
+startup requirement must pass on that new source.

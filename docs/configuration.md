@@ -560,8 +560,9 @@ server launched from `command`. List connected tools with `aishe mcp`. See
   for exports, aliases, and completion paths before AIShe installs widgets.
 - `AISHE_LEANRC_POST`: late native startup file, default
   `~/.aishe/leanrc.post`; use it to extend or override installed widgets/bindings.
-- `AISHE_PERSONAL_INDICATOR=1`: opt into a mode/scope and background-work suffix
-  on the personal right prompt. Themes can instead display the refreshed
+- `AISHE_PERSONAL_INDICATOR`: the personal right prompt includes a quiet
+  mode/scope and background-work suffix by default. Set it to `0` to hide the
+  suffix. Themes can instead display the refreshed
   `AISHE_MODE_INDICATOR` and `AISHE_BACKGROUND_INDICATOR`; the latter is empty
   when there is no running or unseen work. Counts cover all projects.
 - `AISHE_BACKGROUND_INDICATOR_ENABLED=0`: hide the native background-work badge

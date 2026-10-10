@@ -33,7 +33,7 @@ Setup is interactive and resumable. Choose a shell experience first:
 with a backup, and `--remove` restores the surrounding startup file. The login
 shell stays unchanged. Existing configurations without a
 shell-profile setting keep their previous clean profile. `AISHE_ZSH_PROFILE`
-remains an explicit one-process override for zsh.
+remains an explicit one-process override for `clean`, `personal`, or `bash`.
 
 AIShe writes its configuration to a per-platform directory: `~/.config/aishe/` on
 Linux but `~/Library/Application Support/aishe/` on macOS — aishe follows each platform's

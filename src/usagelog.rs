@@ -8,8 +8,9 @@
 //! aggregates and prints it when zsh exits.
 //!
 //! The current format is one versioned tab-separated line per child:
-//! `v2\t<input>\t<output>\t<requests>\t<model>\t<connection>`. The reader also
+//! `v3\t<input>\t<output>\t<requests>\t<model>\t<connection>\t<unreported>\t<reported-input>\t<reported-output>\t<attributed-requests>\t<attributed-input>\t<attributed-output>`. The reader also
 //! accepts the older model-only three- and four-column formats.
+//! Old rows retain their counts but have unknown usage coverage.
 //! Appends are best-effort and tolerant of torn/garbled lines — a missing or
 //! unreadable tally just means no summary, never an error.
 
@@ -35,8 +36,18 @@ pub fn append_attributed(path: &Path, usage: Usage, model: &str, connection_id: 
         .unwrap_or("legacy/unknown")
         .replace(['\t', '\n', '\r'], " ");
     let line = format!(
-        "v2\t{}\t{}\t{}\t{}\t{}\n",
-        usage.input, usage.output, usage.requests, model, connection_id
+        "v3\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\n",
+        usage.input,
+        usage.output,
+        usage.requests,
+        model,
+        connection_id,
+        usage.unreported_requests,
+        usage.reported_input,
+        usage.reported_output,
+        usage.attributed_requests,
+        usage.attributed_input,
+        usage.attributed_output
     );
     if let Ok(mut f) = std::fs::OpenOptions::new()
         .create(true)
@@ -64,8 +75,11 @@ pub fn parse_entries(text: &str) -> Vec<Entry> {
     let mut out = Vec::new();
     for line in text.lines() {
         let parts: Vec<&str> = line.split('\t').collect();
-        let (i, o, requests, model, connection_id) = if parts.first() == Some(&"v2") {
-            if parts.len() != 6 {
+        let versioned = matches!(parts.first(), Some(&"v2") | Some(&"v3"));
+        let (i, o, requests, model, connection_id) = if versioned {
+            if (parts[0] == "v2" && parts.len() != 6)
+                || (parts[0] == "v3" && !matches!(parts.len(), 9 | 12))
+            {
                 continue;
             }
             (
@@ -88,12 +102,52 @@ pub fn parse_entries(text: &str) -> Vec<Entry> {
         let Ok(requests) = requests.trim().parse::<u64>() else {
             continue;
         };
+        let mut usage = Usage::unknown(input, output, requests);
+        if parts.first() == Some(&"v3") {
+            let (Ok(unreported), Ok(reported_input), Ok(reported_output)) = (
+                parts[6].parse::<u64>(),
+                parts[7].parse::<u64>(),
+                parts[8].parse::<u64>(),
+            ) else {
+                continue;
+            };
+            if unreported > requests
+                || reported_input > input
+                || reported_output > output
+                || (unreported == requests && (reported_input != 0 || reported_output != 0))
+                || (unreported == 0 && (reported_input != input || reported_output != output))
+            {
+                continue;
+            }
+            usage.unreported_requests = unreported;
+            usage.reported_input = reported_input;
+            usage.reported_output = reported_output;
+            if parts.len() == 12 {
+                let (Ok(attributed_requests), Ok(attributed_input), Ok(attributed_output)) = (
+                    parts[9].parse::<u64>(),
+                    parts[10].parse::<u64>(),
+                    parts[11].parse::<u64>(),
+                ) else {
+                    continue;
+                };
+                if attributed_requests > usage.reported_requests()
+                    || attributed_input > reported_input
+                    || attributed_output > reported_output
+                    || (attributed_requests == 0
+                        && (attributed_input != 0 || attributed_output != 0))
+                    || (attributed_requests == usage.reported_requests()
+                        && (attributed_input != reported_input
+                            || attributed_output != reported_output))
+                {
+                    continue;
+                }
+                usage.attributed_requests = attributed_requests;
+                usage.attributed_input = attributed_input;
+                usage.attributed_output = attributed_output;
+            }
+        }
         out.push(Entry {
-            usage: Usage {
-                input,
-                output,
-                requests,
-            },
+            usage,
             model,
             connection_id,
         });
@@ -137,32 +191,21 @@ pub fn summarize_for_connection(
     if entries.is_empty() {
         return None;
     }
-    let (mut tin, mut tout, mut reqs, mut unpriced) = (0u64, 0u64, 0u64, 0u64);
-    let mut total_cost = 0f64;
+    let mut total = Usage::default();
+    let mut costs = usage::CostTally::default();
     for entry in &entries {
-        tin += entry.usage.input;
-        tout += entry.usage.output;
-        reqs += entry.usage.requests;
-        match usage::price_for(&entry.model, pricing) {
-            Some(p) => total_cost += usage::cost(entry.usage, p),
-            None => unpriced += entry.usage.requests,
-        }
+        total.add(entry.usage);
+        costs.add(entry.usage, usage::price_for(&entry.model, pricing));
     }
-    if reqs == 0 {
+    if total.is_empty() {
         return None;
     }
-    let cost_str = if unpriced == 0 {
-        format!("~${total_cost:.4}")
-    } else if total_cost > 0.0 {
-        format!("~${total_cost:.4} (+{unpriced} unpriced)")
-    } else {
-        "cost n/a".to_string()
-    };
     Some(format!(
-        "aishe session: {} in · {} out · {reqs} req{} · {cost_str}",
-        usage::group(tin),
-        usage::group(tout),
-        if reqs == 1 { "" } else { "s" },
+        "aishe session: {} · {} req{} · {}",
+        total.tokens_label(),
+        total.requests,
+        if total.requests == 1 { "" } else { "s" },
+        costs.label(),
     ))
 }
 
@@ -207,43 +250,26 @@ fn status_values_for_connection(
         })
         .collect();
     let mut total = Usage::default();
-    let mut total_cost = 0.0;
-    let mut unpriced = 0u64;
+    let mut costs = usage::CostTally::default();
     for entry in &entries {
-        total.input += entry.usage.input;
-        total.output += entry.usage.output;
-        total.requests += entry.usage.requests;
-        match usage::price_for(&entry.model, pricing) {
-            Some(price) => total_cost += usage::cost(entry.usage, price),
-            None => unpriced += entry.usage.requests,
-        }
+        total.add(entry.usage);
+        costs.add(entry.usage, usage::price_for(&entry.model, pricing));
     }
     let mut fields = Vec::new();
     for item in items {
         let value = match item.as_str() {
-            "last_tokens" => last.map(|(usage, _)| {
-                format!(
-                    "last {}/{} tok",
-                    usage::group(usage.input),
-                    usage::group(usage.output)
-                )
+            "last_tokens" => {
+                last.map(|(usage, _)| format!("last {}", usage.compact_tokens_label()))
+            }
+            "last_cost" => last.map(|(usage, model)| {
+                let mut last_cost = usage::CostTally::default();
+                last_cost.add(usage, usage::price_for(model, pricing));
+                format!("last {}", last_cost.label())
             }),
-            "last_cost" => last.map(|(usage, model)| match usage::price_for(model, pricing) {
-                Some(price) => format!("last ~${:.4}", usage::cost(usage, price)),
-                None => "last cost n/a".to_string(),
-            }),
-            "session_tokens" if !total.is_empty() => Some(format!(
-                "session {}/{} tok",
-                usage::group(total.input),
-                usage::group(total.output)
-            )),
-            "session_cost" if !total.is_empty() => Some(if unpriced == 0 {
-                format!("session ~${total_cost:.4}")
-            } else if total_cost > 0.0 {
-                format!("session ~${total_cost:.4} +{unpriced} unpriced")
-            } else {
-                "session cost n/a".to_string()
-            }),
+            "session_tokens" if !total.is_empty() => {
+                Some(format!("session {}", total.compact_tokens_label()))
+            }
+            "session_cost" if !total.is_empty() => Some(format!("session {}", costs.label())),
             "requests" if !total.is_empty() => Some(format!(
                 "{} req{}",
                 total.requests,
@@ -345,24 +371,8 @@ mod tests {
     fn append_then_read_roundtrip() {
         let p = tmp("rt");
         std::fs::remove_file(&p).ok();
-        append(
-            &p,
-            Usage {
-                input: 100,
-                output: 50,
-                requests: 1,
-            },
-            "claude-sonnet-x",
-        );
-        append(
-            &p,
-            Usage {
-                input: 7,
-                output: 3,
-                requests: 1,
-            },
-            "gpt-x",
-        );
+        append(&p, Usage::reported(100, 50, 1), "claude-sonnet-x");
+        append(&p, Usage::reported(7, 3, 1), "gpt-x");
         let entries = read(&p);
         assert_eq!(entries.len(), 2);
         assert_eq!(entries[0].0.input, 100);
@@ -378,21 +388,13 @@ mod tests {
         std::fs::remove_file(&usage_path).ok();
         append_attributed(
             &usage_path,
-            Usage {
-                input: 10,
-                output: 1,
-                requests: 1,
-            },
+            Usage::reported(10, 1, 1),
             "same-model",
             Some("openai-work"),
         );
         append_attributed(
             &usage_path,
-            Usage {
-                input: 20,
-                output: 2,
-                requests: 1,
-            },
+            Usage::reported(20, 2, 1),
             "same-model",
             Some("openai-personal"),
         );
@@ -438,29 +440,13 @@ mod tests {
         std::fs::remove_file(&p).ok();
         // One priced model (matches the builtin `claude-sonnet` price) and one
         // unknown model that must be disclosed as unpriced.
-        append(
-            &p,
-            Usage {
-                input: 1000,
-                output: 200,
-                requests: 1,
-            },
-            "claude-sonnet-x",
-        );
-        append(
-            &p,
-            Usage {
-                input: 2000,
-                output: 300,
-                requests: 3,
-            },
-            "totally-unknown-model",
-        );
+        append(&p, Usage::reported(1000, 200, 1), "claude-sonnet-x");
+        append(&p, Usage::reported(2000, 300, 3), "totally-unknown-model");
         let line = summarize(&p, &std::collections::BTreeMap::new()).unwrap();
         assert!(line.contains("3,000 in"), "got: {line}");
         assert!(line.contains("500 out"), "got: {line}");
         assert!(line.contains("4 reqs"), "got: {line}");
-        assert!(line.contains("(+3 unpriced)"), "got: {line}");
+        assert!(line.contains("(partial; 3 unknown)"), "got: {line}");
         std::fs::remove_file(&p).ok();
     }
 
@@ -468,15 +454,7 @@ mod tests {
     fn summarize_all_unpriced_says_cost_na() {
         let p = tmp("na");
         std::fs::remove_file(&p).ok();
-        append(
-            &p,
-            Usage {
-                input: 5,
-                output: 5,
-                requests: 1,
-            },
-            "mystery-model",
-        );
+        append(&p, Usage::reported(5, 5, 1), "mystery-model");
         let line = summarize(&p, &std::collections::BTreeMap::new()).unwrap();
         assert!(line.contains("cost n/a"), "got: {line}");
         std::fs::remove_file(&p).ok();
@@ -490,14 +468,97 @@ mod tests {
     }
 
     #[test]
+    fn legacy_rows_preserve_counts_without_inventing_cost_coverage() {
+        let entries =
+            parse_entries("v2\t100\t50\t2\tgpt-4o\twork\n7\t3\t1\tgpt-4o\n0\t0\tgpt-4o\n");
+        assert_eq!(entries.len(), 3);
+        assert_eq!(entries[0].usage, Usage::unknown(100, 50, 2));
+        assert_eq!(entries[1].usage, Usage::unknown(7, 3, 1));
+        assert_eq!(entries[2].usage, Usage::unknown(0, 0, 1));
+    }
+
+    #[test]
+    fn priced_missing_usage_remains_unknown_in_last_session_and_reloaded_status() {
+        let path = tmp("coverage-status");
+        std::fs::remove_file(&path).ok();
+        let missing = Usage::unknown(2000, 0, 1);
+        append_attributed(&path, missing, "gpt-4o", Some("work"));
+        assert_eq!(read_entries(&path)[0].usage, missing);
+        let items = [
+            "last_tokens",
+            "last_cost",
+            "session_tokens",
+            "session_cost",
+            "requests",
+        ]
+        .map(str::to_string);
+        let text = status_metrics(
+            &path,
+            &std::collections::BTreeMap::new(),
+            Some((missing, "gpt-4o")),
+            &items,
+        );
+        assert_eq!(
+            text,
+            "last tokens n/a · last cost n/a · session tokens n/a · session cost n/a · 1 req"
+        );
+        let mut mixed = missing;
+        mixed.add(Usage::reported(0, 0, 1));
+        append_attributed(&path, Usage::reported(0, 0, 1), "gpt-4o", Some("work"));
+        let text = status_metrics(
+            &path,
+            &std::collections::BTreeMap::new(),
+            Some((mixed, "gpt-4o")),
+            &items,
+        );
+        assert!(text.contains("last 0/0 tok (partial)"), "{text}");
+        assert!(
+            text.contains("last ~$0.0000 (partial; 1 unknown)"),
+            "{text}"
+        );
+        assert!(
+            text.contains("session ~$0.0000 (partial; 1 unknown)"),
+            "{text}"
+        );
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn mixed_v3_and_legacy_preserve_only_verified_cost_subtotal() {
+        let path = tmp("coverage-legacy");
+        std::fs::write(&path, "v2\t1000000\t1000000\t1\tgpt-4o\twork\n").unwrap();
+        append_attributed(
+            &path,
+            Usage::reported(1000, 1000, 1),
+            "gpt-4o",
+            Some("work"),
+        );
+        let line = summarize(&path, &std::collections::BTreeMap::new()).unwrap();
+        assert!(line.contains("1,000 in · 1,000 out (partial)"), "{line}");
+        assert!(line.contains("~$0.0125 (partial; 1 unknown)"), "{line}");
+        assert!(
+            !line.contains("12.5125"),
+            "legacy usage was claimed verified: {line}"
+        );
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn malformed_coverage_is_not_accepted_as_free_usage() {
+        for line in [
+            "v3\t0\t0\t1\tgpt-4o\twork\t2\t0\t0",
+            "v3\t5\t0\t1\tgpt-4o\twork\t0\t0\t0",
+            "v3\t5\t0\t1\tgpt-4o\twork\t1\t5\t0",
+        ] {
+            assert!(parse_entries(line).is_empty(), "{line}");
+        }
+    }
+
+    #[test]
     fn status_metrics_are_selectable_and_preserve_unknown_cost() {
         let p = tmp("status");
         std::fs::remove_file(&p).ok();
-        let last = Usage {
-            input: 1697,
-            output: 374,
-            requests: 2,
-        };
+        let last = Usage::reported(1697, 374, 2);
         append(&p, last, "gpt-5.6-luna");
         let rendered = status_metrics(
             &p,
@@ -523,16 +584,8 @@ mod tests {
         let status_path = tmp("status-order-rendered");
         std::fs::remove_file(&usage_path).ok();
         std::fs::remove_file(&status_path).ok();
-        let priced = Usage {
-            input: 1_000,
-            output: 500,
-            requests: 2,
-        };
-        let unpriced = Usage {
-            input: 20,
-            output: 10,
-            requests: 3,
-        };
+        let priced = Usage::reported(1_000, 500, 2);
+        let unpriced = Usage::reported(20, 10, 3);
         append(&usage_path, priced, "priced-exact");
         append(&usage_path, unpriced, "unknown-exact");
         let pricing = [(
@@ -560,7 +613,7 @@ mod tests {
         let lines: Vec<&str> = rendered.lines().collect();
         assert!(lines[0].starts_with("requests\t5 reqs"), "{rendered}");
         assert!(
-            lines[1].starts_with("session_cost\tsession ~$0.0020 +3 unpriced"),
+            lines[1].starts_with("session_cost\tsession ~$0.0020 (partial; 3 unknown)"),
             "{rendered}"
         );
         assert!(
