@@ -531,18 +531,19 @@ impl OpenCodeClient {
     }
 
     fn subscribe(&self) -> Result<Box<dyn BufRead + Send>> {
-        let response = ureq::get(format!(
-            "{}/global/event",
-            self.connection.base_url.trim_end_matches('/')
-        ))
-        .header("Authorization", self.authorization())
-        .header("User-Agent", concat!("aishe/", env!("CARGO_PKG_VERSION")))
-        .header("Accept", "text/event-stream")
-        .config()
-        .timeout_global(Some(Duration::from_secs(24 * 60 * 60)))
-        .build()
-        .call()
-        .context("subscribing to OpenCode events")?;
+        let response = crate::platform_tls::default_agent()
+            .get(format!(
+                "{}/global/event",
+                self.connection.base_url.trim_end_matches('/')
+            ))
+            .header("Authorization", self.authorization())
+            .header("User-Agent", concat!("aishe/", env!("CARGO_PKG_VERSION")))
+            .header("Accept", "text/event-stream")
+            .config()
+            .timeout_global(Some(Duration::from_secs(24 * 60 * 60)))
+            .build()
+            .call()
+            .context("subscribing to OpenCode events")?;
         let content_type = response
             .headers()
             .get("content-type")
@@ -557,7 +558,8 @@ impl OpenCodeClient {
 
     fn get_json(&self, path: &str, workspace: Option<&Path>) -> Result<Value> {
         let url = self.url(path, workspace)?;
-        let response = ureq::get(&url)
+        let response = crate::platform_tls::default_agent()
+            .get(&url)
             .header("Authorization", self.authorization())
             .header("User-Agent", concat!("aishe/", env!("CARGO_PKG_VERSION")))
             .config()
@@ -570,7 +572,8 @@ impl OpenCodeClient {
 
     fn get_json_optional(&self, path: &str, workspace: Option<&Path>) -> Result<Option<Value>> {
         let url = self.url(path, workspace)?;
-        match ureq::get(&url)
+        match crate::platform_tls::default_agent()
+            .get(&url)
             .header("Authorization", self.authorization())
             .header("User-Agent", concat!("aishe/", env!("CARGO_PKG_VERSION")))
             .config()
@@ -586,7 +589,8 @@ impl OpenCodeClient {
 
     fn post_json(&self, path: &str, workspace: Option<&Path>, body: &Value) -> Result<Value> {
         let url = self.url(path, workspace)?;
-        let response = ureq::post(&url)
+        let response = crate::platform_tls::default_agent()
+            .post(&url)
             .header("Authorization", self.authorization())
             .header("User-Agent", concat!("aishe/", env!("CARGO_PKG_VERSION")))
             .config()
@@ -599,7 +603,8 @@ impl OpenCodeClient {
 
     fn post_no_content(&self, path: &str, workspace: Option<&Path>, body: &Value) -> Result<()> {
         let url = self.url(path, workspace)?;
-        ureq::post(&url)
+        crate::platform_tls::default_agent()
+            .post(&url)
             .header("Authorization", self.authorization())
             .header("User-Agent", concat!("aishe/", env!("CARGO_PKG_VERSION")))
             .config()

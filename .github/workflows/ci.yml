@@ -258,6 +258,15 @@ jobs:
           python3 tests/native_startup_diagnostic.py target/release/aishe
           --output test-results/native-startup-diagnostic-macOS.json
 
+      - name: Verify native TLS first use and platform trust
+        id: native_tls_activation
+        if: always() && runner.os == 'macOS' && (steps.direct_shell_benchmark.outcome == 'success' || steps.direct_shell_benchmark.outcome == 'failure')
+        continue-on-error: true
+        timeout-minutes: 13
+        run: >-
+          python3 tests/native_tls_activation.py target/release/aishe
+          --output test-results/native-tls-activation-macOS.json
+
       - name: Native display, mode grants, and cancellation
         timeout-minutes: 5
         run: |
@@ -404,6 +413,12 @@ jobs:
         if: always() && steps.native_startup_diagnostic.outcome == 'failure'
         run: |
           echo "Native startup diagnostic capture failed; inspect the retained partial report." >&2
+          exit 1
+
+      - name: Enforce native TLS activation contract
+        if: always() && steps.native_tls_activation.outcome == 'failure'
+        run: |
+          echo "Native TLS activation qualification failed; inspect its retained proof." >&2
           exit 1
 
   pty-legacy:

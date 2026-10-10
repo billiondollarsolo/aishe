@@ -5,6 +5,9 @@
 use sha2::{Digest, Sha256};
 use std::process::Command;
 
+#[path = "build_support/apple_link.rs"]
+mod apple_link;
+
 fn git_output(args: &[&str]) -> Option<String> {
     Command::new("git")
         .args(args)
@@ -22,6 +25,8 @@ fn watch_git_path(path: &str) {
 }
 
 fn main() {
+    apple_link::configure();
+
     let sha =
         git_output(&["rev-parse", "--short", "HEAD"]).unwrap_or_else(|| "unknown".to_string());
     println!("cargo:rustc-env=AISHE_GIT_SHA={sha}");

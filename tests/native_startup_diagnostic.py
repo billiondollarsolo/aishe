@@ -16,6 +16,7 @@ import re
 import selectors
 import shutil
 import signal
+import struct
 import subprocess
 import tempfile
 import time
@@ -35,6 +36,74 @@ RUST_SOURCE = "fn main() {}\n"
 
 def digest(path):
     return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+
+
+def native_link_attributes(path):
+    """Read real thin 64-bit Mach-O attributes, independent of otool's age."""
+    data = Path(path).read_bytes()
+    if len(data) < 32 or struct.unpack_from("<I", data)[0] != 0xFEEDFACF:
+        return {"supported": False, "reason": "not a thin little-endian 64-bit Mach-O"}
+    count = struct.unpack_from("<I", data, 16)[0]
+    offset = 32
+    frameworks = {}
+    formats = set()
+    fixup_headers = []
+    minimum_macos = None
+    for _ in range(count):
+        if offset + 8 > len(data):
+            raise ValueError("truncated Mach-O command header")
+        command, size = struct.unpack_from("<II", data, offset)
+        if size < 8 or offset + size > len(data):
+            raise ValueError("invalid Mach-O command length")
+        if command in (0xC, 0x80000018, 0x8000001F, 0x80000023) and size >= 24:
+            name_offset, marker = struct.unpack_from("<II", data, offset + 8)
+            if name_offset >= size:
+                raise ValueError("invalid dylib name offset")
+            name = data[offset + name_offset:offset + size].split(b"\0", 1)[0].decode()
+            if any(f"/{framework}.framework/" in name for framework in ("Security", "CoreFoundation")):
+                modern = command == 0xC and name_offset == 28 and marker == 0x1A741800 and size >= 28
+                flags = struct.unpack_from("<I", data, offset + 24)[0] if modern else 0
+                dependency = {"command": command, "dylib_use_command": modern,
+                              "flags": flags, "delayed_init": bool(flags & 0x8)}
+                previous = frameworks.get(name)
+                frameworks[name] = {**dependency,
+                    "delayed_init": dependency["delayed_init"] and
+                        (previous is None or previous["delayed_init"]),
+                    "dependencies": (previous["dependencies"] if previous else []) + [dependency]}
+        if command == 0x80000034 and size >= 16:  # LC_DYLD_CHAINED_FIXUPS
+            start, length = struct.unpack_from("<II", data, offset + 8)
+            if start + length > len(data) or length < 28:
+                raise ValueError("invalid chained-fixup payload")
+            header = struct.unpack_from("<7I", data, start)
+            fixup_headers.append({"data_offset": start, "data_bytes": length, **dict(zip(
+                ("version", "starts_offset", "imports_offset", "symbols_offset",
+                 "imports_count", "imports_format", "symbols_format"), header))})
+            starts_offset = struct.unpack_from("<I", data, start + 4)[0]
+            starts = start + starts_offset
+            if starts + 4 > start + length:
+                raise ValueError("invalid chained-fixup starts offset")
+            segments = struct.unpack_from("<I", data, starts)[0]
+            if starts + 4 + segments * 4 > start + length:
+                raise ValueError("truncated chained segment table")
+            for index in range(segments):
+                relative = struct.unpack_from("<I", data, starts + 4 + index * 4)[0]
+                if relative:
+                    segment = starts + relative
+                    if segment + 8 > start + length:
+                        raise ValueError("truncated chained segment header")
+                    formats.add(struct.unpack_from("<H", data, segment + 6)[0])
+        if command == 0x32 and size >= 24:  # LC_BUILD_VERSION
+            target_platform, minimum = struct.unpack_from("<II", data, offset + 8)
+            if target_platform == 1:
+                minimum_macos = minimum
+        if command == 0x24 and size >= 16:  # LC_VERSION_MIN_MACOSX
+            minimum_macos = struct.unpack_from("<I", data, offset + 8)[0]
+        offset += size
+    return {"supported": True, "frameworks": frameworks,
+            "chain_pointer_formats": sorted(formats), "minimum_macos": minimum_macos,
+            "cpu_type": struct.unpack_from("<I", data, 4)[0],
+            "cpu_subtype": struct.unpack_from("<I", data, 8)[0],
+            "chained_fixup_headers": fixup_headers}
 
 
 def capture(argv, env, deadline, timeout=15):
@@ -142,6 +211,11 @@ def main():
             raise RuntimeError("diagnostic binary/source identity mismatch")
         if report["source_dirty"]:
             raise RuntimeError("native diagnostic requires a clean source checkout")
+        retained_binary = evidence / "aishe-candidate"
+        shutil.copy2(binary, retained_binary)
+        if digest(retained_binary) != report["binary_sha256"]:
+            raise RuntimeError("retained candidate copy hash mismatch")
+        report["artifact_binary_path"] = str(Path(evidence.name) / retained_binary.name)
 
         tools = {name: shutil.which(name) for name in ("clang", "rustc", "rustup", "otool", "dyld_info", "file", "zsh")}
         # rustc can be a rustup shim whose lookup depends on HOME. Resolve its
@@ -206,7 +280,8 @@ def main():
                 imports = checked(capture([tools["otool"], "-L", str(executable)], env, deadline), name + " imports")
                 commands = checked(capture([tools["otool"], "-l", str(executable)], env, deadline), name + " load commands")
                 report["macho"][name] = {"imports": imports, "load_commands": commands,
-                    "has_chained_fixups": "LC_DYLD_CHAINED_FIXUPS" in commands["stdout"]}
+                    "has_chained_fixups": "LC_DYLD_CHAINED_FIXUPS" in commands["stdout"],
+                    "native_link_attributes": native_link_attributes(executable)}
                 report["macho"][name]["headers"] = checked(
                     capture([tools["otool"], "-hv", str(executable)], env, deadline), name + " headers")
                 if tools["file"]:
@@ -223,6 +298,19 @@ def main():
             base_imports = report["macho"]["c_minimal"]["imports"]["stdout"]
             if any(f"/{name}.framework/" in base_imports for name in ("Security", "CoreFoundation")):
                 raise RuntimeError("minimal C control unexpectedly links the compared frameworks")
+            # Retain all actual build-script outputs. Multiple cached outputs
+            # remain distinguishable by path/hash/source-bound payload; do not
+            # infer a selected flag from merely finding its text in a cache.
+            report["build_link_records"] = []
+            for build_output in sorted((repository / "target" / "release" / "build").glob("aishe-*/output")):
+                text = build_output.read_text(errors="replace")
+                relevant = [line for line in text.splitlines()
+                            if "STARTUP_LINK" in line or "startup-link" in line or
+                            "delay_framework" in line or "fixup_chains" in line or
+                            "aishe_delayed_frameworks" in line]
+                if relevant:
+                    report["build_link_records"].append({"path": str(build_output),
+                        "sha256": digest(build_output), "lines": relevant})
             # LC_MAIN contains a file offset. Convert it through __TEXT to the
             # virtual entry address even when stripping removed _main symbols.
             load_commands = report["macho"]["aishe"]["load_commands"]["stdout"]

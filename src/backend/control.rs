@@ -837,12 +837,12 @@ fn validate_loopback_url(value: &str) -> Result<()> {
 }
 
 fn loopback_agent(timeout: Duration) -> ureq::Agent {
-    ureq::Agent::config_builder()
+    let config = ureq::Agent::config_builder()
         .http_status_as_error(false)
         .max_redirects(0)
         .timeout_global(Some(timeout))
-        .build()
-        .into()
+        .build();
+    crate::platform_tls::agent(config)
 }
 
 fn control_error(error: ureq::Error) -> String {
@@ -936,7 +936,8 @@ mod tests {
             let (stream, _) = listener.accept().unwrap();
             serve_connection(stream, &server).unwrap();
         });
-        let mut response = ureq::get(&format!("{}/v1/health", context.state.control_url))
+        let mut response = crate::platform_tls::default_agent()
+            .get(&format!("{}/v1/health", context.state.control_url))
             .header("Authorization", format!("Bearer {}", context.control_token))
             .call()
             .unwrap();
@@ -1013,7 +1014,8 @@ mod tests {
             let (stream, _) = listener.accept().unwrap();
             serve_connection(stream, &server).unwrap();
         });
-        let result = ureq::post(&format!("{}/v1/stop", context.state.control_url))
+        let result = crate::platform_tls::default_agent()
+            .post(&format!("{}/v1/stop", context.state.control_url))
             .header("Authorization", format!("Bearer {}", context.plugin_token))
             .header("Content-Type", "application/json")
             .send_json(serde_json::json!({}));

@@ -113,7 +113,7 @@ pub(crate) fn external_http_agent(
 ) -> ureq::Agent {
     use ureq::tls::{RootCerts, TlsConfig};
 
-    ureq::Agent::config_builder()
+    let config = ureq::Agent::config_builder()
         .http_status_as_error(false)
         .max_redirects(5)
         .timeout_connect(Some(connect_timeout))
@@ -125,8 +125,8 @@ pub(crate) fn external_http_agent(
                 .root_certs(RootCerts::PlatformVerifier)
                 .build(),
         )
-        .build()
-        .into()
+        .build();
+    crate::platform_tls::agent(config)
 }
 
 /// One reusable transport pool per native provider. Streaming requests override

@@ -78,6 +78,19 @@ class ReleaseGateTests(unittest.TestCase):
             (root / "src/main.rs").write_text("fn main() { todo!() }\n")
             self.assertNotEqual(production_source_digest(root), before)
 
+    def test_source_digest_includes_new_and_changed_build_helpers(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            subprocess.run(["git", "init", "-q", str(root)], check=True)
+            before = production_source_digest(root)
+            (root / "build_support").mkdir()
+            helper = root / "build_support/apple_link.rs"
+            helper.write_text("fn configure() {}\n")
+            added = production_source_digest(root)
+            self.assertNotEqual(added, before)
+            helper.write_text("fn configure() { fallback(); }\n")
+            self.assertNotEqual(production_source_digest(root), added)
+
     def test_record_accepts_owned_current_dispositions(self):
         self.assertEqual(disposition_problems(ready_record(), "1.1.0", TODAY, "a" * 64), [])
 

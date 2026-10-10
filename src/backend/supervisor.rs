@@ -715,7 +715,8 @@ fn verify_smoke_tool_policy(url: &str, password: &str, directory: &Path) -> Resu
     // endpoint so setup does not fail intermittently on that startup boundary.
     let deadline = std::time::Instant::now() + Duration::from_secs(10);
     loop {
-        let last_error = match ureq::get(ids_url.as_str())
+        let last_error = match crate::platform_tls::default_agent()
+            .get(ids_url.as_str())
             .header("Authorization", &authorization)
             .config()
             .max_redirects(5)
@@ -790,7 +791,8 @@ fn wait_for_health(
         if let Some(status) = child.try_wait()? {
             anyhow::bail!("OpenCode server exited before health check ({status})");
         }
-        let response = ureq::get(&format!("{url}/global/health"))
+        let response = crate::platform_tls::default_agent()
+            .get(&format!("{url}/global/health"))
             .header("Authorization", &authorization)
             .config()
             .max_redirects(5)

@@ -552,3 +552,88 @@ The plan remains Active with all 38 A–F items unchecked. The candidate decisio
 remains Hold and unpublished; provider, named manual-terminal and long-soak
 groups remain not_run, with R1–R4 open. P2's macOS failure and AD-24 remain
 immutable negative history when the next source and digest are qualified.
+
+### P3 corrected evidence wording and retained startup failure
+
+Main `648cec952b1c0bec11a65ae2beabd18136dca1cc`, tree
+`ca7e83cbae8017fc9f21be3a48d84d4d0a70d4ec`, passed eleven local core
+commands, 1,120 Rust tests across 37 targets and all 37 local native commands.
+Root personally inspected the actual corrected zero-check review in workflow
+view 55 and background view 08. Both show No recorded checks and the conditional
+task-workspace caveat without the former affirmative assertion. The successful
+source-bound selective-review scenario also established an empty checks list,
+zero summary total, default-no and explicit application of only the selected
+file. The [qualification history](../releases/v1.1.0.qualification.json)
+retains the passing report's source, immutable local binary, capture, fresh-frame
+and rendered-image hashes. AD-24's specific hold is resolved on P3; its P2 negative
+capture and every prior failure remain unchanged.
+
+Exact push [CI 38029516707](https://github.com/billiondollarsolo/aishe/actions/runs/38029516707)
+completed with ten of eleven jobs passing and all platform functional checks
+passing. Original Linux startup passed at 1.514 ms added p95. Original macOS
+startup failed at 13.101 ms, with raw zsh p95 13.230 ms and AIShe p95 26.331 ms,
+against the unchanged 10 ms limit. The original
+[Linux artifact](https://github.com/billiondollarsolo/aishe/actions/runs/38029516707/artifacts/11661941995)
+and [macOS artifact](https://github.com/billiondollarsolo/aishe/actions/runs/38029516707/artifacts/11661712698)
+retain their actual ZIP and binary identities. Linux produced its release
+identity manifest; macOS withheld it after the failed original gate. The actual
+AD-24 visual pass does not establish overall release qualification.
+
+The retained native macOS attribution report contains 700 raw measured rows.
+Its empty-main C control that forces Security and CoreFoundation imports used
+3.375 ms mean child CPU, compared with 1.515 ms for the minimal C control:
+a measured 1.860 ms difference. These are whole linked-image and runtime
+controls, including process startup and termination, rather than measurements
+of an individual loader phase. The framework control makes no CF/Security API
+call. Actual AIShe imports both frameworks; its Mach-O report has no
+`LC_DYLD_CHAINED_FIXUPS`, while the C controls have chained fixups. Neither that
+structural observation nor the control difference attributes the complete
+13.101 ms gate failure to frameworks or fixups. Loader logs perturb execution,
+and `--version` includes CLI construction and output. The diagnostic report
+and its companion hashes stay separate from the unchanged original gate.
+
+The next production change must retain native TLS trust and observable shell
+behavior and receive fresh source-bound local checks and exact-main CI.
+Any measured startup gain awaits both original platform gates on that actual
+new source. The plan remains Active with all 38 A–F items unchecked, R1–R4 open,
+decision Hold, unpublished and external qualification groups not_run.
+
+### P4 guarded native-loader candidate, qualification pending
+
+The next candidate tests delaying CoreFoundation and Security initialization on
+ordinary macOS shell paths. Build-time probes use the selected Rust target and
+linker, then inspect the emitted Mach-O rather than accepting an option name as
+proof. Both framework dependencies must carry the delayed-initialization marker,
+including duplicate imports, while retaining the baseline architecture and
+minimum macOS deployment version. Chained fixups are admitted separately on
+arm64 only when their recorded encoding fits that unchanged deployment floor:
+generic 64-bit pointers at macOS 11, or offset pointers at macOS 12 and later.
+Unsupported probes retain ordinary linking; x86_64 retains its existing fixups.
+These capability checks do not establish execution on an older macOS release.
+
+Only a verified delayed macOS build wraps the existing ureq connector. Before
+any required TLS connection, including an HTTPS proxy for an HTTP target,
+process-wide once-only activation opens the absolute system CoreFoundation and
+Security framework paths with `dlopen`. It completes before the default
+connector runs, retains the handles for the process lifetime and returns an
+error if activation fails. Other builds use the original eager path. The
+existing configuration, default connector and resolver, connection pools,
+redirects, proxies, rustls and platform trust remain in use.
+
+The proposed bounded native fixture runs the actual library test executable on
+macOS. It checks four concurrent first trusted public HTTPS requests through the
+provider factory and shared pool, a later pooled request, an HTTP-to-HTTPS
+redirect after activation, and rejection of a SAN-valid local self-signed
+certificate. A separate fresh process checks first activation and certificate
+rejection for an untrusted HTTPS proxy serving an HTTP target. It does not alter
+the keychain or trust store or call a paid provider. Retained product and test
+executables, source/binary hashes, compiled capability records and actual Mach-O
+attributes must establish which link path was tested. This fixture does not
+prove custom enterprise-root handling or every proxy/redirect combination.
+
+The candidate has no recorded native pass or measured performance gain yet.
+Fresh clean-source local checks, exact-main CI, the actual native TLS proof and
+both unchanged original startup gates remain required. Attribution diagnostics
+stay separate from startup qualification. All prior negative history remains;
+the plan is Active with all 38 A–F items unchecked, R1–R4 open, decision Hold,
+unpublished and external qualification groups not_run.

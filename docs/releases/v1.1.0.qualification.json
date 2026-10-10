@@ -3,7 +3,7 @@
   "version": "1.1.0",
   "decision": "hold",
   "release_owner": "billiondollarsolo",
-  "production_source_sha256": "524f8e849e0af599736ebfdcd12f78af58438ba839406703d8eaa9dd5dc75815",
+  "production_source_sha256": "84117dddd32eaf99d48afc48611d0d639b29c20d826351dee2821ed084a0ddee",
   "qualification_profile_revision": "2026-10-10.1",
   "prepared_at": "2026-10-10",
   "published": false,
@@ -11,7 +11,7 @@
     "state": "not_run",
     "source_commit": null,
     "ci_run_id": null,
-    "reason": "The conditional AD-24 caveat and native attribution diagnostics require a new clean committed source with fresh exact-main maintained CI and truthful zero-check review. Original P2 macOS startup and actual visual failures remain retained alongside all prior negative evidence."
+    "reason": "P4 guarded native-loader source requires fresh clean local qualification, actual native TLS evidence and exact-main maintained CI. Original P3 macOS startup failed; AD-24 corrected visual evidence passed on P3. All original negative evidence remains retained."
   },
   "dispositions": {
     "live_providers": {
@@ -29,8 +29,7 @@
   },
   "release_holds": [
     "Final exact-source maintained CI must pass, including original 100-command/10-warmup Linux/macOS startup SLO.",
-    "Unrun external qualification groups need truthful dispositions before publication.",
-    "AD-24 zero-check change review must use truthful conditional evidence wording and pass source-bound qualification before final handoff."
+    "Unrun external qualification groups need truthful dispositions before publication."
   ],
   "baseline_only": {
     "source_commit": "9219190b663c12b5a402aeab11f32c48e63d868c",
@@ -180,6 +179,121 @@
         "correction": "Any recorded check evidence belongs to the task workspace. A selected subset has not been checked separately; freshness covers recorded task effects.",
         "correction_qualification": "not_run",
         "scope": "Retained local PTY-render development evidence; no named graphical-terminal manual, paid-provider or long-soak pass."
+      }
+    },
+    {
+      "branch_commit": "648cec952b1c0bec11a65ae2beabd18136dca1cc",
+      "tested_commit": "648cec952b1c0bec11a65ae2beabd18136dca1cc",
+      "source_tree": "ca7e83cbae8017fc9f21be3a48d84d4d0a70d4ec",
+      "production_source_sha256": "524f8e849e0af599736ebfdcd12f78af58438ba839406703d8eaa9dd5dc75815",
+      "ci_run_id": 38029516707,
+      "ci_url": "https://github.com/billiondollarsolo/aishe/actions/runs/38029516707",
+      "ci_event": "push",
+      "state": "fail",
+      "linux_added_p95_ms": 1.514,
+      "macos_added_p95_ms": 13.101,
+      "reason": "Ten of eleven maintained jobs passed and all platform functional checks passed. Actual root-personally-viewed AD-24 corrected zero-check evidence passed, resolving only that visual hold. Original macOS startup failed at 13.101 ms. Later native attribution controls do not replace the failed original gate; fresh production source requires new exact-main qualification.",
+      "hosted_evidence": {
+        "state": "fail",
+        "required_jobs_passed": 10,
+        "required_jobs_total": 11,
+        "summary_file": "hosted-performance-summary.json",
+        "summary_sha256": "70873dbad8695a7defbd2c9e184f9b01ea16aa5dde79b7eb87c52a0bda0cce76",
+        "original_uploaded_artifacts": {
+          "macOS": {
+            "artifact_id": 11661712698,
+            "url": "https://github.com/billiondollarsolo/aishe/actions/runs/38029516707/artifacts/11661712698",
+            "archive_sha256": "9eaa652f74b030d55c292dc29237e1d2305a7051b7c389cd46d7d07e52e543c6",
+            "release_identity_manifest_present": false
+          },
+          "Linux": {
+            "artifact_id": 11661941995,
+            "url": "https://github.com/billiondollarsolo/aishe/actions/runs/38029516707/artifacts/11661941995",
+            "archive_sha256": "6f4752804f016e786665301a2c1886fe245c75651072d236cbe6d4a9f64d49f9",
+            "release_identity_manifest_present": true
+          }
+        },
+        "strict_sample": {
+          "commands": 100,
+          "warmup": 10,
+          "backend_started": false,
+          "allowed_added_p95_ms": 10.0
+        },
+        "macos_original_raw_zsh_p95_ms": 13.23,
+        "macos_original_aishe_p95_ms": 26.331
+      },
+      "local_qualification": {
+        "state": "pass",
+        "core_commands": 11,
+        "rust_tests": 1120,
+        "rust_targets": 37,
+        "native_commands": 37,
+        "core_manifest_file": "core-validation.json",
+        "core_manifest_sha256": "9689e4651ccd91027930ae49e65dd7ee0b3fe9b48d7b9c6946bd9188be3da5b1",
+        "native_manifest_file": "native-validation.json",
+        "native_manifest_sha256": "a89fafdf53bd4b8a8abcf0713f402aef56d99070a4c2249aace5d856c3ae4d0b",
+        "binary_sha256": "6bd54cf2ac0d7fe2cdf48df8669d1674b085977464bf9c2dfa06c95119e562ef",
+        "scope": "Actual clean-source local checks; separate from hosted startup and overall release qualification."
+      },
+      "corrected_ad24_visual_review": {
+        "state": "pass",
+        "source_commit": "648cec952b1c0bec11a65ae2beabd18136dca1cc",
+        "source_tree": "ca7e83cbae8017fc9f21be3a48d84d4d0a70d4ec",
+        "production_source_sha256": "524f8e849e0af599736ebfdcd12f78af58438ba839406703d8eaa9dd5dc75815",
+        "binary_sha256": "6bd54cf2ac0d7fe2cdf48df8669d1674b085977464bf9c2dfa06c95119e562ef",
+        "report_name": "ad24-zero-check-visual-review.json",
+        "report_sha256": "f8a8f8bd865dc01f95993e44d4cb0962eb306ce21303b8b4badf3e877a2333ef",
+        "inspection": {
+          "reviewer": "/root",
+          "personally_viewed": true,
+          "observations": "Personally inspected actual workflow55 and background08 renders. Both show No recorded checks, the conditional task-workspace evidence caveat, and the unresolved no-check notice. No affirmative claim that checks ran appears. Workflow55 shows zero selected hunks with Back to task selected; the source-bound successful workflow scenario separately verified the actual empty API checks list, zero summary total, default no, and only the explicitly selected file applied."
+        },
+        "zero_check_review": {
+          "checks": [],
+          "check_summary": {
+            "total": 0
+          },
+          "evidence_caveat": "Any recorded check evidence belongs to the task workspace. A selected subset has not been checked separately; freshness covers recorded task effects."
+        },
+        "capture": {
+          "file": "workflows-ui-captures.json",
+          "sha256": "65cd4528bae4fa63ac394bd0c9633c36bcb1c05051d559eaf53bd16354ed65c6",
+          "label": "Selective review with untested changes visible",
+          "transcript_sha256": "3e4bffea9ae120c443600b64ec842dfad54a3d1646d051ea6fd1c7b7bb1fe847",
+          "fresh_frame": {
+            "start_byte": 921,
+            "end_byte": 1455,
+            "sha256": "8daa4896a250e1d330eebf91c75946af2ff6836186d91b89ff149a1d88c0ad2e"
+          },
+          "cols": 100,
+          "rows": 28
+        },
+        "rendered_view": {
+          "file": "55.png",
+          "sha256": "32fffcb9693d47a24fe11029c836d45a816124e263d499be5e039a2c7af76164",
+          "transcript_sha256": "3e4bffea9ae120c443600b64ec842dfad54a3d1646d051ea6fd1c7b7bb1fe847"
+        },
+        "workflow_ui_log": {
+          "file": "native-workflows-ui.log",
+          "sha256": "9b15d1cc6b0f55fe0e5f8f27f7957e412bcb3d7154ff6dae7c655ad217c04a67"
+        },
+        "scope": "Actual source-bound local PTY review personally inspected by root; separate from named graphical-terminal manual qualification."
+      },
+      "native_startup_attribution": {
+        "state": "recorded",
+        "qualification_substitute": false,
+        "diagnostic_report_file": "native-startup-diagnostic-macOS.json",
+        "diagnostic_report_sha256": "6924a2ae33d902a29984438ddf5c4a365e5ad575af4c3a175ad43d5f219f6d25",
+        "verification_file": "native-startup-diagnostic-verification.json",
+        "verification_sha256": "65aac5555defe9b9ef595b67749b9a07a6c493bc8e515ee1145d7f6ea53e4f9c",
+        "verified_raw_rows": 700,
+        "mean_child_cpu_ms": {
+          "c_minimal": 1.515,
+          "c_frameworks": 3.375
+        },
+        "framework_control_minus_minimal_mean_child_cpu_ms": 1.86,
+        "aishe_has_chained_fixups": false,
+        "scope": "Whole linked-image/runtime process controls, not individual loader phases or a replacement for the original startup SLO."
       }
     }
   ]
