@@ -3,7 +3,7 @@
   "version": "1.1.0",
   "decision": "hold",
   "release_owner": "billiondollarsolo",
-  "production_source_sha256": "7f7f14f155a0dd93307ecb89be9a4ff75b1207b19070d12250fd6ca52a6b68a2",
+  "production_source_sha256": "524f8e849e0af599736ebfdcd12f78af58438ba839406703d8eaa9dd5dc75815",
   "qualification_profile_revision": "2026-10-10.1",
   "prepared_at": "2026-10-10",
   "published": false,
@@ -11,7 +11,7 @@
     "state": "not_run",
     "source_commit": null,
     "ci_run_id": null,
-    "reason": "One-shot classifier optimization and receipt-based cancellation fixtures require a new clean main commit with exact-source maintained push CI. Both failures on the initial merged main remain recorded."
+    "reason": "The conditional AD-24 caveat and native attribution diagnostics require a new clean committed source with fresh exact-main maintained CI and truthful zero-check review. Original P2 macOS startup and actual visual failures remain retained alongside all prior negative evidence."
   },
   "dispositions": {
     "live_providers": {
@@ -29,7 +29,8 @@
   },
   "release_holds": [
     "Final exact-source maintained CI must pass, including original 100-command/10-warmup Linux/macOS startup SLO.",
-    "Unrun external qualification groups need truthful dispositions before publication."
+    "Unrun external qualification groups need truthful dispositions before publication.",
+    "AD-24 zero-check change review must use truthful conditional evidence wording and pass source-bound qualification before final handoff."
   ],
   "baseline_only": {
     "source_commit": "9219190b663c12b5a402aeab11f32c48e63d868c",
@@ -110,6 +111,76 @@
       "linux_added_p95_ms": 1.091,
       "macos_added_p95_ms": 13.745,
       "reason": "Nine of eleven maintained jobs passed. Linux native qualification failed because the picker fixture sent the next command after a fixed 300 ms wait without observing cancellation; the corrected fixture waits for a fresh receipt and deliberately stalls the relay. All macOS functional checks passed, but its original startup SLO failed at 13.745 ms. Later diagnostics do not replace either original failure; new source requires fresh exact main qualification."
+    },
+    {
+      "branch_commit": "eb8bcddf3abedb1d95ab61a090c914c108124ec3",
+      "tested_commit": "eb8bcddf3abedb1d95ab61a090c914c108124ec3",
+      "source_tree": "cbbed391bf4f7fd45632ea2022fbbb24b0812d91",
+      "production_source_sha256": "7f7f14f155a0dd93307ecb89be9a4ff75b1207b19070d12250fd6ca52a6b68a2",
+      "ci_run_id": 38027633549,
+      "ci_url": "https://github.com/billiondollarsolo/aishe/actions/runs/38027633549",
+      "ci_event": "push",
+      "state": "fail",
+      "linux_added_p95_ms": 1.171,
+      "macos_added_p95_ms": 11.605,
+      "reason": "Ten of eleven maintained jobs passed and all platform functional checks passed, but original macOS startup failed at 11.605 ms. Independent actual P2 UI review also exposed AD-24: a zero-check preview affirmed that checks were recorded. Later diagnostics, local passes and the prepared conditional caveat do not replace either negative result; corrected source requires fresh exact-main qualification.",
+      "hosted_evidence": {
+        "state": "fail",
+        "required_jobs_passed": 10,
+        "required_jobs_total": 11,
+        "summary_file": "hosted-performance-summary.json",
+        "summary_sha256": "d833f07a789ec53214a9d34ee2759feaa45dfd34ce77b8ec109ef78b0525cb00",
+        "original_uploaded_artifacts": {
+          "macOS": {
+            "artifact_id": 11660384624,
+            "url": "https://github.com/billiondollarsolo/aishe/actions/runs/38027633549/artifacts/11660384624",
+            "archive_sha256": "a164d6d158c25b64c5c30d84940bd1ebb411e3b3502b8a27494601f12cb6a115",
+            "release_identity_manifest_present": false
+          },
+          "Linux": {
+            "artifact_id": 11660383957,
+            "url": "https://github.com/billiondollarsolo/aishe/actions/runs/38027633549/artifacts/11660383957",
+            "archive_sha256": "18e86d239558ad8448dfa29ba4a05efb9740451a039265963523cd588c8d2bf4",
+            "release_identity_manifest_present": true
+          }
+        },
+        "strict_sample": {
+          "commands": 100,
+          "warmup": 10,
+          "backend_started": false,
+          "allowed_added_p95_ms": 10.0
+        }
+      },
+      "local_qualification": {
+        "state": "pass",
+        "core_commands": 11,
+        "rust_tests": 1120,
+        "rust_targets": 37,
+        "native_commands": 37,
+        "core_manifest_file": "core-validation.json",
+        "core_manifest_sha256": "867e2358f81e2a3dbe6cd890809f9f0b8d8ff2719b6ffa0e40f20e9326858f8c",
+        "native_manifest_file": "native-validation.json",
+        "native_manifest_sha256": "29a9beca97a088f4b35bb176eca306caac851ec46fa278b6ea9ce41650e5939c",
+        "binary_sha256": "44337e3c650e49f458a5478fcc4009142b6983009889f04b3b6f06c1e92a2a8f",
+        "scope": "Actual clean-source local checks; separate from hosted startup and visual handoff qualification."
+      },
+      "visual_review": {
+        "state": "fail",
+        "finding": "AD-24",
+        "captured_views": 53,
+        "unique_views_personally_inspected": 42,
+        "report_file": "task-background-ui-review/review-index.json",
+        "report_sha256": "6caf6c79d579dbd1a1bf88b585d2d72f691f4a841891e043cf2071711b54bda4",
+        "negative_capture_file": "task-background-ui-review/AD24-negative-capture.json",
+        "negative_capture_sha256": "fa2ad0312b07a58de31db2d1b3b38b859d7cba7e13f0c5196055f81d106d9aa8",
+        "screen": 8,
+        "image_sha256": "8199d5a4a7e6459b92f665cf3c34e2558454f8bdd875e99260a92203153dae08",
+        "binary_sha256": "44337e3c650e49f458a5478fcc4009142b6983009889f04b3b6f06c1e92a2a8f",
+        "observed": "No recorded checks; then Checks were recorded in the task workspace; then Needs attention: No explicit checks have been recorded.",
+        "correction": "Any recorded check evidence belongs to the task workspace. A selected subset has not been checked separately; freshness covers recorded task effects.",
+        "correction_qualification": "not_run",
+        "scope": "Retained local PTY-render development evidence; no named graphical-terminal manual, paid-provider or long-soak pass."
+      }
     }
   ]
 }

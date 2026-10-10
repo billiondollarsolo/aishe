@@ -78,13 +78,22 @@ def selective_review_defaults_to_no_and_applies_only_chosen_file():
         fixture.finish(task_id)
         manifest = review(fixture, task_id)
         assert len(manifest["files"]) == 2, manifest
+        assert manifest["checks"] == [], manifest
+        assert manifest["check_summary"]["total"] == 0, manifest
+        expected_caveat = ("Any recorded check evidence belongs to the task workspace. "
+                           "A selected subset has not been checked separately; "
+                           "freshness covers recorded task effects.")
+        assert manifest["evidence_caveat"] == expected_caveat, manifest
         shell = fixture.shell(browser=task_id)
         shown(shell, "Task details")
+        review_start = len(shell.transcript)
         shell.send("a")
-        shown(shell, "Review task changes")
+        wait_until(shell, lambda: all(text in CSI.sub('', shell.transcript[review_start:])
+                                     for text in ("Review task changes", "No recorded checks", expected_caveat)),
+                   "fresh zero-check review with conditional evidence caveat", timeout=5)
+        assert "Checks were recorded in the task workspace" not in CSI.sub('', shell.transcript[review_start:])
         shown(shell, "first.txt")
         shown(shell, "second.txt")
-        shown(shell, "No recorded checks")
         capture(shell, "Selective review with untested changes visible")
         cancel_start = len(shell.transcript)
         shell.send("\x1b")
@@ -96,8 +105,10 @@ def selective_review_defaults_to_no_and_applies_only_chosen_file():
         # remains an explicit action after returning from the selection frame.
         review_start = len(shell.transcript)
         shell.send("a")
-        wait_until(shell, lambda: "Review task changes" in CSI.sub('', shell.transcript[review_start:]),
-                   "freshly reopened change review", timeout=5)
+        wait_until(shell, lambda: all(text in CSI.sub('', shell.transcript[review_start:])
+                                     for text in ("Review task changes", "No recorded checks", expected_caveat)),
+                   "freshly reopened zero-check change review", timeout=5)
+        assert "Checks were recorded in the task workspace" not in CSI.sub('', shell.transcript[review_start:])
         shell.send("\x1b[H\r")
         shown(shell, "File changes")
         shell.send("\x1b[F\x1b[A\r")

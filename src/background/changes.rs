@@ -353,7 +353,7 @@ fn capture(record: &Record) -> Result<Capture> {
     let applied_hunks = ledger.applied.len();
     let remaining_hunks = hunk_id.saturating_sub(applied_hunks);
     let can_apply = unresolved.is_empty() && remaining_hunks > 0;
-    Ok(Capture { patch, files, ledger, source_stamp, review: ChangeReview { task_id: record.id.clone(), revision, patch_sha256, files: displayed, check_summary, checks, evidence_workspace_revision, evidence_caveat: "Checks were recorded in the task workspace. A selected subset has not been checked separately; freshness covers recorded task effects.".into(), remaining_hunks, applied_hunks, can_apply, unresolved } })
+    Ok(Capture { patch, files, ledger, source_stamp, review: ChangeReview { task_id: record.id.clone(), revision, patch_sha256, files: displayed, check_summary, checks, evidence_workspace_revision, evidence_caveat: "Any recorded check evidence belongs to the task workspace. A selected subset has not been checked separately; freshness covers recorded task effects.".into(), remaining_hunks, applied_hunks, can_apply, unresolved } })
 }
 
 fn raw_patch(record: &Record, deadline: Instant) -> Result<(Vec<u8>, Vec<RawFile>)> {

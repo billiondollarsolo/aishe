@@ -55,6 +55,7 @@ The adoption review found the following concrete problems:
 | AD-21 | Setup's saved next-step examples use fixed aligned columns | At 32 columns, explanations split into isolated letters and unreadable fragments |
 | AD-22 | Settings immediately redraws its menu after showing a prompt preview | On an 18-row terminal, the preview scrolls away before the user can inspect it |
 | AD-23 | A specific-action approval prints its full request above an unbounded decision menu | At 32 columns and 18 rows, the exact command scrolls away while the approval choices remain visible |
+| AD-24 | A zero-check change review says both No recorded checks and Checks were recorded in the task workspace | Users receive a false assertion that check evidence exists despite an empty check manifest |
 
 ### Existing evidence and its limits
 
@@ -231,6 +232,10 @@ The checkbox status will be reconciled with actual candidate evidence.
 - [ ] C5 Separate Seen from explicit Reviewed while retaining old decisions and quiet archives.
 - [ ] C6 Qualify unknown/partial pricing, long results, explicit review, new attention,
   questions/approvals, follow-up receipts, and recorded-check failure/staleness.
+  Zero-check selective review must show No recorded checks and a conditional
+  workspace-evidence caveat in the fresh review frame, retain the default of no
+  application, and apply only explicitly selected changes. Running, NotRun and
+  Uncertain entries do not establish that a check ran.
 - [ ] C7 Keep the full exact-action approval request inspectable at 32/58 columns
   and 18 rows, with explicit continuation, cancellation, and a safe default decision.
 
@@ -496,3 +501,54 @@ single-file delivery. The preliminary binary is not final-source
 qualification and has no startup timing claim. Require routing-equivalence coverage, clean
 source-bound local checks, and a new exact main push with both original
 startup gates before claiming qualification or a measured speed gain.
+
+### P2 qualification, zero-check review and native attribution
+
+Corrected main `eb8bcddf3abedb1d95ab61a090c914c108124ec3`, tree
+`cbbed391bf4f7fd45632ea2022fbbb24b0812d91`, passed all eleven local core
+commands and binary identity validation, 1,120 Rust tests across 37 targets,
+and all 37 local native commands. Its original local Linux startup result
+was 1.725 ms added p95, with 100 measured commands, ten warmups and no backend
+start. These completed local results remain scoped to that source.
+
+Its exact push [CI 38027633549](https://github.com/billiondollarsolo/aishe/actions/runs/38027633549)
+completed with ten of eleven jobs passing. All Linux and macOS functional
+checks passed. The original Linux startup gate passed at 1.171 ms added p95;
+the original macOS gate failed at 11.605 ms against the unchanged 10 ms limit.
+The original [Linux artifact](https://github.com/billiondollarsolo/aishe/actions/runs/38027633549/artifacts/11660383957)
+and [macOS artifact](https://github.com/billiondollarsolo/aishe/actions/runs/38027633549/artifacts/11660384624)
+are retained with their uploaded ZIP hashes and source/binary identities in the
+[qualification history](../releases/v1.1.0.qualification.json). Linux produced
+its matching release identity manifest; macOS correctly withheld that manifest
+after the failed gate. Later diagnostic results do not replace the failure.
+
+Independent source-bound UI review produced 53 background/task captures and
+personally inspected 42 unique rendered views. Actual screen 08 exposed AD-24:
+No recorded checks was followed by Checks were recorded in the task workspace
+and No explicit checks have been recorded. The retained negative capture binds
+the contradiction to P2 and release binary
+`44337e3c650e49f458a5478fcc4009142b6983009889f04b3b6f06c1e92a2a8f`.
+Passing automated checks do not resolve this observed defect. The correction
+uses: Any recorded check evidence belongs to the task workspace. A selected
+subset has not been checked separately; freshness covers recorded task effects.
+The existing unchecked selective-review scenario now requires an empty checks
+manifest, a zero total and that conditional wording in the actual fresh review,
+while preserving cancellation, default-no and explicit one-file application.
+This correction still needs qualification on the next committed source.
+
+The P2 macOS diagnostic recorded 3.840 ms of additional mean child CPU for the
+direct path relative to raw zsh. The inherited-history/config bypass changed
+mean child CPU by about 0.255 ms. Treat that as an upper bound for work skipped
+by the whole bypass in this diagnostic, rather than a measured config-parser
+cost or a promised p95 gain. `--version` still includes CLI construction and
+cannot establish a loader-only floor; unaccounted wall time also does not
+measure scheduler delay. The next source adds bounded native attribution
+diagnostics alongside the AD-24 correction to distinguish process startup,
+configuration and direct execution. These changes gather attribution and fix
+misleading evidence wording. Any startup improvement must be established by a
+fresh exact-main run with both original gates unchanged.
+
+The plan remains Active with all 38 A–F items unchecked. The candidate decision
+remains Hold and unpublished; provider, named manual-terminal and long-soak
+groups remain not_run, with R1–R4 open. P2's macOS failure and AD-24 remain
+immutable negative history when the next source and digest are qualified.

@@ -249,6 +249,15 @@ jobs:
           python3 tests/require_gate.py python3 tests/direct_shell_benchmark.py target/release/aishe
           --commands 100 --warmup 10
 
+      - name: Attribute native macOS startup separately from the SLO
+        id: native_startup_diagnostic
+        if: always() && runner.os == 'macOS' && (steps.direct_shell_benchmark.outcome == 'success' || steps.direct_shell_benchmark.outcome == 'failure')
+        continue-on-error: true
+        timeout-minutes: 3
+        run: >-
+          python3 tests/native_startup_diagnostic.py target/release/aishe
+          --output test-results/native-startup-diagnostic-macOS.json
+
       - name: Native display, mode grants, and cancellation
         timeout-minutes: 5
         run: |
@@ -389,6 +398,12 @@ jobs:
         if: always() && steps.direct_shell_benchmark.outcome == 'failure'
         run: |
           echo "Direct shell startup qualification failed; see its recorded benchmark." >&2
+          exit 1
+
+      - name: Enforce native startup diagnostic capture
+        if: always() && steps.native_startup_diagnostic.outcome == 'failure'
+        run: |
+          echo "Native startup diagnostic capture failed; inspect the retained partial report." >&2
           exit 1
 
   pty-legacy:
