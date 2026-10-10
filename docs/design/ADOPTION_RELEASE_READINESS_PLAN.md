@@ -1,6 +1,6 @@
-> **Lifecycle: Active.** Baseline: main `9219190b663c12b5a402aeab11f32c48e63d868c`,
-> reviewed 2026-10-10. This is the implementation contract for the v1.1.0
-> adoption and release-readiness milestone. Current behavior remains documented
+> **Lifecycle: Implemented.** Baseline: main `9219190b663c12b5a402aeab11f32c48e63d868c`,
+> reviewed 2026-10-10. This records the implemented v1.1.0 adoption
+> and release-readiness milestone. Current behavior remains documented
 > in [Getting started](../getting-started.md), [Commands](../commands.md), and
 > [Release readiness](../release-readiness.md).
 
@@ -201,71 +201,71 @@ The checkbox status will be reconciled with actual candidate evidence.
 
 ### A. Shell-first setup and adoption
 
-- [ ] A1 Remove provider setup from fresh ordinary launch and direct history logging.
-- [ ] A2 Add Connect later and an actionable disconnected-AI experience.
-- [ ] A3 Persist and expose Clean/Personal/Bash shell choice with temporary overrides.
+- [x] A1 Remove provider setup from fresh ordinary launch and direct history logging.
+- [x] A2 Add Connect later and an actionable disconnected-AI experience.
+- [x] A3 Persist and expose Clean/Personal/Bash shell choice with temporary overrides.
   Keep shell-profile project overrides behind explicit trust.
-- [ ] A4 Align recommended first-use mode with Ask and existing grant boundaries.
-- [ ] A5 Simplify first setup screen and retain detailed diagnostics on demand.
-- [ ] A6 Add inspectable reversible native activation and conflict/duplicate handling.
-- [ ] A7 Qualify isolated fresh-home shell launch, providerless direct commands,
+- [x] A4 Align recommended first-use mode with Ask and existing grant boundaries.
+- [x] A5 Simplify first setup screen and retain detailed diagnostics on demand.
+- [x] A6 Add inspectable reversible native activation and conflict/duplicate handling.
+- [x] A7 Qualify isolated fresh-home shell launch, providerless direct commands,
   personal startup preservation, Bash selection, reconnect/setup, settings persistence,
   and internal controls when the executable is outside PATH.
-- [ ] A8 Wrap saved setup examples by terminal width while keeping commands and their meaning readable.
+- [x] A8 Wrap saved setup examples by terminal width while keeping commands and their meaning readable.
 
 ### B. Native discovery and prompt consistency
 
-- [ ] B1 Render and acknowledge a real one-time discovery hint.
-- [ ] B2 Replace overflowing bare-slash listing with a bounded searchable picker.
-- [ ] B3 Preserve staged input, cancellation, prefix/path/argument completion, and concurrent-shell isolation.
-- [ ] B4 Align actual prompt fields and Settings previews; indicate unknown usage honestly.
-- [ ] B5 Capture real PTY behavior at normal, narrow, and short viewports.
-- [ ] B6 Keep prompt previews visible until the user explicitly returns to Settings.
+- [x] B1 Render and acknowledge a real one-time discovery hint.
+- [x] B2 Replace overflowing bare-slash listing with a bounded searchable picker.
+- [x] B3 Preserve staged input, cancellation, prefix/path/argument completion, and concurrent-shell isolation.
+- [x] B4 Align actual prompt fields and Settings previews; indicate unknown usage honestly.
+- [x] B5 Capture real PTY behavior at normal, narrow, and short viewports.
+- [x] B6 Keep prompt previews visible until the user explicitly returns to Settings.
 
 ### C. Honest and usable task results
 
-- [ ] C1 Persist price coverage and migrate older task records without false zero-cost claims.
+- [x] C1 Persist price coverage and migrate older task records without false zero-cost claims.
   Cover provider reports, prompt/session tallies, the usage ledger and historical reports.
-- [ ] C2 Fail safely on unknown historical spend under a money budget.
-- [ ] C3 Show authority/context and recorded check status before long result prose.
-- [ ] C4 Add discoverable scrolling and continuation indicators at narrow sizes.
-- [ ] C5 Separate Seen from explicit Reviewed while retaining old decisions and quiet archives.
-- [ ] C6 Qualify unknown/partial pricing, long results, explicit review, new attention,
+- [x] C2 Fail safely on unknown historical spend under a money budget.
+- [x] C3 Show authority/context and recorded check status before long result prose.
+- [x] C4 Add discoverable scrolling and continuation indicators at narrow sizes.
+- [x] C5 Separate Seen from explicit Reviewed while retaining old decisions and quiet archives.
+- [x] C6 Qualify unknown/partial pricing, long results, explicit review, new attention,
   questions/approvals, follow-up receipts, and recorded-check failure/staleness.
   Zero-check selective review must show No recorded checks and a conditional
   workspace-evidence caveat in the fresh review frame, retain the default of no
   application, and apply only explicitly selected changes. Running, NotRun and
   Uncertain entries do not establish that a check ran.
-- [ ] C7 Keep the full exact-action approval request inspectable at 32/58 columns
+- [x] C7 Keep the full exact-action approval request inspectable at 32/58 columns
   and 18 rows, with explicit continuation, cancellation, and a safe default decision.
 
 ### D. Script and command compatibility
 
-- [ ] D1 Execute piped multiline programs as a single ordinary shell program.
-- [ ] D2 Support and document explicit scripts/positional arguments and conventional forms within tested scope.
-- [ ] D3 Preserve fast-path argument validation, cwd/env/rc, output/status, and signal contracts.
-- [ ] D4 Distinguish native frontend, Bash tier, and historical managed integration in documentation.
-- [ ] D5 Add meaningful multiline/control-flow/error/argv/no-AI regression checks.
+- [x] D1 Execute piped multiline programs as a single ordinary shell program.
+- [x] D2 Support and document explicit scripts/positional arguments and conventional forms within tested scope.
+- [x] D3 Preserve fast-path argument validation, cwd/env/rc, output/status, and signal contracts.
+- [x] D4 Distinguish native frontend, Bash tier, and historical managed integration in documentation.
+- [x] D5 Add meaningful multiline/control-flow/error/argv/no-AI regression checks.
   Qualify last-command fix/explain helpers as noninteractive operations.
 
 ### E. Installation and release pipeline
 
-- [ ] E1 Make optional managed runtime installation explicit and preserve transaction safety.
-- [ ] E2 Clarify executable/PATH/setup/launch completion and remove unavailable distribution claims.
-- [ ] E3 Add native-default/explicit-runtime/offline/fault/rollback installation checks in isolated fixtures.
-- [ ] E4 Require exact-source CI and explicit candidate qualification before release publication.
-- [ ] E5 Prepare v1.1.0 version, changelog, comprehensive release notes, and user documentation.
+- [x] E1 Make optional managed runtime installation explicit and preserve transaction safety.
+- [x] E2 Clarify executable/PATH/setup/launch completion and remove unavailable distribution claims.
+- [x] E3 Add native-default/explicit-runtime/offline/fault/rollback installation checks in isolated fixtures.
+- [x] E4 Require exact-source CI and explicit candidate qualification before release publication.
+- [x] E5 Prepare v1.1.0 version, changelog, comprehensive release notes, and user documentation.
 
 ### F. Startup and candidate qualification
 
-- [ ] F1 Implement a measured production optimization, preserving shell/security/history behavior.
-- [ ] F2 Run the original 100-command/ten-warmup startup gate with no backend start on Linux and macOS.
-- [ ] F3 Pass fmt, strict all-target/all-feature clippy, locked MSRV/no-default build, Rust tests,
+- [x] F1 Implement a measured production optimization, preserving shell/security/history behavior.
+- [x] F2 Run the original 100-command/ten-warmup startup gate with no backend start on Linux and macOS.
+- [x] F3 Pass fmt, strict all-target/all-feature clippy, locked MSRV/no-default build, Rust tests,
   shell/installer/docs/reporting contracts, and native/task compatibility regressions.
-- [ ] F4 Collect actual candidate commit/tree/version/binary identity with statuses and evidence paths.
-- [ ] F5 Review the final diff for permission regressions, stale claims, migrations, and startup behavior.
-- [ ] F6 Open reviewable PR work and qualify the resulting main commit after authorized merging.
-- [ ] F7 Leave public release publication pending with a concrete qualification record.
+- [x] F4 Collect actual candidate commit/tree/version/binary identity with statuses and evidence paths.
+- [x] F5 Review the final diff for permission regressions, stale claims, migrations, and startup behavior.
+- [x] F6 Open reviewable PR work and qualify the resulting main commit after authorized merging.
+- [x] F7 Leave public release publication pending with a concrete qualification record.
 
 ### R. Publication qualification and release decision
 
@@ -886,6 +886,9 @@ P7's completed original negative evidence alongside its scoped passes.
 
 ### P8 background acknowledgment failures and pending P9
 
+This section records the failure and planned correction before P9 qualification;
+completed qualification is recorded below.
+
 Main `78d38b36e2df4fabf32ecc9c13abd74d16f4aa38`, tree
 `0405e45f1f211935877c47bfc81588812741fc27`, passed eleven local core commands
 and 1,138 Rust tests across 38 targets. Its local native run completed 19 commands:
@@ -941,3 +944,81 @@ gates and native TLS proof. Active, all 38 A–F unchecked, R1–R4 open, Hold,
 unpublished and external not_run remain unchanged. The fifteenth history entry
 preserves P8's actual failures and scoped passes; all fourteen earlier entries
 remain unchanged.
+
+### Completed implementation and maintained qualification
+
+The adoption milestone landed through
+[PR #10](https://github.com/billiondollarsolo/aishe/pull/10) at initial
+merged-main commit `1ee03ab8ca3bd3417e517e80a66c49290d065df3`. Corrected main
+commit `dd29cb536066382870c5503be17354af9d362e46`, tree
+`7193a9feef22d3228c2bde869ab4c8d743071e59`, subsequently passed exact-source
+maintained qualification. All 38 A–F implementation and applicable maintained
+qualification tasks are complete. The
+[v1.1.0 qualification record](../releases/v1.1.0.qualification.json) retains
+source identities, artifact links and historical failed candidates.
+
+The clean branch candidate `4effe3b` passed eleven core command gates and binary
+identity validation, 1,116 Rust tests across 37 targets, and all 37 local native
+commands. Its original Linux startup gate passed at 1.487 ms added p95, with 100
+measured commands, ten warmups and no backend start. Branch-candidate visual
+review covered 36 setup/settings, 15 discovery and 53 background/task views.
+These actual isolated PTYs do not establish named-emulator manual, paid-provider
+or long-soak qualification.
+
+Root personally inspected the corrected source-bound zero-check review. Its
+fresh frame shows No recorded checks and the conditional workspace-evidence
+caveat, preserving default-no and explicit selected-file application. The
+qualification record retains report, capture, rendered-view and source/binary
+hashes. AD-24's hold is resolved; its P2 negative history and P3 correction
+proof remain.
+
+The initial main Linux picker fixture and original macOS startup failures remain
+historical evidence. Exact-source maintained
+[main CI 38039300010](https://github.com/billiondollarsolo/aishe/actions/runs/38039300010)
+passed all required jobs. Same-source local main passed 11 core commands with
+1,138 Rust tests across 38 targets and 37 native commands.
+
+Cancellation is admitted while an IPC request remains Active, through
+preparation and the usage/status postlude, until its immutable reply commits.
+Publishing consumes a late Ctrl-C without a cancellation ACK or future-request
+latch and preserves the FIFO reader. Answer/transcript suppression applies to
+the guarded IPC PtyOut sink; stderr cancellation/error, MCP and fallback
+diagnostics remain visible. Explicit CANCELLED MODE replies stop queued NL; a
+key arriving after a MODE reply commits can still be followed by NL.
+
+The same-source completed native UI review personally inspected all 63 rendered
+views, including 26 at 58 columns or narrower and 14 at 32 columns. Actual
+retained PNG hashes identify 55 distinct images. The full review is attributed
+to `/root/activity_qualification`; root's zero-check review remains separately
+attributed. The qualification record retains completed core/native manifest
+hashes, original and bound capture collections, render manifest, image hashes
+and the final review/index hashes. There were no material visual findings;
+observed cosmetic issues remain recorded. This completed local PTY review does
+not establish named graphical-terminal, paid-provider or long-soak
+qualification.
+
+The retained qualified-main release binary measured 10,945,776 bytes. Compared
+with the retained `4effe3b` binary at 11,736,304 bytes, this is a measured 6.7%
+footprint reduction. This size comparison does not attribute startup performance
+to the reduction.
+
+Original startup added p95 was 1.790 ms on Linux and 4.560 ms on macOS. Both
+platform artifacts retain actual binary and strict benchmark identities, source
+digest, runtime/plugin pins and qualification revision.
+[Linux evidence](https://github.com/billiondollarsolo/aishe/actions/runs/38039300010/artifacts/11665785758)
+and
+[macOS evidence](https://github.com/billiondollarsolo/aishe/actions/runs/38039300010/artifacts/11664744782)
+are tied to that main commit.
+
+The same original macOS artifact retains actual native TLS proof for concurrent
+first trusted HTTPS, later pool use, HTTP-to-HTTPS redirect after activation,
+self-signed rejection and fresh untrusted HTTPS-proxy rejection for an HTTP
+target. Product and test executable bytes establish the tested link capability.
+Its startup attribution companion remains separate from the strict gates; this
+proof does not complete external provider, manual-terminal or old-OS groups.
+
+Public release approval remains **Hold**, `published: false`. R1–R4 remain open;
+external provider, named manual-terminal and long-soak groups remain `not_run`.
+This documentation-only completion update must receive its own exact-commit
+maintained CI before any later authorized publication. Preparation and merging
+do not tag, publish or change the public installer distribution.

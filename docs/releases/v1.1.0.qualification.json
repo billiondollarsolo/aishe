@@ -8,10 +8,11 @@
   "prepared_at": "2026-10-10",
   "published": false,
   "qualification": {
-    "state": "not_run",
-    "source_commit": null,
-    "ci_run_id": null,
-    "reason": "P8 both original startup, native TLS and cancellation gates passed, but both hosted background acknowledgment assertions and local partial native background-ui failed. Both release identity manifests were absent; only 16 unreviewed captures exist. P9 restores the intended two-second watcher and synchronizes the unchanged exact one-ready assertion on durable Seen/fresh prompt evidence; it requires new same-source local/native/UI/exact-main CI qualification. All previous failures and scoped passes remain retained."
+    "state": "pass",
+    "source_commit": "dd29cb536066382870c5503be17354af9d362e46",
+    "ci_run_id": 38039300010,
+    "ci_url": "https://github.com/billiondollarsolo/aishe/actions/runs/38039300010",
+    "reason": "Maintained merged-main gates passed. External publication qualifications remain not_run; release decision remains Hold."
   },
   "dispositions": {
     "live_providers": {
@@ -2496,5 +2497,1358 @@
         "scope": "Only 16 background captures retained, none rendered/personally reviewed; no 63-view or visual qualification pass."
       }
     }
-  ]
+  ],
+  "maintained_evidence": {
+    "state": "pass",
+    "source_commit": "dd29cb536066382870c5503be17354af9d362e46",
+    "source_tree": "7193a9feef22d3228c2bde869ab4c8d743071e59",
+    "production_source_sha256": "2f5f589ede707cad019dde31a1d71926fa19dd2844cab0641af8e6cdb46eea78",
+    "qualification_profile_revision": "2026-10-10.1",
+    "ci": {
+      "run_id": 38039300010,
+      "url": "https://github.com/billiondollarsolo/aishe/actions/runs/38039300010",
+      "event": "push",
+      "required_jobs": [
+        "Explicit legacy shell (macos-latest)",
+        "Explicit legacy shell (ubuntu-latest)",
+        "Linux namespace diagnostics",
+        "MSRV (1.88) build",
+        "Managed OpenCode runtime contracts",
+        "Native shell (macos-latest)",
+        "Native shell (ubuntu-latest)",
+        "dependency advisories, licenses, and sources",
+        "documentation lifecycle",
+        "test (macos-latest)",
+        "test (ubuntu-latest)"
+      ],
+      "state": "pass"
+    },
+    "native_artifacts": {
+      "Linux": {
+        "state": "pass",
+        "artifact_id": 11665785758,
+        "artifact_name": "native-terminal-evidence-Linux",
+        "url": "https://github.com/billiondollarsolo/aishe/actions/runs/38039300010/artifacts/11665785758",
+        "archive_sha256": "c24e2c457cac0cb370ccbc78bd9bc8b9b7398142cb42956ea901a8c3c6f1d77a",
+        "release_manifest_sha256": "ce5f57f1f94211ab727f6617cc600d5f9082c3d1286ad315e05685da2bce911e",
+        "binary_identity": {
+          "version": "1.1.0",
+          "commit": "dd29cb5",
+          "date": "2026-10-10"
+        },
+        "binary_sha256": "598ad921631f84c896764f959ed9557efc1da7299e61b65de47367b3f8eeda85",
+        "strict_startup": {
+          "commands": 100,
+          "warmup": 10,
+          "raw_zsh_p95_ms": 1.991,
+          "aishe_p95_ms": 3.781,
+          "added_p95_ms": 1.79,
+          "allowed_added_p95_ms": 10.0,
+          "backend_started": false,
+          "benchmark_file": "direct-shell-benchmark-20261010T085353Z.json",
+          "benchmark_sha256": "18756093e9c73379104e99b6ca0b40f0b6138f9eaa4f9d30a76d1489545ff144"
+        }
+      },
+      "macOS": {
+        "state": "pass",
+        "artifact_id": 11664744782,
+        "artifact_name": "native-terminal-evidence-macOS",
+        "url": "https://github.com/billiondollarsolo/aishe/actions/runs/38039300010/artifacts/11664744782",
+        "archive_sha256": "0937397e2bf9abb23418f903702f33774ffb6f98782b9a7c4a3a9666d60bea52",
+        "release_manifest_sha256": "5054d73b92116985170f0e06e6f37296a5fa40f5f60da84fccc94624c2901961",
+        "binary_identity": {
+          "version": "1.1.0",
+          "commit": "dd29cb5",
+          "date": "2026-10-10"
+        },
+        "binary_sha256": "4fc403d1f69749b322bd16284b8dfc4f651de4eb37baf2d452dcc180882c623d",
+        "strict_startup": {
+          "commands": 100,
+          "warmup": 10,
+          "raw_zsh_p95_ms": 4.67,
+          "aishe_p95_ms": 9.23,
+          "added_p95_ms": 4.56,
+          "allowed_added_p95_ms": 10.0,
+          "backend_started": false,
+          "benchmark_file": "direct-shell-benchmark-20261010T085307Z.json",
+          "benchmark_sha256": "f4ea8506317c6c31b458060011dd3b88c7b1a2ff3c0e2158b15bb128d94621d8"
+        }
+      }
+    },
+    "local_main": {
+      "core": {
+        "state": "pass",
+        "source_commit": "dd29cb536066382870c5503be17354af9d362e46",
+        "command_count": 11,
+        "report_name": "core-validation.json",
+        "report_sha256": "4f5534f810f871a64b7f0ccd6179fd38b82450dee560b494960ecab5769f4203",
+        "binary_identity": {
+          "version": "1.1.0",
+          "commit": "dd29cb5",
+          "date": "2026-10-10"
+        },
+        "binary_sha256": "8b013580997e8951bcfc243c996424abfbc560138cf9135184a3ad1984ef711c",
+        "rust_tests": 1138,
+        "rust_targets": 38,
+        "rust_ignored": 0
+      },
+      "native": {
+        "state": "pass",
+        "source_commit": "dd29cb536066382870c5503be17354af9d362e46",
+        "command_count": 37,
+        "report_name": "native-validation.json",
+        "report_sha256": "278a76b62be7a3f74bed887e70a8a3462f7504ea17c8595bede39dd990e68314",
+        "binary_identity": {
+          "version": "1.1.0",
+          "commit": "dd29cb5",
+          "date": "2026-10-10"
+        },
+        "binary_sha256": "100531de06481acd7447f04ea0f69583989d7fbf6d3590b162b1e8d0dd15dda3",
+        "binary_bytes": 10945776,
+        "binary_name": "aishe",
+        "footprint_comparison": {
+          "actual_binary_bytes": 10945776,
+          "baseline_binary_bytes": 11736304,
+          "reduction_bytes": 790528,
+          "reduction_percent": 6.736,
+          "baseline_source_commit": "4effe3b0360d3b5f73d9045d90b6f20f3162fa70",
+          "baseline_binary_sha256": "6545205c54c2b947935be2128b3d52eca7f558f54dcdda024d914e7ac86e5f53",
+          "scope": "Measured retained release-binary footprint; no startup attribution."
+        }
+      }
+    },
+    "macOS_native_tls_activation": {
+      "source_commit": "dd29cb536066382870c5503be17354af9d362e46",
+      "artifact_id": 11664744782,
+      "artifact_url": "https://github.com/billiondollarsolo/aishe/actions/runs/38039300010/artifacts/11664744782",
+      "archive_sha256": "0937397e2bf9abb23418f903702f33774ffb6f98782b9a7c4a3a9666d60bea52",
+      "product_binary_sha256": "4fc403d1f69749b322bd16284b8dfc4f651de4eb37baf2d452dcc180882c623d",
+      "state": "pass",
+      "report_file": "native-tls-activation-macOS.json",
+      "report_sha256": "5793630405fbc1bbb862d432ad02f2ef03c31eec1561a41a7e4944fa83edee75",
+      "test_executable_sha256": "c0fc775599780a6326e45f8c5d9f470524fcc90513fa1ce416174bb159163e32",
+      "compiled_link_record": {
+        "schema_version": 1,
+        "source_commit": "dd29cb536066382870c5503be17354af9d362e46",
+        "target": "aarch64-apple-darwin",
+        "baseline_min_os": 720896,
+        "probe_opt_level": "z",
+        "machine_outliner_disabled": true,
+        "delayed_frameworks": true,
+        "chained_fixups": true,
+        "flags": [
+          "-Wl,-delay_framework,CoreFoundation",
+          "-Wl,-delay_framework,Security",
+          "-Wl,-fixup_chains"
+        ],
+        "delayed_status": "verified",
+        "chained_status": "verified"
+      },
+      "actual_product_capability": {
+        "cpu_type": 16777228,
+        "minimum_macos": 720896,
+        "framework_dependencies": {
+          "CoreFoundation": [
+            true
+          ],
+          "Security": [
+            true
+          ]
+        },
+        "chains": {
+          "version": 0,
+          "imports_count": 217,
+          "imports_format": 1,
+          "symbols_format": 0,
+          "pointer_formats": [
+            2,
+            2
+          ]
+        }
+      },
+      "coverage": [
+        "concurrent first trusted public HTTPS",
+        "later shared-pool HTTPS",
+        "HTTP-to-HTTPS redirect after activation",
+        "local self-signed certificate rejection",
+        "fresh HTTPS-proxy rejection for HTTP target"
+      ],
+      "trust_store_modified": false,
+      "paid_provider_used": false,
+      "scope": "Actual native transport/trust contract; external provider/manual/old-OS groups unchanged."
+    },
+    "macOS_startup_diagnostic": {
+      "source_commit": "dd29cb536066382870c5503be17354af9d362e46",
+      "artifact_id": 11664744782,
+      "artifact_url": "https://github.com/billiondollarsolo/aishe/actions/runs/38039300010/artifacts/11664744782",
+      "archive_sha256": "0937397e2bf9abb23418f903702f33774ffb6f98782b9a7c4a3a9666d60bea52",
+      "product_binary_sha256": "4fc403d1f69749b322bd16284b8dfc4f651de4eb37baf2d452dcc180882c623d",
+      "state": "collected",
+      "report_file": "native-startup-diagnostic-macOS.json",
+      "report_sha256": "050e56d095dde6d4e05e1ba47437a9e8bdbfabad8fc5b29d4a94ccd5fceb55eb",
+      "commands_per_case": 100,
+      "warmup_per_case": 10,
+      "case_count": 7,
+      "raw_row_count": 700,
+      "qualification_substitute": false,
+      "scope": "Whole linked-image/runtime attribution; no original-gate substitution."
+    },
+    "macOS_native_companions": [
+      {
+        "file": "native-startup-diagnostic-macOS/aishe-candidate",
+        "sha256": "4fc403d1f69749b322bd16284b8dfc4f651de4eb37baf2d452dcc180882c623d"
+      },
+      {
+        "file": "native-startup-diagnostic-macOS/aishe_direct_noop-loader.log",
+        "sha256": "15512aee746df22f21465458d726089a2597b9d81841649f1178950c1db87626"
+      },
+      {
+        "file": "native-startup-diagnostic-macOS/aishe_version_full_clap-loader.log",
+        "sha256": "d89e85cd0aa41d521eae74635f94f7b1ae657116c0d805622093cccde5c6d9f9"
+      },
+      {
+        "file": "native-startup-diagnostic-macOS/c_frameworks",
+        "sha256": "2a93363e579d4ba44c604a9d0708003d043f46ac5f16fa380ef186ecf06caf0e"
+      },
+      {
+        "file": "native-startup-diagnostic-macOS/c_frameworks-loader.log",
+        "sha256": "68b6d657050aa01388cf8252ffd8f0a16810efd939f1e844991f8be16ed9a01a"
+      },
+      {
+        "file": "native-startup-diagnostic-macOS/c_minimal",
+        "sha256": "fea48e4554bd2edf8a6cc649814c6c061f5fab903056fcbf8363f092488d36e3"
+      },
+      {
+        "file": "native-startup-diagnostic-macOS/c_minimal-loader.log",
+        "sha256": "c08630988ece8afc8c8ad638ff31d7343c242aa0ec579fd4dba2120f9c21dceb"
+      },
+      {
+        "file": "native-startup-diagnostic-macOS/minimal.c",
+        "sha256": "2ad75d95660563887d8d3f1d0ae1dcf18c2379cbd83a5c72f5ab276351ee6949"
+      },
+      {
+        "file": "native-startup-diagnostic-macOS/minimal.rs",
+        "sha256": "536e506bb90914c243a12b397b9a998f85ae2cbd9ba02dfd03a9e155ca5ca0f4"
+      },
+      {
+        "file": "native-startup-diagnostic-macOS/rust_minimal",
+        "sha256": "ea4633b49a645a5f4aac594115d8d76ef7e35664f7ba557853b105fbc7de79cd"
+      },
+      {
+        "file": "native-startup-diagnostic-macOS/rust_minimal-loader.log",
+        "sha256": "0bbd0b5526060d90d81db42fcc3ce968d2b23d3bae331baabb0f143ba88f8a91"
+      },
+      {
+        "file": "native-tls-activation-macOS/aishe-candidate",
+        "sha256": "4fc403d1f69749b322bd16284b8dfc4f651de4eb37baf2d452dcc180882c623d"
+      },
+      {
+        "file": "native-tls-activation-macOS/compile.jsonl",
+        "sha256": "d74c71bdebd1ebb9dd2a5761ad47e781517ad0b76bd6e7a767ce3177ebf5507e"
+      },
+      {
+        "file": "native-tls-activation-macOS/native-tls-test-executable",
+        "sha256": "c0fc775599780a6326e45f8c5d9f470524fcc90513fa1ce416174bb159163e32"
+      },
+      {
+        "file": "native-tls-activation-macOS/test-0.log",
+        "sha256": "2e2bbfd61a00eff174a4eee1b0d965a5466f8460b024b779a8363bec4463f014"
+      },
+      {
+        "file": "native-tls-activation-macOS/test-1.log",
+        "sha256": "497c1fbbe2b591ba882b7a697a4e68877622cf5ec6f3836893f7a242dd498a07"
+      }
+    ],
+    "local_candidate": {
+      "state": "pass",
+      "source_commit": "4effe3b0360d3b5f73d9045d90b6f20f3162fa70",
+      "source_tree": "3b2edaa4aaaa1437519c0a59a218c0477c4e7137",
+      "production_source_sha256": "f89f7835f4cc63cf176f5eb0ee06841227a09c4de3845652a896e4860ba8dfac",
+      "binary_identity": {
+        "version": "1.1.0",
+        "commit": "4effe3b"
+      },
+      "binary_sha256": "6545205c54c2b947935be2128b3d52eca7f558f54dcdda024d914e7ac86e5f53",
+      "binary_size_bytes": 11736304,
+      "core_commands": 11,
+      "binary_identity_checked": true,
+      "rust_tests": 1116,
+      "rust_targets": 37,
+      "native_commands": 37,
+      "hosted_pr_ci": {
+        "state": "pass",
+        "event": "pull_request",
+        "head_commit": "4effe3b0360d3b5f73d9045d90b6f20f3162fa70",
+        "tested_commit": "222834898e23634b7b0e12e8f5990b0e9d6ad411",
+        "ci_run_id": 38024672010,
+        "url": "https://github.com/billiondollarsolo/aishe/actions/runs/38024672010",
+        "required_jobs_passed": 11,
+        "tested_tree_matches_candidate": true,
+        "linux_original_startup_added_p95_ms": 1.448,
+        "macos_original_startup_added_p95_ms": 4.649,
+        "performance_summary_sha256": "e4892aaa1cc663788f8b01ae86470ac6dffd7a8b576d6bbf82b914dd2d4cbc0f",
+        "scope": "Qualified synthetic PR merge; separate exact-source merged-main push qualification is required."
+      },
+      "strict_linux_startup": {
+        "commands": 100,
+        "warmup": 10,
+        "raw_zsh_p95_ms": 2.186,
+        "aishe_p95_ms": 3.673,
+        "added_p95_ms": 1.487,
+        "backend_started": false
+      },
+      "recorded_visual_views": {
+        "setup_settings": 36,
+        "discovery": 15,
+        "background_tasks": 53
+      },
+      "visual_scope": "Actual isolated PTYs; no named-emulator manual, paid-provider or long-soak pass is claimed.",
+      "local_report_hashes": {
+        "completed-candidate-evidence-index.json": "26bb4effa127b16e29576073d5b6fd53416d828e1903f0786a0dddaffffbd72e",
+        "core-validation.json": "ad3885ae5aad81daa7daad886a052c14f9bff17a466df420631e6e9697fbb263",
+        "native-validation.json": "b3ced8da182ea200199c43c8c348beb92e4a89599b7ca0822b45488ce21effdd",
+        "strict-startup.json": "898c2ff792426c07d090da2a28e4d0d1c9917597f19af86c53817ae6a7443da0",
+        "setup-settings-ui/review.json": "2607f0befa03d48c2e16038020a3f123536212921934c82143d727a5c730c547",
+        "task-background-ui-review/review-index.json": "bca42008e5a2b84f34da2b98ab0891449d77fb0883066ed6e04d8db0d4bc66a8",
+        "root-final-release-visual-review.json": "5ae396124b0c2702fe36cea34f60fc1dba86c0733702c743a60d88f700412d86"
+      }
+    },
+    "main_ci_validation_report": {
+      "report_name": "actual-main-positive-validation.json",
+      "report_sha256": "8a4c1a0b388ade0aaafc99951255f3bb31967354aa9e3c7dc95144226981f09c",
+      "kind": "aishe_maintained_main_ci_validation",
+      "source_commit": "dd29cb536066382870c5503be17354af9d362e46"
+    },
+    "final_diff_review": {
+      "state": "pass",
+      "source_commit": "dd29cb536066382870c5503be17354af9d362e46",
+      "reference": "https://github.com/billiondollarsolo/aishe/compare/9219190b663c12b5a402aeab11f32c48e63d868c...dd29cb536066382870c5503be17354af9d362e46"
+    },
+    "corrected_ad24_visual_review": {
+      "state": "pass",
+      "source_commit": "dd29cb536066382870c5503be17354af9d362e46",
+      "source_tree": "7193a9feef22d3228c2bde869ab4c8d743071e59",
+      "production_source_sha256": "2f5f589ede707cad019dde31a1d71926fa19dd2844cab0641af8e6cdb46eea78",
+      "binary_sha256": "100531de06481acd7447f04ea0f69583989d7fbf6d3590b162b1e8d0dd15dda3",
+      "report_name": "ad24-zero-check-visual-review.json",
+      "report_sha256": "d9226332a09395eb268bc19e2fcff219c5efa2524ad0eb65316a284eaff88eb7",
+      "inspection": {
+        "reviewer": "/root",
+        "personally_viewed": true,
+        "observations": "Personally inspected fresh P9 workflow55 and background08 PNGs with original detail at 09:03:47 UTC. Both show No recorded checks and conditional task-workspace evidence wording plus an unresolved no-check notice. Neither asserts that checks ran. Workflow55 shows both files unselected, zero selected hunks and Back to task selected. Background08 is a pre-exit changes preview; its captured 2 ready badge is separate from the completed scenario\u2019s successful fresh post-exit 1 ready probe. The same-source workflow scenario verified the actual empty checks API, zero summary, false default and explicitly selected file application."
+      },
+      "zero_check_review": {
+        "checks": [],
+        "check_summary": {
+          "total": 0
+        },
+        "evidence_caveat": "Any recorded check evidence belongs to the task workspace. A selected subset has not been checked separately; freshness covers recorded task effects."
+      },
+      "capture": {
+        "file": "workflows-ui-captures.json",
+        "sha256": "785a9b74ccc4b909e5171f5804ac4b229c093c415e8ea509444c944267dd8d06",
+        "label": "Selective review with untested changes visible",
+        "transcript_sha256": "c6bf5978e4a00d37d7c2e2631b6608b7ebf2ddf87946e68b2708ba160d7c55dd",
+        "fresh_frame": {
+          "start_byte": 921,
+          "end_byte": 1455,
+          "sha256": "8daa4896a250e1d330eebf91c75946af2ff6836186d91b89ff149a1d88c0ad2e"
+        },
+        "cols": 100,
+        "rows": 28
+      },
+      "rendered_view": {
+        "file": "55.png",
+        "sha256": "32fffcb9693d47a24fe11029c836d45a816124e263d499be5e039a2c7af76164",
+        "transcript_sha256": "c6bf5978e4a00d37d7c2e2631b6608b7ebf2ddf87946e68b2708ba160d7c55dd"
+      },
+      "workflow_ui_log": {
+        "file": "native-workflows-ui.log",
+        "sha256": "b0db239558cd9707361970fdde490c1a9441b7e5ce8e75a04ae6c075da5ac0de"
+      },
+      "scope": "Actual source-bound local PTY review personally inspected by root; separate from named graphical-terminal manual qualification."
+    },
+    "current_native_ui_review": {
+      "state": "pass",
+      "source_commit": "dd29cb536066382870c5503be17354af9d362e46",
+      "source_tree": "7193a9feef22d3228c2bde869ab4c8d743071e59",
+      "production_source_sha256": "2f5f589ede707cad019dde31a1d71926fa19dd2844cab0641af8e6cdb46eea78",
+      "binary_sha256": "100531de06481acd7447f04ea0f69583989d7fbf6d3590b162b1e8d0dd15dda3",
+      "binary_version": "aishe 1.1.0 (dd29cb5, 2026-10-10)",
+      "completed_utc": "2026-10-10T09:07:35.930399+00:00",
+      "report": {
+        "file": "review-report.json",
+        "sha256": "22e524fabe093aa57efc55b23f4e23662ab2ffbbaa7fe71f6df04bd10b747e65"
+      },
+      "index": {
+        "file": "review-index.json",
+        "sha256": "4e99196a55d10318ed2a7121583c416ee37f50e95abee554d1284d725a13e06d"
+      },
+      "completed_manifests": {
+        "core": {
+          "file": "core-validation.json",
+          "sha256": "4f5534f810f871a64b7f0ccd6179fd38b82450dee560b494960ecab5769f4203"
+        },
+        "native": {
+          "file": "native-validation.json",
+          "sha256": "278a76b62be7a3f74bed887e70a8a3462f7504ea17c8595bede39dd990e68314"
+        }
+      },
+      "inspector": {
+        "reviewer": "/root/activity_qualification",
+        "method": "Personally inspected all actual fresh P9 rendered PNGs using tools.view_image(detail=original), separately from root inspection. This is a local completed native PTY capture review, not a named graphical-terminal manual qualification. Earlier P5/P6 reviews and negative artifacts remain historical; P7 and P8 captures remain unreviewed. No old pass was used as a substitute for these fresh P9 views."
+      },
+      "personal_review": {
+        "personally_viewed_capture_count": 63,
+        "personally_viewed_indices": [
+          1,
+          2,
+          3,
+          4,
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11,
+          12,
+          13,
+          14,
+          15,
+          16,
+          17,
+          18,
+          19,
+          20,
+          21,
+          22,
+          23,
+          24,
+          25,
+          26,
+          27,
+          28,
+          29,
+          30,
+          31,
+          32,
+          33,
+          34,
+          35,
+          36,
+          37,
+          38,
+          39,
+          40,
+          41,
+          42,
+          43,
+          44,
+          45,
+          46,
+          47,
+          48,
+          49,
+          50,
+          51,
+          52,
+          53,
+          54,
+          55,
+          56,
+          57,
+          58,
+          59,
+          60,
+          61,
+          62,
+          63
+        ],
+        "unique_labels": 55,
+        "unique_rendered_pngs_by_sha256": 55,
+        "unique_terminal_texts_by_sha256": 55,
+        "narrow_definition": "columns <= 58",
+        "narrow_personally_viewed_count": 26,
+        "narrow_unique_rendered_pngs_by_sha256": 18,
+        "columns_32_personally_viewed_count": 14,
+        "column_distribution": {
+          "100": 31,
+          "32": 14,
+          "58": 12,
+          "72": 1,
+          "78": 2,
+          "84": 3
+        }
+      },
+      "screens": [
+        {
+          "index": 1,
+          "label": "Idle shell",
+          "columns": 100,
+          "terminal_rows": 26,
+          "image_file": "01.png",
+          "image_sha256": "102b85dd1c2d6d1b7606b2fd621e294f2bc14ceae82962447625fb70e91784da",
+          "transcript_sha256": "2fea1142fa3f951f5b72889e37c8e11a8fd1edddd4b70954f62bc9a7063e63b6",
+          "terminal_text_sha256": "bb236452f0e14519d72e6b0d17f3685db529422c3813cc7e7d65692862b679db"
+        },
+        {
+          "index": 2,
+          "label": "Running task while editing",
+          "columns": 100,
+          "terminal_rows": 26,
+          "image_file": "02.png",
+          "image_sha256": "d2eb05ddba9bb0f8fcb53c105f8ae544ff1870a384674523a5b77a8e18922fa5",
+          "transcript_sha256": "63d01e96a7096049cf749fbef40af61c60705338da0a8c75ed0ca6c112ad6c09",
+          "terminal_text_sha256": "d8f9719ed4a3ea089e3a59f5ea74bcc2c0d77c7d24bb94133287b64cd8297d26"
+        },
+        {
+          "index": 3,
+          "label": "Ready task while editing",
+          "columns": 100,
+          "terminal_rows": 26,
+          "image_file": "03.png",
+          "image_sha256": "853f6a8aa7d0fde0fb6378996cdd41c2f4480640802c564e477c4dd35195121b",
+          "transcript_sha256": "195b80d813ffd4e5babb4d695f4d7deb542e34df076af899f33fbbd817fd6113",
+          "terminal_text_sha256": "9a53b12a3c1feaa8d84e17f0ad4d8b6e9e1081ec922a244898068a9af3f821c3"
+        },
+        {
+          "index": 4,
+          "label": "Tasks in this project",
+          "columns": 100,
+          "terminal_rows": 26,
+          "image_file": "04.png",
+          "image_sha256": "c1d675398f251a5f8ea79ae59f0ea1a64c864cb9f47b90ba34b0ba6257bb0dbe",
+          "transcript_sha256": "18a307023f795e0e75346d79ca83c1332574f630d5ad56630dbfea1e8b76694c",
+          "terminal_text_sha256": "000c2ba7a811590408e786cfeaecb86c5a130d50d5db97c7be3aaa1ce6aa3a8c"
+        },
+        {
+          "index": 5,
+          "label": "Task authority before the response",
+          "columns": 100,
+          "terminal_rows": 26,
+          "image_file": "05.png",
+          "image_sha256": "5a57da0e7228dfda51fc86cf892a1fe20de079523906c2dd395a09e3ef573bbd",
+          "transcript_sha256": "31c462aaad1f4e2cc2a4597b184ad806bea292e02c0e81001396710df23d5932",
+          "terminal_text_sha256": "bb050705b42c3a2fdc537981e611ed52a96fc48a21d170b764a706a2cd1f595e"
+        },
+        {
+          "index": 6,
+          "label": "Task details and result",
+          "columns": 100,
+          "terminal_rows": 26,
+          "image_file": "06.png",
+          "image_sha256": "c55d5a9a9184d8f042b07f23ece526e2e6fcb597e7afeacd5e68d9431a3e85a9",
+          "transcript_sha256": "49d19ac79381880d3599807a4bc7d590ffa16eb79aca05292be653628659a6f7",
+          "terminal_text_sha256": "a52e8d8ce9e927035a55b4130739568a7364688f7990e482a20b4f2d52886839"
+        },
+        {
+          "index": 7,
+          "label": "Task activity",
+          "columns": 100,
+          "terminal_rows": 26,
+          "image_file": "07.png",
+          "image_sha256": "59d6af92adbe954644c8c0e4ce4af434de3dff81598ff55e4a4c8f0c17491b92",
+          "transcript_sha256": "c4c583bef3428d4328187a0b5f366e3e34e11a618b443ed0a864194a1ba3e955",
+          "terminal_text_sha256": "59b9a9ce9c88dfa0c620831171b3b6885a7915e26d1e275842e05584c686cacf"
+        },
+        {
+          "index": 8,
+          "label": "Task changes preview",
+          "columns": 100,
+          "terminal_rows": 26,
+          "image_file": "08.png",
+          "image_sha256": "3ef0c5bfad59d3785e0636601d4735f607351fee9a7e2586dbd4bd8bd300c01d",
+          "transcript_sha256": "46be809ec6ee2fedba48963f6cf3a8d92642e043d2f90373b48315c9a215af7f",
+          "terminal_text_sha256": "c8c54bb5772f2cbe85aad56b207d20652448cad25524bc7309b4db3629cf686f"
+        },
+        {
+          "index": 9,
+          "label": "Task activity at 32 columns",
+          "columns": 32,
+          "terminal_rows": 26,
+          "image_file": "09.png",
+          "image_sha256": "376811a8c6d712a92e208bf6e61b07e6731de53e6a277f2bb746271023037d09",
+          "transcript_sha256": "b2be2348a4d224bfae9e04d910f6c7dace84622314449b06bb500634af620de2",
+          "terminal_text_sha256": "9384ebd8607d81f5f83b1a9f9901266ccd54e9b2e418e0a4a7a7fdeab9fa92a2"
+        },
+        {
+          "index": 10,
+          "label": "Long task authority and scroll cues at 100 columns",
+          "columns": 100,
+          "terminal_rows": 26,
+          "image_file": "10.png",
+          "image_sha256": "a626d770e10eda19adce42e4d29db55b2d13dba9d4f4f5c3d209785d71e148a1",
+          "transcript_sha256": "3303aad66c56ca0cfbc690d9bf73de67e45185acbf8317de7fb568a3cecaf1c4",
+          "terminal_text_sha256": "f664170c8f2b04cb282516688912b1a458e796cca6b310776970a5ac92d69327"
+        },
+        {
+          "index": 11,
+          "label": "Long task result reached with End at 100 columns",
+          "columns": 100,
+          "terminal_rows": 26,
+          "image_file": "11.png",
+          "image_sha256": "2cff0f843225db2ffef4b8fa3d99c2f347693bbafcb1ca16c5e323521b61630c",
+          "transcript_sha256": "7001caee9daef4ca0219b8a1ccd29c9e1b5aa31df52b4d7addebb629e3688c9a",
+          "terminal_text_sha256": "7a38601c855aaea652638748dfca3b048f605eb892cc9f9c9b4a41f38e44a0ad"
+        },
+        {
+          "index": 12,
+          "label": "Long task authority and scroll cues at 58 columns",
+          "columns": 58,
+          "terminal_rows": 26,
+          "image_file": "12.png",
+          "image_sha256": "a00bbfa88cfe6a2e29d7a23a5b50cb9b0d040cf528d99eaf77b0b6e0803a88cf",
+          "transcript_sha256": "91e77076b3e462307d0d0e810a2bc45f2ca939709cb8ea9e4e3af435aa61fd35",
+          "terminal_text_sha256": "bec38f1307ed0503504e006a30c06bfb8e238150691a63c8f759f42d71ab2815"
+        },
+        {
+          "index": 13,
+          "label": "Long task result reached with End at 58 columns",
+          "columns": 58,
+          "terminal_rows": 26,
+          "image_file": "13.png",
+          "image_sha256": "79377d1e1f5b6bc4cca807d0f040668a1351a6669e0315af5222a42d1dc33f1f",
+          "transcript_sha256": "709f5230031c28d7ad75a877648b64ae26b5f41939d49b171c5b273edff1cb87",
+          "terminal_text_sha256": "5f7f4b18a310f99c2427e7d56427cbc8fe812e17d9188aa235838610590c8816"
+        },
+        {
+          "index": 14,
+          "label": "Long task authority and scroll cues at 32 columns",
+          "columns": 32,
+          "terminal_rows": 26,
+          "image_file": "14.png",
+          "image_sha256": "1caedf4cd09e0badecacd42dfa3ac20200fab21d70c6a0bf7a215f6b2a78f813",
+          "transcript_sha256": "2b0f2d0386b1062732738604d22cf8b90a3ca33adc347d5e9f529f1f9dc4611f",
+          "terminal_text_sha256": "dd437890f36b48e452a6e5c7fd3950b46071f6408896dc2f3be9fa18f6b45459"
+        },
+        {
+          "index": 15,
+          "label": "Long task result reached with End at 32 columns",
+          "columns": 32,
+          "terminal_rows": 26,
+          "image_file": "15.png",
+          "image_sha256": "9437582279c44cd875722029811ff7d2c7b7ccffb416ca9e08810bebf69c72b7",
+          "transcript_sha256": "5c0f6171c49c5d66d29b230ca90f9422ff2193d42159e14eef7e9f3284b27e73",
+          "terminal_text_sha256": "295260d85d97286a1ff6fe73745191fedd0e0d94c070c3b776d87e7c6ac57924"
+        },
+        {
+          "index": 16,
+          "label": "Partial verified token subtotal at 58 columns; unknown model price",
+          "columns": 58,
+          "terminal_rows": 26,
+          "image_file": "16.png",
+          "image_sha256": "d213ad788d5715c1602ac15632e527c4eb0082b9cd7f1d60b58893f139906495",
+          "transcript_sha256": "3824e82c669b41d87bbcb5481c1c741eb5f7ee09a9287ca48d060f8d0faace75",
+          "terminal_text_sha256": "d90f7bd6f4505d489be8b18b24ee531d910998cd1fdec489e82bbdc4c1245918"
+        },
+        {
+          "index": 17,
+          "label": "Needs you question details",
+          "columns": 100,
+          "terminal_rows": 28,
+          "image_file": "17.png",
+          "image_sha256": "1385b99d0894d7658657d86ab6fe06bfb286acd5fd6519e0264db591013e856c",
+          "transcript_sha256": "cc464731a6f5453e2052338dcac5cd69352d5f1cdee2baaa5103099c8d8e0f03",
+          "terminal_text_sha256": "aeda85238194a99d7ecea4163816f734daba08a2a327f40713a6b15f9ff5cff5"
+        },
+        {
+          "index": 18,
+          "label": "Answered task with recorded result",
+          "columns": 100,
+          "terminal_rows": 28,
+          "image_file": "18.png",
+          "image_sha256": "30ae8924b22550eb307a0c02f7ef2ca57cbfefc909fbf5e71c5d61b250e8ee8b",
+          "transcript_sha256": "80b0747b69451d99dada0655b2895afd2f7c40b53a6041924d5a5f79faa90837",
+          "terminal_text_sha256": "4b4852d27824420b3e3290657f6e7a076e9ed0132bec09104c1f1115e4c4d1a5"
+        },
+        {
+          "index": 19,
+          "label": "Exact action awaiting approval",
+          "columns": 100,
+          "terminal_rows": 28,
+          "image_file": "19.png",
+          "image_sha256": "f6b1b7bac1fb47cd72f547c4114452c5e437df916e4cf9cda4aaba799bcf5beb",
+          "transcript_sha256": "ca0b6953767ac456f09057517a52c9d9df15f530eaca4c99f31cab15437f8c9f",
+          "terminal_text_sha256": "349743e62471456f41740153675573fcc9de321cc5c68c4d683805902fdb5da9"
+        },
+        {
+          "index": 20,
+          "label": "Complete exact action before the approval decision",
+          "columns": 100,
+          "terminal_rows": 28,
+          "image_file": "20.png",
+          "image_sha256": "2bd1c30899de6fe33b4ec5525a58511a2dfcc615f625164300b62078b1753f10",
+          "transcript_sha256": "5775f0596c1872a1d5505b1cc77b2fa025e66683007df93a5907d7b3c8a57ebb",
+          "terminal_text_sha256": "da45e97d2903ca281169642f4b60cef8afc3ea6c6c99e997abbaefc6134927eb"
+        },
+        {
+          "index": 21,
+          "label": "Specific action approval defaults to Leave for later",
+          "columns": 100,
+          "terminal_rows": 28,
+          "image_file": "21.png",
+          "image_sha256": "218d3c4bc9baf19bc79548d018b89d3d8fbaca718050ab7dc4b0b0d29d7f1d3c",
+          "transcript_sha256": "2c27e6c6c7c3f6de31340c07e0e560ecd14b889ebcf9ab780439deaf785c1d11",
+          "terminal_text_sha256": "5550d5b5b4965f939efe1b6eafa0c301799fd9f550b8cfcc26eb209b54e1166a"
+        },
+        {
+          "index": 22,
+          "label": "Approved task authority and recorded usage before its result",
+          "columns": 100,
+          "terminal_rows": 28,
+          "image_file": "22.png",
+          "image_sha256": "4ca6eec77244bb497264898754d72480ce27e8505bd1484b16067f9f4748722b",
+          "transcript_sha256": "d00013105086a65e99a2e35d1dd2a519a9c41f0f70cdfffb943e7f71dcc0a91f",
+          "terminal_text_sha256": "c006940e68f43bcceea4129dfb6f215f9a4e90b5b477dffd3059a44e5ecf52a5"
+        },
+        {
+          "index": 23,
+          "label": "Approved task result reached with End",
+          "columns": 100,
+          "terminal_rows": 28,
+          "image_file": "23.png",
+          "image_sha256": "b61c3ad243eae25c354b7dc90f9382b23e4520fb0d4ff682fd22575c4bb085f2",
+          "transcript_sha256": "0b0fc18081b852cca8f51e6cfe68a032185fe70c045163d25dae47c098361b8e",
+          "terminal_text_sha256": "12adc8c744d2e49bf64e77c51d13c9cec2cce431de77e31fe02e4c65629b8f6e"
+        },
+        {
+          "index": 24,
+          "label": "Bounded exact approval identity at 58x18; live",
+          "columns": 58,
+          "terminal_rows": 18,
+          "image_file": "24.png",
+          "image_sha256": "b7f82ddafb990ec29fe2364286e3e6179d5721a60436c7cf169d94a9152655bd",
+          "transcript_sha256": "11ba5ebc021c95b5458a5f991151e283366baeacd726d25847e49ba19160b3c1",
+          "terminal_text_sha256": "b1af00fd1ffb847a0e4619c40984302b85290f17c0ba26e1e5876aabc70c5ce6"
+        },
+        {
+          "index": 25,
+          "label": "Exact approval tail at 32x18; live",
+          "columns": 32,
+          "terminal_rows": 18,
+          "image_file": "25.png",
+          "image_sha256": "447de1388cfb873af3ec128d7f223383fec69b5831a2eb99eac27d3336e0bebb",
+          "transcript_sha256": "2c51f23af3d59ce7a1fbc574b1e7391182498efc3c62b344af1e2d75ed811caf",
+          "terminal_text_sha256": "6416926aa4d55cca7f075234c7a00fc20aaf17ace2986b5b827d0676a6efe523"
+        },
+        {
+          "index": 26,
+          "label": "Exact approval tail at 58x18; live",
+          "columns": 58,
+          "terminal_rows": 18,
+          "image_file": "26.png",
+          "image_sha256": "8ab4223ebe24275ad69e8f56e652ec511bd288642ff80afca6a2e0d32edfe0c1",
+          "transcript_sha256": "cbd5bf2744b774d6da9fff532b61356c6a03021f276f3807671ae4c9ce347626",
+          "terminal_text_sha256": "ceb02ab20a6558f05243d20a442737748e1f824c3a7854a5b5676d0812beafde"
+        },
+        {
+          "index": 27,
+          "label": "Exact approval tail at 58x18; live",
+          "columns": 58,
+          "terminal_rows": 18,
+          "image_file": "27.png",
+          "image_sha256": "8ab4223ebe24275ad69e8f56e652ec511bd288642ff80afca6a2e0d32edfe0c1",
+          "transcript_sha256": "e9ac6e3c0dbca3e0b6a53dcc8e7b6fdca6e3ff3cf256da7b50b31ffdc97fe124",
+          "terminal_text_sha256": "ceb02ab20a6558f05243d20a442737748e1f824c3a7854a5b5676d0812beafde"
+        },
+        {
+          "index": 28,
+          "label": "Exact approval choices default to Leave at 58x18; live",
+          "columns": 58,
+          "terminal_rows": 18,
+          "image_file": "28.png",
+          "image_sha256": "5ac3069fcf2291b3daa7fe8d2db39dbd5e831f40ddb1c33967d819417f49ea59",
+          "transcript_sha256": "eb84ddbaedacad45fe6d2f47e6a2324ced1c0c11e78146ec0255a410e77e8de8",
+          "terminal_text_sha256": "852a3f84d0418c387b391255184e56b218af0724b4ba6a07bcd28515ddd96452"
+        },
+        {
+          "index": 29,
+          "label": "Exact approval tail at 58x18; live",
+          "columns": 58,
+          "terminal_rows": 18,
+          "image_file": "29.png",
+          "image_sha256": "8ab4223ebe24275ad69e8f56e652ec511bd288642ff80afca6a2e0d32edfe0c1",
+          "transcript_sha256": "0bc8d2c2d1206d6b5516f5604d9e1d3f8ff456d7966dfaff08f7294462cc4c56",
+          "terminal_text_sha256": "ceb02ab20a6558f05243d20a442737748e1f824c3a7854a5b5676d0812beafde"
+        },
+        {
+          "index": 30,
+          "label": "Exact approval tail at 58x18; live",
+          "columns": 58,
+          "terminal_rows": 18,
+          "image_file": "30.png",
+          "image_sha256": "8ab4223ebe24275ad69e8f56e652ec511bd288642ff80afca6a2e0d32edfe0c1",
+          "transcript_sha256": "5de59ed5fedd07fcc48d0e6e74eb04ed6f9ba210c654df37ab39ed000e0d6f6a",
+          "terminal_text_sha256": "ceb02ab20a6558f05243d20a442737748e1f824c3a7854a5b5676d0812beafde"
+        },
+        {
+          "index": 31,
+          "label": "Bounded exact approval identity at 32x18; live",
+          "columns": 32,
+          "terminal_rows": 18,
+          "image_file": "31.png",
+          "image_sha256": "dfc2592a16e124aba5b6d287f6207cea8b870fce0ced24cbdbf2e2fb450742cd",
+          "transcript_sha256": "6adbb6d2801ba3a9ae26cfb1c8f2270040de468dd8184da763f2cb5c1f0a51b4",
+          "terminal_text_sha256": "b3eefe7454c2489d0b6206b1e2cf84422b709993d20695dfff5c121b48232d9f"
+        },
+        {
+          "index": 32,
+          "label": "Exact approval tail at 32x18; live",
+          "columns": 32,
+          "terminal_rows": 18,
+          "image_file": "32.png",
+          "image_sha256": "447de1388cfb873af3ec128d7f223383fec69b5831a2eb99eac27d3336e0bebb",
+          "transcript_sha256": "1306977ef4bb3231fd267350ceecc147b6d034b24ecca44e04b8b2fdfbb70be9",
+          "terminal_text_sha256": "6416926aa4d55cca7f075234c7a00fc20aaf17ace2986b5b827d0676a6efe523"
+        },
+        {
+          "index": 33,
+          "label": "Exact approval choices default to Leave at 32x18; live",
+          "columns": 32,
+          "terminal_rows": 18,
+          "image_file": "33.png",
+          "image_sha256": "590fc8a1aebb5ab7f3fbf117f2ec0621eba46490697353187d32bc81064064f0",
+          "transcript_sha256": "9c13885b7a6ef2f217f513436ba2f53528991cf394d85f3beb7ccea304c2e78d",
+          "terminal_text_sha256": "ac56e20e52e6b0f3f893e66a9aae0749fb6e9ef3aeb55982060d434423a65571"
+        },
+        {
+          "index": 34,
+          "label": "Exact approval tail at 32x18; live",
+          "columns": 32,
+          "terminal_rows": 18,
+          "image_file": "34.png",
+          "image_sha256": "447de1388cfb873af3ec128d7f223383fec69b5831a2eb99eac27d3336e0bebb",
+          "transcript_sha256": "5c040fe141bca9c297caf750e5880b5de235897e122303466a657b3046f4d1c3",
+          "terminal_text_sha256": "6416926aa4d55cca7f075234c7a00fc20aaf17ace2986b5b827d0676a6efe523"
+        },
+        {
+          "index": 35,
+          "label": "Exact approval tail at 32x18; live",
+          "columns": 32,
+          "terminal_rows": 18,
+          "image_file": "35.png",
+          "image_sha256": "447de1388cfb873af3ec128d7f223383fec69b5831a2eb99eac27d3336e0bebb",
+          "transcript_sha256": "c86fc21cf603f238b8cd67b07fbe46f6c92d289eb0e40900ae2df2a02932d38f",
+          "terminal_text_sha256": "6416926aa4d55cca7f075234c7a00fc20aaf17ace2986b5b827d0676a6efe523"
+        },
+        {
+          "index": 36,
+          "label": "Bounded exact approval identity at 32x18; static",
+          "columns": 32,
+          "terminal_rows": 18,
+          "image_file": "36.png",
+          "image_sha256": "f7b5b35d4c95279141f73dc66b52f8f3ccd9ee2559cac084438a6dd563f23302",
+          "transcript_sha256": "87e338a055239e7d2d18c1e3fcf780a360ea933a78e60fe129cdb8912382e9c1",
+          "terminal_text_sha256": "6a32402518b17ae269bbe415ed648048defbf418ce9d1a4c9c9e5cf6dd8360f9"
+        },
+        {
+          "index": 37,
+          "label": "Exact approval tail at 32x18; static",
+          "columns": 32,
+          "terminal_rows": 18,
+          "image_file": "37.png",
+          "image_sha256": "99ad17e32cefcb21518c9b2a0741d5c8bc12880e935628eaf77b293fa76c30b4",
+          "transcript_sha256": "51a72bcd7324647b86bfaa31f458c9e0e8f49622e3605cf906362b6a41a1afc9",
+          "terminal_text_sha256": "5dbe5715f3c797a4c1cb92dc3faffc7392db456e60c252aa565a573d0c919d0f"
+        },
+        {
+          "index": 38,
+          "label": "Exact approval choices default to Leave at 32x18; static",
+          "columns": 32,
+          "terminal_rows": 18,
+          "image_file": "38.png",
+          "image_sha256": "5d8dd7074b41846808a813edd9c30c2de3f9162ca4fd71fd0f977cec3ed88626",
+          "transcript_sha256": "01a2bc16acab75210154ccb00a58cbadeb4067d4f4d7be1da61201ec5e849fbf",
+          "terminal_text_sha256": "519fbaff4b3d02d75c6e0c4550c34e2f5246eedc77123964c98ed24bda60a2d9"
+        },
+        {
+          "index": 39,
+          "label": "Exact approval tail at 32x18; static",
+          "columns": 32,
+          "terminal_rows": 18,
+          "image_file": "39.png",
+          "image_sha256": "99ad17e32cefcb21518c9b2a0741d5c8bc12880e935628eaf77b293fa76c30b4",
+          "transcript_sha256": "24d5704c34ec84d9981a1afe3d2814134bd375a1cab9c2c3fe918ff16e3899c6",
+          "terminal_text_sha256": "5dbe5715f3c797a4c1cb92dc3faffc7392db456e60c252aa565a573d0c919d0f"
+        },
+        {
+          "index": 40,
+          "label": "Exact approval tail at 32x18; static",
+          "columns": 32,
+          "terminal_rows": 18,
+          "image_file": "40.png",
+          "image_sha256": "99ad17e32cefcb21518c9b2a0741d5c8bc12880e935628eaf77b293fa76c30b4",
+          "transcript_sha256": "4210359198de4614e85c9d467da630ee7b8492527bc6c06fdb4736a694de023f",
+          "terminal_text_sha256": "5dbe5715f3c797a4c1cb92dc3faffc7392db456e60c252aa565a573d0c919d0f"
+        },
+        {
+          "index": 41,
+          "label": "Result with stale passing and current failed recorded checks",
+          "columns": 78,
+          "terminal_rows": 28,
+          "image_file": "41.png",
+          "image_sha256": "9e7dd30358aeb0b06359776b5ab59aa2062d7fdf2d383b1587f9b1a2acca38a2",
+          "transcript_sha256": "570d48fa6e31cb0328150b6708f81a3a29e83de63f1e741062600f05f70f9908",
+          "terminal_text_sha256": "a47bca1053190fc5325ca149b7b11624c8cca626729b029f592de4f08362fe3c"
+        },
+        {
+          "index": 42,
+          "label": "Recorded command exits and output",
+          "columns": 78,
+          "terminal_rows": 28,
+          "image_file": "42.png",
+          "image_sha256": "8963e66022bc13f3f8f95aceb7d1e45f9e2fb491033ea13e6424ccb2989b03e7",
+          "transcript_sha256": "de455c0600fd797627c06fd667c15c53f4a42825df8609f48c76131e41dd1d13",
+          "terminal_text_sha256": "534229b246bff7ef4c1ebcbd7209791c61633eacab28697a94871a4499aa5b46"
+        },
+        {
+          "index": 43,
+          "label": "Live follow-up queued during command",
+          "columns": 100,
+          "terminal_rows": 28,
+          "image_file": "43.png",
+          "image_sha256": "699c7d8bcba119e1b5f03a6c3be998434052e291f441429d719338d756452e25",
+          "transcript_sha256": "596cfeb658a9c715f4772947c219906f46af7af70ee19fc157775cfa07942d8b",
+          "terminal_text_sha256": "2d523d6e07c5b74cda6d76304380d060d82adc934b42530f5b3c4afc432181be"
+        },
+        {
+          "index": 44,
+          "label": "Live follow-up received after safe boundary",
+          "columns": 100,
+          "terminal_rows": 28,
+          "image_file": "44.png",
+          "image_sha256": "ca4ead3a7505bff362efd281bad6b026d2cbda0180b9efdc0629c008dd6af52d",
+          "transcript_sha256": "587ac6b49d46e73829fdacf72bfdac6bb65d040d387bcb48daeab98204373993",
+          "terminal_text_sha256": "5078ad914a00fda93a3e543370a03c34185bc5d631cf88b91b01be035af60e40"
+        },
+        {
+          "index": 45,
+          "label": "Archived work remains available without a badge",
+          "columns": 100,
+          "terminal_rows": 28,
+          "image_file": "45.png",
+          "image_sha256": "03ecc3881df3488e5ac4644126b27bae98e5f04ac080c7317aa2d1a8687ea51e",
+          "transcript_sha256": "9ce1c1e818fafe020230bb30884814022cf8e8e2cfbf40ff295eaeb6552ebce2",
+          "terminal_text_sha256": "c227eff2423e2e4675b794dc645a4b9c7a02cfb0ef95d493b4481cb30eb1a8e2"
+        },
+        {
+          "index": 46,
+          "label": "Native prompt truthful coverage 0 at 100 columns",
+          "columns": 100,
+          "terminal_rows": 28,
+          "image_file": "46.png",
+          "image_sha256": "b3aff29686f90d0ca304e1f1432189c4243379278650c22188527cb94c0ab27d",
+          "transcript_sha256": "19712b136abb5390360145113c8bd81a197898a34ea259575cb69e89b0114398",
+          "terminal_text_sha256": "f9f3f00f44a2cbfa0662d3ba13027bce0d94f06c4bb6df1034f67241eb571120"
+        },
+        {
+          "index": 47,
+          "label": "Native prompt truthful coverage 1 at 100 columns",
+          "columns": 100,
+          "terminal_rows": 28,
+          "image_file": "47.png",
+          "image_sha256": "21d42d651c5a542a99277dbf50b3ea7ef7ea8a94eab0ed64e7354b69ab1eb419",
+          "transcript_sha256": "47ee2acef172bbb42eecd03e78bd6c6a7b4dfb0baa748401a8c8e8fb7d1dd1b7",
+          "terminal_text_sha256": "f1e71848547d29f9394823695bba2e88a02d754d56e97cad73bfc9bcb06d5131"
+        },
+        {
+          "index": 48,
+          "label": "Native prompt truthful coverage 2 at 100 columns",
+          "columns": 100,
+          "terminal_rows": 28,
+          "image_file": "48.png",
+          "image_sha256": "365e6f9afabf2b6d4e5b291d9156bb4cd676e13a047f53cae37556c495a19e7d",
+          "transcript_sha256": "19ce6d8148d2b46437a5eb881c8c179505ed2e2ec86ae925f4edf90dbdbd322b",
+          "terminal_text_sha256": "838cd8ca35140a8eac981c08291ed821cfcb0a8de4f65e16738c12775b69d42c"
+        },
+        {
+          "index": 49,
+          "label": "Native prompt truthful coverage 0 at 58 columns",
+          "columns": 58,
+          "terminal_rows": 28,
+          "image_file": "49.png",
+          "image_sha256": "f45f65b10bcd141b4b3d12ac4bc85106b01094cac7f3b343a1f3d473ab054e30",
+          "transcript_sha256": "219e55a00e158959e7e3364c61b788e1ebef3c9b2fff73871463f8d0781943a3",
+          "terminal_text_sha256": "dca3ba63ddcadeef72fae2b74b210dd32b3744992f3d5b541b6a95142c18c5b0"
+        },
+        {
+          "index": 50,
+          "label": "Native prompt truthful coverage 1 at 58 columns",
+          "columns": 58,
+          "terminal_rows": 28,
+          "image_file": "50.png",
+          "image_sha256": "c4aa41c9db84de81f57dad414b44838a83f4b6331f166e7d5f15b6c2f2351d37",
+          "transcript_sha256": "c34156d01463ae54de8d539e6b0d7bf47d01c24a8ede1fba8e5844640fd84b5a",
+          "terminal_text_sha256": "28a29e6e831d61aabcb3334f39fc20eb640c8138edac1fb56f778888edf3bce1"
+        },
+        {
+          "index": 51,
+          "label": "Native prompt truthful coverage 2 at 58 columns",
+          "columns": 58,
+          "terminal_rows": 28,
+          "image_file": "51.png",
+          "image_sha256": "f9df6045ac9e84771ce96c81f5b2a103f069613959ded236ff2974870e0d4968",
+          "transcript_sha256": "ccbe24868f3052f739a0ad56f3f9c28dd2d56e0c3fcf7b7c58461231398b135e",
+          "terminal_text_sha256": "7377a6e51e87c5453afd887546ec9003e34b2403eb9f85fda8d1a8d605ef9a98"
+        },
+        {
+          "index": 52,
+          "label": "Native budget rejects unknown provider usage",
+          "columns": 100,
+          "terminal_rows": 28,
+          "image_file": "52.png",
+          "image_sha256": "21cf59ef28a05da8c3ad54b39756d9fbff56d2ace34f23c3d841bbe800c4f2fc",
+          "transcript_sha256": "8ce80e77eec3048d4712736ba5ebd64f47af346cafbe3619db8045836a458696",
+          "terminal_text_sha256": "f7da2230bc85eb4da56d2c2506f39a7e5efafe687e7fb4dac999ef32eeb06bb6"
+        },
+        {
+          "index": 53,
+          "label": "Native budget rejects unknown legacy usage",
+          "columns": 100,
+          "terminal_rows": 28,
+          "image_file": "53.png",
+          "image_sha256": "27cb4670a06116adf48d1d307e430514033af0aafaa1e967e5446e8d7e04b885",
+          "transcript_sha256": "d58e3daffab5246b07588c6b79000eca02d6d75ba51d3507c0f08fb779231998",
+          "terminal_text_sha256": "9a5e9932e4da5d014b83c68d36b42e4010d08f76a925e97e381f662584f2296c"
+        },
+        {
+          "index": 54,
+          "label": "Typed timeline of an observed failed check",
+          "columns": 100,
+          "terminal_rows": 28,
+          "image_file": "54.png",
+          "image_sha256": "08cee4bfc06dacc31457aad861f98472e4637562620832c660c82b84add82f79",
+          "transcript_sha256": "0e24db7e40df894451b797defeef03afc7e701bf8367b2666037d91670938116",
+          "terminal_text_sha256": "6dab2813a73a6aced38b4bfb51a424ded14d25c2c9957a3785089cf7d62a45fd"
+        },
+        {
+          "index": 55,
+          "label": "Selective review with untested changes visible",
+          "columns": 100,
+          "terminal_rows": 28,
+          "image_file": "55.png",
+          "image_sha256": "32fffcb9693d47a24fe11029c836d45a816124e263d499be5e039a2c7af76164",
+          "transcript_sha256": "c6bf5978e4a00d37d7c2e2631b6608b7ebf2ddf87946e68b2708ba160d7c55dd",
+          "terminal_text_sha256": "0f67a22af827820bf6e3d9a2c1acc7b4d44c14d38e8ae94355c522fd1fc38f73"
+        },
+        {
+          "index": 56,
+          "label": "Selected change requires explicit confirmation",
+          "columns": 100,
+          "terminal_rows": 28,
+          "image_file": "56.png",
+          "image_sha256": "c3a5f65f0279e868bb49ae25d477b066b7effd3a3618b2ab0d4c4cff7ed3fdd3",
+          "transcript_sha256": "3aaaf2c6bad5d27a15bcf46de64a323562718257e0e48c4a71855683934d9c51",
+          "terminal_text_sha256": "312b3056f967a564e02de9de54118c2d1a0e1408227b1c7a492db2d9a03427ee"
+        },
+        {
+          "index": 57,
+          "label": "Saved workflow launcher",
+          "columns": 100,
+          "terminal_rows": 28,
+          "image_file": "57.png",
+          "image_sha256": "3b6207fb57624f7df65ee004cf7032b72b6f29f339e92cb46f63cc1d737d76ba",
+          "transcript_sha256": "b8656534dddd56fa7f32f9b62ab4e6d52ee92ca77f8e1ba953257bb7cf0507b2",
+          "terminal_text_sha256": "542be5b396d4e6a8b57c22aee6d2509aeef881ea1e1d390296c1cd7ce9cf81ee"
+        },
+        {
+          "index": 58,
+          "label": "Workflow task tree with running and queued stages",
+          "columns": 84,
+          "terminal_rows": 28,
+          "image_file": "58.png",
+          "image_sha256": "a27bd95442027d832356d440473ac77a4df6da9ada079c10e01c6f99527981b3",
+          "transcript_sha256": "bfcce9f0f6f92243988fd4e143256ffe2338c136b41e75d2a3c1f3273ecfd306",
+          "terminal_text_sha256": "5fae463c7a922c4ba23cf974234d045620992fbc093291f2a7549d01346e603a"
+        },
+        {
+          "index": 59,
+          "label": "Queued stage explains its dependency and required check",
+          "columns": 84,
+          "terminal_rows": 28,
+          "image_file": "59.png",
+          "image_sha256": "1847a45cc9b4ab2ee6af0a8e43eb7a160a58c225a6306471d2ff9bdc4629e68f",
+          "transcript_sha256": "9ce70472f291a100e444322f6cddb99e0ded7400f789b45eb7c77bef6c078052",
+          "terminal_text_sha256": "7083b3ebcb16e7327eb22e6a1ed55c1e282bad7c2ffe48bd7f52617f01781196"
+        },
+        {
+          "index": 60,
+          "label": "Completed workflow tree with persistent results",
+          "columns": 84,
+          "terminal_rows": 28,
+          "image_file": "60.png",
+          "image_sha256": "843911bc5e26c8a4586d995abd4c8750ef4958fa63a6b3574eb351207e9ae021",
+          "transcript_sha256": "179927d5a1d72e1fc522271fcc4736c86f96a89d64651b4f966941654236a928",
+          "terminal_text_sha256": "f6b4d8fdea72ee1e634ae4717561efe1ef90e4213c306ecaf668f3059122eb0d"
+        },
+        {
+          "index": 61,
+          "label": "Foreground continuation queued at a safe boundary",
+          "columns": 100,
+          "terminal_rows": 28,
+          "image_file": "61.png",
+          "image_sha256": "45cc5692a76b51e099550006671e2db44773421a68b8e75b2b61e96c7351898d",
+          "transcript_sha256": "d2345335dd6d285fe762e9a50b7d0ca39e96b6205e896ffe7a5c38069970c1fd",
+          "terminal_text_sha256": "bdab90e7ce7700c06b4ecce8d43041b45d34aa57af7a935f7364878fdf048d65"
+        },
+        {
+          "index": 62,
+          "label": "Foreground continuation completed with recorded checks",
+          "columns": 100,
+          "terminal_rows": 28,
+          "image_file": "62.png",
+          "image_sha256": "07ef2eacb2e2e7426c742b32759d7f67060ce7363b5376f1ff611339913e42f0",
+          "transcript_sha256": "18120b382527acc76a47d913c1807b65d24654ea3625b24b9a90cd8e0a61394a",
+          "terminal_text_sha256": "d880e872909d89120209207272e4891cb54583fedf580dddf04267c59aeafa7c"
+        },
+        {
+          "index": 63,
+          "label": "Thousands of quiet results and one real active task",
+          "columns": 72,
+          "terminal_rows": 28,
+          "image_file": "63.png",
+          "image_sha256": "7fce524e88dd738d6a508d21860b701f05da43f45587547d357c9fd489d093a9",
+          "transcript_sha256": "03f052aa7607c75713211c640949baec8552eaa10f47237a11b23bd0b06ec635",
+          "terminal_text_sha256": "7368f2cb15d66fd9ed594af3ef5ec5cc9bdfe91f1cfa1824bee6a9b93bfa54e5"
+        }
+      ],
+      "capture_collections": [
+        {
+          "gate_name": "background-ui",
+          "capture_count": 16,
+          "original": {
+            "file": "background-ui-captures.json",
+            "sha256": "d0eafd4e27c6cd1e06df1fb153c82f87abe986b029a70f3b3c31e721f435ef09",
+            "embedded_binary_identity": false
+          },
+          "bound": {
+            "file": "bound-background-ui-captures.json",
+            "sha256": "675d743320c29b087714801dd0e783da654855231c6d6ac95c5bdc9a514cdc64"
+          },
+          "completed_gate_log": {
+            "file": "native-background-ui.log",
+            "sha256": "b5f723ce2c7361b3de9cd5e8c335d74874bab3d40464d867ce53169cc758085d"
+          }
+        },
+        {
+          "gate_name": "task-interactions-ui",
+          "capture_count": 37,
+          "original": {
+            "file": "task-interactions-ui-captures.json",
+            "sha256": "8987745a1f3d6895e010b4521103df61f93fdf399f092e4d5a6a3541c79a386d",
+            "embedded_binary_identity": true
+          },
+          "bound": {
+            "file": "bound-task-interactions-ui-captures.json",
+            "sha256": "39d91eac79c82b74a85697d88173f222cae054042df026dbdd0b0e90ba70d7d5"
+          },
+          "completed_gate_log": {
+            "file": "native-task-interactions-ui.log",
+            "sha256": "e26fbb882c43f9cca5cbbf732b22068b88223109b94401aac838d30c43b6af37"
+          }
+        },
+        {
+          "gate_name": "workflows-ui",
+          "capture_count": 10,
+          "original": {
+            "file": "workflows-ui-captures.json",
+            "sha256": "785a9b74ccc4b909e5171f5804ac4b229c093c415e8ea509444c944267dd8d06",
+            "embedded_binary_identity": true
+          },
+          "bound": {
+            "file": "bound-workflows-ui-captures.json",
+            "sha256": "ed6972003142e8f1eea346a140c24d2dc1fe19ddc3f5e2330618d833aad0bcd5"
+          },
+          "completed_gate_log": {
+            "file": "native-workflows-ui.log",
+            "sha256": "b0db239558cd9707361970fdde490c1a9441b7e5ce8e75a04ae6c075da5ac0de"
+          }
+        }
+      ],
+      "rendering": {
+        "renderer": {
+          "file": "render-review.py",
+          "sha256": "c147a01016dd1b482a2f204ea7cda93dab9a3ec94539a2286bbf2d95c3b00535"
+        },
+        "manifest": {
+          "file": "manifest.json",
+          "sha256": "ad911ee3971f8199e330a0f26f6ceb6301213d08435e0acd3a52fbe61596e2ba"
+        },
+        "preview": {
+          "file": "preview.html",
+          "sha256": "c53af95d4abe56d1d7c322e353ab3c48b8f99cd7f81983bc1717767a53f43ef9"
+        },
+        "note": "Existing completed native PTY captures rendered with pyte/PIL; blank top/bottom rows are cropped. No new runtime probes, PTYs, benchmarks or Cargo commands were run for this review."
+      },
+      "material_findings": [],
+      "cosmetic_observations": [
+        {
+          "severity": "non-blocking cosmetic",
+          "indices": [
+            9
+          ],
+          "columns": 32,
+          "field": "Task activity header trailing more-below marker",
+          "observed_text": "  Task activity | 1-16/100 |...",
+          "impact": "The 1-16/100 range remains visible; the trailing more-below marker is ellipsized. Activity lines and Up/Down/Esc/? footer remain visible.",
+          "possible_polish": "Place the range and overflow cue before the title or on a short separate line at narrow widths."
+        },
+        {
+          "severity": "non-blocking cosmetic",
+          "indices": [
+            14
+          ],
+          "columns": 32,
+          "field": "Task details header trailing more-below marker",
+          "observed_text": "  Task details | 1-16/73 | m...",
+          "impact": "The 1-16/73 range remains visible; the trailing more-below text is ellipsized. Saved authority, task identity and navigation remain inspectable in the wrapped body and footer.",
+          "possible_polish": "Place the range and overflow cue before the title or on a short separate line at narrow widths."
+        },
+        {
+          "severity": "non-blocking cosmetic",
+          "indices": [
+            25,
+            32,
+            34,
+            35,
+            37,
+            39,
+            40
+          ],
+          "columns": 32,
+          "field": "Review exact action header end/total range",
+          "observed_text": "  Review exact action | 26-3...",
+          "impact": "The range end/total is ellipsized as 26-3.... Complete action command and JSON, including the tail marker and reason, remain visible at End; initial views31/36 display complete wrapped task/request identity, action and scope. Live/static navigation and Leave for later defaults remain readable.",
+          "possible_polish": "Place the full range before the title or on a short separate line at narrow widths."
+        }
+      ],
+      "observations": [
+        {
+          "indices": [
+            1,
+            2,
+            3,
+            4,
+            45,
+            63
+          ],
+          "observation": "Idle shell omits an idle task badge. Running and ready status remain compact beside the preserved draft. Archived work stays discoverable without a badge, and the large history browser places actual running work above quiet completed results."
+        },
+        {
+          "indices": [
+            5,
+            6,
+            10,
+            11,
+            12,
+            13,
+            14,
+            15,
+            17,
+            18,
+            19,
+            22,
+            23,
+            44,
+            59,
+            62
+          ],
+          "observation": "Task identity, saved connection/model, scope, location and time/tool/network limits precede agent result text. Scroll ranges, End result tails and navigation remain discoverable at 100,58 and32 columns."
+        },
+        {
+          "indices": [
+            8,
+            41,
+            42,
+            54,
+            55,
+            56
+          ],
+          "observation": "No-recorded-check scenes state that checks are absent and use a conditional task-workspace caveat. Failed/stale recorded command outcomes remain visible with actual exit/output evidence, independent of the agent response. Selective apply uses explicit default-no confirmation and does not claim a selected subset was checked."
+        },
+        {
+          "indices": [
+            20,
+            21,
+            22,
+            23,
+            24,
+            25,
+            26,
+            27,
+            28,
+            29,
+            30,
+            31,
+            32,
+            33,
+            34,
+            35,
+            36,
+            37,
+            38,
+            39,
+            40
+          ],
+          "observation": "Exact-action review preserves full task/request identity, saved scope and complete wrapped command/JSON through live and static pagination. Approval choices visibly default to Leave for later; narrow header abbreviations are recorded separately."
+        },
+        {
+          "indices": [
+            16,
+            46,
+            47,
+            48,
+            49,
+            50,
+            51,
+            52,
+            53
+          ],
+          "observation": "Partial provider token coverage is labeled as a subtotal, missing price or usage is n/a, unknown requests remain in partial wide totals, and narrow prompts retain truthful latest cost instead of presenting an incomplete total. Dollar-budget blocks explain incomplete usage coverage."
+        },
+        {
+          "indices": [
+            17,
+            18,
+            43,
+            44,
+            57,
+            58,
+            59,
+            60,
+            61,
+            62
+          ],
+          "observation": "Needs-you questions, queued/received follow-ups, workflow dependency/required-check state, persistent completed results and foreground continuation are visible with saved authority and remaining budget. Foreground continuation asks an explicit default-no confirmation."
+        }
+      ],
+      "root_separate_ad24_review": {
+        "report_file": "ad24-zero-check-visual-review.json",
+        "report_sha256": "d9226332a09395eb268bc19e2fcff219c5efa2524ad0eb65316a284eaff88eb7",
+        "reviewer": "/root",
+        "personally_viewed_indices": [
+          8,
+          55
+        ]
+      },
+      "limits": [
+        "macOS and functional Linux namespace containment require actual hosted CI",
+        "paid provider, named graphical terminal and long-soak gates retain explicit release holds"
+      ],
+      "external_manual_qualification": "not_run",
+      "scope": "Current-source completed local native PTY captures personally inspected by the attributed agent; root AD-24 inspection remains separate. No named graphical-terminal, paid-provider or long-soak qualification is claimed."
+    },
+    "ad24_hold_resolution": {
+      "state": "already_resolved_on_p3",
+      "historical_source_commit": "648cec952b1c0bec11a65ae2beabd18136dca1cc",
+      "historical_report_sha256": "f8a8f8bd865dc01f95993e44d4cb0962eb306ce21303b8b4badf3e877a2333ef"
+    },
+    "completion_record_commit": {
+      "state": "not_run",
+      "source_commit": null,
+      "ci_run_id": null,
+      "reason": "This documentation update changes the full commit. Its own exact-source push CI and native artifacts must pass before later publication."
+    }
+  }
 }
